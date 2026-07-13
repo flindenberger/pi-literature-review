@@ -55,6 +55,9 @@ export interface SearchOptions {
 	enrich?: boolean;
 	/** Receives diagnostics (drops, failures, counts). Default: silent. */
 	onWarn?: (message: string) => void;
+	/** Abort signal from the agent (Esc). Checked between network steps;
+	 * an aborted run throws instead of returning a partial payload. */
+	signal?: AbortSignal;
 }
 
 export async function runSearch(options: SearchOptions) {
@@ -76,6 +79,10 @@ export async function runSearch(options: SearchOptions) {
 	}
 	const multiQuery = queries.length > 1;
 
+	const aborted = () => {
+		if (options.signal?.aborted) throw new Error("search aborted by the user");
+	};
+
 	const records: SourceRecord[] = [];
 	const sourcesUsed: string[] = [];
 	for (const source of sources) {
@@ -86,6 +93,7 @@ export async function runSearch(options: SearchOptions) {
 		}
 		let succeeded = false;
 		for (const [index, query] of queries.entries()) {
+			aborted();
 			const label = multiQuery ? `source '${source}' (Q${index + 1})` : `source '${source}'`;
 			try {
 				const found = await search(query, perSource);
@@ -108,14 +116,17 @@ export async function runSearch(options: SearchOptions) {
 	if (deduped.length < kept.length) {
 		warn(`dedupe merged ${kept.length - deduped.length} duplicate record(s)`);
 	}
-	const verified = await verifyAll(deduped, warn);
+	aborted();
+	const verified = await verifyAll(deduped, warn, options.signal);
 	warn(`verified ${verified.filter((r) => r.verified).length}/${verified.length} records`);
 
 	// Enrichment runs before the user filters so that e.g. min_cites can act
 	// on a looked-up count instead of dropping an arXiv record as unknown.
 	// The journal-score stage rides on the same switch: enrich: false turns
 	// off all OpenAlex lookups beyond the search itself.
+	aborted();
 	const enriched = options.enrich === false ? verified : await enrichAll(verified, warn);
+	aborted();
 	const scored = options.enrich === false ? enriched : await addJournalScores(enriched, warn);
 
 	const filters = options.filters ?? {};

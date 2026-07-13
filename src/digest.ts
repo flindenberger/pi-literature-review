@@ -15,6 +15,12 @@
 
 import type { RenderPayload } from "./render.ts";
 
+/** Safety cap (Pi docs: tools must bound their own output). An exhaustive
+ * multi-variant sweep can yield hundreds of records; the digest lists at
+ * most this many reference lines and says honestly how many more exist --
+ * the complete list is always in the HTML/JSON files anyway. */
+export const MAX_DIGEST_RECORDS = 100;
+
 /** "10.3390/rs13081505" | "arXiv:2403.19646v3" | "no identifier". */
 function recordId(record: { doi: string; arxiv_id: string }): string {
 	if (record.doi) return record.doi;
@@ -62,7 +68,7 @@ export function renderDigest(payload: RenderPayload, htmlPath: string | null): s
 	if (!results.length) {
 		lines.push("No records survived filtering and verification.");
 	}
-	results.forEach((record, index) => {
+	results.slice(0, MAX_DIGEST_RECORDS).forEach((record, index) => {
 		const flags: string[] = [];
 		if (grouped) flags.push(record.group ?? "-");
 		if (!record.verified) flags.push("UNVERIFIED");
@@ -70,6 +76,12 @@ export function renderDigest(payload: RenderPayload, htmlPath: string | null): s
 		const year = record.year || "n.d.";
 		lines.push(`${index + 1}. ${bracket}${year} | ${recordId(record)} | ${record.title}`);
 	});
+	if (results.length > MAX_DIGEST_RECORDS) {
+		lines.push(
+			`... and ${results.length - MAX_DIGEST_RECORDS} more record(s) not listed here -- `
+			+ "the complete list is in the HTML and JSON files.",
+		);
+	}
 
 	return lines.join("\n");
 }

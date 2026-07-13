@@ -59,6 +59,7 @@ async function intakeDialog(
 	sources: string[],
 	proposed: IntakeValues,
 	diagnostics: string[],
+	signal: AbortSignal | undefined,
 ): Promise<IntakeValues | null> {
 	const values = { ...proposed };
 	const summary = [
@@ -75,7 +76,7 @@ async function intakeDialog(
 		const choice = await ctx.ui.select("pi-literature-search: run this search?", [
 			"Run as proposed",
 			"Adjust parameters",
-		]);
+		], { signal });
 		if (choice === undefined) {
 			diagnostics.push("intake dialog: cancelled by the user");
 			return null;
@@ -97,10 +98,13 @@ async function intakeDialog(
 			"Grouping: groups AND-linked, terms within a group OR-linked (labels results only, does " +
 			"not narrow the search). Edit the expression directly - 'none' = ungrouped, empty keeps " +
 			"the proposal, Esc cancels the run";
-		const groupSpec =
-			ctx.mode === "tui"
-				? await ctx.ui.editor(groupPrompt, formatGroupExpression(values.groupTerms ?? []))
-				: await ctx.ui.input(groupPrompt);
+		// editor() works in TUI and RPC alike (pi docs); headless never gets
+		// here because the ctx.hasUI gate skips the whole dialog.
+		const groupSpec = await ctx.ui.editor(
+			groupPrompt,
+			formatGroupExpression(values.groupTerms ?? []),
+			{ signal },
+		);
 		if (groupSpec === undefined) return cancelled();
 		if (groupSpec.trim()) {
 			values.groupTerms = groupSpec.trim().toLowerCase() === "none" ? undefined : parseGroupSpec(groupSpec);
@@ -109,10 +113,11 @@ async function intakeDialog(
 		const yearPrompt =
 			"Publication years: 2015-2024, 2015- or 2024 - 'all' = no limit, empty keeps the " +
 			"proposal, Esc cancels the run";
-		const yearSpec =
-			ctx.mode === "tui"
-				? await ctx.ui.editor(yearPrompt, yearRangeToSpec(values.yearFrom, values.yearTo))
-				: await ctx.ui.input(yearPrompt);
+		const yearSpec = await ctx.ui.editor(
+			yearPrompt,
+			yearRangeToSpec(values.yearFrom, values.yearTo),
+			{ signal },
+		);
 		if (yearSpec === undefined) return cancelled();
 		if (yearSpec.trim()) {
 			if (yearSpec.trim().toLowerCase() === "all") {
@@ -136,17 +141,14 @@ async function intakeDialog(
 			`Thorough (${THOROUGH_PER_SOURCE} per source)`,
 			`Exhaustive (${MAX_PER_SOURCE} per source)`,
 			"Custom count...",
-		]);
+		], { signal });
 		if (depth === undefined) return cancelled();
 		if (depth.startsWith("Quick")) values.perSource = DEFAULT_PER_SOURCE;
 		else if (depth.startsWith("Thorough")) values.perSource = THOROUGH_PER_SOURCE;
 		else if (depth.startsWith("Exhaustive")) values.perSource = MAX_PER_SOURCE;
 		else if (depth.startsWith("Custom")) {
 			const countPrompt = `Results per source (1-${MAX_PER_SOURCE}; the cap is politeness towards the free APIs)`;
-			const countSpec =
-				ctx.mode === "tui"
-					? await ctx.ui.editor(countPrompt, String(proposedDepth))
-					: await ctx.ui.input(countPrompt);
+			const countSpec = await ctx.ui.editor(countPrompt, String(proposedDepth), { signal });
 			if (countSpec === undefined) return cancelled();
 			if (countSpec.trim()) {
 				const count = parsePerSource(countSpec, MAX_PER_SOURCE);
@@ -245,8 +247,14 @@ export default function literatureSearch(pi: ExtensionAPI) {
 				description: "Fill missing citation counts / journal names via a deterministic OpenAlex identifier lookup (open API, no scraping). Filled fields are listed per record under 'enriched' and marked with * in the HTML. Default: true.",
 			})),
 		}),
-		async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const diagnostics: string[] = [];
+			// Progress: every pipeline diagnostic doubles as a live status line
+			// in the UI (per-source counts, verification, enrichment).
+			const report = (message: string) => {
+				diagnostics.push(message);
+				onUpdate?.({ content: [{ type: "text", text: message }] });
+			};
 			let confirmed: IntakeValues = {
 				groupTerms: params.group_terms,
 				yearFrom: params.year_from,
@@ -262,6 +270,7 @@ export default function literatureSearch(pi: ExtensionAPI) {
 					sources,
 					confirmed,
 					diagnostics,
+					signal,
 				);
 				if (result === null) {
 					return {
@@ -304,7 +313,8 @@ export default function literatureSearch(pi: ExtensionAPI) {
 				},
 				sort: params.sort === "cites" || params.sort === "year" ? params.sort : undefined,
 				enrich: params.enrich,
-				onWarn: (message) => diagnostics.push(message),
+				onWarn: report,
+				signal,
 			});
 			let htmlPath: string | null = null;
 			let jsonPath: string | null = null;

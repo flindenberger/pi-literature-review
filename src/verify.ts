@@ -80,13 +80,17 @@ export async function verifyRecord(
 	return { verified: false, note: "no DOI or arXiv ID to verify" };
 }
 
-/** Stamp every record with verified / verify_note. */
+/** Stamp every record with verified / verify_note. An abort (Esc in the
+ * agent) throws between records: an aborted run produces no payload, never
+ * a half-verified one. */
 export async function verifyAll(
 	records: MergedRecord[],
 	onWarn: (message: string) => void = warn,
+	signal?: AbortSignal,
 ): Promise<VerifiedRecord[]> {
 	const verified: VerifiedRecord[] = [];
 	for (const [index, record] of records.entries()) {
+		if (signal?.aborted) throw new Error("search aborted during verification");
 		if (index) await new Promise((resolve) => setTimeout(resolve, VERIFY_PAUSE_MS));
 		const result = await verifyRecord(record);
 		if (!result.verified) {

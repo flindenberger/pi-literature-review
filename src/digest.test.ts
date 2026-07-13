@@ -4,7 +4,7 @@
  */
 
 import assert from "node:assert/strict";
-import { renderDigest } from "./digest.ts";
+import { MAX_DIGEST_RECORDS, renderDigest } from "./digest.ts";
 import type { RenderPayload } from "./render.ts";
 
 function record(overrides: Record<string, unknown>) {
@@ -117,6 +117,22 @@ function payload(overrides: Partial<RenderPayload>): RenderPayload {
 	assert.ok(digest.includes("No records survived filtering and verification."));
 	assert.ok(digest.includes("WARNING: the output files could not be written"));
 	assert.ok(!digest.includes("open the HTML file"));
+}
+
+// Safety cap: huge sweeps list at most MAX_DIGEST_RECORDS reference lines,
+// with an honest note about the rest (Pi docs: tools must bound their output)
+{
+	const many = Array.from({ length: MAX_DIGEST_RECORDS + 23 }, (_, i) =>
+		record({ doi: `10.1234/paper${i}`, title: `Paper ${i}` }));
+	const digest = renderDigest(payload({ results: many }), "/tmp/x.html");
+	assert.ok(digest.includes(`${MAX_DIGEST_RECORDS}. `));
+	assert.ok(!digest.includes(`${MAX_DIGEST_RECORDS + 1}. `));
+	assert.ok(digest.includes("and 23 more record(s) not listed here"));
+	assert.ok(digest.includes(`Discovery complete: ${MAX_DIGEST_RECORDS + 23} records`)); // counts stay honest
+
+	// small runs stay untouched
+	const small = renderDigest(payload({ results: [record({})] }), "/tmp/x.html");
+	assert.ok(!small.includes("more record(s) not listed here"));
 }
 
 console.log("digest.test.ts: all assertions passed");
