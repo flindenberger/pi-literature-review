@@ -9,6 +9,8 @@
  * column-sort script; sorting only reorders already-rendered rows).
  */
 
+import { firstAuthorLastName } from "./types.ts";
+
 interface RenderRecord {
 	title: string;
 	authors: string[];
@@ -118,9 +120,9 @@ function doiCell(record: RenderRecord): string {
 	return parts.length ? parts.join("<br>") : "&mdash;";
 }
 
-function articleCell(record: RenderRecord): string {
+function articleCell(record: RenderRecord, withAuthors = false): string {
 	const title = `<span class="title">${link(safeHref(record.url), record.title || "(untitled)")}</span>`;
-	const authors = record.authors.length
+	const authors = withAuthors && record.authors.length
 		? `<br><span class="authors">${esc(record.authors.join("; "))}</span>`
 		: "";
 	const abstract = record.abstract
@@ -134,6 +136,15 @@ function articleCell(record: RenderRecord): string {
  * the table names the provider. The sort key stays the bare value. On
  * multi-query runs the data-source cell also notes which query variants
  * found the record (Q1, Q2, ... as listed in the page header). */
+/** The identifier the fetch stage accepts for this record: DOI first, else
+ * the arXiv ID in its arXiv:... spelling; empty when the record has neither
+ * (then there is nothing to fetch and the row gets no checkbox). */
+function fetchIdOf(record: RenderRecord): string {
+	if (record.doi) return record.doi;
+	if (record.arxiv_id) return `arXiv:${record.arxiv_id}`;
+	return "";
+}
+
 function resultRow(record: RenderRecord, index: number, queryLabels: Map<string, string>): string {
 	const rowClass = record.group === "on_target" ? ' class="on-target"' : "";
 	const year = record.year !== null && /^\d{4}$/.test(record.year) ? record.year : "";
@@ -149,9 +160,18 @@ function resultRow(record: RenderRecord, index: number, queryLabels: Map<string,
 	// Label sort keys are prefixed so that the FIRST click puts on_target on
 	// top (matching the initial page order), not alphabetical "adjacent".
 	const groupKey = record.group === "on_target" ? "0_on_target" : record.group ? "1_adjacent" : "";
+	const fetchId = fetchIdOf(record);
+	const pickBox = fetchId
+		? `<input type="checkbox" class="pick" data-id="${esc(fetchId)}" aria-label="Select for PDF download">`
+		: "";
+	// Sort key of the Authors column: last name of the FIRST author,
+	// lowercased -- a header click orders by exactly that.
+	const authorKey = firstAuthorLastName(record.authors).toLowerCase();
 	const cells = [
+		cell("", pickBox, "pickcell"),
 		cell(String(index + 1), String(index + 1)),
 		cell(record.title.toLowerCase(), articleCell(record), "paper"),
+		cell(authorKey, record.authors.length ? esc(record.authors.join("; ")) : "&mdash;", "authorscol"),
 		cell(year, esc(record.year ?? "") || "&mdash;"),
 		cell(record.venue.toLowerCase(), record.venue ? esc(record.venue) + venueStar : "&mdash;"),
 		cell(score === null ? "" : String(score), score === null ? "&mdash;" : score.toFixed(1)),
@@ -167,7 +187,7 @@ function droppedRow(entry: { reason: string; record: RenderRecord }): string {
 	const { record, reason } = entry;
 	const year = record.year !== null && /^\d{4}$/.test(record.year) ? record.year : "";
 	return `<tr>${[
-		cell(record.title.toLowerCase(), articleCell(record), "paper"),
+		cell(record.title.toLowerCase(), articleCell(record, true), "paper"),
 		cell(year, esc(record.year ?? "") || "&mdash;"),
 		cell((record.doi || record.arxiv_id).toLowerCase(), doiCell(record)),
 		cell(reason.toLowerCase(), esc(reason)),
@@ -199,10 +219,24 @@ const STYLE = `
 	details summary { cursor: pointer; color: #44506b; font-size: 0.78rem; }
 	details p { margin: 0.3rem 0 0; color: #2c2c2c; }
 	a { color: #2b4a6f; }
-	td.paper { min-width: 20rem; }
+	td.paper { min-width: 18rem; }
+	td.authorscol { color: #3d3d3d; max-width: 13rem; }
+	td.pickcell { text-align: center; }
+	th.no-sort { cursor: default; }
+	.selectbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem;
+		margin-top: 0.8rem; font-size: 0.84rem;
+		position: sticky; bottom: 0; z-index: 5; background: #fdfdfc;
+		padding: 0.5rem 0.2rem; border-top: 1px solid #d9d9d4;
+		box-shadow: 0 -3px 8px rgba(0, 0, 0, 0.07); }
+	.selectbar button { font: inherit; padding: 0.3rem 0.7rem; cursor: pointer;
+		background: #f1f1ec; border: 1px solid #c9c9c2; border-radius: 3px; }
+	.selectbar button:hover:enabled { background: #e6e6df; }
+	.selectbar button:disabled { color: #9a9a94; cursor: default; }
+	.selectbar .hint { color: #6b6b6b; font-size: 0.78rem; }
+	.selectbar .copied { color: #2e7d43; font-weight: 600; }
 	footer { margin: 2.5rem 0 1rem; font-size: 0.78rem; color: #6b6b6b;
 		border-top: 1px solid #d9d9d4; padding-top: 0.6rem; }
-	@media print { body { max-width: none; } details { display: none; } }
+	@media print { body { max-width: none; } details, .selectbar, td.pickcell, th.no-sort { display: none; } }
 `;
 
 /**
@@ -244,6 +278,7 @@ for (const table of document.querySelectorAll("table.sortable")) {
 	};
 	const renderHeaders = () => {
 		headers.forEach((h, i) => {
+			if (h.classList.contains("no-sort")) return;
 			if (h.dataset.label === undefined) h.dataset.label = h.textContent;
 			const entry = stack.find((e) => e.column === i);
 			if (!entry) {
@@ -266,12 +301,14 @@ for (const table of document.querySelectorAll("table.sortable")) {
 		});
 	};
 	headers.forEach((header, column) => {
+		if (header.classList.contains("no-sort")) return;
 		header.addEventListener("click", () => {
 			const keys = Array.from(body.rows).map((row) => row.cells[column].dataset.sort ?? "");
 			const numeric = keys.every((key) => key === "" || !Number.isNaN(Number(key)));
+			const label = (header.dataset.label ?? header.textContent).trim();
 			const existing = stack.find((entry) => entry.column === column);
 			if (existing) existing.dir = existing.dir === "asc" ? "desc" : "asc";
-			else stack.push({ column, dir: numeric && column > 0 ? "desc" : "asc", numeric });
+			else stack.push({ column, dir: numeric && label !== "#" ? "desc" : "asc", numeric });
 			applySort();
 			renderHeaders();
 		});
@@ -279,7 +316,66 @@ for (const table of document.querySelectorAll("table.sortable")) {
 }
 `;
 
-const RESULT_HEADERS = "<tr><th>#</th><th>Article</th><th>Year</th><th>Journal</th><th>Journal score&sup1;</th><th>Citations</th><th>DOI</th><th>Data source</th><th>Label</th></tr>";
+const RESULT_HEADERS = "<tr><th class=\"no-sort\" title=\"Select rows, then copy the download request below\"></th><th>#</th><th>Article</th><th>Authors</th><th>Year</th><th>Journal</th><th>Journal score&sup1;</th><th>Citations</th><th>DOI</th><th>Data source</th><th>Label</th></tr>";
+
+/**
+ * Selection layer: checkboxes feed a ready-made chat sentence ("Download
+ * these papers: <id>, <id>, ...") into the clipboard. Pure view logic on
+ * identifiers that are already printed on the page -- the page itself can
+ * never download (file:// pages have neither filesystem access nor
+ * permission to call other servers); the sentence is pasted into the Pi
+ * chat, where the fetch tool downloads after the user confirms the terminal
+ * dialog.
+ */
+const SELECT_SCRIPT = `
+{
+	const bar = document.querySelector(".selectbar");
+	if (bar) {
+		const picks = () => Array.from(document.querySelectorAll("input.pick"));
+		const chosen = () => picks().filter((box) => box.checked);
+		const countLabel = bar.querySelector(".selectcount");
+		const copyButton = bar.querySelector(".copy-selection");
+		const feedback = bar.querySelector(".copy-feedback");
+		const update = () => {
+			const n = chosen().length;
+			countLabel.textContent = n + " selected";
+			copyButton.disabled = n === 0;
+			feedback.textContent = "";
+		};
+		document.addEventListener("change", (event) => {
+			if (event.target instanceof HTMLInputElement && event.target.classList.contains("pick")) update();
+		});
+		bar.querySelector(".select-on-target")?.addEventListener("click", () => {
+			for (const box of picks()) box.checked = box.closest("tr").classList.contains("on-target");
+			update();
+		});
+		bar.querySelector(".select-clear").addEventListener("click", () => {
+			for (const box of picks()) box.checked = false;
+			update();
+		});
+		copyButton.addEventListener("click", () => {
+			const sentence = "Download these papers: "
+				+ chosen().map((box) => box.dataset.id).join(", ");
+			const done = () => { feedback.textContent = "Copied. Now paste it into the Pi chat."; };
+			const fallback = () => {
+				const area = document.createElement("textarea");
+				area.value = sentence;
+				document.body.appendChild(area);
+				area.select();
+				document.execCommand("copy");
+				area.remove();
+				done();
+			};
+			if (navigator.clipboard?.writeText) {
+				navigator.clipboard.writeText(sentence).then(done, fallback);
+			} else {
+				fallback();
+			}
+		});
+		update();
+	}
+}
+`;
 const DROPPED_HEADERS = "<tr><th>Article</th><th>Year</th><th>DOI</th><th>Reason</th></tr>";
 
 /** Render the full discovery payload as a standalone HTML document. */
@@ -310,13 +406,28 @@ export function renderHtml(payload: RenderPayload): string {
 		: "";
 	const queryLabel = variants.length ? `Q1: ${payload.query}` : payload.query;
 
+	const fetchable = results.some((record) => fetchIdOf(record));
+	const onTargetButton = payload.grouping?.length
+		? `<button type="button" class="select-on-target">Select all on_target</button>\n`
+		: "";
+	const selectBar = results.length && fetchable
+		? `\n<div class="selectbar">
+<span class="selectcount">0 selected</span>
+${onTargetButton}<button type="button" class="select-clear">Clear</button>
+<button type="button" class="copy-selection" disabled>Copy download request</button>
+<span class="copy-feedback copied"></span>
+<span class="hint">Tick papers above, copy the request, then paste it into the Pi chat -- the fetch tool
+downloads the PDFs into the papers/ library after you confirm the terminal dialog.</span>
+</div>`
+		: "";
+
 	const resultsTable = results.length
 		? `<table class="sortable">
 <thead>${RESULT_HEADERS}</thead>
 <tbody>
 ${results.map((record, index) => resultRow(record, index, queryLabels)).join("\n")}
 </tbody>
-</table>${enrichmentFootnote}${scoreFootnote}`
+</table>${selectBar}${enrichmentFootnote}${scoreFootnote}`
 		: "<p>No results.</p>";
 
 	const droppedSection = payload.dropped.length
@@ -356,6 +467,7 @@ originates from a search-API response; an identifier counts as verified when it 
 doi.org / arxiv.org. Column sorting only reorders the rows above. No language model produced or
 modified any citation data.</footer>
 <script>${SORT_SCRIPT}</script>
+<script>${SELECT_SCRIPT}</script>
 </body>
 </html>
 `;

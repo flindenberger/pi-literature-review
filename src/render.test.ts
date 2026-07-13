@@ -109,7 +109,8 @@ const html = renderHtml(payload);
 
 // table: expected column order, sortable markup, on_target highlighting
 {
-	assert.ok(html.includes("<th>#</th><th>Article</th><th>Year</th><th>Journal</th><th>Journal score&sup1;</th><th>Citations</th><th>DOI</th><th>Data source</th><th>Label</th>"));
+	assert.ok(html.includes("</th><th>#</th><th>Article</th><th>Authors</th><th>Year</th><th>Journal</th><th>Journal score&sup1;</th><th>Citations</th><th>DOI</th><th>Data source</th><th>Label</th>"));
+	assert.ok(html.includes('<th class="no-sort"')); // checkbox column is not sortable
 	assert.ok(html.includes('<table class="sortable">'));
 	assert.ok(html.includes('<tr class="on-target">'));
 	assert.ok(html.includes('data-sort="12"'));
@@ -147,6 +148,65 @@ const html = renderHtml(payload);
 	assert.ok(html.includes('data-sort="1_adjacent"'));
 	const bare = renderHtml({ ...payload, results: [], dropped: [] });
 	assert.ok(!bare.includes("2-year mean citedness")); // no scores, no footnote
+}
+
+// authors column: own cell, sorted by the FIRST author's last name; the
+// dropped table keeps authors inside the article cell (no own column there)
+{
+	assert.ok(html.includes('<td class="authorscol" data-sort="author">A. Author; B. Author</td>'));
+	const commaStyle = renderHtml({
+		...payload,
+		results: [{ ...payload.results[0], authors: ["Kryniecka, A.", "Magnuszewski, A."] }],
+		dropped: [],
+	});
+	assert.ok(commaStyle.includes('data-sort="kryniecka"')); // "Last, F." spelling
+	// dropped table: authors stay inside the article cell (no own column there)
+	const droppedWithAuthors = renderHtml({
+		...payload,
+		results: [],
+		dropped: [{ reason: "year out of range", record: payload.results[0] }],
+	});
+	assert.ok(droppedWithAuthors.includes('<span class="authors">A. Author; B. Author</span>'));
+	// sticky selection bar styling is present
+	assert.ok(html.includes("position: sticky; bottom: 0;"));
+}
+
+// selection layer: checkboxes carry the fetch identifier, the bar and the
+// copy sentence exist, and rows without any identifier get no checkbox
+{
+	assert.ok(html.includes('<input type="checkbox" class="pick" data-id="10.1234/abc"'));
+	assert.ok(html.includes('data-id="arXiv:2401.16393v1"'));
+	assert.ok(html.includes('<div class="selectbar">'));
+	assert.ok(html.includes("Copy download request"));
+	assert.ok(html.includes("Select all on_target")); // grouping is on in the fixture
+	assert.ok(html.includes("paste it into the Pi chat"));
+	assert.ok(html.includes('"Download these papers: "')); // the copy script's sentence
+
+	// a record with neither DOI nor arXiv ID cannot be fetched -> no checkbox
+	const noId = renderHtml({
+		...payload,
+		results: [{ ...payload.results[0], doi: "", arxiv_id: "", url: "" }],
+		dropped: [],
+	});
+	assert.ok(!noId.includes('class="pick"'));
+	assert.ok(!noId.includes('<div class="selectbar">')); // nothing fetchable, no bar
+
+	// no grouping -> no "Select all on_target" button, bar still there
+	const ungrouped = renderHtml({ ...payload, grouping: null });
+	assert.ok(!ungrouped.includes("Select all on_target"));
+	assert.ok(ungrouped.includes('<div class="selectbar">'));
+
+	// hostile identifier text stays inside the escaped attribute
+	const hostile = renderHtml({
+		...payload,
+		results: [{ ...payload.results[0], doi: '10.1/a"b<c' }],
+		dropped: [],
+	});
+	assert.ok(hostile.includes('data-id="10.1/a&quot;b&lt;c"'));
+
+	// no results -> no selection bar at all
+	const bare = renderHtml({ ...payload, results: [], dropped: [] });
+	assert.ok(!bare.includes('<div class="selectbar">'));
 }
 
 // dropped section: record appears with its reason
