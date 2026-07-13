@@ -45,8 +45,10 @@ export function filterRecords(records: SourceRecord[]): FilterResult {
  * and are ignored for identity: OSF-style "..._v1" DOI variants and arXiv
  * "...v2" IDs (seen live: 10.31227/osf.io/pz6jv vs .../pz6jv_v1 returned as
  * two records). Only the key is normalized; record fields stay untouched.
+ * Exported: the fetch stage keys its papers/ library the same way, so one
+ * paper is never stored twice.
  */
-function identityKey(record: MergedRecord): string | null {
+export function identityKey(record: Pick<MergedRecord, "doi" | "arxiv_id">): string | null {
 	if (record.doi) return `doi:${record.doi.toLowerCase().replace(/_v\d+$/, "")}`;
 	if (record.arxiv_id) return `arxiv:${record.arxiv_id.toLowerCase().replace(/v\d+$/, "")}`;
 	return null;

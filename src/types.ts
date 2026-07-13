@@ -5,6 +5,8 @@
  * not exist. Nothing is invented: missing stays missing (empty string / null).
  */
 
+import { storedMailto } from "./config.ts";
+
 export interface SourceRecord {
 	title: string;
 	authors: string[];
@@ -29,11 +31,14 @@ export const VERSION = "0.1.0";
 
 /**
  * Polite User-Agent. The contact address is configurable and defaults to
- * none: no personal data ships in the code. Setting PI_LITERATURE_REVIEW_MAILTO
- * opts search APIs like CrossRef into their "polite pool".
+ * none: no personal data ships in the code. Sources, in order: the
+ * PI_LITERATURE_REVIEW_MAILTO environment variable (override), then the
+ * email stored via the fetch dialog (src/config.ts). It opts search APIs
+ * like CrossRef into their "polite pool" and enables Unpaywall lookups.
  */
 export function contactMailto(): string {
-	return (process.env.PI_LITERATURE_REVIEW_MAILTO || "").trim();
+	const env = (process.env.PI_LITERATURE_REVIEW_MAILTO || "").trim();
+	return env || storedMailto();
 }
 
 export function userAgent(): string {
@@ -44,4 +49,19 @@ export function userAgent(): string {
 
 export function warn(message: string): void {
 	process.stderr.write(`pi-literature-review: ${message}\n`);
+}
+
+/**
+ * Deterministic last name of the first author, for sorting and file
+ * naming. Handles both API spellings: "Anna Kryniecka" (last token) and
+ * "Kryniecka, A." (part before the comma). No repair, no guessing -- an
+ * empty author list yields "".
+ */
+export function firstAuthorLastName(authors: string[]): string {
+	const first = (authors[0] ?? "").trim();
+	if (!first) return "";
+	const comma = first.indexOf(",");
+	if (comma > 0) return first.slice(0, comma).trim();
+	const parts = first.split(/\s+/);
+	return parts[parts.length - 1];
 }

@@ -11,8 +11,13 @@
  *
  * Clean JSON to stdout; warnings and diagnostics to stderr. A failing
  * source degrades gracefully and never crashes the run.
+ *
+ * Second subcommand -- deterministic PDF retrieval into the papers/ library:
+ *
+ *     node src/cli.ts fetch <DOI-or-arXiv-ID> [more ...]
  */
 
+import { renderFetchReport, runFetch } from "./fetch.ts";
 import { renderDigest } from "./digest.ts";
 import { runSearch, SEARCHERS, type SearchOptions } from "./search.ts";
 import { parseGroupTerms } from "./intake.ts";
@@ -44,6 +49,8 @@ function usage(): never {
 	warn("       --variant adds an alternative phrasing; results are deduplicated across variants");
 	warn("       --digest prints the agent-facing digest instead of JSON (combine with --html for real paths)");
 	warn(`available sources: ${Object.keys(SEARCHERS).join(", ")}`);
+	warn("or:    node src/cli.ts fetch <DOI-or-arXiv-ID> [more ...]");
+	warn("       downloads legal open-access PDFs into pi-literature-review/papers/");
 	process.exit(2);
 }
 
@@ -119,6 +126,19 @@ function parseArgs(argv: string[]): CliArgs {
 	}
 	if (!query) usage();
 	return { query, variants, perSource, sources, groupTerms, filters, sort, htmlFile, enrich, digest };
+}
+
+if (process.argv[2] === "fetch") {
+	// Identifiers may arrive comma-separated (pasted chat sentence) or as
+	// separate arguments; both spellings end up as one clean list.
+	const identifiers = process.argv.slice(3)
+		.flatMap((chunk) => chunk.split(","))
+		.map((s) => s.trim())
+		.filter(Boolean);
+	if (!identifiers.length) usage();
+	const { results, papersDir } = await runFetch({ identifiers, onWarn: warn });
+	process.stdout.write(`${renderFetchReport(results, papersDir)}\n`);
+	process.exit(0);
 }
 
 const args = parseArgs(process.argv.slice(2));
