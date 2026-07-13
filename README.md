@@ -1,0 +1,205 @@
+# pi-literature-review
+
+Local, open, login-free literature review tooling for the
+[Pi coding agent](https://pi.dev). One package, one shared data folder, one tool
+per pipeline stage:
+
+- **`pi-literature-search`** (this release) -- deterministic literature discovery:
+  searches arXiv, CrossRef and OpenAlex, then filters, deduplicates, HTTP-verifies,
+  enriches and groups the results into clean JSON, and renders them as a sortable,
+  self-contained HTML table.
+- **`pi-literature-fetch`** (planned) -- deterministic PDF retrieval for selected
+  records into a shared `papers/` library keyed by DOI/arXiv ID.
+- **`pi-literature-synthesize`** (planned) -- synthesis over the retrieved papers;
+  citations will be inserted by fixed code from the verified records, never typed
+  by a model.
+
+Transparency: the package talks only to the public arXiv, CrossRef and OpenAlex
+APIs plus doi.org/arxiv.org for verification, and writes its output files under
+`<working directory>/pi-literature-review/` (see Output). No accounts, no
+scraping, no telemetry.
+
+## The one inviolable rule
+
+**No LLM is ever in the citation path.** Titles, authors, years, venues, DOIs and
+arXiv IDs come only from the search-API responses -- never generated, guessed,
+"tidied" or completed by a language model. The agent may shape the search query and
+propose grouping word lists; it never produces or modifies a citation. Every DOI is
+verified by an HTTP request to doi.org (a real DOI answers with a redirect to the
+publisher), every arXiv ID against arxiv.org. Anything that does not resolve is
+marked `verified: false` with a plain-language reason -- never silently confirmed.
+
+## Install
+
+```
+pi install git:github.com/<owner>/pi-literature-review    # once published
+pi install /absolute/path/to/pi-literature-review         # local checkout
+```
+
+No prerequisites beyond Pi itself. Pi runs `npm install` for published packages;
+for a local checkout run it yourself in this directory. (Development note: on
+filesystems without symlink support, e.g. exFAT, use `npm install --no-bin-links`.)
+
+## Use
+
+Ask the agent naturally, for example: "Find papers on drone remote sensing of
+floodplains, 10 per source, group by floodplain vs. drone terms."
+
+**Every** tool call opens an intake dialog in your terminal before anything is
+searched -- enforced by code, not by an instruction the model could skip (field
+tests showed models reliably skip "ask the user first" instructions). The
+dialog summarizes the proposed parameters: query (and variants), the grouping
+rules as an explicit logic expression (groups are AND-linked, terms within a
+group OR-linked -- e.g. `(river OR fluvial) AND (sandbar OR bar)`; grouping
+only labels results as on_target/adjacent, it does not narrow the search), the
+publication year range, and the search depth. Choose "Run as proposed" to
+start, or "Adjust parameters" to edit them in prefilled prompts: the grouping
+is edited directly in the displayed expression form (e.g. change
+`(river OR fluvial) AND (sandbar OR bar)` in place; the compact `a,b; c,d`
+syntax also works, `none` = ungrouped), the year range accepts `2015-2024`,
+`2015-` or `all`, and the depth offers keep/quick/thorough/exhaustive plus a
+custom results-per-source count of your own (capped at 50 out of politeness
+towards the free APIs). Escape or Ctrl+C in ANY dialog cancels the whole run
+-- no search fires -- and the agent is told to ask you what to change; to
+leave a field unchanged, submit it as-is (or leave the input empty). Headless runs (no interactive UI) skip the dialog. The agent
+calls the `pi-literature-search` tool with:
+
+- `query` -- the search string (required)
+- `query_variants` -- alternative phrasings of the same question (synonyms,
+  domain jargon, broader/narrower wording), searched in the same run. Results
+  are deduplicated across all variants by fixed code; each record notes which
+  variants found it (`found_by`), and the HTML table labels them Q1, Q2, ...
+  Use this for exhaustive sweeps instead of separate calls.
+- `per_source` -- results per source (default 5, capped at 50 out of politeness
+  towards the free APIs)
+- `sources` -- subset of `arxiv`, `crossref`, `openalex` (default: all)
+- `group_terms` -- deterministic grouping rules: an array of term groups. A record
+  is `on_target` when at least one term from every group appears in its
+  title+abstract (case-insensitive); everything else is `adjacent`. Example:
+  `[["river","fluvial"],["sandbar","bar"],["sentinel","s-1","s-2"]]`. Omit for
+  ungrouped results. The matching is fixed code; only the word lists vary.
+- `min_cites` -- keep only records with at least this many citations. Records
+  with an unknown count (arXiv preprints; `cites: null`) still pass. Beware:
+  citation thresholds penalize very recent papers.
+- `year_from` / `year_to` -- publication year range. Records that cannot prove
+  they are in range (unknown year) are excluded, with a reason.
+- `venues` -- keep only records whose journal name contains one of these strings
+  (case-insensitive). Venue-less preprints are excluded, with a reason.
+- `require_pdf` / `verified_only` -- keep only records with a direct PDF link /
+  a resolving identifier.
+- `sort` -- `cites` (citation count, a rough impact proxy) or `year` (newest
+  first); unknown values sort last. Note: an official journal impact factor is
+  proprietary and not available from open APIs; this tool does not pretend to
+  have it.
+- `enrich` -- fill missing citation counts / journal names via a deterministic
+  OpenAlex identifier lookup (open API, no scraping; arXiv, for example, carries
+  neither). Only empty fields are filled, never overwritten; every filled field
+  is listed per record under `enriched` and marked with `*` in the HTML table.
+  The same switch attaches each journal's OpenAlex 2-year mean citedness as
+  `journal_2yr_citedness` (shown as the "Journal score" column) -- the open
+  analog of the proprietary impact factor; it rates the journal, not the paper,
+  and is fetched in batches (a handful of extra API calls per run). Default: true.
+- `html_file` -- override for the HTML output path (see below).
+
+All filters act on metadata the source APIs delivered -- pure deterministic
+checks. Whatever a filter removes appears in `dropped` with the exact reason.
+
+## Output
+
+Every run writes a deterministic, self-contained HTML rendering of the result
+(sortable table, expandable abstracts, dropped records with reasons) plus the
+full JSON payload as a sidecar with the same basename to
+
+```
+<working directory>/pi-literature-review/queries/<YYYY-MM-DD>_<query>.html
+<working directory>/pi-literature-review/queries/<YYYY-MM-DD>_<query>.json
+```
+
+Table columns sort on click, Excel-style: the first clicked column is the
+primary key, each further click refines the order within it (click Label, then
+Citations: on_target stays on top, most cited first inside each label); a
+second click on the same column flips its direction, and headers show arrows
+plus the key priority. Reload the page to reset.
+
+A same-day rerun of the same query gets `_2`, `_3`, ... appended instead of
+overwriting (the pair always shares one suffix). The root folder is overridable
+via `PI_LITERATURE_REVIEW_HOME`, the exact HTML path via `html_file`. The page is
+generated from the JSON payload by fixed code -- never by a model -- and states
+so in its footer. PDF downloads (planned) will join as a shared `papers/`
+library next to `queries/`, keyed by DOI/arXiv ID so the same paper is never
+stored twice.
+
+The agent model itself does NOT receive the full data. The tool result is a
+short plain-text digest: counts (records, verified, on_target/adjacent,
+dropped), the HTML path, and one reference line per record
+(`[group] year | DOI-or-arXiv-ID | title`). A live field test with a small
+local model showed that full citation JSON in the model's context gets re-typed
+and "completed" -- fabricated tables, invented page numbers, reformatted author
+names. Starving the model of everything except copyable reference lines closes
+that path structurally; the HTML file is where results are actually reviewed,
+and follow-up tooling reads the JSON sidecar. The sidecar's path is not part of
+the digest (it concerns tooling, not the user) -- the tool description tells
+the agent it sits next to the HTML with the same basename.
+
+The JSON payload is
+`{query, generated, sources_used, grouping, filters, sort, results, dropped}`.
+Each result carries `verified`, `verify_note`, `sources`, and (when grouping is on)
+`group`. Records dropped by the filter (no title or no authors -- uncitable) are
+not discarded silently: they ship in `dropped` with the full record and the reason,
+so every exclusion can be audited.
+
+Standalone CLI (same pipeline, for testing; prints the full JSON to stdout):
+
+```
+node src/cli.ts "sandbar detection rivers Sentinel-1 Sentinel-2" \
+  -n 5 -s arxiv,crossref,openalex -g "river,fluvial;sandbar,bar;sentinel,s-1,s-2" \
+  --variant "alternate bars rivers Sentinel-2" --html [FILE] --no-enrich --digest
+```
+
+`--html` without FILE uses the deterministic default location and also writes
+the JSON sidecar; `--digest` prints the agent-facing digest instead of the JSON.
+All flags are optional.
+
+## Configuration
+
+- `PI_LITERATURE_REVIEW_MAILTO` -- optional contact email added to the User-Agent and
+  polite-pool parameters of API requests (CrossRef/OpenAlex etiquette). Unset by
+  default; no personal data ships in the code.
+- `PI_LITERATURE_REVIEW_HOME` -- optional root folder for query results (default:
+  `pi-literature-review/` inside the working directory).
+- `SEMANTIC_SCHOLAR_API_KEY` -- reserved for future Semantic Scholar support (the
+  free tier rate-limits without a key; not implemented yet).
+
+## What this tool does NOT do
+
+- It does not use an LLM anywhere inside the pipeline.
+- It does not search paper full texts; discovery matches what the source databases
+  index (typically title/abstract/metadata -- coverage differs per source, which is
+  why several sources are queried and deduplicated).
+- It does not pad results. A niche query legitimately returning two on-target
+  papers yields two on-target papers.
+- It does not repair source metadata; broken characters in a database's own
+  records pass through unmodified.
+
+## Tests
+
+```
+node src/pipeline.test.ts    # pure-logic tests (filter, dedupe, grouping)
+node src/render.test.ts      # HTML rendering (escaping, links, layout)
+node src/enrich.test.ts      # enrichment fill rules (gaps only, provenance)
+node src/output.test.ts      # output paths (slug, collision policy, JSON sidecar)
+node src/digest.test.ts      # agent-facing digest (counts, reference lines)
+node src/intake.test.ts      # intake helpers (group syntax, AND/OR display, year ranges)
+```
+
+Acceptance gate before any release: the ground-truth query
+`"sandbar detection rivers Sentinel-1 Sentinel-2"` must return DOIs
+`10.3390/rs13081505` and `10.3390/rs18010132` with `verified: true`, drop the known
+junk records with reasons, and a fabricated DOI must come out `verified: false`.
+
+## License and attribution
+
+MIT (see LICENSE). The multi-source search design follows
+[paper-search-mcp](https://github.com/openags/paper-search-mcp) (MIT, Copyright
+2025 OPENAGS), which served as the engine during prototyping; the sources here are
+implemented natively against the public arXiv, CrossRef and OpenAlex APIs.

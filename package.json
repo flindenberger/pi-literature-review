@@ -1,0 +1,22 @@
+{
+  "name": "pi-literature-review",
+  "version": "0.1.0",
+  "description": "Local, login-free literature review tooling for the Pi coding agent: deterministic search today, retrieval and synthesis as later tools over the same data. No LLM in the citation path; every DOI/arXiv ID is HTTP-verified before it is shown.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "dependencies": {
+    "fast-xml-parser": "^5.9.3"
+  }
+}

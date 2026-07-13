@@ -1,0 +1,6 @@
+node_modules/
+# Query results are research data, not code; if a run happens to use this
+# package folder as its working directory, keep its output out of git.
+queries/
+papers/
+pi-literature-review/
