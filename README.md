@@ -8,16 +8,20 @@ per pipeline stage:
   searches arXiv, CrossRef and OpenAlex, then filters, deduplicates, HTTP-verifies,
   enriches and groups the results into clean JSON, and renders them as a sortable,
   self-contained HTML table.
-- **`pi-literature-fetch`** (planned) -- deterministic PDF retrieval for selected
-  records into a shared `papers/` library keyed by DOI/arXiv ID.
+- **`pi-literature-fetch`** -- deterministic PDF retrieval for selected records
+  into the shared `papers/` library: resolver chain record link -> Unpaywall ->
+  arXiv, legal open access only, %PDF check before anything is saved, honest
+  per-paper report (see Fetching PDFs).
 - **`pi-literature-synthesize`** (planned) -- synthesis over the retrieved papers;
   citations will be inserted by fixed code from the verified records, never typed
   by a model.
 
 Transparency: the package talks only to the public arXiv, CrossRef and OpenAlex
-APIs plus doi.org/arxiv.org for verification, and writes its output files under
+APIs, doi.org/arxiv.org for verification and api.unpaywall.org for open-access
+lookups, and writes its output files under
 `<working directory>/pi-literature-review/` (see Output). No accounts, no
-scraping, no telemetry.
+scraping, no telemetry; the only personal datum is an optional contact email for
+Unpaywall that you enter (and may store) yourself.
 
 ## The one inviolable rule
 
@@ -125,9 +129,49 @@ A same-day rerun of the same query gets `_2`, `_3`, ... appended instead of
 overwriting (the pair always shares one suffix). The root folder is overridable
 via `PI_LITERATURE_REVIEW_HOME`, the exact HTML path via `html_file`. The page is
 generated from the JSON payload by fixed code -- never by a model -- and states
-so in its footer. PDF downloads (planned) will join as a shared `papers/`
-library next to `queries/`, keyed by DOI/arXiv ID so the same paper is never
-stored twice.
+so in its footer.
+
+The result table has a checkbox per row and a selection bar that floats at the
+bottom of the window while you scroll: tick papers (or "Select all on_target"),
+click "Copy download request", and paste the copied sentence
+(`Download these papers: <id>, <id>, ...`) into the Pi chat -- that sentence is
+the handover to the fetch tool. The page itself never downloads anything: a
+local file:// page can neither write files nor call other servers; it only
+assembles identifiers that are already printed on it.
+
+## Fetching PDFs (pi-literature-fetch)
+
+Two equivalent ways in: paste the copied sentence, or just ask in plain words
+("download the three on_target papers"). The model only transports DOIs/arXiv
+IDs to the tool; before ANY network request the tool shows a terminal dialog
+listing every identifier with its title from the saved searches (titles never
+come from the model) -- confirm or cancel there. Escape cancels the whole run.
+
+Resolution per identifier is a fixed chain, first source with real PDF bytes
+wins: the record's own `pdf_url` -> Unpaywall (legal open-access index by the
+non-profit OurResearch) -> the arXiv PDF endpoint. Every download is checked
+for the `%PDF` magic bytes; an HTML error page is never saved as a PDF. No
+gray sources, ever. The per-paper report is honest: `downloaded` / `already in
+library` / `blocked by publisher` (some publishers, e.g. MDPI, refuse ALL
+automated clients with HTTP 403 -- the report then gives the direct link to
+open in your browser, which works fine) / `not freely available -- obtain via
+authorized access` (with the publisher link) / `invalid identifier`.
+
+Library naming: `papers/<year>_<FirstAuthor>[_et_al]_<Title_words>.pdf`
+(capped at 80 characters, umlauts transliterated), built only from saved
+API records; if year, author or title is unknown the identifier slug
+(`10.3390_rs13081505`) is used instead. A paper already in the library is
+never downloaded twice.
+
+Unpaywall requires a contact email (their usage policy; sent only to
+api.unpaywall.org). While none is configured, the fetch dialog explains this
+and offers three choices: enter it for this run only, enter and save it to the
+local config file (`~/.config/pi-literature-review/config.json` on Linux/macOS,
+`%APPDATA%\pi-literature-review\config.json` on Windows; file mode 0600), or
+continue without Unpaywall (asked again next time). The
+`PI_LITERATURE_REVIEW_MAILTO` environment variable overrides everything --
+use it for headless and container runs. Without an email, downloads still work
+via record links and arXiv.
 
 The agent model itself does NOT receive the full data. The tool result is a
 short plain-text digest: counts (records, verified, on_target/adjacent,
@@ -158,13 +202,18 @@ node src/cli.ts "sandbar detection rivers Sentinel-1 Sentinel-2" \
 
 `--html` without FILE uses the deterministic default location and also writes
 the JSON sidecar; `--digest` prints the agent-facing digest instead of the JSON.
-All flags are optional.
+All flags are optional. The downloader runs standalone too (no Pi, no LLM):
+
+```
+node src/cli.ts fetch 10.3390/rs13081505 arXiv:2401.16393
+```
 
 ## Configuration
 
 - `PI_LITERATURE_REVIEW_MAILTO` -- optional contact email added to the User-Agent and
-  polite-pool parameters of API requests (CrossRef/OpenAlex etiquette). Unset by
-  default; no personal data ships in the code.
+  polite-pool parameters of API requests (CrossRef/OpenAlex etiquette) and required
+  by Unpaywall. Overrides the email stored via the fetch dialog (config.json, see
+  Fetching PDFs). Unset by default; no personal data ships in the code.
 - `PI_LITERATURE_REVIEW_HOME` -- optional root folder for query results (default:
   `pi-literature-review/` inside the working directory).
 - `SEMANTIC_SCHOLAR_API_KEY` -- reserved for future Semantic Scholar support (the
@@ -185,11 +234,13 @@ All flags are optional.
 
 ```
 node src/pipeline.test.ts    # pure-logic tests (filter, dedupe, grouping)
-node src/render.test.ts      # HTML rendering (escaping, links, layout)
+node src/render.test.ts      # HTML rendering (escaping, links, layout, selection bar)
 node src/enrich.test.ts      # enrichment fill rules (gaps only, provenance)
 node src/output.test.ts      # output paths (slug, collision policy, JSON sidecar)
-node src/digest.test.ts      # agent-facing digest (counts, reference lines)
+node src/digest.test.ts      # agent-facing digest (counts, reference lines, cap)
 node src/intake.test.ts      # intake helpers (group syntax, AND/OR display, year ranges)
+node src/fetch.test.ts       # fetch engine (identifiers, resolver chain, naming, report)
+node src/config.test.ts      # config paths (XDG/APPDATA) and email plausibility
 ```
 
 Acceptance gate before any release: the ground-truth query
