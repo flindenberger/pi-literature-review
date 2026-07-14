@@ -15,6 +15,7 @@ import {
 	groupAll,
 	sanitizeTermGroups,
 	sortRecords,
+	termMatches,
 } from "./pipeline.ts";
 import type { SourceRecord } from "./types.ts";
 
@@ -113,6 +114,53 @@ function record(overrides: Partial<SourceRecord>): SourceRecord {
 	const coastal = { title: "Submerged sandbar crest from Sentinel-2", abstract: "Mediterranean beaches" };
 	assert.equal(group(vistula, rules), "on_target");
 	assert.equal(group(coastal, rules), "adjacent"); // no river context -> adjacent
+}
+
+// termMatches: whole words only -- no substring hits (v18)
+{
+	assert.equal(termMatches("using s2 imagery", "s2"), true);
+	assert.equal(termMatches("the s2gis toolbox", "s2"), false); // no match inside words
+	assert.equal(termMatches("the rs2 sensor", "s2"), false);
+	assert.equal(termMatches("a sandbar in the river", "bar"), false); // "bar" no longer hits "sandbar"
+	assert.equal(termMatches("a sandbarrier model", "sandbar"), false);
+}
+
+// termMatches: optional plural-s, nothing more (user decision, v18)
+{
+	assert.equal(termMatches("alternate sandbars move", "sandbar"), true);
+	assert.equal(termMatches("one sandbar", "sandbar"), true);
+	assert.equal(termMatches("a sandbank", "sandbar"), false); // no stemming
+}
+
+// termMatches: hyphen and whitespace inside a term are interchangeable (user decision, v18)
+{
+	assert.equal(termMatches("sentinel-2 images", "sentinel-2"), true);
+	assert.equal(termMatches("sentinel 2 images", "sentinel-2"), true);
+	assert.equal(termMatches("sentinel-2 images", "sentinel 2"), true);
+	assert.equal(termMatches("sentinel-1 images", "sentinel-2"), false);
+	// generic term still matches the specific compound's word part
+	assert.equal(termMatches("sentinel-2 images", "sentinel"), true);
+}
+
+// group: the ALOHA 2 incident fixture (arXiv noise) hits zero groups -> adjacent
+{
+	const rules = sanitizeTermGroups([
+		["sentinel-2", "satellite"],
+		["sandbar", "sediment"],
+		["detection", "classification"],
+	]);
+	const aloha = {
+		title: "ALOHA 2: An Enhanced Low-Cost Hardware for Bimanual Teleoperation",
+		abstract:
+			"Diverse demonstration datasets have powered significant advances in robot " +
+			"learning, but the dexterity and scale of such data can be limited by the hardware " +
+			"cost, the hardware robustness, and the ease of teleoperation. We introduce ALOHA 2, " +
+			"an enhanced version of ALOHA that has greater performance, ergonomics, and " +
+			"robustness compared to the original design. To accelerate research in large-scale " +
+			"bimanual manipulation, we open source all hardware designs of ALOHA 2 with a " +
+			"detailed tutorial, together with a MuJoCo model of ALOHA 2 with system identification.",
+	};
+	assert.equal(group(aloha, rules), "adjacent");
 }
 
 // groupAll: on_target sorts first; without rules, records stay ungrouped

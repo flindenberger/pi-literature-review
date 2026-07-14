@@ -233,6 +233,28 @@ export function sanitizeTermGroups(termGroups: unknown): TermGroups {
 		.filter((groupTerms) => groupTerms.length > 0);
 }
 
+function escapeRegExp(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Whole-word term matching (design/2026-07-14_v18). Substring matching let
+ * "s2" hit "S2GIS" and "bar" hit "sandbar"; a term now only matches a whole
+ * word: no word character may touch it on either side (explicit lookarounds
+ * instead of \b, which flips at non-word term edges like "sentinel-2").
+ * Exactly two tolerances, both user decisions: separators inside a term
+ * match hyphen or whitespace interchangeably ("sentinel-2" finds
+ * "Sentinel 2"), and an optional plural-s ("sandbar" finds "sandbars" but
+ * not "sandbarrier"). No stemming, no synonyms -- those belong in the term
+ * groups, visible and editable in the intake dialog.
+ */
+export function termMatches(text: string, term: string): boolean {
+	const parts = term.split(/[-\s]+/).filter(Boolean).map(escapeRegExp);
+	if (!parts.length) return false;
+	const pattern = new RegExp(`(?<!\\w)${parts.join("[-\\s]+")}s?(?!\\w)`);
+	return pattern.test(text);
+}
+
 /**
  * Deterministic on_target/adjacent split -- fixed matching code, never an
  * LLM. Everything not matching every term group is adjacent. A small
@@ -243,7 +265,7 @@ export function group(
 	termGroups: TermGroups,
 ): "on_target" | "adjacent" {
 	const text = `${record.title} ${record.abstract}`.toLowerCase();
-	const hit = termGroups.every((groupTerms) => groupTerms.some((term) => text.includes(term)));
+	const hit = termGroups.every((groupTerms) => groupTerms.some((term) => termMatches(text, term)));
 	return hit ? "on_target" : "adjacent";
 }
 

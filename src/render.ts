@@ -42,6 +42,8 @@ export interface RenderPayload {
 	query_variants?: string[] | null;
 	generated: string;
 	sources_used: string[];
+	/** Boolean expression actually sent to arXiv per query (null: arXiv unused). */
+	arxiv_queries?: string[] | null;
 	grouping: string[][] | null;
 	filters: Record<string, unknown> | null;
 	sort: string | null;
@@ -405,6 +407,14 @@ export function renderHtml(payload: RenderPayload): string {
 		? `\n<dt>Variants</dt>${variants.map((v, i) => `<dd>Q${i + 2}: ${esc(v)}</dd>`).join("")}`
 		: "";
 	const queryLabel = variants.length ? `Q1: ${payload.query}` : payload.query;
+	// Transparency: the boolean expression actually sent to arXiv (v18) --
+	// what was asked stays verifiable, same line as grouping and dropped list.
+	const arxivQueries = payload.arxiv_queries ?? [];
+	const arxivQueryRows = arxivQueries.length
+		? `\n<dt>Sent to arXiv</dt>${arxivQueries
+			.map((q, i) => `<dd>${arxivQueries.length > 1 ? `Q${i + 1}: ` : ""}${esc(q)}</dd>`)
+			.join("")}`
+		: "";
 
 	const fetchable = results.some((record) => fetchIdOf(record));
 	const onTargetButton = payload.grouping?.length
@@ -454,7 +464,7 @@ ${payload.dropped.map(droppedRow).join("\n")}
 <dl class="meta">
 <dt>Query</dt><dd>${esc(queryLabel)}</dd>${variantRows}
 <dt>Generated</dt><dd>${esc(payload.generated)} (UTC)</dd>
-<dt>Sources</dt><dd>${esc(payload.sources_used.join(", ")) || "none reachable"}</dd>
+<dt>Sources</dt><dd>${esc(payload.sources_used.join(", ")) || "none reachable"}</dd>${arxivQueryRows}
 <dt>Grouping</dt><dd>${esc(describeGrouping(payload.grouping))}</dd>
 <dt>Filters</dt><dd>${esc(describeFilters(payload.filters))}</dd>
 <dt>Sort</dt><dd>${esc(payload.sort ?? "source order")}</dd>

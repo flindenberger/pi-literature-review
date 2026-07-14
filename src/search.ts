@@ -17,7 +17,7 @@ import {
 	sortRecords,
 } from "./pipeline.ts";
 import { addJournalScores, enrichAll } from "./enrich.ts";
-import { searchArxiv } from "./sources/arxiv.ts";
+import { buildSearchQuery, searchArxiv } from "./sources/arxiv.ts";
 import { searchCrossref } from "./sources/crossref.ts";
 import { searchOpenalex } from "./sources/openalex.ts";
 import type { SourceRecord } from "./types.ts";
@@ -159,6 +159,10 @@ export async function runSearch(options: SearchOptions) {
 		query_variants: multiQuery ? queries.slice(1) : null,
 		generated: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
 		sources_used: sourcesUsed,
+		// Transparency (design/2026-07-14_v18): the boolean expression actually
+		// sent to arXiv per query, so every reader can verify what was asked.
+		// CrossRef/OpenAlex receive the query text unchanged.
+		arxiv_queries: sourcesUsed.includes("arxiv") ? queries.map(buildSearchQuery) : null,
 		grouping: termGroups.length ? termGroups : null,
 		filters: filtersActive ? filters : null,
 		sort: options.sort ?? null,

@@ -139,6 +139,26 @@ const html = renderHtml(payload);
 	assert.ok(!html.includes("<dt>Variants</dt>")); // single-query page stays clean
 }
 
+// arXiv transparency row: the expression actually sent to arXiv, per query (v18)
+{
+	const single = renderHtml({
+		...payload,
+		arxiv_queries: ['all:"sentinel 2" AND all:sandbar AND all:detection'],
+	});
+	assert.ok(
+		single.includes(
+			"<dt>Sent to arXiv</dt><dd>all:&quot;sentinel 2&quot; AND all:sandbar AND all:detection</dd>",
+		),
+	);
+	const multi = renderHtml({
+		...payload,
+		arxiv_queries: ["all:river AND all:sandbar", "all:fluvial AND all:sandbar"],
+	});
+	assert.ok(multi.includes("<dd>Q1: all:river AND all:sandbar</dd>"));
+	assert.ok(multi.includes("<dd>Q2: all:fluvial AND all:sandbar</dd>"));
+	assert.ok(!html.includes("Sent to arXiv")); // no arXiv in the run, no row
+}
+
 // journal score: rounded display, raw sort key, footnote, label sort keys
 {
 	assert.ok(html.includes('data-sort="4.422208">4.4</td>'));

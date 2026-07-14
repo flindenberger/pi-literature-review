@@ -1,9 +1,10 @@
 /**
  * Native arXiv client (replaces the paper-search engine for this source).
  *
- * GET https://export.arxiv.org/api/query?search_query=all:...&max_results=N
- * mirrors the engine's request shape; all: searches title, abstract, authors
- * and categories. The response is an Atom XML feed, parsed with
+ * GET https://export.arxiv.org/api/query?search_query=...&max_results=N
+ * with an explicit boolean expression built by buildSearchQuery (see there);
+ * all: searches title, abstract, authors and categories. The response is an
+ * Atom XML feed, parsed with
  * fast-xml-parser. arXiv records usually have no DOI but always an arXiv ID;
  * the ID is the citable identifier and is never discarded. A DOI is taken
  * only from the feed's doi metadata (arxiv:doi element or the rel=doi link),
@@ -39,9 +40,47 @@ function extractDoi(entry: Record<string, any>): string {
 	return "";
 }
 
+/**
+ * Build the arXiv search_query expression.
+ *
+ * arXiv treats unquoted space-separated words as OR with similarity ranking;
+ * on topics arXiv does not cover, the ranking degenerates and stray tokens
+ * like the "2" in "Sentinel 2" pull in unrelated papers (the ALOHA 2
+ * incident, design/2026-07-14_v18). Therefore: tokenize, bind standalone
+ * single characters to the neighbouring word (previous preferred) as a
+ * quoted phrase, and join the units with explicit AND. Zero hits from a
+ * source that has nothing on the topic is the honest answer.
+ *
+ * Two pass-through cases keep the user in control: a query that already
+ * carries uppercase operators or quotes is the user's own arXiv syntax, and
+ * a query without any multi-character word offers nothing to anchor on --
+ * both go out in the legacy all:<query> form unchanged.
+ */
+export function buildSearchQuery(query: string): string {
+	const trimmed = query.trim().replace(/\s+/g, " ");
+	const hasOperators = /(^|\s)(AND|OR|NOT|ANDNOT)(\s|$)/.test(trimmed) || trimmed.includes('"');
+	const tokens = trimmed.toLowerCase().split(" ").filter(Boolean);
+	if (hasOperators || !tokens.some((token) => token.length > 1)) return `all:${trimmed}`;
+
+	const units: string[][] = [];
+	let leading: string[] = []; // single chars with no word yet; bound to the next word
+	for (const token of tokens) {
+		if (token.length === 1) {
+			if (units.length) units[units.length - 1].push(token);
+			else leading.push(token);
+		} else {
+			units.push([...leading, token]);
+			leading = [];
+		}
+	}
+	return units
+		.map((unit) => (unit.length === 1 ? `all:${unit[0]}` : `all:"${unit.join(" ")}"`))
+		.join(" AND ");
+}
+
 export async function searchArxiv(query: string, rows: number): Promise<SourceRecord[]> {
 	const params = new URLSearchParams({
-		search_query: `all:${query}`,
+		search_query: buildSearchQuery(query),
 		max_results: String(rows),
 		sortBy: "relevance",
 		sortOrder: "descending",
