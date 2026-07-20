@@ -8,9 +8,9 @@
 import assert from "node:assert/strict";
 import {
 	appendChatRound,
-	type AskDeps,
-	type AskPaper,
-	buildAskPrompt,
+	type ChatDeps,
+	type ChatPaper,
+	buildChatPrompt,
 	CHAT_SCHEMA,
 	type ChatLogDeps,
 	chatLogPath,
@@ -18,13 +18,13 @@ import {
 	type ChatProtocol,
 	type ChatRound,
 	DEFAULT_REPORT_QUESTION,
-	ensureAskLibrary,
+	ensureChatLibrary,
 	loadChatRounds,
-	runAsk,
-	runAskReport,
+	runChat,
+	runChatReport,
 	selectPaper,
 	unionChunks,
-} from "./ask.ts";
+} from "./chat.ts";
 import type { CorpusDeps, LibraryMatch, PaperIndex } from "./corpus.ts";
 import { querySlug } from "./output.ts";
 import type { RetrievedChunk } from "./synthesize.ts";
@@ -113,7 +113,7 @@ function memoryChatLog(): { chatLog: ChatLogDeps; files: Map<string, string> } {
 }
 
 function makeDeps(generatorOutput: string): {
-	deps: AskDeps;
+	deps: ChatDeps;
 	generateCalls: Array<{ system: string; user: string }>;
 	embedCalls: string[][];
 	files: Map<string, string>;
@@ -152,7 +152,7 @@ function makeDeps(generatorOutput: string): {
 	};
 }
 
-const askPaperA: AskPaper = {
+const chatPaperA: ChatPaper = {
 	base: "a", key: paperA.key, title: paperA.title, authors: paperA.authors,
 	year: paperA.year, doi: paperA.doi, arxiv_id: "", pdf_path: "/papers/a.pdf", verified: true,
 };
@@ -170,13 +170,13 @@ function makeRound(question: string): ChatRound {
 	};
 }
 
-/* ---------------- buildAskPrompt ---------------- */
+/* ---------------- buildChatPrompt ---------------- */
 {
 	const chunks: RetrievedChunk[] = [
 		{ id: 1, paper: paperA, page: 2, score: 0.9, text: "Excerpt one." },
 		{ id: 2, paper: paperA, page: 5, score: 0.5, text: "Excerpt two." },
 	];
-	const prompt = buildAskPrompt("Wie werden Sandbaenke erkannt?", chunks);
+	const prompt = buildChatPrompt("Wie werden Sandbaenke erkannt?", chunks);
 	assert.ok(prompt.user.includes("Question: Wie werden Sandbaenke erkannt?"));
 	assert.ok(prompt.user.includes("[1] (source 1)\nExcerpt one."));
 	assert.ok(prompt.user.includes("[2] (source 2)\nExcerpt two."));
@@ -184,8 +184,8 @@ function makeRound(question: string): ChatRound {
 	assert.ok(prompt.system.includes("plain, accessible language"));
 	assert.ok(prompt.system.includes("NEVER write author names"));
 	assert.ok(prompt.system.includes("the language of the question"));
-	assert.ok(buildAskPrompt("q", chunks, "German").system.includes("Write in German"));
-	assert.ok(buildAskPrompt("q", chunks, "  ").system.includes("the language of the question"));
+	assert.ok(buildChatPrompt("q", chunks, "German").system.includes("Write in German"));
+	assert.ok(buildChatPrompt("q", chunks, "  ").system.includes("the language of the question"));
 }
 
 /* ---------------- selectPaper ---------------- */
@@ -202,13 +202,13 @@ function makeRound(question: string): ChatRound {
 	assert.throws(() => selectPaper([], "x"), /available: \(none\)/);
 }
 
-/* ---------------- runAsk: confinement + trust gate ---------------- */
+/* ---------------- runChat: confinement + trust gate ---------------- */
 {
 	const { deps, generateCalls } = makeDeps(
 		"Die Methode nutzt Sentinel-2 [1]. Wechselbaenke treten auf [2]. Erfunden [9].",
 	);
 	const warnings: string[] = [];
-	const result = await runAsk({
+	const result = await runChat({
 		question: "Wie funktioniert die Methode?",
 		paper: "a.pdf",
 		root: "/",
@@ -249,10 +249,10 @@ function makeRound(question: string): ChatRound {
 	assert.equal(result.raw_output.includes("[9]"), true); // raw kept for inspection
 }
 
-/* ---------------- runAsk: ungrounded answer ---------------- */
+/* ---------------- runChat: ungrounded answer ---------------- */
 {
 	const { deps } = makeDeps("Eine fluessige Antwort ohne einen einzigen Beleg.");
-	const result = await runAsk({
+	const result = await runChat({
 		question: "Wie funktioniert die Methode?",
 		paper: "a", root: "/", model: "fake-gen", embedModel: "fake-embed",
 	}, deps);
@@ -260,29 +260,29 @@ function makeRound(question: string): ChatRound {
 	assert.deepEqual(result.references, []);
 }
 
-/* ---------------- runAsk: honest errors ---------------- */
+/* ---------------- runChat: honest errors ---------------- */
 {
 	const { deps } = makeDeps("never reached");
 	// Missing paper: the error names the available files.
 	await assert.rejects(
-		() => runAsk({ question: "q", root: "/", embedModel: "fake-embed" }, deps),
+		() => runChat({ question: "q", root: "/", embedModel: "fake-embed" }, deps),
 		/no paper selected.*a\.pdf, b\.pdf/,
 	);
 	// Empty question.
 	await assert.rejects(
-		() => runAsk({ question: "  ", paper: "a", root: "/", embedModel: "fake-embed" }, deps),
+		() => runChat({ question: "  ", paper: "a", root: "/", embedModel: "fake-embed" }, deps),
 		/empty question/,
 	);
 	// Abort before generation throws instead of returning a partial result.
 	const controller = new AbortController();
 	controller.abort();
 	await assert.rejects(
-		() => runAsk({ question: "q", paper: "a", root: "/", embedModel: "fake-embed", signal: controller.signal }, deps),
+		() => runChat({ question: "q", paper: "a", root: "/", embedModel: "fake-embed", signal: controller.signal }, deps),
 		/aborted/,
 	);
 	// Empty library.
 	await assert.rejects(
-		() => runAsk({ question: "q", paper: "a", root: "/", embedModel: "fake-embed" }, {
+		() => runChat({ question: "q", paper: "a", root: "/", embedModel: "fake-embed" }, {
 			...deps,
 			library: () => ({ matched: [], unmatched: [], papersDir: "/papers" }),
 		}),
@@ -290,12 +290,12 @@ function makeRound(question: string): ChatRound {
 	);
 }
 
-/* ---------------- ensureAskLibrary: adoption re-match ---------------- */
+/* ---------------- ensureChatLibrary: adoption re-match ---------------- */
 {
 	let scans = 0;
 	const adoptCalls: Array<{ files: string[]; dir: string }> = [];
 	const warnings: string[] = [];
-	const { match, adopted, adoptionFailures } = await ensureAskLibrary("/", (m) => warnings.push(m), {
+	const { match, adopted, adoptionFailures } = await ensureChatLibrary("/", (m) => warnings.push(m), {
 		library: () => {
 			scans++;
 			return scans === 1
@@ -327,12 +327,12 @@ function makeRound(question: string): ChatRound {
 {
 	// Output cites only excerpt [1] -- the protocol must store only that chunk.
 	const { deps, files } = makeDeps("Nur die erste Quelle [1].");
-	const first = await runAsk({
+	const first = await runChat({
 		question: "Frage eins?", paper: "a", root: "/", model: "fake-gen", embedModel: "fake-embed",
 	}, deps);
 	assert.equal(first.round, 1);
 	assert.equal(first.protocol_path, "/chats/2026-07-16_a.json");
-	const second = await runAsk({
+	const second = await runChat({
 		question: "Frage zwei?", paper: "a", root: "/", model: "fake-gen", embedModel: "fake-embed",
 	}, deps);
 	assert.equal(second.round, 2);
@@ -360,7 +360,7 @@ function makeRound(question: string): ChatRound {
 	const { chatLog, files } = memoryChatLog();
 	files.set("/chats/2026-07-16_a.json", "{ not json");
 	const warnings: string[] = [];
-	const appended = appendChatRound("/", askPaperA, makeRound("q"), chatLog, (m) => warnings.push(m));
+	const appended = appendChatRound("/", chatPaperA, makeRound("q"), chatLog, (m) => warnings.push(m));
 	assert.equal(appended.path, "/chats/2026-07-16_a_2.json");
 	assert.equal(appended.roundNumber, 1);
 	assert.equal(files.get("/chats/2026-07-16_a.json"), "{ not json"); // untouched
@@ -376,7 +376,7 @@ function makeRound(question: string): ChatRound {
 	};
 	files.set("/chats/2026-07-16_a.json", JSON.stringify(foreign));
 	const warnings: string[] = [];
-	const appended = appendChatRound("/", askPaperA, makeRound("new"), chatLog, (m) => warnings.push(m));
+	const appended = appendChatRound("/", chatPaperA, makeRound("new"), chatLog, (m) => warnings.push(m));
 	assert.equal(appended.path, "/chats/2026-07-16_a_2.json");
 	assert.equal((JSON.parse(files.get("/chats/2026-07-16_a.json")!) as ChatProtocol).rounds[0].question, "old");
 	assert.ok(warnings.some((m) => m.includes("different paper")));
@@ -394,7 +394,7 @@ function makeRound(question: string): ChatRound {
 		list: () => [],
 	};
 	const warnings: string[] = [];
-	const result = await runAsk({
+	const result = await runChat({
 		question: "q", paper: "a", root: "/", model: "fake-gen", embedModel: "fake-embed",
 		onWarn: (m) => warnings.push(m),
 	}, deps);
@@ -445,10 +445,10 @@ function makeRound(question: string): ChatRound {
 	const { deps, files } = makeDeps("Antwort [1].");
 	files.set("/chats/current-paper.json", JSON.stringify({ base: "a" }));
 	// No paper option: the sticky marker resolves it.
-	const result = await runAsk({ question: "q", root: "/", model: "fake-gen", embedModel: "fake-embed" }, deps);
+	const result = await runChat({ question: "q", root: "/", model: "fake-gen", embedModel: "fake-embed" }, deps);
 	assert.equal(result.paper.base, "a");
 	// An explicit paper wins over the marker and updates it.
-	const explicit = await runAsk({ question: "q", paper: "b", root: "/", model: "fake-gen", embedModel: "fake-embed" }, deps);
+	const explicit = await runChat({ question: "q", paper: "b", root: "/", model: "fake-gen", embedModel: "fake-embed" }, deps);
 	assert.equal(explicit.paper.base, "b");
 	assert.equal(JSON.parse(files.get("/chats/current-paper.json")!).base, "b");
 }
@@ -457,7 +457,7 @@ function makeRound(question: string): ChatRound {
 	const { deps, files } = makeDeps("never reached");
 	files.set("/chats/current-paper.json", "{ garbage");
 	await assert.rejects(
-		() => runAsk({ question: "q", root: "/", embedModel: "fake-embed" }, deps),
+		() => runChat({ question: "q", root: "/", embedModel: "fake-embed" }, deps),
 		/no paper selected/,
 	);
 }
@@ -473,7 +473,7 @@ function makeRound(question: string): ChatRound {
 	const { deps } = makeDeps("Kameras werden beschrieben [1].");
 	deps.library = () => ({ matched: library.matched, unmatched: ["c.pdf"], papersDir: "/papers" });
 	const warnings: string[] = [];
-	const result = await runAsk({
+	const result = await runChat({
 		question: "Welche Kameras?", paper: "c.pdf", root: "/", model: "fake-gen", embedModel: "fake-embed",
 		onWarn: (m) => warnings.push(m),
 	}, deps);
@@ -509,7 +509,7 @@ function makeRound(question: string): ChatRound {
 	assert.deepEqual(twoPages.map((x) => [x.id, x.page]), [[1, 1], [2, 2]]);
 }
 
-/* ---------------- runAskReport: session questions drive retrieval ---------------- */
+/* ---------------- runChatReport: session questions drive retrieval ---------------- */
 {
 	const { deps, files, embedCalls, generateCalls } = makeDeps("Zusammenfassung [1][2].");
 	const protocol: ChatProtocol = {
@@ -518,7 +518,7 @@ function makeRound(question: string): ChatRound {
 		rounds: [makeRound("Frage eins?"), makeRound("Frage zwei?"), makeRound("Frage eins?")],
 	};
 	files.set("/chats/2026-07-15_a.json", JSON.stringify(protocol));
-	const report = await runAskReport({
+	const report = await runChatReport({
 		question: "Fokus: Validierung?", paper: "a.pdf", root: "/", model: "fake-gen", embedModel: "fake-embed",
 	}, deps);
 	// ONE embed call carrying the deduplicated session questions + focus.
@@ -544,17 +544,17 @@ function makeRound(question: string): ChatRound {
 	assert.deepEqual(report.protocol_files, ["/chats/2026-07-15_a.json"]);
 	assert.equal((JSON.parse(files.get("/chats/2026-07-15_a.json")!) as ChatProtocol).rounds.length, 3);
 	// Determinism: an identical second run retrieves the identical excerpts.
-	const again = await runAskReport({
+	const again = await runChatReport({
 		question: "Fokus: Validierung?", paper: "a.pdf", root: "/", model: "fake-gen", embedModel: "fake-embed",
 	}, deps);
 	assert.deepEqual(again.chunks, report.chunks);
 }
 
-/* ---------------- runAskReport: no session, no focus ---------------- */
+/* ---------------- runChatReport: no session, no focus ---------------- */
 {
 	const { deps, embedCalls } = makeDeps("Antwort [1].");
 	const warnings: string[] = [];
-	const report = await runAskReport({
+	const report = await runChatReport({
 		paper: "a", root: "/", model: "fake-gen", embedModel: "fake-embed",
 		onWarn: (m) => warnings.push(m),
 	}, deps);

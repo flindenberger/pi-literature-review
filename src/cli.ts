@@ -29,14 +29,14 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { adoptUnmatched, realAdoptDeps } from "./adopt.ts";
-import { runAsk, runAskReport } from "./ask.ts";
+import { runChat, runChatReport } from "./chat.ts";
 import { llmConfig } from "./config.ts";
 import { ensureIndexed, matchLibrary, realCorpusDeps } from "./corpus.ts";
 import { chunkPages, cleanPageText, extractPdfPages, isExtractionUsable } from "./extract.ts";
 import { renderFetchReport, runFetch } from "./fetch.ts";
 import { createBackend } from "./llm.ts";
 import { runSynthesize, type SynthesizeOptions } from "./synthesize.ts";
-import { renderAskDigest, renderAskReportDigest, renderDigest, renderSynthesisDigest } from "./digest.ts";
+import { renderChatDigest, renderChatReportDigest, renderDigest, renderSynthesisDigest } from "./digest.ts";
 import { runSearch, SEARCHERS, type SearchOptions } from "./search.ts";
 import { parseGroupTerms } from "./intake.ts";
 import { outputRoot, writeRunOutputs } from "./output.ts";
@@ -79,12 +79,12 @@ function usage(): never {
 	warn("       [--embed-model E] [--top-k N] [--language L] [--reindex] [--html [FILE]] [--digest]");
 	warn("       grounded synthesis over the local PDF library (citations from verified records);");
 	warn("       --html writes pi-literature-review/reviews/<date>_<question>.html + JSON sidecar");
-	warn('or:    node src/cli.ts ask "<question>" [--paper <file.pdf>] [--model M] [--embed-model E]');
+	warn('or:    node src/cli.ts chat "<question>" [--paper <file.pdf>] [--model M] [--embed-model E]');
 	warn("       [--top-k N] [--language L] [--reindex] [--digest]");
 	warn("       paper chat: answers ONE question about ONE paper with page-exact citations;");
 	warn("       --paper omitted = the session's current paper (remembered after each round);");
 	warn("       every validated round is appended to pi-literature-review/chats/<date>_<paper>.json");
-	warn('or:    node src/cli.ts ask --report --paper <file.pdf> ["<focus>"] [--html [FILE]] [--digest]');
+	warn('or:    node src/cli.ts chat --report --paper <file.pdf> ["<focus>"] [--html [FILE]] [--digest]');
 	warn("       grounded summary report built from the session's questions; writes");
 	warn("       pi-literature-review/chats/<date>_Paper_chat_report_<paper>.html + JSON sidecar");
 	process.exit(2);
@@ -270,7 +270,7 @@ if (process.argv[2] === "synthesize") {
 	process.exit(0);
 }
 
-if (process.argv[2] === "ask") {
+if (process.argv[2] === "chat") {
 	// Paper chat: one question about ONE paper; --report builds the grounded
 	// session summary instead (and always writes the HTML pair into chats/).
 	const argv = process.argv.slice(3);
@@ -282,8 +282,8 @@ if (process.argv[2] === "ask") {
 	let language: string | undefined;
 	let report = false;
 	let reindex = false;
-	let askHtml: string | undefined;
-	let askDigest = false;
+	let chatHtml: string | undefined;
+	let chatDigest = false;
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i];
 		if (arg === "--paper") {
@@ -305,14 +305,14 @@ if (process.argv[2] === "ask") {
 			// Report mode only (question mode writes no files).
 			const next = argv[i + 1];
 			if (next !== undefined && !next.startsWith("-")) {
-				askHtml = next.trim();
+				chatHtml = next.trim();
 				i++;
-				if (!askHtml) usage();
+				if (!chatHtml) usage();
 			} else {
-				askHtml = "";
+				chatHtml = "";
 			}
 		} else if (arg === "--digest") {
-			askDigest = true;
+			chatDigest = true;
 		} else if (!question && !arg.startsWith("-")) {
 			question = arg;
 		} else {
@@ -322,22 +322,22 @@ if (process.argv[2] === "ask") {
 	if (!report && !question.trim()) usage();
 
 	if (report) {
-		const result = await runAskReport({
+		const result = await runChatReport({
 			question: question.trim() || undefined,
 			paper, model, embedModel, language, reindex, onWarn: warn,
 		});
-		const written = writeRunOutputs(renderPaperChatReportHtml(result), result, askHtml || undefined, "chats");
+		const written = writeRunOutputs(renderPaperChatReportHtml(result), result, chatHtml || undefined, "chats");
 		warn(`wrote HTML report to ${written.htmlPath}`);
 		warn(`wrote JSON copy to ${written.jsonPath}`);
-		process.stdout.write(`${renderAskReportDigest(result, written.htmlPath)}\n`);
+		process.stdout.write(`${renderChatReportDigest(result, written.htmlPath)}\n`);
 		process.exit(0);
 	}
 
-	const answer = await runAsk({
+	const answer = await runChat({
 		question, paper, model, embedModel, topK, language, reindex, onWarn: warn,
 	});
-	if (askDigest) {
-		process.stdout.write(`${renderAskDigest(answer)}\n`);
+	if (chatDigest) {
+		process.stdout.write(`${renderChatDigest(answer)}\n`);
 		process.exit(0);
 	}
 	const lines: string[] = [];

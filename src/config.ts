@@ -43,8 +43,8 @@ export function isPlausibleMailto(value: string): boolean {
 interface StoredConfig {
 	mailto?: string;
 	/** Local LLM backend for the synthesis/chat stages; unset fields use
-	 * defaults. askModel is the paper-chat generator (see askModel()). */
-	llm?: Partial<LlmConfig> & { askModel?: string };
+	 * defaults. chatModel is the paper-chat generator (see chatModel()). */
+	llm?: Partial<LlmConfig> & { chatModel?: string };
 }
 
 let cache: StoredConfig | null = null;
@@ -124,17 +124,17 @@ export function llmConfig(
 }
 
 /**
- * Generator model for the paper-chat stage (pi-literature-ask). Its own
+ * Generator model for the paper-chat stage (pi-literature-chat). Its own
  * slot because the two stages want different tones: OpenScholar-8B is
  * tuned for terse synthesis prose, while the chat wants an explanatory
- * instruct model (e.g. "llama3.1:8b-instruct" via `"llm": {"askModel":
+ * instruct model (e.g. "llama3.1:8b-instruct" via `"llm": {"chatModel":
  * ...}` in config.json). Falls back to the resolved generateModel, so
  * nothing changes until the user opts in. Same precedence as everything
  * here: environment variable, then stored config, then the fallback.
  */
-export function askModel(
+export function chatModel(
 	env: Record<string, string | undefined> = process.env,
-	stored: Partial<LlmConfig> & { askModel?: string } = loadStoredConfig().llm ?? {},
+	stored: Partial<LlmConfig> & { chatModel?: string } = loadStoredConfig().llm ?? {},
 ): string {
-	return pick(env.PI_LITERATURE_REVIEW_ASK_MODEL, stored.askModel, llmConfig(env, stored).generateModel);
+	return pick(env.PI_LITERATURE_REVIEW_CHAT_MODEL, stored.chatModel, llmConfig(env, stored).generateModel);
 }

@@ -108,6 +108,52 @@ async function mailtoDialog(
 	}
 }
 
+/**
+ * Code-enforced consent: list exactly what would be downloaded -- titles come
+ * from the saved searches on disk, not from the model -- and ask before any
+ * network request fires. Shared by the tool and the /lit-fetch command.
+ * Returns false when the user cancels (Esc or "Cancel").
+ */
+async function fetchConsentDialog(
+	ctx: ExtensionContext,
+	identifiers: string[],
+	diagnostics: string[],
+	signal: AbortSignal | undefined,
+): Promise<boolean> {
+	const root = outputRoot();
+	const index = loadSidecarIndex(root, (message) => diagnostics.push(message));
+	const lines = identifiers.map((raw) => {
+		const target = parseIdentifier(raw);
+		if (target.kind === "unknown") return clip(`  ${raw}  -- NOT a DOI or arXiv ID`);
+		const entry = target.key !== null ? index.get(target.key) : undefined;
+		return clip(`  ${raw}  ${entry?.title ?? "(not from any saved search)"}`);
+	});
+	const shown = lines.slice(0, WIDGET_MAX_PAPERS);
+	if (lines.length > shown.length) {
+		shown.push(`  ... and ${lines.length - shown.length} more (all listed in the report afterwards)`);
+	}
+	ctx.ui.setWidget(FETCH_WIDGET, [
+		`Download ${identifiers.length} paper(s) as PDF`,
+		`Library:  ${root}/papers`,
+		"Sources:  record link, Unpaywall, arXiv (legal open access only)",
+		...shown,
+	]);
+	try {
+		const choice = await ctx.ui.select("pi-literature-fetch: download these PDFs?", [
+			"Download",
+			"Cancel",
+		], { signal });
+		if (choice === undefined || choice === "Cancel") {
+			diagnostics.push("fetch dialog: cancelled by the user");
+			return false;
+		}
+		diagnostics.push("fetch dialog: confirmed by the user");
+		return true;
+	} finally {
+		ctx.ui.setWidget(FETCH_WIDGET, undefined);
+	}
+}
+
 export default function literatureFetch(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "pi-literature-fetch",
@@ -172,44 +218,16 @@ export default function literatureFetch(pi: ExtensionAPI) {
 			// Code-enforced consent: list exactly what would be downloaded --
 			// titles come from the saved searches on disk, not from the model.
 			if (ctx.hasUI) {
-				const root = outputRoot();
-				const index = loadSidecarIndex(root, (message) => diagnostics.push(message));
-				const lines = identifiers.map((raw) => {
-					const target = parseIdentifier(raw);
-					if (target.kind === "unknown") return clip(`  ${raw}  -- NOT a DOI or arXiv ID`);
-					const entry = target.key !== null ? index.get(target.key) : undefined;
-					return clip(`  ${raw}  ${entry?.title ?? "(not from any saved search)"}`);
-				});
-				const shown = lines.slice(0, WIDGET_MAX_PAPERS);
-				if (lines.length > shown.length) {
-					shown.push(`  ... and ${lines.length - shown.length} more (all listed in the report afterwards)`);
-				}
-				ctx.ui.setWidget(FETCH_WIDGET, [
-					`Download ${identifiers.length} paper(s) as PDF`,
-					`Library:  ${root}/papers`,
-					"Sources:  record link, Unpaywall, arXiv (legal open access only)",
-					...shown,
-				]);
-				try {
-					const choice = await ctx.ui.select("pi-literature-fetch: download these PDFs?", [
-						"Download",
-						"Cancel",
-					], { signal });
-					if (choice === undefined || choice === "Cancel") {
-						diagnostics.push("fetch dialog: cancelled by the user");
-						return {
-							content: [{
-								type: "text",
-								text:
-									"The user cancelled this fetch run in the confirmation dialog. Nothing was " +
-									"downloaded. Ask the user what they want to change before fetching again.",
-							}],
-							details: { diagnostics },
-						};
-					}
-					diagnostics.push("fetch dialog: confirmed by the user");
-				} finally {
-					ctx.ui.setWidget(FETCH_WIDGET, undefined);
+				if (!(await fetchConsentDialog(ctx, identifiers, diagnostics, signal))) {
+					return {
+						content: [{
+							type: "text",
+							text:
+								"The user cancelled this fetch run in the confirmation dialog. Nothing was " +
+								"downloaded. Ask the user what they want to change before fetching again.",
+						}],
+						details: { diagnostics },
+					};
 				}
 			} else {
 				diagnostics.push("fetch dialog: skipped (no interactive UI)");
@@ -232,6 +250,63 @@ export default function literatureFetch(pi: ExtensionAPI) {
 				content: [{ type: "text", text: renderFetchReport(results, papersDir) }],
 				details: { diagnostics },
 			};
+		},
+	});
+
+	// /lit-fetch -- the agent-free path (companion to /lit-chat and
+	// /lit-search). The user pastes identifiers, or the whole
+	// "Download these papers: ..." sentence copied from the search page; the
+	// SAME Unpaywall-email and consent dialogs gate the download.
+	pi.registerCommand("lit-fetch", {
+		description:
+			"Download papers as PDFs, agent-free: /lit-fetch <DOIs / arXiv IDs> "
+			+ "(or paste the \"Download these papers: ...\" line from the search page).",
+		handler: async (args, ctx) => {
+			if (!ctx.hasUI) return;
+			const raw = (args ?? "").replace(/^\s*download\s+these\s+papers\s*:?\s*/i, "");
+			const identifiers = raw.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+			if (!identifiers.length) {
+				ctx.ui.notify(
+					"Usage: /lit-fetch <DOIs / arXiv IDs>  (comma- or space-separated; or paste the "
+					+ "\"Download these papers: ...\" line from the search page)",
+					"info",
+				);
+				return;
+			}
+			const diagnostics: string[] = [];
+			const progress = (message: string) => ctx.ui.notify(message, "info");
+			// Unpaywall email: ask (with explanation) while none is configured.
+			let runMailto: string | undefined;
+			if (!contactMailto()) {
+				const answer = await mailtoDialog(ctx, diagnostics, ctx.signal);
+				if (answer === null) {
+					ctx.ui.notify("Download cancelled.", "info");
+					return;
+				}
+				runMailto = answer;
+			}
+			if (!(await fetchConsentDialog(ctx, identifiers, diagnostics, ctx.signal))) {
+				ctx.ui.notify("Download cancelled -- nothing was downloaded.", "info");
+				return;
+			}
+			if (ctx.signal?.aborted) return;
+			try {
+				const { results, papersDir } = await runFetch({
+					identifiers,
+					mailto: runMailto,
+					onWarn: progress,
+					signal: ctx.signal,
+				});
+				// Show the per-paper report in the widget: reliable and immediate.
+				// (sendMessage with deliverAs:"nextTurn" only queues it for the next
+				// prompt, so it never rendered.)
+				const reportLines = renderFetchReport(results, papersDir).split("\n");
+				ctx.ui.setWidget(FETCH_WIDGET, reportLines.length > 16
+					? [...reportLines.slice(0, 15), `... (${reportLines.length - 15} more lines)`]
+					: reportLines);
+			} catch (error) {
+				ctx.ui.notify(`Fetch failed: ${error instanceof Error ? error.message : error}`, "error");
+			}
 		},
 	});
 }

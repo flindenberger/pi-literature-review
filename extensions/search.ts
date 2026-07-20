@@ -179,7 +179,7 @@ export default function literatureSearch(pi: ExtensionAPI) {
 			"written to disk by fixed code. " +
 			"This tool DISCOVERS NEW papers in online databases. It is NOT for papers already on disk: when the " +
 			"user wants to chat about, ask about or understand ONE local PDF ('zu einem Paper chatten', 'Frage zum " +
-			"Paper'), use pi-literature-ask; for a summary or review across the local PDF library, use " +
+			"Paper'), use pi-literature-chat; for a summary or review across the local PDF library, use " +
 			"pi-literature-synthesize; for downloading found papers, use pi-literature-fetch. " +
 			"Call this tool DIRECTLY; do NOT ask intake or clarification questions in chat first. On every call the " +
 			"tool itself shows the user a terminal dialog summarizing the proposed query, grouping logic, year range " +
@@ -336,6 +336,76 @@ export default function literatureSearch(pi: ExtensionAPI) {
 				content: [{ type: "text", text: renderDigest(payload, htmlPath) }],
 				details: { diagnostics },
 			};
+		},
+	});
+
+	// /lit-search -- the agent-free path (companion to /lit-chat). Runs the
+	// SAME intake dialog and deterministic pipeline as the tool, with no agent
+	// model deciding whether or how to search. The user types the query; the
+	// dialog covers grouping, years and depth. The digest lands in the
+	// transcript (display:true) so it is both shown to the user and available
+	// to the agent for later turns, without triggering a turn (nextTurn).
+	pi.registerCommand("lit-search", {
+		description:
+			"Discover literature online, agent-free: /lit-search <query>. Opens the same intake dialog, "
+			+ "writes the verified HTML/JSON and shows the digest.",
+		handler: async (args, ctx) => {
+			if (!ctx.hasUI) return;
+			const query = (args ?? "").trim();
+			if (!query) {
+				ctx.ui.notify(
+					"Usage: /lit-search <query>  (e.g. /lit-search sandbar detection rivers Sentinel-2)",
+					"info",
+				);
+				return;
+			}
+			const diagnostics: string[] = [];
+			const progress = (message: string) => ctx.ui.notify(message, "info");
+			const sources = Object.keys(SEARCHERS);
+			const confirmed = await intakeDialog(
+				ctx,
+				query,
+				undefined,
+				sources,
+				{ groupTerms: undefined, yearFrom: undefined, yearTo: undefined, perSource: undefined },
+				diagnostics,
+				ctx.signal,
+			);
+			if (confirmed === null) {
+				ctx.ui.notify("Search cancelled -- nothing was searched.", "info");
+				return;
+			}
+			if (ctx.signal?.aborted) return;
+			try {
+				const payload = await runSearch({
+					query,
+					perSource: confirmed.perSource,
+					groupTerms: confirmed.groupTerms,
+					filters: { yearFrom: confirmed.yearFrom, yearTo: confirmed.yearTo },
+					onWarn: progress,
+					signal: ctx.signal,
+				});
+				let htmlPath: string | null = null;
+				try {
+					({ htmlPath } = writeRunOutputs(renderHtml(payload), payload, undefined));
+				} catch (error) {
+					ctx.ui.notify(
+						`writing the output files failed: ${error instanceof Error ? error.message : error}`,
+						"warning",
+					);
+				}
+				if (htmlPath) ctx.ui.notify(`Results written to ${htmlPath}`, "info");
+				// Show the digest in the widget: reliable and immediate. (An earlier
+				// version used sendMessage with deliverAs:"nextTurn", which only
+				// QUEUES the text for the next prompt, so it never rendered.) The
+				// full results are in the HTML file the notify points at.
+				const digestLines = renderDigest(payload, htmlPath).split("\n");
+				ctx.ui.setWidget(INTAKE_WIDGET, digestLines.length > 16
+					? [...digestLines.slice(0, 15), `... (${digestLines.length - 15} more lines -- full results in the HTML)`]
+					: digestLines);
+			} catch (error) {
+				ctx.ui.notify(`Search failed: ${error instanceof Error ? error.message : error}`, "error");
+			}
 		},
 	});
 }

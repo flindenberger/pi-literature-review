@@ -1,5 +1,5 @@
 /**
- * pi-literature-review Pi extension: the pi-literature-ask tool ("Paper
+ * pi-literature-review Pi extension: the pi-literature-chat tool ("Paper
  * Chat").
  *
  * Grounded Q&A about ONE paper from the local, verified PDF library: the
@@ -22,23 +22,40 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
-	type AskAnswer,
-	type AskDeps,
+	type ChatAnswer,
+	type ChatDeps,
 	chatPool,
 	readCurrentPaper,
-	runAsk,
-	runAskReport,
+	runChat,
+	runChatReport,
 	writeCurrentPaper,
-} from "../src/ask.ts";
+} from "../src/chat.ts";
 import { llmConfig } from "../src/config.ts";
 import { type LibraryMatch, matchLibrary } from "../src/corpus.ts";
-import { renderAskDigest, renderAskReportDigest } from "../src/digest.ts";
+import { renderChatDigest, renderChatReportDigest } from "../src/digest.ts";
 import { createBackend, type LlmBackend } from "../src/llm.ts";
 import { outputRoot, writeRunOutputs } from "../src/output.ts";
 import { renderPaperChatReportHtml } from "../src/render.ts";
 import { DEFAULT_TOP_K, MAX_TOP_K } from "../src/synthesize.ts";
 
-const ASK_WIDGET = "pi-literature-review-ask";
+const CHAT_WIDGET = "pi-literature-review-chat";
+const MODE_WIDGET = "pi-literature-review-chat-mode";
+
+/**
+ * Persistent paper-chat mode (user request 2026-07-20). A slash command is a
+ * one-shot; the recurring pain was re-typing /lit-chat before every question.
+ * While this holds a paper base, the `input` event handler routes EVERY plain
+ * (non-command) line to that paper's chat engine and marks it handled -- the
+ * agent is bypassed entirely, a true REPL over one PDF. Toggled on by the
+ * /lit-chat command (after the paper is picked) and off by typing "exit".
+ * Session-scoped module state: one active paper chat per pi process.
+ */
+let chatModeBase: string | null = null;
+
+/** True once the pi-tui entry renderer is registered (see literatureChat).
+ * When true, validated answers render as full, scrollable transcript entries;
+ * otherwise they fall back to the capped CHAT_WIDGET. */
+let answerEntryReady = false;
 
 /** Same widget/select discipline as the sibling tools: no scrolling
  * exists, so cap the list and clip each line. */
@@ -71,9 +88,9 @@ function wrapText(text: string, width = PICKER_MAX_LINE): string[] {
 }
 
 /** Widget lines for a validated answer (shared by the tool and the
- * /paper-chat command). Capped -- the full text is always in the digest
+ * /lit-chat command). Capped -- the full text is always in the digest
  * and the session protocol. */
-function answerWidgetLines(answer: AskAnswer, paperLabel: string): string[] {
+function answerWidgetLines(answer: ChatAnswer, paperLabel: string): string[] {
 	const referenceLines = answer.references.map((reference) => {
 		const id = reference.doi || (reference.arxiv_id ? `arXiv:${reference.arxiv_id}` : reference.key);
 		return clip(`[${reference.n}] ${reference.year ?? "n.d."} | ${id} | ${reference.title} (S. ${reference.pages.join(", ")})`);
@@ -88,6 +105,33 @@ function answerWidgetLines(answer: AskAnswer, paperLabel: string): string[] {
 	return lines.length > WIDGET_MAX_LINES
 		? [...lines.slice(0, WIDGET_MAX_LINES - 1), "... (the full validated answer is in the session protocol)"]
 		: lines;
+}
+
+/** The full validated answer as plain text (verbatim, with [n] markers and
+ * reference lines) for the scrollable transcript entry. */
+function formatAnswerText(answer: ChatAnswer, paperLabel: string): string {
+	const refs = answer.references.map((reference) => {
+		const id = reference.doi || (reference.arxiv_id ? `arXiv:${reference.arxiv_id}` : reference.key);
+		return `[${reference.n}] ${reference.year ?? "n.d."} | ${id} | ${reference.title} (S. ${reference.pages.join(", ")})`;
+	});
+	return `${answer.prose}${refs.length ? `\n\n${refs.join("\n")}` : ""}`;
+}
+
+/** Show the validated answer: a full, scrollable transcript entry when the
+ * pi-tui renderer is available (appendEntry), else the capped CHAT_WIDGET as a
+ * fallback. The entry is the anti-paraphrase ground truth and does NOT enter
+ * the LLM context. */
+function showAnswer(pi: ExtensionAPI, ctx: ExtensionContext, paperLabel: string, answer: ChatAnswer): void {
+	if (answerEntryReady) {
+		pi.appendEntry("pi-literature-chat-answer", {
+			paper: paperLabel,
+			grounded: answer.grounded,
+			text: formatAnswerText(answer, paperLabel),
+		});
+		if (ctx.hasUI) ctx.ui.setWidget(CHAT_WIDGET, undefined);
+	} else if (ctx.hasUI) {
+		ctx.ui.setWidget(CHAT_WIDGET, answerWidgetLines(answer, paperLabel));
+	}
 }
 
 /**
@@ -127,6 +171,56 @@ function piModelBackend(ctx: ExtensionContext, embed: LlmBackend["embed"]): LlmB
 				.join("");
 		},
 	};
+}
+
+/**
+ * Run ONE grounded chat turn against `base` and show the validated answer in
+ * the CHAT_WIDGET (answerWidgetLines) -- the same reliable rendering the tool
+ * path uses. Shared by the /lit-chat command and the persistent-mode input
+ * handler; both are agent-free, so the answer goes straight to the user.
+ * (An earlier version used sendMessage(display:true, deliverAs:"nextTurn"),
+ * but nextTurn QUEUES the message for the next prompt instead of showing it,
+ * so the answer never appeared. The widget renders immediately.) Errors
+ * surface as a notification; nothing about a paper is ever invented.
+ */
+async function answerInChat(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	base: string,
+	question: string,
+): Promise<void> {
+	const progress = (message: string) => ctx.ui.notify(message, "info");
+	const cfg = llmConfig();
+	const engineDeps: ChatDeps | undefined = ctx.model
+		? { backend: piModelBackend(ctx, (texts, signal) => createBackend(cfg).embed(texts, signal)) }
+		: undefined;
+	const model = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
+	ctx.ui.setWidget(CHAT_WIDGET, [
+		`Paper chat: ${base}.pdf`,
+		clip(`Question: ${question}`),
+		`Generating with ${model ?? "the configured chat model"} -- no agent model involved.`,
+	]);
+	try {
+		const answer = await runChat({
+			question,
+			paper: `${base}.pdf`,
+			model,
+			onWarn: progress,
+			signal: ctx.signal,
+		}, engineDeps);
+		showAnswer(pi, ctx, `${base}.pdf`, answer);
+	} catch (error) {
+		ctx.ui.setWidget(CHAT_WIDGET, undefined);
+		ctx.ui.notify(`paper chat failed: ${error instanceof Error ? error.message : error}`, "error");
+	}
+}
+
+/** Persistent mode indicator + exit hint; stays visible until the user types "exit". */
+function showChatMode(ctx: ExtensionContext, base: string): void {
+	ctx.ui.setWidget(MODE_WIDGET, [
+		`Paper-chat mode: ${base}.pdf -- just type your questions (no /lit-chat needed).`,
+		"/lit-chat switches paper  |  type 'exit' to leave",
+	]);
 }
 
 const OPTION_LIBRARY = "Whole library: synthesis across ALL papers (pi-literature-synthesize)";
@@ -180,23 +274,23 @@ async function pickPaper(
 		}
 		if (entries.length > PICKER_MAX_PAPERS) add(OPTION_UNLISTED, { kind: "unlisted" });
 
-		ctx.ui.setWidget(ASK_WIDGET, [
+		ctx.ui.setWidget(CHAT_WIDGET, [
 			"Paper chat: pick the paper this conversation is about",
 			`Question: ${clip(questionDisplay)}`,
 			`Library:  ${entries.length} PDF(s) in ${match.papersDir}`
 				+ (match.unmatched.length ? ` (${match.unmatched.length} without metadata yet)` : ""),
 		]);
-		const choice = await ctx.ui.select("pi-literature-ask: which paper is this about?", options, { signal });
+		const choice = await ctx.ui.select("pi-literature-chat: which paper is this about?", options, { signal });
 		if (choice === undefined) return { kind: "cancelled" };
 		return byLabel.get(choice) ?? { kind: "cancelled" };
 	} finally {
-		ctx.ui.setWidget(ASK_WIDGET, undefined);
+		ctx.ui.setWidget(CHAT_WIDGET, undefined);
 	}
 }
 
-export default function literatureAsk(pi: ExtensionAPI) {
+export default async function literatureChat(pi: ExtensionAPI) {
 	pi.registerTool({
-		name: "pi-literature-ask",
+		name: "pi-literature-chat",
 		label: "Paper Chat",
 		description:
 			"Answer a question about ONE specific paper from the local PDF library (papers/ or the current folder) -- " +
@@ -377,9 +471,9 @@ export default function literatureAsk(pi: ExtensionAPI) {
 			const cfg = llmConfig();
 			// Generator resolution (user decision 2026-07-16): explicit param >
 			// the model currently selected in pi > the engine's config slot
-			// (askModel/generateModel; used headless or when pi has no model).
+			// (chatModel/generateModel; used headless or when pi has no model).
 			const paramModel = params.model?.trim();
-			let engineDeps: AskDeps | undefined;
+			let engineDeps: ChatDeps | undefined;
 			let model = paramModel;
 			let generatorLine = `Generator: ${model || "(config default)"} (${cfg.api} at ${cfg.baseUrl})`;
 			if (!paramModel && ctx.model) {
@@ -391,7 +485,7 @@ export default function literatureAsk(pi: ExtensionAPI) {
 			let keepWidget = false;
 			try {
 				if (ctx.hasUI) {
-					ctx.ui.setWidget(ASK_WIDGET, [
+					ctx.ui.setWidget(CHAT_WIDGET, [
 						wantsReport ? `Paper chat report: ${paper}` : `Paper chat: ${paper}`,
 						...(question ? [clip(`Question: ${question}`)] : []),
 						`${generatorLine} -- progress appears below.`,
@@ -401,7 +495,7 @@ export default function literatureAsk(pi: ExtensionAPI) {
 				// the configured LLM backend); the extension only transports
 				// options and relays the digest.
 				if (wantsReport) {
-					const result = await runAskReport({
+					const result = await runChatReport({
 						question: question || undefined,
 						paper,
 						model,
@@ -419,11 +513,11 @@ export default function literatureAsk(pi: ExtensionAPI) {
 						diagnostics.push(`writing the output files failed: ${error instanceof Error ? error.message : error}`);
 					}
 					return {
-						content: [{ type: "text", text: renderAskReportDigest(result, htmlPath) }],
+						content: [{ type: "text", text: renderChatReportDigest(result, htmlPath) }],
 						details: { diagnostics },
 					};
 				}
-				const answer = await runAsk({
+				const answer = await runChat({
 					question,
 					paper,
 					model,
@@ -438,11 +532,11 @@ export default function literatureAsk(pi: ExtensionAPI) {
 					// the agent model makes of the digest (field finding
 					// 2026-07-16: a small agent paraphrased, dropped the markers
 					// and invented a journal name).
-					ctx.ui.setWidget(ASK_WIDGET, answerWidgetLines(answer, paper));
+					showAnswer(pi, ctx, paper, answer);
 					keepWidget = true;
 				}
 				return {
-					content: [{ type: "text", text: renderAskDigest(answer) }],
+					content: [{ type: "text", text: renderChatDigest(answer) }],
 					details: { diagnostics },
 				};
 			} catch (error) {
@@ -459,20 +553,22 @@ export default function literatureAsk(pi: ExtensionAPI) {
 					details: { diagnostics },
 				};
 			} finally {
-				if (ctx.hasUI && !keepWidget) ctx.ui.setWidget(ASK_WIDGET, undefined);
+				if (ctx.hasUI && !keepWidget) ctx.ui.setWidget(CHAT_WIDGET, undefined);
 			}
 		},
 	});
 
-	// /paper-chat -- the agent-free path (user decision 2026-07-16, after a
+	// /lit-chat -- the agent-free path (user decision 2026-07-16, after a
 	// field test in which the agent model neither relayed answers verbatim
 	// nor called the tool on follow-ups). The command runs the SAME engine
 	// and citation gate; no agent model touches the flow. The validated
 	// answer lands in the persistent widget, and a silent context note
 	// informs the agent for later turns without triggering one.
-	pi.registerCommand("paper-chat", {
+	pi.registerCommand("lit-chat", {
 		description:
-			"Grounded chat about ONE local PDF, agent-free: /paper-chat <question>. Bare /paper-chat picks or switches the paper.",
+			"Grounded chat about ONE local PDF, agent-free. /lit-chat <question> answers once; "
+			+ "bare /lit-chat picks or switches the paper. Either way it enters a persistent chat mode: "
+			+ "afterwards just type your questions directly (no /lit-chat needed); type 'exit' to leave.",
 		handler: async (args, ctx) => {
 			if (!ctx.hasUI) return;
 			const question = (args ?? "").trim();
@@ -484,14 +580,14 @@ export default function literatureAsk(pi: ExtensionAPI) {
 				// user switches papers without any agent involved).
 				const picked = await pickPaper(
 					ctx,
-					question || "(picking the paper -- then ask with /paper-chat <question>)",
+					question || "(picking the paper -- then just type your questions)",
 					progress,
 					ctx.signal,
 				);
 				if (picked.kind === "library") {
 					ctx.ui.notify(
-						"The whole-library synthesis runs through the agent: just ask for a synthesis in chat"
-						+ " (or run: node src/cli.ts synthesize).",
+						"For a whole-library synthesis run /lit-synthesize <question> (agent-free),"
+						+ " or just ask for a synthesis in chat.",
 						"info",
 					);
 					return;
@@ -503,45 +599,64 @@ export default function literatureAsk(pi: ExtensionAPI) {
 				if (picked.kind !== "paper") return; // cancelled / not listed
 				base = picked.base;
 				writeCurrentPaper(root, base);
-				if (!question) {
-					ctx.ui.notify(`Current paper: ${base}.pdf -- now ask with /paper-chat <question>`, "info");
-					return;
-				}
 			}
-
-			const cfg = llmConfig();
-			const engineDeps: AskDeps | undefined = ctx.model
-				? { backend: piModelBackend(ctx, (texts, signal) => createBackend(cfg).embed(texts, signal)) }
-				: undefined;
-			const model = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
-			try {
-				ctx.ui.setWidget(ASK_WIDGET, [
-					`Paper chat: ${base}.pdf`,
-					clip(`Question: ${question}`),
-					`Generating with ${model ?? "the configured chat model"} -- no agent model involved.`,
-				]);
-				const answer = await runAsk({
-					question,
-					paper: `${base}.pdf`,
-					model,
-					onWarn: progress,
-					signal: ctx.signal,
-				}, engineDeps);
-				ctx.ui.setWidget(ASK_WIDGET, answerWidgetLines(answer, `${base}.pdf`));
-				// Keep the agent informed for LATER turns -- silently, without
-				// running one, and with the instruction not to re-tell it.
-				pi.sendMessage({
-					customType: "pi-literature-ask",
-					content:
-						`The user ran /paper-chat about ${base}.pdf.\nQuestion: ${question}\n`
-						+ "Code-validated answer (already shown to the user -- do NOT repeat or rephrase it):\n"
-						+ answer.prose,
-					display: false,
-				}, { deliverAs: "nextTurn" });
-			} catch (error) {
-				ctx.ui.setWidget(ASK_WIDGET, undefined);
-				ctx.ui.notify(`paper chat failed: ${error instanceof Error ? error.message : error}`, "error");
+			// Enter (or refresh) persistent chat mode: from here every plain line
+			// is a grounded question about THIS paper until the user types "exit".
+			chatModeBase = base;
+			showChatMode(ctx, base);
+			if (!question) {
+				ctx.ui.notify(
+					`Paper-chat mode on: ${base}.pdf -- just type your questions (type 'exit' to leave).`,
+					"info",
+				);
+				return;
 			}
+			await answerInChat(pi, ctx, base, question);
 		},
 	});
+
+	// Persistent chat mode: while a paper is active, every plain (non-command)
+	// line becomes a grounded question about it -- the agent is bypassed
+	// (input event -> action: handled). Commands (/...) and blank lines pass
+	// through. A bare "exit"/"quit" leaves the mode: Ctrl+C cannot, because pi
+	// owns it (copy / clear editor / cancel picker) and emits no event to hook,
+	// so a keybinding would only clobber those globally; a typed word stays out
+	// of the command palette and never collides.
+	pi.on("input", async (event, ctx) => {
+		if (!chatModeBase) return; // not in chat mode -> normal agent flow
+		if (event.source !== "interactive") return; // ignore rpc / injected input
+		const text = event.text.trim();
+		if (!text || text.startsWith("/")) return; // commands & blanks pass through
+		if (/^(exit|quit)$/i.test(text)) {
+			chatModeBase = null;
+			ctx.ui.setWidget(MODE_WIDGET, undefined);
+			ctx.ui.setWidget(CHAT_WIDGET, undefined);
+			ctx.ui.notify("Left paper-chat mode -- back to the agent.", "info");
+			return { action: "handled" };
+		}
+		await answerInChat(pi, ctx, chatModeBase, text);
+		return { action: "handled" };
+	});
+
+	// Rich transcript rendering for validated answers: register a pi-tui entry
+	// renderer so answers appear as full, scrollable cards (appendEntry) instead
+	// of the capped widget. pi-tui exists only at pi runtime, so import it lazily
+	// and fall back to the widget if unavailable (e.g. offline tooling). Entries
+	// do NOT enter the LLM context.
+	try {
+		const { Box, Text } = await import("@earendil-works/pi-tui");
+		pi.registerEntryRenderer("pi-literature-chat-answer", (entry, _state, theme) => {
+			const data = entry.data as { paper: string; text: string; grounded: boolean };
+			const box = new Box(1, 1, (text: string) => theme.bg("customMessageBg", text));
+			const heading = data.grounded
+				? `Paper chat -- ${data.paper} (code-validated)`
+				: `Paper chat -- ${data.paper} (UNGROUNDED DRAFT)`;
+			box.addChild(new Text(theme.bold(heading)));
+			for (const line of data.text.split("\n")) box.addChild(new Text(line));
+			return box;
+		});
+		answerEntryReady = true;
+	} catch {
+		// pi-tui unavailable -> the capped CHAT_WIDGET fallback stays in effect.
+	}
 }

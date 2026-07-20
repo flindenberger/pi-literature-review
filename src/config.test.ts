@@ -6,7 +6,7 @@
  */
 
 import assert from "node:assert/strict";
-import { askModel, configPath, isPlausibleMailto, LLM_DEFAULTS, llmConfig } from "./config.ts";
+import { chatModel, configPath, isPlausibleMailto, LLM_DEFAULTS, llmConfig } from "./config.ts";
 
 /* ---------------- configPath ---------------- */
 {
@@ -81,17 +81,17 @@ import { askModel, configPath, isPlausibleMailto, LLM_DEFAULTS, llmConfig } from
 	assert.equal(llmConfig({}, { api: "banana" as "ollama" }).api, "ollama");
 }
 
-/* ---------------- askModel ---------------- */
+/* ---------------- chatModel ---------------- */
 {
 	// Environment beats stored config beats the resolved generateModel.
-	assert.equal(askModel({ PI_LITERATURE_REVIEW_ASK_MODEL: "env-chat" }, { askModel: "cfg-chat" }), "env-chat");
-	assert.equal(askModel({}, { askModel: "cfg-chat", generateModel: "cfg-gen" }), "cfg-chat");
-	assert.equal(askModel({}, { generateModel: "cfg-gen" }), "cfg-gen");
-	assert.equal(askModel({}, {}), LLM_DEFAULTS.generateModel);
+	assert.equal(chatModel({ PI_LITERATURE_REVIEW_CHAT_MODEL: "env-chat" }, { chatModel: "cfg-chat" }), "env-chat");
+	assert.equal(chatModel({}, { chatModel: "cfg-chat", generateModel: "cfg-gen" }), "cfg-chat");
+	assert.equal(chatModel({}, { generateModel: "cfg-gen" }), "cfg-gen");
+	assert.equal(chatModel({}, {}), LLM_DEFAULTS.generateModel);
 	// The generateModel fallback itself honors ITS environment variable.
-	assert.equal(askModel({ PI_LITERATURE_REVIEW_LLM_MODEL: "env-gen" }, {}), "env-gen");
+	assert.equal(chatModel({ PI_LITERATURE_REVIEW_LLM_MODEL: "env-gen" }, {}), "env-gen");
 	// Whitespace-only values fall through.
-	assert.equal(askModel({ PI_LITERATURE_REVIEW_ASK_MODEL: "  " }, { askModel: " cfg-chat " }), "cfg-chat");
+	assert.equal(chatModel({ PI_LITERATURE_REVIEW_CHAT_MODEL: "  " }, { chatModel: " cfg-chat " }), "cfg-chat");
 }
 
 console.log("config.test.ts: all assertions passed");

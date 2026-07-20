@@ -21,7 +21,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { dirname, join } from "node:path";
 
 import { adoptUnmatched, type AdoptionResult, realAdoptDeps } from "./adopt.ts";
-import { askModel, llmConfig } from "./config.ts";
+import { chatModel, llmConfig } from "./config.ts";
 import {
 	type CorpusDeps,
 	ensureIndexed,
@@ -62,7 +62,7 @@ export const DEFAULT_REPORT_QUESTION = "What are the main contributions, methods
 /** The grounding contract of the chat: didactic, excerpts-only, marker
  * after every claim. Deliberately its own prompt (the synthesis prompt
  * asks for terse review prose; here the reader wants an explanation). */
-export function askSystemPrompt(language: string): string {
+export function chatSystemPrompt(language: string): string {
 	return [
 		"You are helping a reader understand ONE scientific paper by answering their question about it.",
 		"You are given numbered source excerpts [1]..[k] from that paper. Rules:",
@@ -76,14 +76,14 @@ export function askSystemPrompt(language: string): string {
 	].join("\n");
 }
 
-export function buildAskPrompt(
+export function buildChatPrompt(
 	question: string,
 	chunks: RetrievedChunk[],
 	language?: string,
 ): { system: string; user: string } {
 	const blocks = chunks.map((chunk) => `[${chunk.id}] (source ${chunk.id})\n${chunk.text}`);
 	return {
-		system: askSystemPrompt(language?.trim() || "the language of the question"),
+		system: chatSystemPrompt(language?.trim() || "the language of the question"),
 		user: `Question: ${question}\n\nSource excerpts:\n\n${blocks.join("\n\n")}`,
 	};
 }
@@ -168,7 +168,7 @@ export function selectPaper(matched: LibraryPaper[], wanted: string): LibraryPap
  * Library with adoption                                               *
  * ------------------------------------------------------------------ */
 
-export interface AskLibraryOptions {
+export interface ChatLibraryOptions {
 	library?: (root: string, onWarn: (message: string) => void) => LibraryMatch;
 	adopt?: (unmatched: string[], papersDir: string) => Promise<AdoptionResult[]>;
 	signal?: AbortSignal;
@@ -180,10 +180,10 @@ export interface AskLibraryOptions {
  * whatever does not stays excluded and named. Exported because the tool's
  * paper picker needs the very same view before any question is asked.
  */
-export async function ensureAskLibrary(
+export async function ensureChatLibrary(
 	root: string,
 	onWarn: (message: string) => void,
-	options: AskLibraryOptions = {},
+	options: ChatLibraryOptions = {},
 ): Promise<{ match: LibraryMatch; adopted: string[]; adoptionFailures: Array<{ file: string; reason: string }> }> {
 	const libraryFn = options.library ?? matchLibrary;
 	let match = libraryFn(root, onWarn);
@@ -335,7 +335,7 @@ function parseProtocol(text: string | null): ChatProtocol | null {
  */
 export function appendChatRound(
 	root: string,
-	paper: AskPaper,
+	paper: ChatPaper,
 	round: ChatRound,
 	deps: ChatLogDeps,
 	onWarn: (message: string) => void,
@@ -416,7 +416,7 @@ export function loadChatRounds(
  * Orchestration                                                       *
  * ------------------------------------------------------------------ */
 
-export interface AskOptions {
+export interface ChatOptions {
 	question: string;
 	/** PDF filename in the library (basename, with or without .pdf). */
 	paper?: string;
@@ -441,7 +441,7 @@ export interface ChatLogDeps {
 	list(dir: string): string[];
 }
 
-export interface AskDeps {
+export interface ChatDeps {
 	/** Both optional: omitted pieces are wired from the local config. The
 	 * Pi adapter injects a backend whose generate() calls the model
 	 * currently selected in pi (user decision 2026-07-16), while embed()
@@ -449,9 +449,9 @@ export interface AskDeps {
 	corpus?: CorpusDeps;
 	backend?: LlmBackend;
 	/** Library scan; injectable so the orchestration tests offline. */
-	library?: AskLibraryOptions["library"];
+	library?: ChatLibraryOptions["library"];
 	/** Adoption of unmatched PDFs; injectable for offline tests. */
-	adopt?: AskLibraryOptions["adopt"];
+	adopt?: ChatLibraryOptions["adopt"];
 	chatLog?: ChatLogDeps;
 	/** Clock; injectable for deterministic protocol tests. */
 	now?: () => Date;
@@ -459,7 +459,7 @@ export interface AskDeps {
 
 /** The paper the answer is about -- identity from the verified record,
  * path from the filesystem scan (the only source of local PDF links). */
-export interface AskPaper {
+export interface ChatPaper {
 	base: string;
 	key: string;
 	title: string;
@@ -474,7 +474,7 @@ export interface AskPaper {
 }
 
 /** Full payload of one question round. */
-export interface AskAnswer {
+export interface ChatAnswer {
 	question: string;
 	generated: string;
 	model: string;
@@ -492,7 +492,7 @@ export interface AskAnswer {
 	stripped_reference_section: boolean;
 	/** Chunks dropped by the context-budget guard (lowest-ranked first). */
 	trimmed_chunks: number;
-	paper: AskPaper;
+	paper: ChatPaper;
 	/** Loose PDFs that gained a verified identity this run. */
 	adopted_pdfs: string[];
 	adoption_failures: Array<{ file: string; reason: string }>;
@@ -505,13 +505,13 @@ export interface AskAnswer {
 	round: number;
 }
 
-export async function runAsk(options: AskOptions, deps?: AskDeps): Promise<AskAnswer> {
+export async function runChat(options: ChatOptions, deps?: ChatDeps): Promise<ChatAnswer> {
 	const onWarn = options.onWarn ?? (() => {});
 	const question = options.question.trim();
 	if (!question) throw new Error("empty question");
 	const root = options.root ?? outputRoot();
 	const cfg = llmConfig();
-	const model = options.model?.trim() || askModel();
+	const model = options.model?.trim() || chatModel();
 	const embedModel = options.embedModel?.trim() || cfg.embedModel;
 	const topK = Math.max(1, Math.min(options.topK ?? DEFAULT_TOP_K, MAX_TOP_K));
 	const backend = deps?.backend ?? createBackend({ ...cfg, generateModel: model, embedModel });
@@ -521,7 +521,7 @@ export async function runAsk(options: AskOptions, deps?: AskDeps): Promise<AskAn
 	// 1. Library (loose PDFs get an adoption attempt; whatever stays
 	// unverified remains choosable by filename), then the ONE paper --
 	// named, or the session's sticky current paper.
-	const { match, adopted, adoptionFailures } = await ensureAskLibrary(root, onWarn, {
+	const { match, adopted, adoptionFailures } = await ensureChatLibrary(root, onWarn, {
 		library: deps?.library,
 		adopt: deps?.adopt,
 		signal: options.signal,
@@ -554,12 +554,12 @@ export async function runAsk(options: AskOptions, deps?: AskDeps): Promise<AskAn
 
 	// 3. Retrieval WITHIN the paper + context-budget guard.
 	let retrieved = topKChunks(queryVector, indexes, topK);
-	let prompt = buildAskPrompt(question, retrieved, options.language);
+	let prompt = buildChatPrompt(question, retrieved, options.language);
 	let trimmed = 0;
 	const budget = NUM_CTX - OUTPUT_RESERVE_TOKENS;
 	while (retrieved.length > 1 && promptTokens(prompt) > budget) {
 		retrieved = retrieved.slice(0, -1).map((chunk, i) => ({ ...chunk, id: i + 1 }));
-		prompt = buildAskPrompt(question, retrieved, options.language);
+		prompt = buildChatPrompt(question, retrieved, options.language);
 		trimmed++;
 	}
 	if (trimmed) onWarn(`context budget: dropped the ${trimmed} lowest-ranked chunk(s) to fit ${NUM_CTX} tokens`);
@@ -582,7 +582,7 @@ export async function runAsk(options: AskOptions, deps?: AskDeps): Promise<AskAn
 
 	const now = deps?.now ?? (() => new Date());
 	const generated = now().toISOString();
-	const askPaper: AskPaper = {
+	const chatPaper: ChatPaper = {
 		base: paper.base,
 		key: paper.key,
 		title: paper.entry.title,
@@ -620,7 +620,7 @@ export async function runAsk(options: AskOptions, deps?: AskDeps): Promise<AskAn
 	let protocolPath: string | null = null;
 	let roundNumber = 0;
 	try {
-		const appended = appendChatRound(root, askPaper, chatRound, chatLog, onWarn);
+		const appended = appendChatRound(root, chatPaper, chatRound, chatLog, onWarn);
 		protocolPath = appended.path;
 		roundNumber = appended.roundNumber;
 	} catch (error) {
@@ -645,7 +645,7 @@ export async function runAsk(options: AskOptions, deps?: AskDeps): Promise<AskAn
 		unmarked_sentences: scan.unmarkedSentences,
 		stripped_reference_section: scan.strippedReferenceSection,
 		trimmed_chunks: trimmed,
-		paper: askPaper,
+		paper: chatPaper,
 		adopted_pdfs: adopted,
 		adoption_failures: adoptionFailures,
 		extraction_failures: failures,
@@ -678,7 +678,7 @@ export function unionChunks(perQuery: RetrievedChunk[][], cap: number): Retrieve
 		.map((chunk, i) => ({ ...chunk, id: i + 1 }));
 }
 
-export interface AskReportOptions {
+export interface ChatReportOptions {
 	/** Optional extra focus, added to the session's questions. */
 	question?: string;
 	/** PDF filename in the library (basename, with or without .pdf). */
@@ -694,7 +694,7 @@ export interface AskReportOptions {
 }
 
 /** Full report payload; written as the JSON sidecar next to the HTML. */
-export interface AskReport {
+export interface ChatReport {
 	/** "Paper chat report: <base>.pdf" -- drives the output filename, whose
 	 * slug therefore always starts with Paper_chat_report_ and can never
 	 * collide with a protocol file name. */
@@ -714,7 +714,7 @@ export interface AskReport {
 	unmarked_sentences: number;
 	stripped_reference_section: boolean;
 	trimmed_chunks: number;
-	paper: AskPaper;
+	paper: ChatPaper;
 	/** The session's validated rounds, verbatim (report appendix). */
 	rounds: ChatRound[];
 	protocol_files: string[];
@@ -732,18 +732,18 @@ export interface AskReport {
  * and the same citation gate validates the prose. Does NOT append to the
  * protocol -- a report is an output, not a round.
  */
-export async function runAskReport(options: AskReportOptions, deps?: AskDeps): Promise<AskReport> {
+export async function runChatReport(options: ChatReportOptions, deps?: ChatDeps): Promise<ChatReport> {
 	const onWarn = options.onWarn ?? (() => {});
 	const root = options.root ?? outputRoot();
 	const cfg = llmConfig();
-	const model = options.model?.trim() || askModel();
+	const model = options.model?.trim() || chatModel();
 	const embedModel = options.embedModel?.trim() || cfg.embedModel;
 	const backend = deps?.backend ?? createBackend({ ...cfg, generateModel: model, embedModel });
 	const corpus = deps?.corpus ?? realCorpusDeps((texts, signal) => backend.embed(texts, signal));
 
 	// 1. The ONE paper (named, or the sticky current paper), then its
 	// session protocol.
-	const { match, adopted, adoptionFailures } = await ensureAskLibrary(root, onWarn, {
+	const { match, adopted, adoptionFailures } = await ensureChatLibrary(root, onWarn, {
 		library: deps?.library,
 		adopt: deps?.adopt,
 		signal: options.signal,

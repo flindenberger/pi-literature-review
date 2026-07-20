@@ -4,8 +4,8 @@
  */
 
 import assert from "node:assert/strict";
-import type { AskAnswer, AskReport } from "./ask.ts";
-import { MAX_DIGEST_RECORDS, renderAskDigest, renderAskReportDigest, renderDigest, renderSynthesisDigest } from "./digest.ts";
+import type { ChatAnswer, ChatReport } from "./chat.ts";
+import { MAX_DIGEST_RECORDS, renderChatDigest, renderChatReportDigest, renderDigest, renderSynthesisDigest } from "./digest.ts";
 import type { RenderPayload } from "./render.ts";
 import type { SynthesisResult } from "./synthesize.ts";
 
@@ -204,9 +204,9 @@ const synthesis: SynthesisResult = {
 	assert.ok(!digest.includes("[1]")); // no reference lines to copy
 }
 
-/* ---------------- renderAskDigest ---------------- */
+/* ---------------- renderChatDigest ---------------- */
 
-const askAnswer: AskAnswer = {
+const chatAnswer: ChatAnswer = {
 	question: "Wie funktioniert die Methode?",
 	generated: "2026-07-16T10:00:00.000Z",
 	model: "chat-model",
@@ -240,7 +240,7 @@ const askAnswer: AskAnswer = {
 };
 
 {
-	const digest = renderAskDigest(askAnswer);
+	const digest = renderChatDigest(chatAnswer);
 	// The validated prose travels verbatim between explicit delimiters.
 	assert.ok(digest.includes("--- answer (relay to the user EXACTLY as written, including [n] markers) ---"));
 	assert.ok(digest.includes("Die Methode nutzt einen adaptiven Schwellwert [1]."));
@@ -258,7 +258,7 @@ const askAnswer: AskAnswer = {
 }
 
 {
-	const digest = renderAskDigest({ ...askAnswer, grounded: false, references: [], protocol_path: null, round: 0 });
+	const digest = renderChatDigest({ ...chatAnswer, grounded: false, references: [], protocol_path: null, round: 0 });
 	assert.ok(digest.startsWith("Paper chat answer FAILED to ground"));
 	assert.ok(digest.includes("must NOT be presented as an answer"));
 	// The draft is still inspectable, but unmistakably labeled.
@@ -269,9 +269,9 @@ const askAnswer: AskAnswer = {
 
 {
 	// Unverified paper: cited by filename, nothing bibliographic invented.
-	const digest = renderAskDigest({
-		...askAnswer,
-		paper: { ...askAnswer.paper, verified: false, key: "file:report_x", base: "report_x", doi: "", title: "" },
+	const digest = renderChatDigest({
+		...chatAnswer,
+		paper: { ...chatAnswer.paper, verified: false, key: "file:report_x", base: "report_x", doi: "", title: "" },
 		references: [{
 			n: 1, key: "file:report_x", title: "", authors: [], year: null,
 			doi: "", arxiv_id: "", pages: [3], chunk_ids: [1],
@@ -282,9 +282,9 @@ const askAnswer: AskAnswer = {
 	assert.ok(!digest.includes("n.d. |")); // no pseudo-bibliographic line
 }
 
-/* ---------------- renderAskReportDigest ---------------- */
+/* ---------------- renderChatReportDigest ---------------- */
 
-const askReport: AskReport = {
+const chatReport: ChatReport = {
 	question: "Paper chat report: a.pdf",
 	focus: "Validierung",
 	session_questions: ["Frage eins?", "Frage zwei?"],
@@ -294,16 +294,16 @@ const askReport: AskReport = {
 	backend: "ollama at http://127.0.0.1:11434",
 	grounded: true,
 	prose: "Zusammenfassung [1].",
-	references: askAnswer.references,
-	chunks: askAnswer.chunks,
+	references: chatAnswer.references,
+	chunks: chatAnswer.chunks,
 	invalid_markers: [],
 	unmarked_sentences: 1,
 	stripped_reference_section: false,
 	trimmed_chunks: 0,
-	paper: askAnswer.paper,
+	paper: chatAnswer.paper,
 	rounds: [{
 		asked: "2026-07-16T09:00:00.000Z", question: "Frage eins?", language: null, model: "chat-model",
-		top_k: 8, grounded: true, prose: "Antwort [1].", references: askAnswer.references,
+		top_k: 8, grounded: true, prose: "Antwort [1].", references: chatAnswer.references,
 		cited_chunks: [], invalid_markers: [], unmarked_sentences: 0, stripped_reference_section: false,
 	}],
 	protocol_files: ["/chats/2026-07-16_a.json"],
@@ -314,7 +314,7 @@ const askReport: AskReport = {
 };
 
 {
-	const digest = renderAskReportDigest(askReport, "/chats/2026-07-16_Paper_chat_report_a.html");
+	const digest = renderChatReportDigest(chatReport, "/chats/2026-07-16_Paper_chat_report_a.html");
 	assert.ok(digest.startsWith("Paper chat report complete: 1 reference(s), 2 excerpt(s), built from 1 chat round(s)."));
 	assert.ok(digest.includes("Paper: a.pdf -- 2021 | 10.1234/abc | River sandbar dynamics"));
 	assert.ok(digest.includes("Focus: Validierung"));
@@ -326,13 +326,13 @@ const askReport: AskReport = {
 }
 
 {
-	const digest = renderAskReportDigest({ ...askReport, session_questions: [], rounds: [] }, null);
+	const digest = renderChatReportDigest({ ...chatReport, session_questions: [], rounds: [] }, null);
 	assert.ok(digest.includes("built from the default question"));
 	assert.ok(digest.includes("WARNING: the output files could not be written"));
 }
 
 {
-	const digest = renderAskReportDigest({ ...askReport, grounded: false, references: [] }, "/x.html");
+	const digest = renderChatReportDigest({ ...chatReport, grounded: false, references: [] }, "/x.html");
 	assert.ok(digest.startsWith("Paper chat report FAILED to ground"));
 	assert.ok(digest.includes("must NOT be presented as a summary"));
 }

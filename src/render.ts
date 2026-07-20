@@ -38,7 +38,7 @@ interface RenderRecord {
 	journal_2yr_citedness?: number | null;
 }
 
-import type { AskReport } from "./ask.ts";
+import type { ChatReport } from "./chat.ts";
 import type { SynthesisResult } from "./synthesize.ts";
 
 export interface RenderPayload {
@@ -691,7 +691,7 @@ export function searchSnippet(text: string): string | null {
 }
 
 /**
- * Deterministic rendering of an AskReport (paper chat). Same trust
+ * Deterministic rendering of an ChatReport (paper chat). Same trust
  * boundary as the review page -- verified record data, escaped prose,
  * code-validated markers as the only live markup -- plus one new element:
  * file:// links into the local PDF, built exclusively from the scanned
@@ -700,7 +700,7 @@ export function searchSnippet(text: string): string | null {
  * refer to excerpts of THAT round, so linking them to this page's
  * reference anchors would wire them to the wrong targets.
  */
-export function renderPaperChatReportHtml(report: AskReport): string {
+export function renderPaperChatReportHtml(report: ChatReport): string {
 	const paper = report.paper;
 	const banner = report.grounded
 		? ""

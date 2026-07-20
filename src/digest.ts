@@ -13,7 +13,7 @@
  * the tool description tells the agent the sidecar sits next to the HTML.
  */
 
-import type { AskAnswer, AskReport } from "./ask.ts";
+import type { ChatAnswer, ChatReport } from "./chat.ts";
 import type { RenderPayload } from "./render.ts";
 import type { ReferenceEntry, SynthesisResult } from "./synthesize.ts";
 
@@ -152,7 +152,7 @@ export function renderSynthesisDigest(result: SynthesisResult, htmlPath: string 
 	return lines.join("\n");
 }
 
-/* ---------------- paper chat (pi-literature-ask) ---------------- */
+/* ---------------- paper chat (pi-literature-chat) ---------------- */
 
 /** Reference line with the cited PDF pages: "[1] 2021 | 10.x/y | Title
  * (S. 2, 5)". "S." (Seite) by user decision -- the chat's audience reads
@@ -169,7 +169,7 @@ function referenceLine(reference: ReferenceEntry): string {
 	return `[${reference.n}] ${year} | ${id} | ${reference.title}${pages}`;
 }
 
-function paperLine(paper: AskAnswer["paper"]): string {
+function paperLine(paper: ChatAnswer["paper"]): string {
 	if (!paper.verified) {
 		return `Paper: ${paper.base}.pdf -- UNVERIFIED (no bibliographic record; cited by filename and page)`;
 	}
@@ -185,7 +185,7 @@ function paperLine(paper: AskAnswer["paper"]): string {
  * protocol file on disk always keeps the validated ground truth, so even
  * a paraphrasing agent cannot corrupt the record the report is built from.
  */
-export function renderAskDigest(answer: AskAnswer): string {
+export function renderChatDigest(answer: ChatAnswer): string {
 	const lines: string[] = [];
 	if (answer.grounded) {
 		lines.push(
@@ -235,7 +235,7 @@ export function renderAskDigest(answer: AskAnswer): string {
  * prose (the report lives in the HTML file), counts, the HTML path and
  * copyable reference lines only.
  */
-export function renderAskReportDigest(report: AskReport, htmlPath: string | null): string {
+export function renderChatReportDigest(report: ChatReport, htmlPath: string | null): string {
 	const lines: string[] = [];
 	if (report.grounded) {
 		lines.push(

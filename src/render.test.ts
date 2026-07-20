@@ -7,7 +7,7 @@
  */
 
 import assert from "node:assert/strict";
-import type { AskReport } from "./ask.ts";
+import type { ChatReport } from "./chat.ts";
 import {
 	localPdfHref,
 	renderHtml,
@@ -355,7 +355,7 @@ const synthesis: SynthesisResult = {
 
 /* ---------------- renderPaperChatReportHtml ---------------- */
 
-const chatReport: AskReport = {
+const chatReport: ChatReport = {
 	question: "Paper chat report: a.pdf",
 	focus: "Validierung <focus>",
 	session_questions: ["Wie funktioniert die Methode? <script>alert(1)</script>", "Wie wird validiert?"],

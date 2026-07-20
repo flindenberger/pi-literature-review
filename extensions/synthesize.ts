@@ -81,13 +81,13 @@ async function synthIntakeDialog(
 		const choice = await ctx.ui.select("pi-literature-synthesize: run this synthesis?", [
 			"Run as proposed",
 			"Adjust parameters",
-			"Chat about ONE paper instead (pi-literature-ask)",
+			"Chat about ONE paper instead (pi-literature-chat)",
 		], { signal });
 		if (choice === undefined) {
 			diagnostics.push("synthesis dialog: cancelled by the user");
 			return null;
 		}
-		if (choice === "Chat about ONE paper instead (pi-literature-ask)") {
+		if (choice === "Chat about ONE paper instead (pi-literature-chat)") {
 			diagnostics.push("synthesis dialog: user switched to the single-paper chat");
 			return "switch-to-ask";
 		}
@@ -166,7 +166,7 @@ export default function literatureSynthesize(pi: ExtensionAPI) {
 			"library or the current folder). Use this tool WHENEVER the user asks to synthesize, summarize, review " +
 			"or get an overview of the papers, the literature, the PDFs or 'the folder' -- including German " +
 			"requests like 'zusammenfassen', 'Zusammenfassung', 'Synthese', 'Literatur zusammenfassen'. " +
-			"For a question about ONE specific paper (understanding, explaining, chatting), use pi-literature-ask " +
+			"For a question about ONE specific paper (understanding, explaining, chatting), use pi-literature-chat " +
 			"instead. " +
 			"Call this tool DIRECTLY and IMMEDIATELY; do NOT ask clarification questions in chat first, do NOT ask " +
 			"for a paper list, and do NOT ask for a research question: if the user named none, pass a sensible " +
@@ -282,7 +282,7 @@ export default function literatureSynthesize(pi: ExtensionAPI) {
 							type: "text",
 							text:
 								"The user wants to chat about ONE paper instead of a corpus synthesis. Call " +
-								"pi-literature-ask now (omit question if you only know the topic; the user picks " +
+								"pi-literature-chat now (omit question if you only know the topic; the user picks " +
 								"the paper in its dialog).",
 						}],
 						details: { diagnostics },
@@ -349,6 +349,108 @@ export default function literatureSynthesize(pi: ExtensionAPI) {
 				};
 			} finally {
 				if (ctx.hasUI) ctx.ui.setWidget(SYNTH_WIDGET, undefined);
+			}
+		},
+	});
+
+	// /lit-synthesize -- the agent-free path (companion to /lit-chat,
+	// /lit-search, /lit-fetch). Runs the SAME intake dialog, corpus adoption
+	// and grounded generation as the tool, with no agent model in the loop.
+	// Bare /lit-synthesize proposes a generic question the user edits in the
+	// dialog. The digest lands in the transcript (display:true) so it reaches
+	// both the user and the agent's later-turn context, without triggering one.
+	pi.registerCommand("lit-synthesize", {
+		description:
+			"Grounded synthesis over the local PDF library, agent-free: /lit-synthesize <question>. "
+			+ "Bare /lit-synthesize proposes a generic question you can edit in the dialog.",
+		handler: async (args, ctx) => {
+			if (!ctx.hasUI) return;
+			const cfg = llmConfig();
+			const question = (args ?? "").trim()
+				|| "What are the main findings and methods of the papers in this library?";
+			const diagnostics: string[] = [];
+			const progress = (message: string) => ctx.ui.notify(message, "info");
+			let values: SynthIntakeValues = {
+				question,
+				papers: undefined,
+				model: cfg.generateModel,
+				topK: DEFAULT_TOP_K,
+			};
+			// Corpus preview BEFORE consent: matching is cheap (filenames + twin
+			// JSONs); extraction, embedding and adoption only run after confirm.
+			const root = outputRoot();
+			const { matched, unmatched, papersDir } = matchLibrary(root, (message) => diagnostics.push(message));
+			const corpusLines = [
+				clip(`Corpus:    ${matched.length} paper(s) with verified metadata in ${papersDir}`),
+			];
+			for (const paper of matched.slice(0, WIDGET_MAX_PAPERS)) {
+				corpusLines.push(clip(`  ${paper.base}.pdf  ${paper.entry.title || "(title unknown)"}`));
+			}
+			if (matched.length > WIDGET_MAX_PAPERS) {
+				corpusLines.push(`  ... and ${matched.length - WIDGET_MAX_PAPERS} more`);
+			}
+			if (unmatched.length) {
+				corpusLines.push(
+					`  ${unmatched.length} PDF(s) without metadata yet -- adoption (identifier found in the`,
+					"  PDF, verified API lookup) runs after you confirm; failures are excluded and listed.",
+				);
+				for (const file of unmatched.slice(0, 3)) corpusLines.push(clip(`    ${file}`));
+				if (unmatched.length > 3) corpusLines.push(`    ... and ${unmatched.length - 3} more`);
+			}
+
+			const result = await synthIntakeDialog(
+				ctx,
+				values,
+				corpusLines,
+				cfg.embedModel,
+				`${cfg.api} at ${cfg.baseUrl}`,
+				diagnostics,
+				ctx.signal,
+			);
+			if (result === null) {
+				ctx.ui.notify("Synthesis cancelled -- nothing was generated.", "info");
+				return;
+			}
+			if (result === "switch-to-ask") {
+				ctx.ui.notify("To chat about ONE paper use /lit-chat <question> instead.", "info");
+				return;
+			}
+			values = result;
+			if (ctx.signal?.aborted) return;
+			try {
+				ctx.ui.setWidget(SYNTH_WIDGET, [
+					`Synthesizing: ${clip(values.question)}`,
+					`Generator: ${values.model} -- indexing and generation progress appears below.`,
+				]);
+				const synth = await runSynthesize({
+					question: values.question,
+					papers: values.papers,
+					model: values.model,
+					topK: values.topK,
+					onWarn: progress,
+					signal: ctx.signal,
+				});
+				let htmlPath: string | null = null;
+				try {
+					const written = writeRunOutputs(renderReviewHtml(synth), synth, undefined, "reviews");
+					htmlPath = written.htmlPath;
+				} catch (error) {
+					ctx.ui.notify(
+						`writing the output files failed: ${error instanceof Error ? error.message : error}`,
+						"warning",
+					);
+				}
+				if (htmlPath) ctx.ui.notify(`Review written to ${htmlPath}`, "info");
+				// Show the digest in the widget: reliable and immediate. (sendMessage
+				// with deliverAs:"nextTurn" only queues it for the next prompt, so it
+				// never rendered.) The full review is in the HTML file.
+				const digestLines = renderSynthesisDigest(synth, htmlPath).split("\n");
+				ctx.ui.setWidget(SYNTH_WIDGET, digestLines.length > 16
+					? [...digestLines.slice(0, 15), `... (${digestLines.length - 15} more lines -- full review in the HTML)`]
+					: digestLines);
+			} catch (error) {
+				ctx.ui.setWidget(SYNTH_WIDGET, undefined);
+				ctx.ui.notify(`Synthesis failed: ${error instanceof Error ? error.message : error}`, "error");
 			}
 		},
 	});
