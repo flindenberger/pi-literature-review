@@ -208,6 +208,95 @@ All flags are optional. The downloader runs standalone too (no Pi, no LLM):
 node src/cli.ts fetch 10.3390/rs13081505 arXiv:2401.16393
 ```
 
+## Synthesis and paper chat (pi-literature-synthesize, pi-literature-ask)
+
+Both tools answer from the LOCAL PDF library with a LOCAL generator model
+(Ollama or any OpenAI-compatible local server; nothing leaves the machine)
+and share one trust architecture: the generator sees only numbered text
+excerpts extracted mechanically from the PDFs and may cite ONLY by excerpt
+number; fixed code validates every marker, strips fabricated ones (reported,
+not hidden), and inserts the reference list from the HTTP-verified search
+records. A result without a single valid citation is flagged `grounded:
+false` and rendered with an unmissable warning. PDFs are indexed once
+(text extraction, chunking, embeddings under `index/`, invalidated by
+content hash); scanned PDFs without a text layer are excluded and named.
+Loose PDFs that never went through search+fetch are adopted automatically
+when their own DOI/arXiv ID can be extracted from the PDF text and verified
+by an API lookup.
+
+**pi-literature-synthesize** answers a research question ACROSS the library:
+top-k excerpts over all selected papers, one generation pass, and an HTML
+review under `reviews/` (prose with citation links, reference table,
+evidence excerpts, method notes). The agent model only transports the
+question; a terminal dialog lets the user confirm or adjust everything
+before anything runs.
+
+**pi-literature-ask** ("Paper Chat") answers questions about ONE paper, for
+understanding it -- the conversational counterpart. Differences by design:
+
+- One paper per question. On first contact a terminal picker lists EVERY
+  PDF in the folder -- with "whole library (synthesis)" as the first
+  option, so the one-paper-vs-library fork is decided by the user in code,
+  not by the agent model. PDFs without metadata are listed under their
+  original filename; adoption is attempted on selection, and whatever
+  stays unverified is still chattable -- its citations then honestly carry
+  filename and page only (never invented bibliographic data).
+- The selection is sticky: the tool remembers the session's current paper
+  (`chats/current-paper.json`), so every further call -- from the agent or
+  the CLI -- needs only the question. A weak agent model merely has to
+  transport the user's words; `pick: true` (tool) or `--paper` (CLI)
+  switches papers.
+- The validated answer is returned verbatim in the tool result between
+  explicit delimiters (the one deliberate exception to the digest-only
+  doctrine -- a chat answer must reach the terminal). References carry the
+  cited PDF pages: `[1] 2024 | arXiv:2401.16393v1 | Title (S. 2)`. The
+  answer is ALSO shown directly in a terminal widget, so the validated text
+  stays visible even when a small agent model paraphrases the digest.
+- In the Pi tool, the generator is the model currently selected in pi
+  (called in a separate, excerpts-only completion -- the citation gate is
+  unchanged); a `model` parameter or the config slot overrides. The CLI
+  uses the configured chat model (`llm.askModel`, falling back to the
+  synthesis generator). Embeddings always stay on the configured local
+  embedding server.
+- Every validated round is appended to a protocol file
+  `chats/<date>_<paper>.json` -- question, validated prose, references,
+  cited excerpts. A corrupt or foreign protocol file is never overwritten
+  (quarantined with a `_2` suffix instead).
+- `report: true` writes a grounded session summary as HTML under `chats/`:
+  the session's questions become the retrieval queries; the page contains
+  the summary, references, evidence excerpts and the full Q&A protocol.
+  The report is built from the protocol on disk, never from the Pi chat
+  transcript.
+- The report links every citation into the local PDF: page numbers open
+  `file://...#page=N` (works in Firefox and Chromium; new tab), and each
+  excerpt gets a best-effort highlight link with a short verbatim phrase
+  (`#page=N&search=...&phrase=true`) -- Firefox's built-in viewer then
+  highlights the passage; Chromium ignores the search part and lands on
+  the page. These links are built by code from the scanned library path
+  only, never from API or model strings.
+- No chat memory in the generator: each call is stateless and separately
+  validated; the Pi conversation carries the thread (the agent is told to
+  rewrite follow-ups into self-contained questions).
+- **Agent-free path:** the `/paper-chat <question>` command in pi runs the
+  same engine and citation gate WITHOUT any agent model in the loop -- the
+  validated answer appears in the persistent terminal widget, and a silent
+  context note keeps the agent informed for later turns. Bare `/paper-chat`
+  opens the picker (also the way to switch papers). Use it when the agent
+  model is too weak to route follow-up questions reliably.
+- An ambiguous opening ("chat about the papers in this folder") may land in
+  either tool -- both dialogs therefore offer the fork in code: the ask
+  picker's first entry is the whole-library synthesis, and the synthesize
+  dialog has "Chat about ONE paper instead".
+
+Standalone CLI (no Pi):
+
+```
+node src/cli.ts synthesize "How are river sandbars detected?" --digest
+node src/cli.ts ask "Welche Datenquellen nutzt das Paper?" --paper arxiv_2401.16393.pdf --digest
+node src/cli.ts ask --report --paper arxiv_2401.16393.pdf
+node src/cli.ts llm-check     # verifies the local backend (embed + generate)
+```
+
 ## Configuration
 
 - `PI_LITERATURE_REVIEW_MAILTO` -- optional contact email added to the User-Agent and
@@ -216,6 +305,16 @@ node src/cli.ts fetch 10.3390/rs13081505 arXiv:2401.16393
   Fetching PDFs). Unset by default; no personal data ships in the code.
 - `PI_LITERATURE_REVIEW_HOME` -- optional root folder for query results (default:
   `pi-literature-review/` inside the working directory).
+- `PI_LITERATURE_REVIEW_LLM_URL` / `_LLM_API` / `_LLM_MODEL` / `_EMBED_MODEL` --
+  the local LLM backend for synthesis and paper chat (defaults: Ollama at
+  `http://127.0.0.1:11434`, generator `openscholar-8b`, embeddings
+  `nomic-embed-text`). The same values can live in config.json under `"llm"`;
+  `api: "openai"` plus a base URL switches to any OpenAI-compatible local
+  server (e.g. llama.cpp's llama-server).
+- `PI_LITERATURE_REVIEW_ASK_MODEL` (or `"llm": {"askModel": ...}` in
+  config.json) -- generator for the paper chat CLI (and the fallback when
+  pi has no model selected). Inside pi, the chat uses the model currently
+  selected in pi. Falls back to the synthesis generator.
 - `SEMANTIC_SCHOLAR_API_KEY` -- reserved for future Semantic Scholar support (the
   free tier rate-limits without a key; not implemented yet).
 
@@ -240,7 +339,13 @@ node src/output.test.ts      # output paths (slug, collision policy, JSON sideca
 node src/digest.test.ts      # agent-facing digest (counts, reference lines, cap)
 node src/intake.test.ts      # intake helpers (group syntax, AND/OR display, year ranges)
 node src/fetch.test.ts       # fetch engine (identifiers, resolver chain, naming, report)
-node src/config.test.ts      # config paths (XDG/APPDATA) and email plausibility
+node src/config.test.ts      # config paths (XDG/APPDATA), email plausibility, LLM/ask model slots
+node src/extract.test.ts     # PDF text cleanup, usability gate, chunking
+node src/corpus.test.ts      # library matching and the embedding index cache
+node src/llm.test.ts         # backend clients (Ollama / OpenAI-compatible)
+node src/adopt.test.ts       # adoption of loose PDFs (identifier from PDF text)
+node src/synthesize.test.ts  # synthesis engine incl. the citation trust gate
+node src/ask.test.ts         # paper chat engine, session protocol, report mode
 ```
 
 Acceptance gate before any release: the ground-truth query
