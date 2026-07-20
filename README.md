@@ -279,18 +279,23 @@ understanding it -- the conversational counterpart. Differences by design:
 - No chat memory in the generator: each call is stateless and separately
   validated; the Pi conversation carries the thread (the agent is told to
   rewrite follow-ups into self-contained questions).
-- **Agent-free slash commands.** Every stage has a `pi.registerCommand`
-  twin that pi checks BEFORE the agent, so it works regardless of the
-  selected model: `/lit-search`, `/lit-fetch`, `/lit-synthesize`, and
-  `/lit-chat`. Each runs the SAME engine and code dialogs as its tool, with
-  no agent model in the loop -- built after field tests showed weak agents
-  (granite4.1:8b) fail to route or relay while a capable one (Qwen3.5-9B)
-  works.
-- **Persistent chat mode.** `/lit-chat` picks a paper and ENTERS a mode:
-  afterwards every plain line you type is a grounded question about that
-  paper (agent bypassed), the answer rendered as a transcript entry. A
-  persistent widget shows the active paper; typing `exit` (or `quit`) leaves
-  the mode. Bare `/lit-chat` switches papers.
+- **Slash commands.** Every stage has a `pi.registerCommand` twin that pi
+  checks BEFORE the agent: `/lit-search`, `/lit-fetch`, `/lit-synthesize`,
+  and `/lit-chat`. With arguments each runs the SAME engine and code
+  dialogs as its tool, with no agent model in the loop (the deterministic
+  fallback -- field tests showed weak agents like granite4.1:8b fail to
+  route or relay while a capable one, Qwen3.5-9B, works). Invoked BARE,
+  each command hands over to the agent: it asks for the missing input in
+  chat (query, identifiers, question) and then calls the corresponding
+  tool -- so the conversation, streaming and pi's working indicator all
+  behave natively.
+- **Paper chat flow.** Bare `/lit-chat` opens the paper picker (also how
+  you switch papers), remembers the choice, and hands the conversation to
+  the agent: just chat normally afterwards; the agent routes every question
+  through the grounded tool and each code-validated answer is rendered as
+  its own transcript entry. `/lit-chat <question>` answers once, agent-free.
+  Long engine calls show an elapsed-seconds ticker in the widget (the
+  generation itself does not stream).
 - An ambiguous opening ("chat about the papers in this folder") may land in
   either tool -- both dialogs therefore offer the fork in code: the chat
   picker's first entry is the whole-library synthesis, and the synthesize

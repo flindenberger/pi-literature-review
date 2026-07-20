@@ -42,6 +42,19 @@ function clip(line: string): string {
 	return line.length > WIDGET_MAX_LINE ? `${line.slice(0, WIDGET_MAX_LINE - 3)}...` : line;
 }
 
+/** Sign of life while the non-streaming engine runs (same helper as chat.ts:
+ * pi's native working indicator exists only inside an agent turn, and even
+ * there a silent multi-minute generation looks dead -- field feedback
+ * 2026-07-20). Returns the stop function; always call it. */
+function startElapsedTicker(update: (line: string) => void): () => void {
+	const started = Date.now();
+	const interval = setInterval(() => {
+		const seconds = Math.round((Date.now() - started) / 1000);
+		update(`working -- ${seconds}s elapsed (indexing and generation do not stream; a thinking model can take minutes)`);
+	}, 5000);
+	return () => clearInterval(interval);
+}
+
 /** The user-adjustable subset of a synthesis call. */
 interface SynthIntakeValues {
 	question: string;
@@ -310,12 +323,15 @@ export default function literatureSynthesize(pi: ExtensionAPI) {
 				onWarn: report,
 				signal,
 			};
+			let stopTicker = () => {};
 			try {
 				if (ctx.hasUI) {
-					ctx.ui.setWidget(SYNTH_WIDGET, [
+					const widgetLines = [
 						`Synthesizing: ${clip(values.question)}`,
 						`Generator: ${values.model} -- indexing and generation progress appears below.`,
-					]);
+					];
+					ctx.ui.setWidget(SYNTH_WIDGET, widgetLines);
+					stopTicker = startElapsedTicker((line) => ctx.ui.setWidget(SYNTH_WIDGET, [...widgetLines, line]));
 				}
 				// The engine wires its own real deps (filesystem, hashing, the
 				// configured LLM backend); the extension only transports options.
@@ -348,26 +364,37 @@ export default function literatureSynthesize(pi: ExtensionAPI) {
 					details: { diagnostics },
 				};
 			} finally {
+				stopTicker();
 				if (ctx.hasUI) ctx.ui.setWidget(SYNTH_WIDGET, undefined);
 			}
 		},
 	});
 
 	// /lit-synthesize -- the agent-free path (companion to /lit-chat,
-	// /lit-search, /lit-fetch). Runs the SAME intake dialog, corpus adoption
-	// and grounded generation as the tool, with no agent model in the loop.
-	// Bare /lit-synthesize proposes a generic question the user edits in the
-	// dialog. The digest lands in the transcript (display:true) so it reaches
-	// both the user and the agent's later-turn context, without triggering one.
+	// /lit-search, /lit-fetch). With a question it runs the SAME intake
+	// dialog, corpus adoption and grounded generation as the tool, with no
+	// agent model in the loop. Bare /lit-synthesize hands over to the agent,
+	// which asks for the question in chat and calls the tool (2026-07-20,
+	// same pattern as the other three commands).
 	pi.registerCommand("lit-synthesize", {
 		description:
-			"Grounded synthesis over the local PDF library, agent-free: /lit-synthesize <question>. "
-			+ "Bare /lit-synthesize proposes a generic question you can edit in the dialog.",
+			"Grounded synthesis over the local PDF library: /lit-synthesize <question> runs agent-free "
+			+ "(intake dialog, verified citations). Bare /lit-synthesize lets the agent ask for the question.",
 		handler: async (args, ctx) => {
 			if (!ctx.hasUI) return;
+			const question = (args ?? "").trim();
+			if (!question) {
+				pi.sendMessage({
+					customType: "pi-literature-synthesize-handoff",
+					content:
+						"The user invoked /lit-synthesize without a question. Ask them, in ONE short sentence, "
+						+ "what question the synthesis across the local PDF library should answer, then call the "
+						+ "pi-literature-synthesize tool with that question.",
+					display: false,
+				}, { triggerTurn: true });
+				return;
+			}
 			const cfg = llmConfig();
-			const question = (args ?? "").trim()
-				|| "What are the main findings and methods of the papers in this library?";
 			const diagnostics: string[] = [];
 			const progress = (message: string) => ctx.ui.notify(message, "info");
 			let values: SynthIntakeValues = {
@@ -417,11 +444,13 @@ export default function literatureSynthesize(pi: ExtensionAPI) {
 			}
 			values = result;
 			if (ctx.signal?.aborted) return;
+			const widgetLines = [
+				`Synthesizing: ${clip(values.question)}`,
+				`Generator: ${values.model} -- indexing and generation progress appears below.`,
+			];
+			ctx.ui.setWidget(SYNTH_WIDGET, widgetLines);
+			const stopTicker = startElapsedTicker((line) => ctx.ui.setWidget(SYNTH_WIDGET, [...widgetLines, line]));
 			try {
-				ctx.ui.setWidget(SYNTH_WIDGET, [
-					`Synthesizing: ${clip(values.question)}`,
-					`Generator: ${values.model} -- indexing and generation progress appears below.`,
-				]);
 				const synth = await runSynthesize({
 					question: values.question,
 					papers: values.papers,
@@ -451,6 +480,8 @@ export default function literatureSynthesize(pi: ExtensionAPI) {
 			} catch (error) {
 				ctx.ui.setWidget(SYNTH_WIDGET, undefined);
 				ctx.ui.notify(`Synthesis failed: ${error instanceof Error ? error.message : error}`, "error");
+			} finally {
+				stopTicker();
 			}
 		},
 	});

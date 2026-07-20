@@ -42,6 +42,7 @@ import {
 	OUTPUT_RESERVE_TOKENS,
 	promptTokens,
 	type ReferenceEntry,
+	requireOutput,
 	type RetrievedChunk,
 	topKChunks,
 } from "./synthesize.ts";
@@ -569,6 +570,7 @@ export async function runChat(options: ChatOptions, deps?: ChatDeps): Promise<Ch
 	onWarn(`generating with ${model} (${retrieved.length} excerpts from ${paper.base}.pdf)`);
 	const generateOptions: GenerateOptions = { model, numCtx: NUM_CTX, temperature: ASK_TEMPERATURE };
 	const rawOutput = await backend.generate(prompt.system, prompt.user, generateOptions, options.signal);
+	requireOutput(rawOutput);
 
 	// 5. Trust gate: validate markers, references from the verified record.
 	const scan = enforceCitations(rawOutput, retrieved.length);
@@ -808,6 +810,7 @@ export async function runChatReport(options: ChatReportOptions, deps?: ChatDeps)
 	onWarn(`generating the report with ${model} (${retrieved.length} excerpts, ${queries.length} question(s))`);
 	const generateOptions: GenerateOptions = { model, numCtx: NUM_CTX, temperature: ASK_TEMPERATURE };
 	const rawOutput = await backend.generate(prompt.system, prompt.user, generateOptions, options.signal);
+	requireOutput(rawOutput);
 	const scan = enforceCitations(rawOutput, retrieved.length);
 	if (scan.invalidMarkers.length) {
 		onWarn(`stripped ${scan.invalidMarkers.length} invalid citation marker(s): ${scan.invalidMarkers.join(" ")}`);

@@ -259,18 +259,26 @@ export default function literatureFetch(pi: ExtensionAPI) {
 	// SAME Unpaywall-email and consent dialogs gate the download.
 	pi.registerCommand("lit-fetch", {
 		description:
-			"Download papers as PDFs, agent-free: /lit-fetch <DOIs / arXiv IDs> "
-			+ "(or paste the \"Download these papers: ...\" line from the search page).",
+			"Download papers as PDFs: /lit-fetch <DOIs / arXiv IDs> runs agent-free (or paste the "
+			+ "\"Download these papers: ...\" line from the search page). Bare /lit-fetch lets the agent ask.",
 		handler: async (args, ctx) => {
 			if (!ctx.hasUI) return;
 			const raw = (args ?? "").replace(/^\s*download\s+these\s+papers\s*:?\s*/i, "");
 			const identifiers = raw.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
 			if (!identifiers.length) {
-				ctx.ui.notify(
-					"Usage: /lit-fetch <DOIs / arXiv IDs>  (comma- or space-separated; or paste the "
-					+ "\"Download these papers: ...\" line from the search page)",
-					"info",
-				);
+				// Bare invocation: hand over to the agent, which asks for the
+				// identifiers in chat and then calls the pi-literature-fetch
+				// tool (the email and consent dialogs still gate the download).
+				// A dim usage notify was invisible in the field (2026-07-20).
+				pi.sendMessage({
+					customType: "pi-literature-fetch-handoff",
+					content:
+						"The user invoked /lit-fetch without identifiers. Ask them, in ONE short sentence, which "
+						+ "papers to download -- DOIs or arXiv IDs, or the \"Download these papers: ...\" line "
+						+ "copied from a search results page -- then call the pi-literature-fetch tool with "
+						+ "those identifiers. Never invent or complete identifiers yourself.",
+					display: false,
+				}, { triggerTurn: true });
 				return;
 			}
 			const diagnostics: string[] = [];

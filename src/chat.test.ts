@@ -288,6 +288,15 @@ function makeRound(question: string): ChatRound {
 		}),
 		/no PDFs in the library/,
 	);
+	// EMPTY generation is a backend failure, not a groundable answer (field
+	// failure 2026-07-20: a thinking model returned zero answer text; the
+	// empty string must not flow through the citation gate as an empty
+	// "ungrounded draft").
+	const { deps: emptyDeps } = makeDeps("  \n ");
+	await assert.rejects(
+		() => runChat({ question: "q", paper: "a", root: "/", model: "fake-gen", embedModel: "fake-embed" }, emptyDeps),
+		/no answer text/,
+	);
 }
 
 /* ---------------- ensureChatLibrary: adoption re-match ---------------- */
@@ -565,4 +574,4 @@ function makeRound(question: string): ChatRound {
 	assert.ok(warnings.some((m) => m.includes("default question")));
 }
 
-console.log("ask.test.ts: all assertions passed");
+console.log("chat.test.ts: all assertions passed");

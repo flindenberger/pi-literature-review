@@ -36,21 +36,9 @@ import { renderChatDigest, renderChatReportDigest } from "../src/digest.ts";
 import { createBackend, type LlmBackend } from "../src/llm.ts";
 import { outputRoot, writeRunOutputs } from "../src/output.ts";
 import { renderPaperChatReportHtml } from "../src/render.ts";
-import { DEFAULT_TOP_K, MAX_TOP_K } from "../src/synthesize.ts";
+import { DEFAULT_TOP_K, MAX_TOP_K, OUTPUT_RESERVE_TOKENS } from "../src/synthesize.ts";
 
 const CHAT_WIDGET = "pi-literature-review-chat";
-const MODE_WIDGET = "pi-literature-review-chat-mode";
-
-/**
- * Persistent paper-chat mode (user request 2026-07-20). A slash command is a
- * one-shot; the recurring pain was re-typing /lit-chat before every question.
- * While this holds a paper base, the `input` event handler routes EVERY plain
- * (non-command) line to that paper's chat engine and marks it handled -- the
- * agent is bypassed entirely, a true REPL over one PDF. Toggled on by the
- * /lit-chat command (after the paper is picked) and off by typing "exit".
- * Session-scoped module state: one active paper chat per pi process.
- */
-let chatModeBase: string | null = null;
 
 /** True once the pi-tui entry renderer is registered (see literatureChat).
  * When true, validated answers render as full, scrollable transcript entries;
@@ -135,6 +123,22 @@ function showAnswer(pi: ExtensionAPI, ctx: ExtensionContext, paperLabel: string,
 }
 
 /**
+ * Sign of life during a long, non-streaming engine call: pi's native pulsing
+ * working indicator exists only while the AGENT streams (setWorkingVisible is
+ * a no-op outside a turn), so this updates a widget line with the elapsed
+ * seconds instead (field feedback 2026-07-20: a silent multi-minute
+ * generation looks dead). Returns the stop function; always call it.
+ */
+function startElapsedTicker(update: (line: string) => void): () => void {
+	const started = Date.now();
+	const interval = setInterval(() => {
+		const seconds = Math.round((Date.now() - started) / 1000);
+		update(`working -- ${seconds}s elapsed (embedding and generation do not stream; a thinking model can take minutes)`);
+	}, 5000);
+	return () => clearInterval(interval);
+}
+
+/**
  * Generator = the model currently selected in pi (user decision
  * 2026-07-16), called in a SEPARATE, excerpts-only completion -- the
  * citation gate stays exactly the same; only the model behind generate()
@@ -159,16 +163,31 @@ function piModelBackend(ctx: ExtensionContext, embed: LlmBackend["embed"]): LlmB
 				apiKey: auth.apiKey,
 				headers: auth.headers,
 				temperature: options?.temperature,
-				maxTokens: options?.maxTokens,
+				// Thinking OFF and a hard output cap (field failure 2026-07-20:
+				// Qwen3.5 spent 7 minutes of hidden reasoning and returned zero
+				// answer text). The excerpts-only answer needs no deliberation;
+				// hidden reasoning would eat the whole budget invisibly. The cap
+				// matches the tokens the prompt budget reserves for the answer.
+				reasoning: "off",
+				maxTokens: options?.maxTokens ?? OUTPUT_RESERVE_TOKENS,
 				signal,
 			});
 			if (response.stopReason === "error" || response.stopReason === "aborted") {
 				throw new Error(response.errorMessage || `generation ${response.stopReason}`);
 			}
-			return response.content
+			const text = response.content
 				.filter((part): part is { type: "text"; text: string } => part.type === "text")
 				.map((part) => part.text)
 				.join("");
+			if (!text.trim()) {
+				const thought = response.content.some((part) => part.type === "thinking");
+				throw new Error(
+					`the model returned no answer text (stop reason: ${response.stopReason}`
+					+ `${thought ? "; it produced only hidden reasoning" : ""}) -- ask again, `
+					+ "rephrase, or select a non-thinking model in pi",
+				);
+			}
+			return text;
 		},
 	};
 }
@@ -176,8 +195,8 @@ function piModelBackend(ctx: ExtensionContext, embed: LlmBackend["embed"]): LlmB
 /**
  * Run ONE grounded chat turn against `base` and show the validated answer in
  * the CHAT_WIDGET (answerWidgetLines) -- the same reliable rendering the tool
- * path uses. Shared by the /lit-chat command and the persistent-mode input
- * handler; both are agent-free, so the answer goes straight to the user.
+ * path uses. Used by the /lit-chat <question> one-shot command; agent-free,
+ * so the answer goes straight to the user.
  * (An earlier version used sendMessage(display:true, deliverAs:"nextTurn"),
  * but nextTurn QUEUES the message for the next prompt instead of showing it,
  * so the answer never appeared. The widget renders immediately.) Errors
@@ -195,11 +214,13 @@ async function answerInChat(
 		? { backend: piModelBackend(ctx, (texts, signal) => createBackend(cfg).embed(texts, signal)) }
 		: undefined;
 	const model = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
-	ctx.ui.setWidget(CHAT_WIDGET, [
+	const widgetLines = [
 		`Paper chat: ${base}.pdf`,
 		clip(`Question: ${question}`),
 		`Generating with ${model ?? "the configured chat model"} -- no agent model involved.`,
-	]);
+	];
+	ctx.ui.setWidget(CHAT_WIDGET, widgetLines);
+	const stopTicker = startElapsedTicker((line) => ctx.ui.setWidget(CHAT_WIDGET, [...widgetLines, line]));
 	try {
 		const answer = await runChat({
 			question,
@@ -212,15 +233,9 @@ async function answerInChat(
 	} catch (error) {
 		ctx.ui.setWidget(CHAT_WIDGET, undefined);
 		ctx.ui.notify(`paper chat failed: ${error instanceof Error ? error.message : error}`, "error");
+	} finally {
+		stopTicker();
 	}
-}
-
-/** Persistent mode indicator + exit hint; stays visible until the user types "exit". */
-function showChatMode(ctx: ExtensionContext, base: string): void {
-	ctx.ui.setWidget(MODE_WIDGET, [
-		`Paper-chat mode: ${base}.pdf -- just type your questions (no /lit-chat needed).`,
-		"/lit-chat switches paper  |  type 'exit' to leave",
-	]);
 }
 
 const OPTION_LIBRARY = "Whole library: synthesis across ALL papers (pi-literature-synthesize)";
@@ -280,7 +295,7 @@ async function pickPaper(
 			`Library:  ${entries.length} PDF(s) in ${match.papersDir}`
 				+ (match.unmatched.length ? ` (${match.unmatched.length} without metadata yet)` : ""),
 		]);
-		const choice = await ctx.ui.select("pi-literature-chat: which paper is this about?", options, { signal });
+		const choice = await ctx.ui.select("Select the article, paper or PDF you want to chat about", options, { signal });
 		if (choice === undefined) return { kind: "cancelled" };
 		return byLabel.get(choice) ?? { kind: "cancelled" };
 	} finally {
@@ -483,13 +498,16 @@ export default async function literatureChat(pi: ExtensionAPI) {
 				generatorLine = `Generator: ${model} (the model selected in pi; embeddings: ${cfg.embedModel})`;
 			}
 			let keepWidget = false;
+			let stopTicker = () => {};
 			try {
 				if (ctx.hasUI) {
-					ctx.ui.setWidget(CHAT_WIDGET, [
+					const widgetLines = [
 						wantsReport ? `Paper chat report: ${paper}` : `Paper chat: ${paper}`,
 						...(question ? [clip(`Question: ${question}`)] : []),
 						`${generatorLine} -- progress appears below.`,
-					]);
+					];
+					ctx.ui.setWidget(CHAT_WIDGET, widgetLines);
+					stopTicker = startElapsedTicker((line) => ctx.ui.setWidget(CHAT_WIDGET, [...widgetLines, line]));
 				}
 				// The engine wires its own real deps (filesystem, protocol file,
 				// the configured LLM backend); the extension only transports
@@ -553,22 +571,25 @@ export default async function literatureChat(pi: ExtensionAPI) {
 					details: { diagnostics },
 				};
 			} finally {
+				stopTicker();
 				if (ctx.hasUI && !keepWidget) ctx.ui.setWidget(CHAT_WIDGET, undefined);
 			}
 		},
 	});
 
-	// /lit-chat -- the agent-free path (user decision 2026-07-16, after a
-	// field test in which the agent model neither relayed answers verbatim
-	// nor called the tool on follow-ups). The command runs the SAME engine
-	// and citation gate; no agent model touches the flow. The validated
-	// answer lands in the persistent widget, and a silent context note
-	// informs the agent for later turns without triggering one.
+	// /lit-chat -- the code-gated entry into a paper chat. Bare invocation
+	// runs the PICKER (deterministic, agent-free), then hands the conversation
+	// to the AGENT via a triggered turn: the chat loop lives in the harness
+	// (user decision 2026-07-20, replacing the input-intercepting persistent
+	// mode -- pi's native working indicator and streaming exist only inside an
+	// agent turn, so the bypass mode always looked dead while generating).
+	// /lit-chat <question> stays as the deterministic one-shot fallback: same
+	// engine and citation gate, no agent model in the loop.
 	pi.registerCommand("lit-chat", {
 		description:
-			"Grounded chat about ONE local PDF, agent-free. /lit-chat <question> answers once; "
-			+ "bare /lit-chat picks or switches the paper. Either way it enters a persistent chat mode: "
-			+ "afterwards just type your questions directly (no /lit-chat needed); type 'exit' to leave.",
+			"Chat about ONE local PDF with page-exact citations. Bare /lit-chat picks (or switches) the "
+			+ "paper, then just chat normally -- the agent routes every question through the grounded tool. "
+			+ "/lit-chat <question> answers once with no agent model involved (fallback).",
 		handler: async (args, ctx) => {
 			if (!ctx.hasUI) return;
 			const question = (args ?? "").trim();
@@ -580,7 +601,7 @@ export default async function literatureChat(pi: ExtensionAPI) {
 				// user switches papers without any agent involved).
 				const picked = await pickPaper(
 					ctx,
-					question || "(picking the paper -- then just type your questions)",
+					question || "(picking the paper -- your questions follow in normal chat)",
 					progress,
 					ctx.signal,
 				);
@@ -600,42 +621,26 @@ export default async function literatureChat(pi: ExtensionAPI) {
 				base = picked.base;
 				writeCurrentPaper(root, base);
 			}
-			// Enter (or refresh) persistent chat mode: from here every plain line
-			// is a grounded question about THIS paper until the user types "exit".
-			chatModeBase = base;
-			showChatMode(ctx, base);
-			if (!question) {
-				ctx.ui.notify(
-					`Paper-chat mode on: ${base}.pdf -- just type your questions (type 'exit' to leave).`,
-					"info",
-				);
+			if (question) {
+				await answerInChat(pi, ctx, base, question);
 				return;
 			}
-			await answerInChat(pi, ctx, base, question);
+			// Paper picked, no question: hand over to the agent, which asks for
+			// the first question in chat and calls the pi-literature-chat tool
+			// per question (the sticky paper means it only transports the
+			// question). display:false keeps the note out of the transcript;
+			// triggerTurn makes the agent respond immediately.
+			pi.sendMessage({
+				customType: "pi-literature-chat-handoff",
+				content:
+					`The user picked the paper "${base}.pdf" for a grounded paper chat via /lit-chat. `
+					+ "Ask them now, in ONE short sentence, what they would like to know about this paper -- "
+					+ "mention that an overview, specific details, or bullet points are all fine, in German or "
+					+ "English. Route EVERY question about the paper through the pi-literature-chat tool: pass "
+					+ "only the question (the tool remembers the paper) and relay each validated answer verbatim.",
+				display: false,
+			}, { triggerTurn: true });
 		},
-	});
-
-	// Persistent chat mode: while a paper is active, every plain (non-command)
-	// line becomes a grounded question about it -- the agent is bypassed
-	// (input event -> action: handled). Commands (/...) and blank lines pass
-	// through. A bare "exit"/"quit" leaves the mode: Ctrl+C cannot, because pi
-	// owns it (copy / clear editor / cancel picker) and emits no event to hook,
-	// so a keybinding would only clobber those globally; a typed word stays out
-	// of the command palette and never collides.
-	pi.on("input", async (event, ctx) => {
-		if (!chatModeBase) return; // not in chat mode -> normal agent flow
-		if (event.source !== "interactive") return; // ignore rpc / injected input
-		const text = event.text.trim();
-		if (!text || text.startsWith("/")) return; // commands & blanks pass through
-		if (/^(exit|quit)$/i.test(text)) {
-			chatModeBase = null;
-			ctx.ui.setWidget(MODE_WIDGET, undefined);
-			ctx.ui.setWidget(CHAT_WIDGET, undefined);
-			ctx.ui.notify("Left paper-chat mode -- back to the agent.", "info");
-			return { action: "handled" };
-		}
-		await answerInChat(pi, ctx, chatModeBase, text);
-		return { action: "handled" };
 	});
 
 	// Rich transcript rendering for validated answers: register a pi-tui entry

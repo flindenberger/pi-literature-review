@@ -45,6 +45,23 @@ export const DEFAULT_TOP_K = 8;
 export const MAX_TOP_K = 20;
 const TEMPERATURE = 0.2;
 
+/**
+ * Guard against an EMPTY generation (field failure 2026-07-20: a thinking
+ * model spent its entire run on hidden reasoning and returned no answer
+ * text at all -- the empty string then flowed through the citation gate as
+ * a confusing "ungrounded draft" with nothing in it). An empty output is a
+ * backend failure, not a groundable answer; fail loudly with the likely
+ * cause and the ways out.
+ */
+export function requireOutput(rawOutput: string): void {
+	if (rawOutput.trim()) return;
+	throw new Error(
+		"the generator returned no answer text -- a thinking model may have spent its entire "
+		+ "token budget on hidden reasoning. Ask again (thinking length varies), rephrase the "
+		+ "question, or switch to a non-thinking model",
+	);
+}
+
 /* ------------------------------------------------------------------ *
  * Retrieval -- pure                                                    *
  * ------------------------------------------------------------------ */
@@ -414,6 +431,7 @@ export async function runSynthesize(
 	onWarn(`generating with ${model} (${retrieved.length} excerpts; this can take a few minutes on a local GPU)`);
 	const generateOptions: GenerateOptions = { model, numCtx: NUM_CTX, temperature: TEMPERATURE };
 	const rawOutput = await backend.generate(prompt.system, prompt.user, generateOptions, options.signal);
+	requireOutput(rawOutput);
 
 	// 5. Trust gate: validate markers, then paper-level references from
 	// verified records only.

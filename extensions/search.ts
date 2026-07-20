@@ -347,16 +347,24 @@ export default function literatureSearch(pi: ExtensionAPI) {
 	// to the agent for later turns, without triggering a turn (nextTurn).
 	pi.registerCommand("lit-search", {
 		description:
-			"Discover literature online, agent-free: /lit-search <query>. Opens the same intake dialog, "
-			+ "writes the verified HTML/JSON and shows the digest.",
+			"Discover literature online: /lit-search <query> runs the pipeline agent-free (intake dialog, "
+			+ "verified HTML/JSON, digest). Bare /lit-search lets the agent ask what to search for.",
 		handler: async (args, ctx) => {
 			if (!ctx.hasUI) return;
 			const query = (args ?? "").trim();
 			if (!query) {
-				ctx.ui.notify(
-					"Usage: /lit-search <query>  (e.g. /lit-search sandbar detection rivers Sentinel-2)",
-					"info",
-				);
+				// Bare invocation: hand over to the agent, which asks for the
+				// query in chat and then calls the pi-literature-search tool
+				// (the code-enforced intake dialog still gates the run). A dim
+				// usage notify was invisible in the field (2026-07-20).
+				pi.sendMessage({
+					customType: "pi-literature-search-handoff",
+					content:
+						"The user invoked /lit-search without a query. Ask them, in ONE short sentence, what "
+						+ "literature they want to find (topic; optionally years or must-have terms), then call "
+						+ "the pi-literature-search tool with their query.",
+					display: false,
+				}, { triggerTurn: true });
 				return;
 			}
 			const diagnostics: string[] = [];
