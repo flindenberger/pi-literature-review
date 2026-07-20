@@ -208,7 +208,7 @@ All flags are optional. The downloader runs standalone too (no Pi, no LLM):
 node src/cli.ts fetch 10.3390/rs13081505 arXiv:2401.16393
 ```
 
-## Synthesis and paper chat (pi-literature-synthesize, pi-literature-ask)
+## Synthesis and paper chat (pi-literature-synthesize, pi-literature-chat)
 
 Both tools answer from the LOCAL PDF library with a LOCAL generator model
 (Ollama or any OpenAI-compatible local server; nothing leaves the machine)
@@ -231,7 +231,7 @@ evidence excerpts, method notes). The agent model only transports the
 question; a terminal dialog lets the user confirm or adjust everything
 before anything runs.
 
-**pi-literature-ask** ("Paper Chat") answers questions about ONE paper, for
+**pi-literature-chat** ("Paper Chat") answers questions about ONE paper, for
 understanding it -- the conversational counterpart. Differences by design:
 
 - One paper per question. On first contact a terminal picker lists EVERY
@@ -250,12 +250,14 @@ understanding it -- the conversational counterpart. Differences by design:
   explicit delimiters (the one deliberate exception to the digest-only
   doctrine -- a chat answer must reach the terminal). References carry the
   cited PDF pages: `[1] 2024 | arXiv:2401.16393v1 | Title (S. 2)`. The
-  answer is ALSO shown directly in a terminal widget, so the validated text
-  stays visible even when a small agent model paraphrases the digest.
+  validated answer ALSO renders as a full, scrollable transcript entry
+  (`pi.appendEntry` + a pi-tui renderer; capped-widget fallback when pi-tui
+  is unavailable), so it stays visible verbatim even if a small agent model
+  paraphrases the digest. The entry does not enter the LLM context.
 - In the Pi tool, the generator is the model currently selected in pi
   (called in a separate, excerpts-only completion -- the citation gate is
   unchanged); a `model` parameter or the config slot overrides. The CLI
-  uses the configured chat model (`llm.askModel`, falling back to the
+  uses the configured chat model (`llm.chatModel`, falling back to the
   synthesis generator). Embeddings always stay on the configured local
   embedding server.
 - Every validated round is appended to a protocol file
@@ -277,14 +279,20 @@ understanding it -- the conversational counterpart. Differences by design:
 - No chat memory in the generator: each call is stateless and separately
   validated; the Pi conversation carries the thread (the agent is told to
   rewrite follow-ups into self-contained questions).
-- **Agent-free path:** the `/paper-chat <question>` command in pi runs the
-  same engine and citation gate WITHOUT any agent model in the loop -- the
-  validated answer appears in the persistent terminal widget, and a silent
-  context note keeps the agent informed for later turns. Bare `/paper-chat`
-  opens the picker (also the way to switch papers). Use it when the agent
-  model is too weak to route follow-up questions reliably.
+- **Agent-free slash commands.** Every stage has a `pi.registerCommand`
+  twin that pi checks BEFORE the agent, so it works regardless of the
+  selected model: `/lit-search`, `/lit-fetch`, `/lit-synthesize`, and
+  `/lit-chat`. Each runs the SAME engine and code dialogs as its tool, with
+  no agent model in the loop -- built after field tests showed weak agents
+  (granite4.1:8b) fail to route or relay while a capable one (Qwen3.5-9B)
+  works.
+- **Persistent chat mode.** `/lit-chat` picks a paper and ENTERS a mode:
+  afterwards every plain line you type is a grounded question about that
+  paper (agent bypassed), the answer rendered as a transcript entry. A
+  persistent widget shows the active paper; typing `exit` (or `quit`) leaves
+  the mode. Bare `/lit-chat` switches papers.
 - An ambiguous opening ("chat about the papers in this folder") may land in
-  either tool -- both dialogs therefore offer the fork in code: the ask
+  either tool -- both dialogs therefore offer the fork in code: the chat
   picker's first entry is the whole-library synthesis, and the synthesize
   dialog has "Chat about ONE paper instead".
 
@@ -292,8 +300,8 @@ Standalone CLI (no Pi):
 
 ```
 node src/cli.ts synthesize "How are river sandbars detected?" --digest
-node src/cli.ts ask "Welche Datenquellen nutzt das Paper?" --paper arxiv_2401.16393.pdf --digest
-node src/cli.ts ask --report --paper arxiv_2401.16393.pdf
+node src/cli.ts chat "Welche Datenquellen nutzt das Paper?" --paper arxiv_2401.16393.pdf --digest
+node src/cli.ts chat --report --paper arxiv_2401.16393.pdf
 node src/cli.ts llm-check     # verifies the local backend (embed + generate)
 ```
 
@@ -311,7 +319,7 @@ node src/cli.ts llm-check     # verifies the local backend (embed + generate)
   `nomic-embed-text`). The same values can live in config.json under `"llm"`;
   `api: "openai"` plus a base URL switches to any OpenAI-compatible local
   server (e.g. llama.cpp's llama-server).
-- `PI_LITERATURE_REVIEW_ASK_MODEL` (or `"llm": {"askModel": ...}` in
+- `PI_LITERATURE_REVIEW_CHAT_MODEL` (or `"llm": {"chatModel": ...}` in
   config.json) -- generator for the paper chat CLI (and the fallback when
   pi has no model selected). Inside pi, the chat uses the model currently
   selected in pi. Falls back to the synthesis generator.
@@ -339,7 +347,7 @@ node src/output.test.ts      # output paths (slug, collision policy, JSON sideca
 node src/digest.test.ts      # agent-facing digest (counts, reference lines, cap)
 node src/intake.test.ts      # intake helpers (group syntax, AND/OR display, year ranges)
 node src/fetch.test.ts       # fetch engine (identifiers, resolver chain, naming, report)
-node src/config.test.ts      # config paths (XDG/APPDATA), email plausibility, LLM/ask model slots
+node src/config.test.ts      # config paths (XDG/APPDATA), email plausibility, LLM/chat model slots
 node src/extract.test.ts     # PDF text cleanup, usability gate, chunking
 node src/corpus.test.ts      # library matching and the embedding index cache
 node src/llm.test.ts         # backend clients (Ollama / OpenAI-compatible)
