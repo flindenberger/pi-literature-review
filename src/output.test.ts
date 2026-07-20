@@ -53,4 +53,24 @@ import { htmlPathFor, jsonPathFor, querySlug } from "./output.ts";
 	);
 }
 
+/* ---------------- htmlPathFor: stage subdir ---------------- */
+{
+	const none = () => false;
+	// The synthesis stage writes to reviews/ with identical naming rules.
+	assert.equal(
+		htmlPathFor("/data", "2026-07-15T09:00:00Z", "How are sandbars detected?", none, "reviews"),
+		"/data/reviews/2026-07-15_How_are_sandbars_detected.html",
+	);
+	// Default stays queries/ so existing callers are untouched.
+	assert.equal(
+		htmlPathFor("/data", "2026-07-15T09:00:00Z", "q", none),
+		"/data/queries/2026-07-15_q.html",
+	);
+	const taken = new Set(["/data/reviews/2026-07-15_q.html"]);
+	assert.equal(
+		htmlPathFor("/data", "2026-07-15T09:00:00Z", "q", (p) => taken.has(p), "reviews"),
+		"/data/reviews/2026-07-15_q_2.html",
+	);
+}
+
 console.log("output.test.ts: all assertions passed");

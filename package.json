@@ -17,6 +17,7 @@
     "typebox": "*"
   },
   "dependencies": {
-    "fast-xml-parser": "^5.9.3"
+    "fast-xml-parser": "^5.9.3",
+    "unpdf": "^1.6.2"
   }
 }

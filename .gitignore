@@ -3,4 +3,7 @@ node_modules/
 # package folder as its working directory, keep its output out of git.
 queries/
 papers/
+index/
+reviews/
+chats/
 pi-literature-review/

@@ -7,12 +7,14 @@
 
 import assert from "node:assert/strict";
 import {
+	buildPaperMeta,
 	buildSidecarIndex,
 	type FetchDeps,
 	fetchOne,
 	identifierSlug,
 	isPdfBytes,
 	paperFilename,
+	type PaperMeta,
 	parseIdentifier,
 	renderFetchReport,
 } from "./fetch.ts";
@@ -115,16 +117,46 @@ const payloadB = {
 	assert.ok(index.get(parseIdentifier("2401.16393").key as string));
 }
 
+/* ---------------- buildPaperMeta ---------------- */
+{
+	// Without a saved-search entry the citable identity still comes from the
+	// parsed identifier; bibliographic fields stay honestly empty.
+	const arxivMeta = buildPaperMeta(parseIdentifier("arXiv:2401.16393"), undefined, "arxiv", "2026-07-15T12:00:00Z");
+	assert.equal(arxivMeta.arxiv_id, "2401.16393");
+	assert.equal(arxivMeta.doi, "");
+	assert.equal(arxivMeta.title, "");
+	assert.deepEqual(arxivMeta.authors, []);
+	assert.equal(arxivMeta.year, null);
+	assert.equal(arxivMeta.via, "arxiv");
+	assert.equal(arxivMeta.fetched, "2026-07-15T12:00:00Z");
+	const doiMeta = buildPaperMeta(parseIdentifier("10.1234/x"), undefined, "unpaywall", "2026-07-15T12:00:00Z");
+	assert.equal(doiMeta.doi, "10.1234/x");
+	assert.equal(doiMeta.arxiv_id, "");
+	// Entry values (API-sourced) win over the parsed fallback.
+	const entryMeta = buildPaperMeta(
+		parseIdentifier("10.3390/rs13081505"),
+		{ title: "T", pdf_url: "u", doi: "10.3390/RS13081505", arxiv_id: "", authors: ["A B"], year: "2021" },
+		"record",
+		"2026-07-15T12:00:00Z",
+	);
+	assert.equal(entryMeta.doi, "10.3390/RS13081505"); // verbatim, not re-cased
+	assert.equal(entryMeta.pdf_url, "u");
+}
+
 /* ---------------- fetchOne chain logic (fake deps) ---------------- */
 const pdfBytes = new TextEncoder().encode("%PDF-1.4 fake");
 const htmlBytes = new TextEncoder().encode("<html>paywall</html>");
 
-function makeDeps(overrides: Partial<FetchDeps> = {}): { deps: FetchDeps; saved: string[]; urls: string[] } {
+function makeDeps(overrides: Partial<FetchDeps> = {}): {
+	deps: FetchDeps; saved: string[]; urls: string[]; metas: Array<{ path: string; meta: PaperMeta }>;
+} {
 	const saved: string[] = [];
 	const urls: string[] = [];
+	const metas: Array<{ path: string; meta: PaperMeta }> = [];
 	const deps: FetchDeps = {
 		fileExists: () => false,
 		saveFile: (path) => saved.push(path),
+		saveMeta: (path, meta) => metas.push({ path, meta }),
 		downloadPdf: async (url) => {
 			urls.push(url);
 			return { ok: true, bytes: pdfBytes };
@@ -132,20 +164,32 @@ function makeDeps(overrides: Partial<FetchDeps> = {}): { deps: FetchDeps; saved:
 		unpaywallPdfUrl: async () => ({ url: null, note: "Unpaywall: no open copy listed" }),
 		...overrides,
 	};
-	return { deps, saved, urls };
+	return { deps, saved, urls, metas };
 }
 
-// 1) record pdf_url wins first
+// 1) record pdf_url wins first; the metadata twin lands next to the PDF
 {
-	const { deps, saved } = makeDeps();
+	const { deps, saved, metas } = makeDeps();
 	const target = parseIdentifier("10.3390/rs13081505");
-	const entry = { title: "Vistula", pdf_url: "https://mdpi.com/x.pdf", doi: "10.3390/rs13081505", arxiv_id: "" };
+	const entry = {
+		title: "Vistula", pdf_url: "https://mdpi.com/x.pdf", doi: "10.3390/rs13081505", arxiv_id: "",
+		authors: ["Anna Kryniecka"], year: "2021",
+	};
 	const result = await fetchOne(target, entry, "/papers", deps);
 	assert.equal(result.status, "downloaded");
 	assert.equal(result.source, "record");
-	assert.equal(result.path, "/papers/10.3390_rs13081505.pdf");
+	assert.equal(result.path, "/papers/2021_Kryniecka_Vistula.pdf");
 	assert.equal(saved.length, 1);
 	assert.ok(result.known);
+	// Twin: same basename, fields verbatim from the entry, honest event data.
+	assert.equal(metas.length, 1);
+	assert.equal(metas[0].path, "/papers/2021_Kryniecka_Vistula.json");
+	assert.equal(metas[0].meta.title, "Vistula");
+	assert.deepEqual(metas[0].meta.authors, ["Anna Kryniecka"]);
+	assert.equal(metas[0].meta.year, "2021");
+	assert.equal(metas[0].meta.doi, "10.3390/rs13081505");
+	assert.equal(metas[0].meta.via, "record");
+	assert.ok(!Number.isNaN(Date.parse(metas[0].meta.fetched)));
 }
 
 // 2) record link answers HTML -> falls through to Unpaywall
@@ -170,7 +214,7 @@ function makeDeps(overrides: Partial<FetchDeps> = {}): { deps: FetchDeps; saved:
 // 3) already in the library -> no network call at all
 {
 	let networkCalls = 0;
-	const { deps } = makeDeps({
+	const { deps, metas } = makeDeps({
 		fileExists: () => true,
 		downloadPdf: async () => {
 			networkCalls++;
@@ -180,6 +224,7 @@ function makeDeps(overrides: Partial<FetchDeps> = {}): { deps: FetchDeps; saved:
 	const result = await fetchOne(parseIdentifier("10.3390/rs13081505"), undefined, "/papers", deps);
 	assert.equal(result.status, "already");
 	assert.equal(networkCalls, 0);
+	assert.equal(metas.length, 0); // twin only accompanies fresh downloads
 }
 
 // 4) DOI without any source: honest not_free with the publisher link

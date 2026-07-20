@@ -32,15 +32,18 @@ export function querySlug(query: string): string {
 	return slug || "query";
 }
 
-/** Pure path builder; collision policy: append _2, _3, ... */
+/** Pure path builder; collision policy: append _2, _3, ... The subdir
+ * separates the pipeline stages: queries/ for search runs, reviews/ for
+ * synthesis runs -- same naming and collision rules everywhere. */
 export function htmlPathFor(
 	root: string,
 	generatedIso: string,
 	query: string,
 	exists: (path: string) => boolean,
+	subdir = "queries",
 ): string {
 	const date = generatedIso.slice(0, 10);
-	const base = join(root, "queries", `${date}_${querySlug(query)}`);
+	const base = join(root, subdir, `${date}_${querySlug(query)}`);
 	let candidate = `${base}.html`;
 	for (let suffix = 2; exists(candidate); suffix++) {
 		candidate = `${base}_${suffix}.html`;
@@ -62,13 +65,15 @@ export function jsonPathFor(htmlPath: string): string {
  */
 export function writeRunOutputs(
 	html: string,
-	payload: { query: string; generated: string },
+	payload: { query?: string; question?: string; generated: string },
 	explicitHtmlPath?: string,
+	subdir = "queries",
 ): { htmlPath: string; jsonPath: string } {
 	const pairExists = (path: string) => existsSync(path) || existsSync(jsonPathFor(path));
+	const name = payload.query ?? payload.question ?? "output";
 	const htmlPath = explicitHtmlPath?.trim()
 		? resolve(explicitHtmlPath.trim())
-		: htmlPathFor(outputRoot(), payload.generated, payload.query, pairExists);
+		: htmlPathFor(outputRoot(), payload.generated, name, pairExists, subdir);
 	const jsonPath = jsonPathFor(htmlPath);
 	mkdirSync(dirname(htmlPath), { recursive: true });
 	writeFileSync(htmlPath, html, "utf8");

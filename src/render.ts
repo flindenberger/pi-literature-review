@@ -9,6 +9,8 @@
  * column-sort script; sorting only reorders already-rendered rows).
  */
 
+import { pathToFileURL } from "node:url";
+
 import { firstAuthorLastName } from "./types.ts";
 
 interface RenderRecord {
@@ -35,6 +37,9 @@ interface RenderRecord {
 	/** Journal-level 2-yr mean citedness from OpenAlex (open JIF analog). */
 	journal_2yr_citedness?: number | null;
 }
+
+import type { AskReport } from "./ask.ts";
+import type { SynthesisResult } from "./synthesize.ts";
 
 export interface RenderPayload {
 	query: string;
@@ -478,6 +483,349 @@ doi.org / arxiv.org. Column sorting only reorders the rows above. No language mo
 modified any citation data.</footer>
 <script>${SORT_SCRIPT}</script>
 <script>${SELECT_SCRIPT}</script>
+</body>
+</html>
+`;
+}
+
+/* ------------------------------------------------------------------ *
+ * Synthesis review page                                               *
+ * ------------------------------------------------------------------ */
+
+const REVIEW_STYLE = `
+	.warnbanner { background: #fbeee6; border: 1px solid #d9a184; border-left: 5px solid #8a1f11;
+		color: #6d1a0e; padding: 0.7rem 1rem; border-radius: 3px; margin: 1rem 0; font-weight: 600; }
+	.prose { max-width: 46rem; font-size: 0.95rem; }
+	.prose p { margin: 0.6rem 0; }
+	a.cite { text-decoration: none; font-weight: 600; }
+	.excerpt { color: #2c2c2c; font-size: 0.84rem; margin: 0.3rem 0 0.8rem; }
+`;
+
+/** Escaped prose with validated [n] markers turned into reference links.
+ * The regex only ever touches bracketed digits that survived the citation
+ * gate -- no other model text is interpreted as markup. */
+function proseHtml(prose: string): string {
+	return prose
+		.split(/\n{2,}/)
+		.map((paragraph) => paragraph.trim())
+		.filter(Boolean)
+		.map((paragraph) => {
+			const withLinks = esc(paragraph)
+				.replaceAll("\n", "<br>")
+				.replace(/\[(\d+)\]/g, '<a class="cite" href="#ref-$1">[$1]</a>');
+			return `<p>${withLinks}</p>`;
+		})
+		.join("\n");
+}
+
+function referenceHref(reference: { doi: string; arxiv_id: string }): string | null {
+	if (reference.doi) return safeHref(`https://doi.org/${reference.doi}`);
+	if (reference.arxiv_id) return safeHref(`https://arxiv.org/abs/${reference.arxiv_id}`);
+	return null;
+}
+
+/**
+ * Deterministic rendering of a SynthesisResult. Same trust boundary as the
+ * search page: every value in the reference table originates from verified
+ * search records; the model's prose is escaped text whose only live parts
+ * are the code-validated citation markers. An ungrounded result renders
+ * with an unmissable warning banner instead of being suppressed -- the
+ * draft stays inspectable, but nobody can mistake it for a review.
+ */
+export function renderReviewHtml(result: SynthesisResult): string {
+	const banner = result.grounded
+		? ""
+		: `\n<div class="warnbanner">UNGROUNDED DRAFT -- the model produced no verifiable citations.
+Do not use this text as a literature review.</div>`;
+
+	const referenceRows = result.references.map((reference) => {
+		const id = reference.doi || (reference.arxiv_id ? `arXiv:${reference.arxiv_id}` : reference.key);
+		return `<tr id="ref-${reference.n}">
+<td>[${reference.n}]</td>
+<td>${esc(reference.year ?? "")}</td>
+<td class="authorscol">${esc(reference.authors.join("; "))}</td>
+<td class="paper title">${esc(reference.title || "(title not in the saved search records)")}</td>
+<td>${link(referenceHref(reference), id)}</td>
+<td>${esc(reference.pages.join(", "))}</td>
+</tr>`;
+	}).join("\n");
+
+	const referencesSection = result.references.length
+		? `<h2>References</h2>
+<p class="meta">Inserted by fixed code from HTTP-verified search records; the model only chose excerpt numbers.</p>
+<table>
+<thead><tr><th>#</th><th>Year</th><th>Authors</th><th>Title</th><th>Identifier</th><th>PDF pages cited</th></tr></thead>
+<tbody>
+${referenceRows}
+</tbody>
+</table>`
+		: "<h2>References</h2>\n<p>None -- no valid citations survived the gate.</p>";
+
+	const excerptItems = result.chunks.map((chunk) =>
+		`<details><summary>[${chunk.id}] ${esc(chunk.title || chunk.paper_key)} -- page ${chunk.page}, similarity ${chunk.score.toFixed(3)}</summary>
+<p class="excerpt">${esc(chunk.text)}</p></details>`).join("\n");
+
+	const adoptionReasons = new Map(result.adoption_failures.map((failure) => [failure.file, failure.reason]));
+	const exclusions: string[] = [];
+	for (const file of result.unmatched_pdfs) {
+		exclusions.push(`<dd>${esc(file)} -- ${esc(adoptionReasons.get(file)
+			?? "no verified record (not part of any saved search); run a search that covers it")}</dd>`);
+	}
+	for (const failure of result.extraction_failures) {
+		exclusions.push(`<dd>${esc(failure.file)} -- ${esc(failure.reason)}</dd>`);
+	}
+	const exclusionRows = exclusions.length ? `\n<dt>Excluded</dt>${exclusions.join("")}` : "";
+	const adoptedRow = result.adopted_pdfs.length
+		? `\n<dt>Adopted</dt><dd>${esc(result.adopted_pdfs.join(", "))} -- identifier found in the PDF text, metadata from a verified API lookup</dd>`
+		: "";
+	const uncitedRow = result.papers_uncited.length
+		? `\n<dt>Retrieved, uncited</dt><dd>${esc(result.papers_uncited.join(", "))}</dd>`
+		: "";
+	const integrity: string[] = [];
+	integrity.push(`${result.invalid_markers.length} invalid citation marker(s) stripped`
+		+ (result.invalid_markers.length ? ` (${result.invalid_markers.join(" ")})` : ""));
+	integrity.push(`${result.unmarked_sentences} sentence(s) without a citation marker`);
+	if (result.stripped_reference_section) {
+		integrity.push("a model-written reference section was cut (references come from verified records only)");
+	}
+	if (result.trimmed_chunks) {
+		integrity.push(`${result.trimmed_chunks} lowest-ranked excerpt(s) dropped by the context budget`);
+	}
+
+	return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Literature Synthesis: ${esc(result.question)}</title>
+<style>${STYLE}${REVIEW_STYLE}</style>
+</head>
+<body>
+<h1>Literature Synthesis</h1>
+<dl class="meta">
+<dt>Question</dt><dd>${esc(result.question)}</dd>
+<dt>Generated</dt><dd>${esc(result.generated)} (UTC)</dd>
+</dl>${banner}
+<div class="prose">
+${proseHtml(result.prose)}
+</div>
+${referencesSection}
+<h2>Method &amp; transparency</h2>
+<dl class="meta">
+<dt>Generator</dt><dd>${esc(result.model)} (${esc(result.backend)})</dd>
+<dt>Embeddings</dt><dd>${esc(result.embedding_model)}</dd>
+<dt>Retrieval</dt><dd>top ${esc(result.top_k)} excerpts by cosine similarity; ${result.chunks.length} in the prompt</dd>
+<dt>Corpus</dt><dd>${result.papers_matched} paper(s) with verified metadata; ${result.papers_cited} cited</dd>${uncitedRow}${adoptedRow}${exclusionRows}
+<dt>Integrity</dt><dd>${esc(integrity.join("; "))}</dd>
+</dl>
+<h2>Excerpts given to the model</h2>
+<p class="meta">The complete evidence trail: these are the only sources the model saw. Chunk-level citations per reference are in the JSON sidecar next to this file.</p>
+${excerptItems || "<p>None.</p>"}
+<footer>Rendered deterministically from the pi-literature-review synthesis payload. The language model wrote
+the prose and chose excerpt numbers only; every reference on this page was inserted by fixed code from
+HTTP-verified search records. Citation markers naming non-existent excerpts were stripped and are reported
+above. No language model produced or modified any citation data.</footer>
+</body>
+</html>
+`;
+}
+
+/* ------------------------------------------------------------------ *
+ * Paper-chat report page                                              *
+ * ------------------------------------------------------------------ */
+
+const CHAT_STYLE = `
+	.round { border-left: 3px solid #c8d0d8; padding: 0.2rem 0 0.2rem 1rem; margin: 1.1rem 0; }
+	.round .question { font-weight: 600; margin: 0.2rem 0; }
+	.round .answer { white-space: pre-wrap; font-size: 0.92rem; margin: 0.4rem 0; }
+	.round .roundmeta { color: #555; font-size: 0.8rem; }
+`;
+
+/**
+ * file:// link into the local PDF library, optionally anchored to a page
+ * and carrying a best-effort search term (Firefox's built-in PDF.js viewer
+ * honors #page and #search and highlights the matches; Chromium honors
+ * #page and ignores #search).
+ *
+ * TRUST BOUNDARY: callers may pass ONLY code-constructed paths -- in
+ * practice LibraryPaper.file, which the filesystem scan built from the
+ * papers directory. No API- or model-delivered string ever reaches this
+ * function; safeHref stays the gate for all record-derived URLs.
+ */
+export function localPdfHref(pdfPath: string, page?: number, snippet?: string | null): string {
+	let href = pathToFileURL(pdfPath).href; // correct percent-encoding
+	if (page !== undefined) {
+		href += `#page=${page}`;
+		// phrase=true makes PDF.js highlight the CONTIGUOUS passage; without
+		// it the query is split into single words (live finding 2026-07-16:
+		// an 8-word snippet lit up countless stray words, even bare letters).
+		if (snippet) href += `&search=${encodeURIComponent(snippet)}&phrase=true`;
+	}
+	return href;
+}
+
+/**
+ * Deterministic search phrase for the #search fragment: the first run of
+ * at least 3 CONSECUTIVE words containing only letters/digits (capped at
+ * 5). Phrase search matches the text layer verbatim, so a single comma
+ * inside the snippet -- or a word we trimmed punctuation from -- would
+ * kill the match (live finding 2026-07-16); shorter also means fewer
+ * line-break crossings. Null when no such run exists or it is too short
+ * to be distinctive -- the #page anchor alone is then the honest offer.
+ */
+export function searchSnippet(text: string): string | null {
+	const words = text.replace(/\[\d+\]/g, " ").split(/\s+/).filter(Boolean);
+	let run: string[] = [];
+	for (const word of words) {
+		if (/^[\p{L}\p{N}]+$/u.test(word)) {
+			run.push(word);
+			if (run.length === 5) break;
+		} else if (run.length >= 3) {
+			break; // first usable run wins -- deterministic
+		} else {
+			run = [];
+		}
+	}
+	const snippet = run.join(" ");
+	return run.length >= 3 && snippet.length >= 15 ? snippet : null;
+}
+
+/**
+ * Deterministic rendering of an AskReport (paper chat). Same trust
+ * boundary as the review page -- verified record data, escaped prose,
+ * code-validated markers as the only live markup -- plus one new element:
+ * file:// links into the local PDF, built exclusively from the scanned
+ * library path (see localPdfHref). The chat protocol appendix renders the
+ * per-round answers as PLAIN escaped text: their round-local [n] markers
+ * refer to excerpts of THAT round, so linking them to this page's
+ * reference anchors would wire them to the wrong targets.
+ */
+export function renderPaperChatReportHtml(report: AskReport): string {
+	const paper = report.paper;
+	const banner = report.grounded
+		? ""
+		: `\n<div class="warnbanner">UNGROUNDED DRAFT -- the model produced no verifiable citations.
+Do not use this text as a summary of the paper.</div>`;
+
+	const identifier = paper.verified
+		? paper.doi || (paper.arxiv_id ? `arXiv:${paper.arxiv_id}` : paper.key)
+		: "(unverified -- no bibliographic record, identified by filename)";
+	// PDF links open in a new tab (user decision 2026-07-16): the report
+	// stays open next to the paper.
+	const pdfAnchor = (href: string, text: string): string =>
+		`<a href="${esc(href)}" target="_blank" rel="noopener">${esc(text)}</a>`;
+	const pageLinks = (pages: number[]): string =>
+		pages.map((page) => pdfAnchor(localPdfHref(paper.pdf_path, page), String(page))).join(", ");
+
+	const referenceRows = report.references.map((reference) => {
+		const unverified = reference.key.startsWith("file:");
+		const id = reference.doi || (reference.arxiv_id ? `arXiv:${reference.arxiv_id}`
+			: unverified ? `${reference.key.slice(5)}.pdf (unverified)` : reference.key);
+		const title = reference.title
+			|| (unverified ? "(no verified record -- cited by filename)" : "(title not in the saved search records)");
+		return `<tr id="ref-${reference.n}">
+<td>[${reference.n}]</td>
+<td>${esc(reference.year ?? "")}</td>
+<td class="authorscol">${esc(reference.authors.join("; "))}</td>
+<td class="paper title">${esc(title)}</td>
+<td>${link(referenceHref(reference), id)}</td>
+<td>${pageLinks(reference.pages)}</td>
+</tr>`;
+	}).join("\n");
+	const referencesSection = report.references.length
+		? `<h2>References</h2>
+<p class="meta">Inserted by fixed code from HTTP-verified search records; the model only chose excerpt numbers. Page numbers link into the local PDF.</p>
+<table>
+<thead><tr><th>#</th><th>Year</th><th>Authors</th><th>Title</th><th>Identifier</th><th>PDF pages cited</th></tr></thead>
+<tbody>
+${referenceRows}
+</tbody>
+</table>`
+		: "<h2>References</h2>\n<p>None -- no valid citations survived the gate.</p>";
+
+	const excerptItems = report.chunks.map((chunk) => {
+		const href = localPdfHref(paper.pdf_path, chunk.page, searchSnippet(chunk.text));
+		return `<details><summary>[${chunk.id}] page ${chunk.page}, similarity ${chunk.score.toFixed(3)}</summary>
+<p class="excerpt">${esc(chunk.text)}</p>
+<p class="meta">${pdfAnchor(href, `Open the PDF at page ${chunk.page}`)} (Firefox also highlights the passage)</p>
+</details>`;
+	}).join("\n");
+
+	const questionItems = report.session_questions.map((question) => `<li>${esc(question)}</li>`).join("\n");
+	const focusRow = report.focus ? `\n<dt>Focus</dt><dd>${esc(report.focus)}</dd>` : "";
+	const roundBlocks = report.rounds.map((round, i) => {
+		const pages = [...new Set(round.references.flatMap((reference) => reference.pages))].sort((a, b) => a - b);
+		const state = round.grounded ? "" : " -- UNGROUNDED (no verifiable citations)";
+		const cited = pages.length ? `<p class="roundmeta">Cited pages: ${pageLinks(pages)}</p>` : "";
+		return `<div class="round">
+<p class="roundmeta">Round ${i + 1} -- ${esc(round.asked)} (UTC), ${esc(round.model)}${state}</p>
+<p class="question">${esc(round.question)}</p>
+<p class="answer">${esc(round.prose)}</p>
+${cited}</div>`;
+	}).join("\n");
+	const protocolSection = report.rounds.length
+		? `<h2>Chat protocol</h2>
+<p class="meta">The code-validated rounds of this session (from ${esc(report.protocol_files.map((file) => file.split("/").pop() ?? file).join(", "))}).
+Bracketed numbers inside the answers refer to each round's own excerpts and are left as plain text here.</p>
+${roundBlocks}`
+		: "";
+
+	const adoptedRow = report.adopted_pdfs.length
+		? `\n<dt>Adopted</dt><dd>${esc(report.adopted_pdfs.join(", "))} -- identifier found in the PDF text, metadata from a verified API lookup</dd>`
+		: "";
+	const failureRows = report.extraction_failures.length
+		? `\n<dt>Extraction</dt><dd>${esc(report.extraction_failures.map((f) => `${f.file}: ${f.reason}`).join("; "))}</dd>`
+		: "";
+	const integrity: string[] = [];
+	integrity.push(`${report.invalid_markers.length} invalid citation marker(s) stripped`
+		+ (report.invalid_markers.length ? ` (${report.invalid_markers.join(" ")})` : ""));
+	integrity.push(`${report.unmarked_sentences} sentence(s) without a citation marker`);
+	if (report.stripped_reference_section) {
+		integrity.push("a model-written reference section was cut (references come from verified records only)");
+	}
+	if (report.trimmed_chunks) {
+		integrity.push(`${report.trimmed_chunks} lowest-ranked excerpt(s) dropped by the context budget`);
+	}
+
+	return `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Paper Chat Report: ${esc(paper.title || paper.base)}</title>
+<style>${STYLE}${REVIEW_STYLE}${CHAT_STYLE}</style>
+</head>
+<body>
+<h1>Paper Chat Report</h1>
+<dl class="meta">
+<dt>Paper</dt><dd>${esc(paper.title || `${paper.base}.pdf`)}</dd>
+<dt>Authors</dt><dd>${esc(paper.authors.join("; "))}</dd>
+<dt>Year</dt><dd>${esc(paper.year ?? "n.d.")}</dd>
+<dt>Identifier</dt><dd>${link(referenceHref(paper), identifier)}</dd>
+<dt>Local PDF</dt><dd>${pdfAnchor(localPdfHref(paper.pdf_path), `${paper.base}.pdf`)}</dd>
+<dt>Generated</dt><dd>${esc(report.generated)} (UTC)</dd>${focusRow}
+</dl>${banner}
+${report.session_questions.length ? `<h2>Questions of the session</h2>\n<ol>\n${questionItems}\n</ol>` : ""}
+<h2>Summary</h2>
+<div class="prose">
+${proseHtml(report.prose)}
+</div>
+${referencesSection}
+<h2>Method &amp; transparency</h2>
+<dl class="meta">
+<dt>Generator</dt><dd>${esc(report.model)} (${esc(report.backend)})</dd>
+<dt>Embeddings</dt><dd>${esc(report.embedding_model)}</dd>
+<dt>Retrieval</dt><dd>union of the best excerpts per session question; ${report.chunks.length} in the prompt</dd>${adoptedRow}${failureRows}
+<dt>Integrity</dt><dd>${esc(integrity.join("; "))}</dd>
+</dl>
+<h2>Excerpts given to the model</h2>
+<p class="meta">The complete evidence trail: these are the only sources the model saw.</p>
+${excerptItems || "<p>None.</p>"}
+${protocolSection}
+<footer>Rendered deterministically from the pi-literature-review paper-chat payload. The language model wrote
+the prose and chose excerpt numbers only; every reference on this page was inserted by fixed code from
+HTTP-verified search records. Links into the PDF are built by code from the scanned library path -- never
+from model output. No language model produced or modified any citation data.</footer>
 </body>
 </html>
 `;

@@ -177,6 +177,10 @@ export default function literatureSearch(pi: ExtensionAPI) {
 		description:
 			"Search academic literature (arXiv, CrossRef, OpenAlex): clean, deduplicated, HTTP-verified results, " +
 			"written to disk by fixed code. " +
+			"This tool DISCOVERS NEW papers in online databases. It is NOT for papers already on disk: when the " +
+			"user wants to chat about, ask about or understand ONE local PDF ('zu einem Paper chatten', 'Frage zum " +
+			"Paper'), use pi-literature-ask; for a summary or review across the local PDF library, use " +
+			"pi-literature-synthesize; for downloading found papers, use pi-literature-fetch. " +
 			"Call this tool DIRECTLY; do NOT ask intake or clarification questions in chat first. On every call the " +
 			"tool itself shows the user a terminal dialog summarizing the proposed query, grouping logic, year range " +
 			"and search depth, where the user confirms or adjusts them before the search runs. Your job is only to " +

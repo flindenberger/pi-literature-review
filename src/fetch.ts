@@ -197,6 +197,53 @@ export function loadSidecarIndex(root: string, onWarn: (message: string) => void
 }
 
 /* ------------------------------------------------------------------ *
+ * Per-paper metadata twin -- makes the library self-describing        *
+ * ------------------------------------------------------------------ */
+
+/**
+ * Written as papers/<basename>.json next to every downloaded PDF. All
+ * bibliographic fields are copied VERBATIM from the saved search records
+ * (API-sourced); fetched/via describe the download event. The synthesis
+ * stage reads this twin first and only falls back to recomputing filenames
+ * against queries/*.json for PDFs downloaded before this existed.
+ */
+export interface PaperMeta {
+	title: string;
+	authors: string[];
+	year: string | null;
+	doi: string;
+	arxiv_id: string;
+	/** PDF link from the saved record (not necessarily the URL that worked). */
+	pdf_url: string;
+	/** ISO timestamp of the download (or of the adoption, see src/adopt.ts). */
+	fetched: string;
+	/** Which resolver produced the PDF (record link, Unpaywall, arXiv) --
+	 * or "adopted": the PDF was already on disk and its identity came from
+	 * an identifier found in the PDF text, verified by an API lookup. */
+	via: "record" | "unpaywall" | "arxiv" | "adopted";
+}
+
+/** Pure assembly; identifiers fall back to the parsed target so even a
+ * paper outside every saved search keeps its citable identity. */
+export function buildPaperMeta(
+	target: FetchTarget,
+	entry: SidecarEntry | undefined,
+	via: PaperMeta["via"],
+	fetchedIso: string,
+): PaperMeta {
+	return {
+		title: entry?.title ?? "",
+		authors: entry?.authors ?? [],
+		year: entry?.year ?? null,
+		doi: entry?.doi || (target.kind === "doi" ? target.id : ""),
+		arxiv_id: entry?.arxiv_id || (target.kind === "arxiv" ? target.id : ""),
+		pdf_url: entry?.pdf_url ?? "",
+		fetched: fetchedIso,
+		via,
+	};
+}
+
+/* ------------------------------------------------------------------ *
  * Per-paper fetch -- injectable deps so the chain logic tests offline *
  * ------------------------------------------------------------------ */
 
@@ -224,6 +271,8 @@ export interface FetchResult {
 export interface FetchDeps {
 	fileExists(path: string): boolean;
 	saveFile(path: string, bytes: Uint8Array): void;
+	/** Write the metadata twin next to a freshly downloaded PDF. */
+	saveMeta(path: string, meta: PaperMeta): void;
 	/** GET the url; ok=false carries a plain-language reason and, for HTTP
 	 * failures, the status code (403 marks publisher bot-blocking). */
 	downloadPdf(url: string): Promise<{ ok: true; bytes: Uint8Array } | { ok: false; reason: string; status?: number }>;
@@ -294,6 +343,12 @@ export async function fetchOne(
 			continue;
 		}
 		deps.saveFile(path, answer.bytes);
+		// Metadata twin: written only for fresh downloads; "already" papers
+		// from before this existed are matched by filename recomputation.
+		deps.saveMeta(
+			path.replace(/\.pdf$/, ".json"),
+			buildPaperMeta(target, entry, candidate.source as PaperMeta["via"], new Date().toISOString()),
+		);
 		result.status = "downloaded";
 		result.detail = `downloaded via ${candidate.source}`;
 		result.path = path;
@@ -440,6 +495,7 @@ export async function runFetch(
 	const deps: FetchDeps = {
 		fileExists: existsSync,
 		saveFile: (path, bytes) => writeFileSync(path, bytes),
+		saveMeta: (path, meta) => writeFileSync(path, JSON.stringify(meta, null, 2) + "\n", "utf8"),
 		downloadPdf: (url) => downloadPdfReal(url, options.signal),
 		unpaywallPdfUrl: (doi) => unpaywallPdfUrlReal(doi, mailto, options.signal),
 	};

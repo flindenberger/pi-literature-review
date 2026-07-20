@@ -78,22 +78,9 @@ export function buildSearchQuery(query: string): string {
 		.join(" AND ");
 }
 
-export async function searchArxiv(query: string, rows: number): Promise<SourceRecord[]> {
-	const params = new URLSearchParams({
-		search_query: buildSearchQuery(query),
-		max_results: String(rows),
-		sortBy: "relevance",
-		sortOrder: "descending",
-	});
-
-	const response = await fetch(`${BASE_URL}?${params}`, {
-		headers: { "User-Agent": userAgent() },
-		signal: AbortSignal.timeout(TIMEOUT_MS),
-	});
-	if (!response.ok) {
-		throw new Error(`arXiv answered HTTP ${response.status}`);
-	}
-	const xml = await response.text();
+/** Parse an arXiv Atom feed into records; shared by the relevance search
+ * and the exact id_list lookup (PDF adoption). Exported for offline tests. */
+export function parseArxivFeed(xml: string): SourceRecord[] {
 	const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: "@_" });
 	const feed = parser.parse(xml)?.feed ?? {};
 
@@ -123,4 +110,34 @@ export async function searchArxiv(query: string, rows: number): Promise<SourceRe
 			abstract: collapseWhitespace(entry.summary),
 		};
 	});
+}
+
+async function fetchFeed(params: URLSearchParams): Promise<SourceRecord[]> {
+	const response = await fetch(`${BASE_URL}?${params}`, {
+		headers: { "User-Agent": userAgent() },
+		signal: AbortSignal.timeout(TIMEOUT_MS),
+	});
+	if (!response.ok) {
+		throw new Error(`arXiv answered HTTP ${response.status}`);
+	}
+	return parseArxivFeed(await response.text());
+}
+
+export async function searchArxiv(query: string, rows: number): Promise<SourceRecord[]> {
+	return fetchFeed(new URLSearchParams({
+		search_query: buildSearchQuery(query),
+		max_results: String(rows),
+		sortBy: "relevance",
+		sortOrder: "descending",
+	}));
+}
+
+/** Exact lookup by arXiv IDs (no relevance ranking involved) -- used by
+ * PDF adoption to turn an ID found in a PDF into a verified record. */
+export async function lookupArxivIds(ids: string[]): Promise<SourceRecord[]> {
+	if (!ids.length) return [];
+	return fetchFeed(new URLSearchParams({
+		id_list: ids.join(","),
+		max_results: String(ids.length),
+	}));
 }

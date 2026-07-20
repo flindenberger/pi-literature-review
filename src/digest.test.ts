@@ -4,8 +4,10 @@
  */
 
 import assert from "node:assert/strict";
-import { MAX_DIGEST_RECORDS, renderDigest } from "./digest.ts";
+import type { AskAnswer, AskReport } from "./ask.ts";
+import { MAX_DIGEST_RECORDS, renderAskDigest, renderAskReportDigest, renderDigest, renderSynthesisDigest } from "./digest.ts";
 import type { RenderPayload } from "./render.ts";
+import type { SynthesisResult } from "./synthesize.ts";
 
 function record(overrides: Record<string, unknown>) {
 	return {
@@ -133,6 +135,206 @@ function payload(overrides: Partial<RenderPayload>): RenderPayload {
 	// small runs stay untouched
 	const small = renderDigest(payload({ results: [record({})] }), "/tmp/x.html");
 	assert.ok(!small.includes("more record(s) not listed here"));
+}
+
+/* ---------------- renderSynthesisDigest ---------------- */
+
+const synthesis: SynthesisResult = {
+	question: "How are sandbars detected?",
+	generated: "2026-07-15T12:00:00Z",
+	model: "openscholar-8b",
+	embedding_model: "nomic-embed-text",
+	backend: "ollama at http://127.0.0.1:11434",
+	top_k: 8,
+	grounded: true,
+	prose: "Detected [1]. Contracted [2].",
+	references: [
+		{ n: 1, key: "doi:10.1/x", title: "Paper One", authors: ["A B"], year: "2021",
+			doi: "10.1/x", arxiv_id: "", pages: [2], chunk_ids: [1] },
+		{ n: 2, key: "arxiv:2401.16393", title: "Paper Two", authors: [], year: null,
+			doi: "", arxiv_id: "2401.16393", pages: [1], chunk_ids: [2] },
+	],
+	chunks: [
+		{ id: 1, paper_key: "doi:10.1/x", title: "Paper One", page: 2, score: 0.9, text: "e1" },
+		{ id: 2, paper_key: "arxiv:2401.16393", title: "Paper Two", page: 1, score: 0.5, text: "e2" },
+	],
+	invalid_markers: ["[9]"],
+	unmarked_sentences: 0,
+	stripped_reference_section: false,
+	trimmed_chunks: 0,
+	papers_matched: 2,
+	papers_cited: 2,
+	papers_uncited: [],
+	adopted_pdfs: ["2020_Found_A_paper.pdf"],
+	adoption_failures: [{ file: "alien_scan.pdf", reason: "no DOI or arXiv ID found on the first 2 pages" }],
+	unmatched_pdfs: ["alien_scan.pdf"],
+	extraction_failures: [],
+	raw_output: "raw",
+};
+
+{
+	const digest = renderSynthesisDigest(synthesis, "/root/reviews/2026-07-15_q.html");
+	const lines = digest.split("\n");
+	assert.equal(lines[0], "Synthesis complete: 2 reference(s) from 2 of 2 paper(s); 2 excerpt(s) retrieved.");
+	assert.ok(digest.includes("Question: How are sandbars detected?"));
+	assert.ok(digest.includes("/root/reviews/2026-07-15_q.html"));
+	assert.ok(digest.includes("Tell the user to open the HTML file"));
+	// The prose itself NEVER enters the digest -- structural anti-fabrication.
+	assert.ok(!digest.includes("Detected [1]"));
+	// Copyable reference lines, values verbatim.
+	assert.ok(digest.includes("[1] 2021 | 10.1/x | Paper One"));
+	assert.ok(digest.includes("[2] n.d. | arXiv:2401.16393 | Paper Two"));
+	assert.ok(digest.includes("copy its line below EXACTLY"));
+	// Honesty lines: adoption outcome and the per-file exclusion reason.
+	assert.ok(digest.includes("1 invalid citation marker(s) were stripped"));
+	assert.ok(digest.includes("Adopted 1 loose PDF(s)"));
+	assert.ok(digest.includes("2020_Found_A_paper.pdf"));
+	assert.ok(digest.includes("Excluded (no DOI or arXiv ID found on the first 2 pages): alien_scan.pdf"));
+}
+
+{
+	// Ungrounded run leads with the failure; missing output path warns.
+	const digest = renderSynthesisDigest(
+		{ ...synthesis, grounded: false, references: [], papers_cited: 0 },
+		null,
+	);
+	assert.ok(digest.startsWith("Synthesis FAILED to ground"));
+	assert.ok(digest.includes("must NOT be presented as a literature review"));
+	assert.ok(digest.includes("WARNING: the output files could not be written"));
+	assert.ok(!digest.includes("[1]")); // no reference lines to copy
+}
+
+/* ---------------- renderAskDigest ---------------- */
+
+const askAnswer: AskAnswer = {
+	question: "Wie funktioniert die Methode?",
+	generated: "2026-07-16T10:00:00.000Z",
+	model: "chat-model",
+	embedding_model: "embed-model",
+	backend: "ollama at http://127.0.0.1:11434",
+	top_k: 8,
+	grounded: true,
+	prose: "Die Methode nutzt einen adaptiven Schwellwert [1].",
+	references: [{
+		n: 1, key: "doi:10.1234/abc", title: "River sandbar dynamics", authors: ["A. Author"],
+		year: "2021", doi: "10.1234/abc", arxiv_id: "", pages: [2, 5], chunk_ids: [1, 2],
+	}],
+	chunks: [
+		{ id: 1, page: 2, score: 0.91, text: "chunk one" },
+		{ id: 2, page: 5, score: 0.83, text: "chunk two" },
+	],
+	invalid_markers: ["[9]"],
+	unmarked_sentences: 0,
+	stripped_reference_section: false,
+	trimmed_chunks: 0,
+	paper: {
+		base: "a", key: "doi:10.1234/abc", title: "River sandbar dynamics", authors: ["A. Author"],
+		year: "2021", doi: "10.1234/abc", arxiv_id: "", pdf_path: "/papers/a.pdf", verified: true,
+	},
+	adopted_pdfs: [],
+	adoption_failures: [],
+	extraction_failures: [],
+	raw_output: "raw",
+	protocol_path: "/chats/2026-07-16_a.json",
+	round: 1,
+};
+
+{
+	const digest = renderAskDigest(askAnswer);
+	// The validated prose travels verbatim between explicit delimiters.
+	assert.ok(digest.includes("--- answer (relay to the user EXACTLY as written, including [n] markers) ---"));
+	assert.ok(digest.includes("Die Methode nutzt einen adaptiven Schwellwert [1]."));
+	assert.ok(digest.includes("--- end answer ---"));
+	// Paper line and the follow-up instruction.
+	assert.ok(digest.includes("Paper: a.pdf -- 2021 | 10.1234/abc | River sandbar dynamics"));
+	assert.ok(digest.includes('Pass paper: "a.pdf" on every follow-up call'));
+	// Reference line carries the cited PDF pages.
+	assert.ok(digest.includes("[1] 2021 | 10.1234/abc | River sandbar dynamics (S. 2, 5)"));
+	// Integrity + protocol note; no HTML path in question mode.
+	assert.ok(digest.includes("1 invalid citation marker(s) were stripped"));
+	assert.ok(digest.includes("report: true"));
+	assert.ok(!digest.includes(".html"));
+	assert.ok(!digest.includes("FAILED"));
+}
+
+{
+	const digest = renderAskDigest({ ...askAnswer, grounded: false, references: [], protocol_path: null, round: 0 });
+	assert.ok(digest.startsWith("Paper chat answer FAILED to ground"));
+	assert.ok(digest.includes("must NOT be presented as an answer"));
+	// The draft is still inspectable, but unmistakably labeled.
+	assert.ok(digest.includes("--- ungrounded draft (present ONLY together with the warning above) ---"));
+	assert.ok(digest.includes("Die Methode nutzt einen adaptiven Schwellwert"));
+	assert.ok(digest.includes("WARNING: the session protocol could not be written"));
+}
+
+{
+	// Unverified paper: cited by filename, nothing bibliographic invented.
+	const digest = renderAskDigest({
+		...askAnswer,
+		paper: { ...askAnswer.paper, verified: false, key: "file:report_x", base: "report_x", doi: "", title: "" },
+		references: [{
+			n: 1, key: "file:report_x", title: "", authors: [], year: null,
+			doi: "", arxiv_id: "", pages: [3], chunk_ids: [1],
+		}],
+	});
+	assert.ok(digest.includes("Paper: report_x.pdf -- UNVERIFIED (no bibliographic record; cited by filename and page)"));
+	assert.ok(digest.includes("[1] report_x.pdf -- UNVERIFIED, cited by filename (S. 3)"));
+	assert.ok(!digest.includes("n.d. |")); // no pseudo-bibliographic line
+}
+
+/* ---------------- renderAskReportDigest ---------------- */
+
+const askReport: AskReport = {
+	question: "Paper chat report: a.pdf",
+	focus: "Validierung",
+	session_questions: ["Frage eins?", "Frage zwei?"],
+	generated: "2026-07-16T10:00:00.000Z",
+	model: "chat-model",
+	embedding_model: "embed-model",
+	backend: "ollama at http://127.0.0.1:11434",
+	grounded: true,
+	prose: "Zusammenfassung [1].",
+	references: askAnswer.references,
+	chunks: askAnswer.chunks,
+	invalid_markers: [],
+	unmarked_sentences: 1,
+	stripped_reference_section: false,
+	trimmed_chunks: 0,
+	paper: askAnswer.paper,
+	rounds: [{
+		asked: "2026-07-16T09:00:00.000Z", question: "Frage eins?", language: null, model: "chat-model",
+		top_k: 8, grounded: true, prose: "Antwort [1].", references: askAnswer.references,
+		cited_chunks: [], invalid_markers: [], unmarked_sentences: 0, stripped_reference_section: false,
+	}],
+	protocol_files: ["/chats/2026-07-16_a.json"],
+	adopted_pdfs: [],
+	adoption_failures: [],
+	extraction_failures: [],
+	raw_output: "raw",
+};
+
+{
+	const digest = renderAskReportDigest(askReport, "/chats/2026-07-16_Paper_chat_report_a.html");
+	assert.ok(digest.startsWith("Paper chat report complete: 1 reference(s), 2 excerpt(s), built from 1 chat round(s)."));
+	assert.ok(digest.includes("Paper: a.pdf -- 2021 | 10.1234/abc | River sandbar dynamics"));
+	assert.ok(digest.includes("Focus: Validierung"));
+	assert.ok(digest.includes("/chats/2026-07-16_Paper_chat_report_a.html"));
+	assert.ok(digest.includes("open the HTML file"));
+	assert.ok(digest.includes("[1] 2021 | 10.1234/abc | River sandbar dynamics (S. 2, 5)"));
+	// The report digest never carries the prose.
+	assert.ok(!digest.includes("Zusammenfassung [1]."));
+}
+
+{
+	const digest = renderAskReportDigest({ ...askReport, session_questions: [], rounds: [] }, null);
+	assert.ok(digest.includes("built from the default question"));
+	assert.ok(digest.includes("WARNING: the output files could not be written"));
+}
+
+{
+	const digest = renderAskReportDigest({ ...askReport, grounded: false, references: [] }, "/x.html");
+	assert.ok(digest.startsWith("Paper chat report FAILED to ground"));
+	assert.ok(digest.includes("must NOT be presented as a summary"));
 }
 
 console.log("digest.test.ts: all assertions passed");

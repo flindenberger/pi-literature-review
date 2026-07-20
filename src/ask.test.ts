@@ -1,0 +1,568 @@
+/**
+ * Offline tests for the paper-chat engine. Centerpieces: the single-paper
+ * confinement (a two-paper library must never leak chunks of the other
+ * paper into the prompt) and the citation trust gate on the didactic
+ * answer. No filesystem, no network, no models.
+ */
+
+import assert from "node:assert/strict";
+import {
+	appendChatRound,
+	type AskDeps,
+	type AskPaper,
+	buildAskPrompt,
+	CHAT_SCHEMA,
+	type ChatLogDeps,
+	chatLogPath,
+	chatPool,
+	type ChatProtocol,
+	type ChatRound,
+	DEFAULT_REPORT_QUESTION,
+	ensureAskLibrary,
+	loadChatRounds,
+	runAsk,
+	runAskReport,
+	selectPaper,
+	unionChunks,
+} from "./ask.ts";
+import type { CorpusDeps, LibraryMatch, PaperIndex } from "./corpus.ts";
+import { querySlug } from "./output.ts";
+import type { RetrievedChunk } from "./synthesize.ts";
+
+/* ---------------- fixtures ---------------- */
+
+const paperA: PaperIndex["paper"] = {
+	key: "doi:10.3390/rs13081505", title: "Vistula sandbars", authors: ["Anna Kryniecka", "A. Magnuszewski"],
+	year: "2021", doi: "10.3390/rs13081505", arxiv_id: "",
+};
+const paperB: PaperIndex["paper"] = {
+	key: "arxiv:2401.16393", title: "Amazon drought", authors: ["Fabien H. Wagner"],
+	year: "2024", doi: "", arxiv_id: "2401.16393",
+};
+
+const indexA: PaperIndex = {
+	schema: 1, sha256: "hash-a", embedding_model: "fake-embed", paper: paperA,
+	chunks: [
+		{ id: 0, page: 2, text: "Sandbars were mapped with Sentinel-2 imagery.", embedding: [1, 0] },
+		{ id: 1, page: 5, text: "Alternate bars appear along the Vistula reach.", embedding: [0.9, 0.1] },
+	],
+};
+const indexB: PaperIndex = {
+	schema: 1, sha256: "hash-b", embedding_model: "fake-embed", paper: paperB,
+	chunks: [
+		// Deliberately the best global match for the test question vector:
+		// if retrieval were corpus-wide, THIS chunk would win.
+		{ id: 0, page: 1, text: "Rio Negro water surfaces contracted during the drought.", embedding: [1, 0.05] },
+	],
+};
+// A PDF without a verified record, indexed under its filename identity.
+const indexC: PaperIndex = {
+	schema: 1, sha256: "hash-c", embedding_model: "fake-embed",
+	paper: { key: "file:c", title: "", authors: [], year: null, doi: "", arxiv_id: "" },
+	chunks: [{ id: 0, page: 3, text: "Filename-only content about cameras.", embedding: [1, 0] }],
+};
+
+const library: LibraryMatch = {
+	matched: [
+		{ file: "/papers/a.pdf", base: "a", key: paperA.key, entry: {
+			title: paperA.title, pdf_url: "", doi: paperA.doi, arxiv_id: "", authors: paperA.authors, year: paperA.year,
+		} },
+		{ file: "/papers/b.pdf", base: "b", key: paperB.key, entry: {
+			title: paperB.title, pdf_url: "", doi: "", arxiv_id: paperB.arxiv_id, authors: paperB.authors, year: paperB.year,
+		} },
+	],
+	unmatched: [],
+	papersDir: "/papers",
+};
+
+/** Corpus deps serving the prebuilt indexes from "cache" -- extraction
+ * must never run; readPdf/sha256 cooperate so the hashes match per file. */
+function fakeCorpus(): CorpusDeps {
+	const indexByFile = new Map([["/index/a.json", indexA], ["/index/b.json", indexB], ["/index/c.json", indexC]]);
+	return {
+		readPdf: (path) => new TextEncoder().encode(path),
+		sha256: (bytes) => {
+			const path = new TextDecoder().decode(bytes);
+			return path.endsWith("a.pdf") ? "hash-a" : path.endsWith("b.pdf") ? "hash-b" : "hash-c";
+		},
+		extract: async () => {
+			throw new Error("extract must not run when the cache is valid");
+		},
+		embed: async (texts) => texts.map(() => [1, 0.05]), // the question vector
+		loadIndex: (file) => indexByFile.get(file) ?? null,
+		saveIndex: () => {},
+	};
+}
+
+/** In-memory chat log: a Map of absolute path -> file text. */
+function memoryChatLog(): { chatLog: ChatLogDeps; files: Map<string, string> } {
+	const files = new Map<string, string>();
+	return {
+		files,
+		chatLog: {
+			read: (path) => files.get(path) ?? null,
+			write: (path, text) => {
+				files.set(path, text);
+			},
+			exists: (path) => files.has(path),
+			list: (dir) => [...files.keys()]
+				.filter((path) => path.startsWith(`${dir}/`))
+				.map((path) => path.slice(dir.length + 1)),
+		},
+	};
+}
+
+function makeDeps(generatorOutput: string): {
+	deps: AskDeps;
+	generateCalls: Array<{ system: string; user: string }>;
+	embedCalls: string[][];
+	files: Map<string, string>;
+} {
+	const corpus = fakeCorpus();
+	const embedCalls: string[][] = [];
+	const baseEmbed = corpus.embed;
+	corpus.embed = async (texts, signal) => {
+		embedCalls.push([...texts]);
+		return baseEmbed(texts, signal);
+	};
+	const generateCalls: Array<{ system: string; user: string }> = [];
+	const { chatLog, files } = memoryChatLog();
+	return {
+		deps: {
+			corpus,
+			library: () => library,
+			adopt: async (files) => files.map((file) => ({
+				file,
+				status: "no_identifier" as const,
+				detail: "no DOI or arXiv ID found on the first 2 pages",
+			})),
+			backend: {
+				embed: corpus.embed,
+				generate: async (system, user) => {
+					generateCalls.push({ system, user });
+					return generatorOutput;
+				},
+			},
+			chatLog,
+			now: () => new Date("2026-07-16T10:00:00Z"),
+		},
+		generateCalls,
+		embedCalls,
+		files,
+	};
+}
+
+const askPaperA: AskPaper = {
+	base: "a", key: paperA.key, title: paperA.title, authors: paperA.authors,
+	year: paperA.year, doi: paperA.doi, arxiv_id: "", pdf_path: "/papers/a.pdf", verified: true,
+};
+
+function makeRound(question: string): ChatRound {
+	return {
+		asked: "2026-07-16T10:00:00.000Z", question, language: null, model: "fake-gen",
+		top_k: 8, grounded: true, prose: `Antwort [1].`,
+		references: [{
+			n: 1, key: paperA.key, title: paperA.title, authors: paperA.authors, year: paperA.year,
+			doi: paperA.doi, arxiv_id: "", pages: [2], chunk_ids: [1],
+		}],
+		cited_chunks: [{ id: 1, page: 2, score: 0.9, text: "Sandbars were mapped with Sentinel-2 imagery." }],
+		invalid_markers: [], unmarked_sentences: 0, stripped_reference_section: false,
+	};
+}
+
+/* ---------------- buildAskPrompt ---------------- */
+{
+	const chunks: RetrievedChunk[] = [
+		{ id: 1, paper: paperA, page: 2, score: 0.9, text: "Excerpt one." },
+		{ id: 2, paper: paperA, page: 5, score: 0.5, text: "Excerpt two." },
+	];
+	const prompt = buildAskPrompt("Wie werden Sandbaenke erkannt?", chunks);
+	assert.ok(prompt.user.includes("Question: Wie werden Sandbaenke erkannt?"));
+	assert.ok(prompt.user.includes("[1] (source 1)\nExcerpt one."));
+	assert.ok(prompt.user.includes("[2] (source 2)\nExcerpt two."));
+	assert.ok(prompt.system.includes("understand ONE scientific paper"));
+	assert.ok(prompt.system.includes("plain, accessible language"));
+	assert.ok(prompt.system.includes("NEVER write author names"));
+	assert.ok(prompt.system.includes("the language of the question"));
+	assert.ok(buildAskPrompt("q", chunks, "German").system.includes("Write in German"));
+	assert.ok(buildAskPrompt("q", chunks, "  ").system.includes("the language of the question"));
+}
+
+/* ---------------- selectPaper ---------------- */
+{
+	assert.equal(selectPaper(library.matched, "a.pdf").base, "a");
+	assert.equal(selectPaper(library.matched, "a").base, "a");
+	assert.equal(selectPaper(library.matched, "A.PDF").base, "a");
+	assert.throws(() => selectPaper(library.matched, "missing.pdf"), (error: Error) => {
+		assert.ok(error.message.includes("missing.pdf"));
+		assert.ok(error.message.includes("a.pdf, b.pdf")); // lists what IS available
+		return true;
+	});
+	assert.throws(() => selectPaper(library.matched, "  "), /no paper selected/);
+	assert.throws(() => selectPaper([], "x"), /available: \(none\)/);
+}
+
+/* ---------------- runAsk: confinement + trust gate ---------------- */
+{
+	const { deps, generateCalls } = makeDeps(
+		"Die Methode nutzt Sentinel-2 [1]. Wechselbaenke treten auf [2]. Erfunden [9].",
+	);
+	const warnings: string[] = [];
+	const result = await runAsk({
+		question: "Wie funktioniert die Methode?",
+		paper: "a.pdf",
+		root: "/",
+		model: "fake-gen",
+		embedModel: "fake-embed",
+		onWarn: (m) => warnings.push(m),
+	}, deps);
+
+	assert.equal(result.grounded, true);
+	assert.equal(result.model, "fake-gen");
+	assert.equal(generateCalls.length, 1);
+	// Confinement: paper B's chunk is the best GLOBAL match for the question
+	// vector, but retrieval ran only over paper A.
+	assert.equal(result.chunks.length, 2);
+	for (const chunk of result.chunks) {
+		assert.ok(indexA.chunks.some((c) => c.text === chunk.text));
+		assert.ok(!chunk.text.includes("Rio Negro"));
+	}
+	assert.ok(!generateCalls[0].user.includes("Rio Negro"));
+	// Single paper -> exactly one reference, verbatim from the record.
+	assert.equal(result.references.length, 1);
+	assert.equal(result.references[0].title, "Vistula sandbars");
+	assert.equal(result.references[0].doi, "10.3390/rs13081505");
+	assert.deepEqual(result.references[0].pages, [2, 5]);
+	// Paper-level renumbering: every marker becomes [1].
+	assert.equal(result.prose, "Die Methode nutzt Sentinel-2 [1]. Wechselbaenke treten auf [1]. Erfunden.");
+	assert.deepEqual(result.invalid_markers, ["[9]"]);
+	assert.ok(warnings.some((m) => m.includes("stripped 1 invalid citation marker")));
+	// The paper identity in the result comes from the verified record.
+	assert.equal(result.paper.base, "a");
+	assert.equal(result.paper.key, paperA.key);
+	assert.equal(result.paper.title, "Vistula sandbars");
+	assert.equal(result.paper.pdf_path, "/papers/a.pdf");
+	// The validated round went to the protocol file of the day.
+	assert.equal(result.protocol_path, "/chats/2026-07-16_a.json");
+	assert.equal(result.round, 1);
+	assert.equal(result.generated, "2026-07-16T10:00:00.000Z"); // injected clock
+	assert.equal(result.raw_output.includes("[9]"), true); // raw kept for inspection
+}
+
+/* ---------------- runAsk: ungrounded answer ---------------- */
+{
+	const { deps } = makeDeps("Eine fluessige Antwort ohne einen einzigen Beleg.");
+	const result = await runAsk({
+		question: "Wie funktioniert die Methode?",
+		paper: "a", root: "/", model: "fake-gen", embedModel: "fake-embed",
+	}, deps);
+	assert.equal(result.grounded, false);
+	assert.deepEqual(result.references, []);
+}
+
+/* ---------------- runAsk: honest errors ---------------- */
+{
+	const { deps } = makeDeps("never reached");
+	// Missing paper: the error names the available files.
+	await assert.rejects(
+		() => runAsk({ question: "q", root: "/", embedModel: "fake-embed" }, deps),
+		/no paper selected.*a\.pdf, b\.pdf/,
+	);
+	// Empty question.
+	await assert.rejects(
+		() => runAsk({ question: "  ", paper: "a", root: "/", embedModel: "fake-embed" }, deps),
+		/empty question/,
+	);
+	// Abort before generation throws instead of returning a partial result.
+	const controller = new AbortController();
+	controller.abort();
+	await assert.rejects(
+		() => runAsk({ question: "q", paper: "a", root: "/", embedModel: "fake-embed", signal: controller.signal }, deps),
+		/aborted/,
+	);
+	// Empty library.
+	await assert.rejects(
+		() => runAsk({ question: "q", paper: "a", root: "/", embedModel: "fake-embed" }, {
+			...deps,
+			library: () => ({ matched: [], unmatched: [], papersDir: "/papers" }),
+		}),
+		/no PDFs in the library/,
+	);
+}
+
+/* ---------------- ensureAskLibrary: adoption re-match ---------------- */
+{
+	let scans = 0;
+	const adoptCalls: Array<{ files: string[]; dir: string }> = [];
+	const warnings: string[] = [];
+	const { match, adopted, adoptionFailures } = await ensureAskLibrary("/", (m) => warnings.push(m), {
+		library: () => {
+			scans++;
+			return scans === 1
+				? { matched: [library.matched[0]], unmatched: ["b.pdf"], papersDir: "/papers" }
+				: { matched: library.matched, unmatched: [], papersDir: "/papers" };
+		},
+		adopt: async (files, dir) => {
+			adoptCalls.push({ files, dir });
+			return [{ file: "b.pdf", status: "adopted", detail: "identity arXiv:2401.16393 verified by API lookup" }];
+		},
+	});
+	assert.deepEqual(adoptCalls, [{ files: ["b.pdf"], dir: "/papers" }]);
+	assert.equal(scans, 2); // re-matched after the twin was written
+	assert.deepEqual(adopted, ["b.pdf"]);
+	assert.deepEqual(adoptionFailures, []);
+	assert.equal(match.matched.length, 2);
+	assert.ok(warnings.some((m) => m.includes("attempting adoption")));
+	assert.ok(warnings.some((m) => m.includes("adopted b.pdf")));
+}
+
+/* ---------------- chatLogPath naming ---------------- */
+{
+	assert.equal(chatLogPath("/root", "2026-07-16", "a"), "/root/chats/2026-07-16_a.json");
+	assert.equal(chatLogPath("/root", "2026-07-16", "a", 2), "/root/chats/2026-07-16_a_2.json");
+	assert.equal(chatLogPath("/root", "2026-07-16", "arxiv_2401.16393", 5), "/root/chats/2026-07-16_arxiv_2401.16393_5.json");
+}
+
+/* ---------------- protocol: create, append, cited-only ---------------- */
+{
+	// Output cites only excerpt [1] -- the protocol must store only that chunk.
+	const { deps, files } = makeDeps("Nur die erste Quelle [1].");
+	const first = await runAsk({
+		question: "Frage eins?", paper: "a", root: "/", model: "fake-gen", embedModel: "fake-embed",
+	}, deps);
+	assert.equal(first.round, 1);
+	assert.equal(first.protocol_path, "/chats/2026-07-16_a.json");
+	const second = await runAsk({
+		question: "Frage zwei?", paper: "a", root: "/", model: "fake-gen", embedModel: "fake-embed",
+	}, deps);
+	assert.equal(second.round, 2);
+	assert.equal(second.protocol_path, first.protocol_path); // same day -> same file
+	// Two files: the protocol and the sticky current-paper marker.
+	assert.equal(files.size, 2);
+	assert.equal(JSON.parse(files.get("/chats/current-paper.json")!).base, "a");
+	const protocol = JSON.parse(files.get("/chats/2026-07-16_a.json")!) as ChatProtocol;
+	assert.equal(protocol.schema, CHAT_SCHEMA);
+	assert.equal(protocol.base, "a");
+	assert.equal(protocol.paper.key, paperA.key);
+	assert.equal(protocol.paper.title, "Vistula sandbars"); // verbatim record
+	assert.equal(protocol.rounds.length, 2);
+	assert.deepEqual(protocol.rounds.map((round) => round.question), ["Frage eins?", "Frage zwei?"]);
+	// Two chunks were retrieved, but only the cited one is persisted.
+	assert.equal(protocol.rounds[0].cited_chunks.length, 1);
+	assert.equal(protocol.rounds[0].cited_chunks[0].id, 1);
+	assert.equal(protocol.rounds[0].grounded, true);
+	assert.equal(protocol.rounds[0].asked, "2026-07-16T10:00:00.000Z");
+}
+
+/* ---------------- protocol: quarantine, never overwrite ---------------- */
+{
+	// Corrupt file: stays untouched, the round goes to _2.
+	const { chatLog, files } = memoryChatLog();
+	files.set("/chats/2026-07-16_a.json", "{ not json");
+	const warnings: string[] = [];
+	const appended = appendChatRound("/", askPaperA, makeRound("q"), chatLog, (m) => warnings.push(m));
+	assert.equal(appended.path, "/chats/2026-07-16_a_2.json");
+	assert.equal(appended.roundNumber, 1);
+	assert.equal(files.get("/chats/2026-07-16_a.json"), "{ not json"); // untouched
+	assert.ok(warnings.some((m) => m.includes("not readable")));
+}
+{
+	// Same path, different paper identity (renamed PDF): also quarantined.
+	const { chatLog, files } = memoryChatLog();
+	const foreign: ChatProtocol = {
+		schema: CHAT_SCHEMA, base: "a", date: "2026-07-16",
+		paper: { key: "doi:10.9999/other", title: "Other", authors: [], year: null, doi: "10.9999/other", arxiv_id: "" },
+		rounds: [makeRound("old")],
+	};
+	files.set("/chats/2026-07-16_a.json", JSON.stringify(foreign));
+	const warnings: string[] = [];
+	const appended = appendChatRound("/", askPaperA, makeRound("new"), chatLog, (m) => warnings.push(m));
+	assert.equal(appended.path, "/chats/2026-07-16_a_2.json");
+	assert.equal((JSON.parse(files.get("/chats/2026-07-16_a.json")!) as ChatProtocol).rounds[0].question, "old");
+	assert.ok(warnings.some((m) => m.includes("different paper")));
+}
+
+/* ---------------- protocol: write failure never loses the answer ---------------- */
+{
+	const { deps } = makeDeps("Antwort [1].");
+	deps.chatLog = {
+		read: () => null,
+		write: () => {
+			throw new Error("disk full");
+		},
+		exists: () => false,
+		list: () => [],
+	};
+	const warnings: string[] = [];
+	const result = await runAsk({
+		question: "q", paper: "a", root: "/", model: "fake-gen", embedModel: "fake-embed",
+		onWarn: (m) => warnings.push(m),
+	}, deps);
+	assert.equal(result.grounded, true); // the answer is fully intact
+	assert.equal(result.prose, "Antwort [1].");
+	assert.equal(result.protocol_path, null);
+	assert.equal(result.round, 0);
+	assert.ok(warnings.some((m) => m.includes("could not persist") && m.includes("disk full")));
+}
+
+/* ---------------- loadChatRounds: anchored matching, multi-day ---------------- */
+{
+	const { chatLog, files } = memoryChatLog();
+	const protocolOf = (date: string, rounds: ChatRound[], key = paperA.key): string => JSON.stringify({
+		schema: CHAT_SCHEMA, base: "a", date,
+		paper: { key, title: paperA.title, authors: paperA.authors, year: paperA.year, doi: paperA.doi, arxiv_id: "" },
+		rounds,
+	} satisfies ChatProtocol);
+	files.set("/chats/2026-07-15_a.json", protocolOf("2026-07-15", [makeRound("Dienstag")]));
+	files.set("/chats/2026-07-16_a.json", protocolOf("2026-07-16", [makeRound("Mittwoch 1"), makeRound("Mittwoch 2")]));
+	files.set("/chats/2026-07-16_a_2.json", protocolOf("2026-07-16", [makeRound("Quarantaene-Nachfolger")]));
+	files.set("/chats/2026-07-14_a.json", "{ corrupt");
+	files.set("/chats/2026-07-13_a.json", protocolOf("2026-07-13", [makeRound("fremd")], "doi:10.9999/other"));
+	files.set("/chats/2026-07-16_ab.json", protocolOf("2026-07-16", [makeRound("anderes Paper")])); // base "ab" != "a"
+	files.set("/chats/2026-07-16_Paper_chat_report_a.json", "{}"); // report sidecar, never ingested
+	const warnings: string[] = [];
+	const { rounds, files: used } = loadChatRounds("/", "a", paperA.key, chatLog, (m) => warnings.push(m));
+	assert.deepEqual(
+		rounds.map((round) => round.question),
+		["Dienstag", "Mittwoch 1", "Mittwoch 2", "Quarantaene-Nachfolger"],
+	);
+	assert.deepEqual(used, [
+		"/chats/2026-07-15_a.json",
+		"/chats/2026-07-16_a.json",
+		"/chats/2026-07-16_a_2.json",
+	]);
+	assert.ok(warnings.some((m) => m.includes("unreadable") && m.includes("2026-07-14_a.json")));
+	assert.ok(warnings.some((m) => m.includes("different paper identity") && m.includes("2026-07-13_a.json")));
+	// The dotted arXiv base must not match its dot-as-wildcard lookalikes.
+	const dotted = memoryChatLog();
+	dotted.files.set("/chats/2026-07-16_arxiv_2401x16393.json", protocolOf("2026-07-16", [makeRound("Falle")]));
+	const none = loadChatRounds("/", "arxiv_2401.16393", paperA.key, dotted.chatLog, () => {});
+	assert.deepEqual(none.rounds, []);
+}
+
+/* ---------------- sticky current paper ---------------- */
+{
+	const { deps, files } = makeDeps("Antwort [1].");
+	files.set("/chats/current-paper.json", JSON.stringify({ base: "a" }));
+	// No paper option: the sticky marker resolves it.
+	const result = await runAsk({ question: "q", root: "/", model: "fake-gen", embedModel: "fake-embed" }, deps);
+	assert.equal(result.paper.base, "a");
+	// An explicit paper wins over the marker and updates it.
+	const explicit = await runAsk({ question: "q", paper: "b", root: "/", model: "fake-gen", embedModel: "fake-embed" }, deps);
+	assert.equal(explicit.paper.base, "b");
+	assert.equal(JSON.parse(files.get("/chats/current-paper.json")!).base, "b");
+}
+{
+	// A corrupt marker falls back to the honest missing-paper error.
+	const { deps, files } = makeDeps("never reached");
+	files.set("/chats/current-paper.json", "{ garbage");
+	await assert.rejects(
+		() => runAsk({ question: "q", root: "/", embedModel: "fake-embed" }, deps),
+		/no paper selected/,
+	);
+}
+
+/* ---------------- unverified paper: filename-only citations ---------------- */
+{
+	// chatPool exposes unmatched PDFs under a file: identity.
+	const pool = chatPool({ matched: [], unmatched: ["x y.pdf"], papersDir: "/p" });
+	assert.deepEqual(pool.map((p) => [p.base, p.key, p.file]), [["x y", "file:x y", "/p/x y.pdf"]]);
+	assert.equal(pool[0].entry.title, "");
+}
+{
+	const { deps } = makeDeps("Kameras werden beschrieben [1].");
+	deps.library = () => ({ matched: library.matched, unmatched: ["c.pdf"], papersDir: "/papers" });
+	const warnings: string[] = [];
+	const result = await runAsk({
+		question: "Welche Kameras?", paper: "c.pdf", root: "/", model: "fake-gen", embedModel: "fake-embed",
+		onWarn: (m) => warnings.push(m),
+	}, deps);
+	// The paper works, but nothing bibliographic is invented.
+	assert.equal(result.paper.verified, false);
+	assert.equal(result.paper.key, "file:c");
+	assert.equal(result.paper.title, "");
+	assert.equal(result.grounded, true);
+	assert.equal(result.references.length, 1);
+	assert.equal(result.references[0].key, "file:c");
+	assert.equal(result.references[0].doi, "");
+	assert.equal(result.references[0].title, "");
+	assert.deepEqual(result.references[0].pages, [3]);
+	assert.ok(warnings.some((m) => m.includes("no verified bibliographic record")));
+}
+
+/* ---------------- unionChunks ---------------- */
+{
+	const c = (page: number, text: string, score: number): RetrievedChunk =>
+		({ id: 0, paper: paperA, page, score, text });
+	const union = unionChunks([
+		[c(1, "alpha", 0.5), c(2, "beta", 0.4)],
+		[c(1, "alpha", 0.9), c(3, "gamma", 0.4)],
+	], 10);
+	assert.deepEqual(union.map((x) => [x.id, x.page, x.text, x.score]), [
+		[1, 1, "alpha", 0.9], // dedupe keeps the max score
+		[2, 2, "beta", 0.4], // score tie -> page ascending
+		[3, 3, "gamma", 0.4],
+	]);
+	// The same text on two pages is genuinely two excerpts; the cap trims
+	// the tail after ranking.
+	const twoPages = unionChunks([[c(1, "same", 0.9), c(2, "same", 0.8), c(3, "tail", 0.1)]], 2);
+	assert.deepEqual(twoPages.map((x) => [x.id, x.page]), [[1, 1], [2, 2]]);
+}
+
+/* ---------------- runAskReport: session questions drive retrieval ---------------- */
+{
+	const { deps, files, embedCalls, generateCalls } = makeDeps("Zusammenfassung [1][2].");
+	const protocol: ChatProtocol = {
+		schema: CHAT_SCHEMA, base: "a", date: "2026-07-15",
+		paper: { key: paperA.key, title: paperA.title, authors: paperA.authors, year: paperA.year, doi: paperA.doi, arxiv_id: "" },
+		rounds: [makeRound("Frage eins?"), makeRound("Frage zwei?"), makeRound("Frage eins?")],
+	};
+	files.set("/chats/2026-07-15_a.json", JSON.stringify(protocol));
+	const report = await runAskReport({
+		question: "Fokus: Validierung?", paper: "a.pdf", root: "/", model: "fake-gen", embedModel: "fake-embed",
+	}, deps);
+	// ONE embed call carrying the deduplicated session questions + focus.
+	assert.equal(embedCalls.length, 1);
+	assert.deepEqual(embedCalls[0], ["Frage eins?", "Frage zwei?", "Fokus: Validierung?"]);
+	assert.deepEqual(report.session_questions, ["Frage eins?", "Frage zwei?"]);
+	assert.equal(report.focus, "Fokus: Validierung?");
+	// Union dedupe: 3 queries over the same 2 paper-A chunks -> 2 excerpts,
+	// contiguous ids.
+	assert.deepEqual(report.chunks.map((chunk) => chunk.id), [1, 2]);
+	assert.equal(generateCalls.length, 1);
+	assert.ok(generateCalls[0].user.includes("- Frage eins?"));
+	assert.ok(generateCalls[0].user.includes("- Fokus: Validierung?"));
+	assert.ok(generateCalls[0].system.includes("summary of ONE scientific paper"));
+	assert.equal(report.grounded, true);
+	assert.equal(report.references.length, 1); // single paper -> single reference
+	// Naming invariant: the report's output slug can never collide with a
+	// protocol filename.
+	assert.equal(report.question, "Paper chat report: a.pdf");
+	assert.ok(querySlug(report.question).startsWith("Paper_chat_report_"));
+	// Appendix carried verbatim; the report itself did NOT append a round.
+	assert.equal(report.rounds.length, 3);
+	assert.deepEqual(report.protocol_files, ["/chats/2026-07-15_a.json"]);
+	assert.equal((JSON.parse(files.get("/chats/2026-07-15_a.json")!) as ChatProtocol).rounds.length, 3);
+	// Determinism: an identical second run retrieves the identical excerpts.
+	const again = await runAskReport({
+		question: "Fokus: Validierung?", paper: "a.pdf", root: "/", model: "fake-gen", embedModel: "fake-embed",
+	}, deps);
+	assert.deepEqual(again.chunks, report.chunks);
+}
+
+/* ---------------- runAskReport: no session, no focus ---------------- */
+{
+	const { deps, embedCalls } = makeDeps("Antwort [1].");
+	const warnings: string[] = [];
+	const report = await runAskReport({
+		paper: "a", root: "/", model: "fake-gen", embedModel: "fake-embed",
+		onWarn: (m) => warnings.push(m),
+	}, deps);
+	assert.deepEqual(embedCalls[0], [DEFAULT_REPORT_QUESTION]);
+	assert.deepEqual(report.session_questions, []);
+	assert.equal(report.focus, null);
+	assert.deepEqual(report.protocol_files, []);
+	assert.ok(warnings.some((m) => m.includes("default question")));
+}
+
+console.log("ask.test.ts: all assertions passed");
