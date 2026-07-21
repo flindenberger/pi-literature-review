@@ -241,11 +241,12 @@ understanding it -- the conversational counterpart. Differences by design:
   original filename; adoption is attempted on selection, and whatever
   stays unverified is still chattable -- its citations then honestly carry
   filename and page only (never invented bibliographic data).
-- The selection is sticky: the tool remembers the session's current paper
-  (`chats/current-paper.json`), so every further call -- from the agent or
-  the CLI -- needs only the question. A weak agent model merely has to
-  transport the user's words; `pick: true` (tool) or `--paper` (CLI)
-  switches papers.
+- The selection is sticky WITHIN one pi session: the tool remembers the
+  current paper (`chats/current-paper.json`, stamped with the pi session
+  id), so every further call needs only the question. A weak agent model
+  merely has to transport the user's words; `pick: true` (tool) or
+  `--paper` (CLI) switches papers. A new pi session (restart or `/new`)
+  starts blank and opens the picker again; `/resume` keeps the selection.
 - The validated answer is returned verbatim in the tool result between
   explicit delimiters (the one deliberate exception to the digest-only
   doctrine -- a chat answer must reach the terminal). References carry the
@@ -262,13 +263,14 @@ understanding it -- the conversational counterpart. Differences by design:
   embedding server.
 - Every validated round is appended to a protocol file
   `chats/<date>_<paper>.json` -- question, validated prose, references,
-  cited excerpts. A corrupt or foreign protocol file is never overwritten
-  (quarantined with a `_2` suffix instead).
+  cited excerpts, and the pi session id. A corrupt or foreign protocol
+  file is never overwritten (quarantined with a `_2` suffix instead).
 - `report: true` writes a grounded session summary as HTML under `chats/`:
-  the session's questions become the retrieval queries; the page contains
-  the summary, references, evidence excerpts and the full Q&A protocol.
-  The report is built from the protocol on disk, never from the Pi chat
-  transcript.
+  the CURRENT session's questions become the retrieval queries; the page
+  contains the summary, references, evidence excerpts and that session's
+  Q&A protocol. Rounds of earlier sessions stay in the JSON protocol files
+  on disk but never resurface in a report. The report is built from the
+  protocol on disk, never from the Pi chat transcript.
 - The report links every citation into the local PDF: page numbers open
   `file://...#page=N` (works in Firefox and Chromium; new tab), and each
   excerpt gets a best-effort highlight link with a short verbatim phrase
@@ -300,6 +302,14 @@ understanding it -- the conversational counterpart. Differences by design:
   either tool -- both dialogs therefore offer the fork in code: the chat
   picker's first entry is the whole-library synthesis, and the synthesize
   dialog has "Chat about ONE paper instead".
+- **HTML-export gate.** "Make me an HTML of that" must produce the
+  deterministic report (`report: true`), never an agent-written file --
+  instructions alone did not stop small agent models from hand-writing
+  ad-hoc HTML (observed twice in the field). While a paper chat is active
+  in the session, any agent `write`/`edit` of an `.html` file therefore
+  opens a blocking dialog (pi `tool_call` event): default is to block and
+  point the agent at report mode; "Allow" keeps deliberate, unrelated HTML
+  writes possible. Headless runs block outright.
 
 Standalone CLI (no Pi):
 
@@ -309,6 +319,14 @@ node src/cli.ts chat "Welche Datenquellen nutzt das Paper?" --paper arxiv_2401.1
 node src/cli.ts chat --report --paper arxiv_2401.16393.pdf
 node src/cli.ts llm-check     # verifies the local backend (embed + generate)
 ```
+
+The CLI shares pi's session scoping: without `--session` it uses the most
+recently written pi session of the current folder (from
+`~/.pi/agent/sessions/`), so `chat` without `--paper` picks up that
+session's sticky paper and `chat --report` covers exactly that session's
+questions. `--session <uuid>` targets an older session explicitly; when no
+pi session exists for the folder, `--paper` is required and a report falls
+back to the default overview question.
 
 ## Configuration
 
@@ -358,7 +376,8 @@ node src/corpus.test.ts      # library matching and the embedding index cache
 node src/llm.test.ts         # backend clients (Ollama / OpenAI-compatible)
 node src/adopt.test.ts       # adoption of loose PDFs (identifier from PDF text)
 node src/synthesize.test.ts  # synthesis engine incl. the citation trust gate
-node src/ask.test.ts         # paper chat engine, session protocol, report mode
+node src/chat.test.ts        # paper chat engine, session-scoped protocol, report mode
+node src/pisession.test.ts   # pi session resolver for the CLI (sticky/report scoping)
 ```
 
 Acceptance gate before any release: the ground-truth query
