@@ -221,8 +221,10 @@ export function renderChatDigest(answer: ChatAnswer): string {
 	}
 	if (answer.protocol_path) {
 		lines.push(
-			"The validated Q&A round was recorded in the session protocol on disk; "
-			+ "call with report: true when the user wants a summary report of the session.",
+			"The validated Q&A round was recorded in the session protocol on disk. "
+			+ "When the user wants a summary report OR any HTML/file/export of this chat "
+			+ "('mach mir eine html', 'save this', 'export'): call this tool with report: true -- "
+			+ "NEVER write an HTML or any other file about this paper yourself.",
 		);
 	} else {
 		lines.push("WARNING: the session protocol could not be written (see diagnostics); a report will not include this round.");

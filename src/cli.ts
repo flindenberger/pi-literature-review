@@ -40,6 +40,7 @@ import { renderChatDigest, renderChatReportDigest, renderDigest, renderSynthesis
 import { runSearch, SEARCHERS, type SearchOptions } from "./search.ts";
 import { parseGroupTerms } from "./intake.ts";
 import { outputRoot, writeRunOutputs } from "./output.ts";
+import { resolvePiSessionId } from "./pisession.ts";
 import type { ResultFilters, SortKey } from "./pipeline.ts";
 import { renderHtml, renderPaperChatReportHtml, renderReviewHtml } from "./render.ts";
 import { warn } from "./types.ts";
@@ -79,13 +80,15 @@ function usage(): never {
 	warn("       [--embed-model E] [--top-k N] [--language L] [--reindex] [--html [FILE]] [--digest]");
 	warn("       grounded synthesis over the local PDF library (citations from verified records);");
 	warn("       --html writes pi-literature-review/reviews/<date>_<question>.html + JSON sidecar");
-	warn('or:    node src/cli.ts chat "<question>" [--paper <file.pdf>] [--model M] [--embed-model E]');
-	warn("       [--top-k N] [--language L] [--reindex] [--digest]");
+	warn('or:    node src/cli.ts chat "<question>" [--paper <file.pdf>] [--session ID] [--model M]');
+	warn("       [--embed-model E] [--top-k N] [--language L] [--reindex] [--digest]");
 	warn("       paper chat: answers ONE question about ONE paper with page-exact citations;");
-	warn("       --paper omitted = the session's current paper (remembered after each round);");
+	warn("       --paper omitted = the sticky paper of the current pi session (--session omitted =");
+	warn("       the newest pi session of this folder; no session -> --paper is required);");
 	warn("       every validated round is appended to pi-literature-review/chats/<date>_<paper>.json");
-	warn('or:    node src/cli.ts chat --report --paper <file.pdf> ["<focus>"] [--html [FILE]] [--digest]');
-	warn("       grounded summary report built from the session's questions; writes");
+	warn('or:    node src/cli.ts chat --report --paper <file.pdf> ["<focus>"] [--session ID]');
+	warn("       [--html [FILE]] [--digest]");
+	warn("       grounded summary report of ONE pi session's questions (only that session); writes");
 	warn("       pi-literature-review/chats/<date>_Paper_chat_report_<paper>.html + JSON sidecar");
 	process.exit(2);
 }
@@ -276,6 +279,7 @@ if (process.argv[2] === "chat") {
 	const argv = process.argv.slice(3);
 	let question = "";
 	let paper: string | undefined;
+	let session: string | undefined;
 	let model: string | undefined;
 	let embedModel: string | undefined;
 	let topK: number | undefined;
@@ -289,6 +293,9 @@ if (process.argv[2] === "chat") {
 		if (arg === "--paper") {
 			paper = (argv[++i] ?? "").trim() || undefined;
 			if (!paper) usage();
+		} else if (arg === "--session") {
+			session = (argv[++i] ?? "").trim() || undefined;
+			if (!session) usage();
 		} else if (arg === "--model") {
 			model = (argv[++i] ?? "").trim() || undefined;
 		} else if (arg === "--embed-model") {
@@ -321,10 +328,20 @@ if (process.argv[2] === "chat") {
 	}
 	if (!report && !question.trim()) usage();
 
+	// Session scoping (user decision 2026-07-21): sticky paper and report
+	// rounds belong to ONE pi session. The CLI resolves the newest pi
+	// session of this folder unless --session names one explicitly.
+	if (!session) {
+		session = resolvePiSessionId(process.cwd()) ?? undefined;
+		warn(session
+			? `scoping to the newest pi session of this folder: ${session} (--session overrides)`
+			: "no pi session found for this folder -- no sticky paper; a report covers no prior rounds");
+	}
+
 	if (report) {
 		const result = await runChatReport({
 			question: question.trim() || undefined,
-			paper, model, embedModel, language, reindex, onWarn: warn,
+			paper, session, model, embedModel, language, reindex, onWarn: warn,
 		});
 		const written = writeRunOutputs(renderPaperChatReportHtml(result), result, chatHtml || undefined, "chats");
 		warn(`wrote HTML report to ${written.htmlPath}`);
@@ -334,7 +351,7 @@ if (process.argv[2] === "chat") {
 	}
 
 	const answer = await runChat({
-		question, paper, model, embedModel, topK, language, reindex, onWarn: warn,
+		question, paper, session, model, embedModel, topK, language, reindex, onWarn: warn,
 	});
 	if (chatDigest) {
 		process.stdout.write(`${renderChatDigest(answer)}\n`);

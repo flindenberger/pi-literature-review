@@ -223,6 +223,9 @@ export interface ChatRound {
 	question: string;
 	language: string | null;
 	model: string;
+	/** Pi session the round belongs to (null: recorded without a session,
+	 * e.g. by a CLI run outside any pi session or before session scoping). */
+	session: string | null;
 	top_k: number;
 	grounded: boolean;
 	prose: string;
@@ -286,13 +289,23 @@ export function currentPaperPath(root: string): string {
  * The sticky selection: set after every successful round, used whenever a
  * call names no paper -- a weak agent model then only has to transport the
  * user's question (user decision 2026-07-16, after a field test with an
- * agent that could not carry the paper name across turns). Null when
- * unset or unreadable.
+ * agent that could not carry the paper name across turns). SESSION-SCOPED
+ * (user decision 2026-07-21): the marker only counts inside the pi session
+ * that wrote it -- a new pi session starts with no current paper. Null when
+ * unset, unreadable, or written by a different session.
  */
-export function readCurrentPaper(root: string, deps: ChatLogDeps = realChatLogDeps()): string | null {
+export function readCurrentPaper(
+	root: string,
+	session: string | null | undefined,
+	deps: ChatLogDeps = realChatLogDeps(),
+): string | null {
+	if (!session) return null;
 	try {
-		const parsed = JSON.parse(deps.read(currentPaperPath(root)) ?? "null") as { base?: unknown } | null;
-		return parsed && typeof parsed.base === "string" && parsed.base.trim() ? parsed.base.trim() : null;
+		const parsed = JSON.parse(deps.read(currentPaperPath(root)) ?? "null") as
+			| { base?: unknown; session?: unknown }
+			| null;
+		if (!parsed || typeof parsed.base !== "string" || !parsed.base.trim()) return null;
+		return parsed.session === session ? parsed.base.trim() : null;
 	} catch {
 		return null;
 	}
@@ -302,11 +315,12 @@ export function readCurrentPaper(root: string, deps: ChatLogDeps = realChatLogDe
 export function writeCurrentPaper(
 	root: string,
 	base: string,
+	session: string | null | undefined,
 	deps: ChatLogDeps = realChatLogDeps(),
 	onWarn: (message: string) => void = () => {},
 ): void {
 	try {
-		deps.write(currentPaperPath(root), JSON.stringify({ base }, null, 2) + "\n");
+		deps.write(currentPaperPath(root), JSON.stringify({ base, session: session ?? null }, null, 2) + "\n");
 	} catch (error) {
 		onWarn(`could not remember the current paper: ${error instanceof Error ? error.message : error}`);
 	}
@@ -378,19 +392,24 @@ function escapeRegExp(value: string): string {
 }
 
 /**
- * All protocol rounds ever recorded for this paper (multi-day: "chat on
- * Tuesday, report on Wednesday" must not drop rounds). Filenames are
- * matched with an anchored pattern so report sidecars and other papers
- * sharing a name prefix are never ingested; files recording a different
- * paper identity are skipped with a warning.
+ * The protocol rounds of ONE pi session for this paper (user decision
+ * 2026-07-21: reports cover only the current session; earlier sessions stay
+ * on disk as ground truth but are never re-surfaced). The scan still spans
+ * all day files -- /resume keeps the session id, so "chat on Tuesday, report
+ * on Wednesday" works within the resumed session. Filenames are matched with
+ * an anchored pattern so report sidecars and other papers sharing a name
+ * prefix are never ingested; files recording a different paper identity are
+ * skipped with a warning. Without a session id nothing matches.
  */
 export function loadChatRounds(
 	root: string,
 	base: string,
 	paperKey: string,
+	session: string | null,
 	deps: ChatLogDeps,
 	onWarn: (message: string) => void,
 ): { rounds: ChatRound[]; files: string[] } {
+	if (!session) return { rounds: [], files: [] };
 	const dir = join(root, "chats");
 	const pattern = new RegExp(`^\\d{4}-\\d{2}-\\d{2}_${escapeRegExp(base)}(_\\d+)?\\.json$`);
 	const names = deps.list(dir).filter((name) => pattern.test(name)).sort();
@@ -407,7 +426,9 @@ export function loadChatRounds(
 			onWarn(`skipping ${path}: it records a different paper identity`);
 			continue;
 		}
-		rounds.push(...protocol.rounds);
+		const ofSession = protocol.rounds.filter((round) => round.session === session);
+		if (!ofSession.length) continue;
+		rounds.push(...ofSession);
 		files.push(path);
 	}
 	return { rounds, files };
@@ -421,6 +442,10 @@ export interface ChatOptions {
 	question: string;
 	/** PDF filename in the library (basename, with or without .pdf). */
 	paper?: string;
+	/** Pi session id; scopes the sticky current paper and the protocol
+	 * rounds a later report will cover. Absent: no sticky, rounds are
+	 * recorded session-less. */
+	session?: string;
 	model?: string;
 	embedModel?: string;
 	topK?: number;
@@ -531,7 +556,8 @@ export async function runChat(options: ChatOptions, deps?: ChatDeps): Promise<Ch
 	if (!pool.length) {
 		throw new Error("no PDFs in the library -- run a search and fetch first, or start pi in the folder holding the PDFs");
 	}
-	const wanted = options.paper?.trim() || readCurrentPaper(root, chatLog) || "";
+	const session = options.session?.trim() || null;
+	const wanted = options.paper?.trim() || readCurrentPaper(root, session, chatLog) || "";
 	const paper = selectPaper(pool, wanted);
 	if (paper.key.startsWith(FILE_KEY_PREFIX)) {
 		onWarn(`${paper.base}.pdf has no verified bibliographic record -- citations identify it by filename and page only`);
@@ -610,6 +636,7 @@ export async function runChat(options: ChatOptions, deps?: ChatDeps): Promise<Ch
 		question,
 		language: options.language?.trim() || null,
 		model,
+		session,
 		top_k: topK,
 		grounded: references.length > 0,
 		prose,
@@ -629,8 +656,9 @@ export async function runChat(options: ChatOptions, deps?: ChatDeps): Promise<Ch
 		onWarn(`could not persist the chat round: ${error instanceof Error ? error.message : error}`
 			+ " -- the answer itself is unaffected");
 	}
-	// Sticky selection: the next call without a paper name means THIS paper.
-	writeCurrentPaper(root, paper.base, chatLog, onWarn);
+	// Sticky selection: the next call of THIS session without a paper name
+	// means this paper.
+	writeCurrentPaper(root, paper.base, session, chatLog, onWarn);
 
 	return {
 		question,
@@ -685,6 +713,9 @@ export interface ChatReportOptions {
 	question?: string;
 	/** PDF filename in the library (basename, with or without .pdf). */
 	paper?: string;
+	/** Pi session id; the report covers ONLY this session's rounds (and the
+	 * sticky paper of this session). Absent: no rounds, default question. */
+	session?: string;
 	model?: string;
 	embedModel?: string;
 	/** Output language of the prose; default: the language of the questions. */
@@ -729,10 +760,12 @@ export interface ChatReport {
 
 /**
  * Grounded summary of ONE paper, built from the code-validated protocol
- * (never from the Pi chat transcript): the session's questions become the
- * retrieval queries, the union of their best excerpts becomes the context,
- * and the same citation gate validates the prose. Does NOT append to the
- * protocol -- a report is an output, not a round.
+ * (never from the Pi chat transcript): the CURRENT session's questions
+ * become the retrieval queries, the union of their best excerpts becomes
+ * the context, and the same citation gate validates the prose. Rounds of
+ * earlier sessions stay on disk but are never re-surfaced (user decision
+ * 2026-07-21). Does NOT append to the protocol -- a report is an output,
+ * not a round.
  */
 export async function runChatReport(options: ChatReportOptions, deps?: ChatDeps): Promise<ChatReport> {
 	const onWarn = options.onWarn ?? (() => {});
@@ -755,12 +788,13 @@ export async function runChatReport(options: ChatReportOptions, deps?: ChatDeps)
 		throw new Error("no PDFs in the library -- run a search and fetch first, or start pi in the folder holding the PDFs");
 	}
 	const chatLog = deps?.chatLog ?? realChatLogDeps();
-	const wanted = options.paper?.trim() || readCurrentPaper(root, chatLog) || "";
+	const session = options.session?.trim() || null;
+	const wanted = options.paper?.trim() || readCurrentPaper(root, session, chatLog) || "";
 	const paper = selectPaper(pool, wanted);
 	if (paper.key.startsWith(FILE_KEY_PREFIX)) {
 		onWarn(`${paper.base}.pdf has no verified bibliographic record -- citations identify it by filename and page only`);
 	}
-	const { rounds, files: protocolFiles } = loadChatRounds(root, paper.base, paper.key, chatLog, onWarn);
+	const { rounds, files: protocolFiles } = loadChatRounds(root, paper.base, paper.key, session, chatLog, onWarn);
 
 	// 2. Retrieval queries: the session's questions (deduplicated, order
 	// kept) plus the optional focus; the default question when both are
@@ -774,7 +808,7 @@ export async function runChatReport(options: ChatReportOptions, deps?: ChatDeps)
 	if (focus && !queries.includes(focus)) queries.push(focus);
 	if (!queries.length) {
 		queries.push(DEFAULT_REPORT_QUESTION);
-		onWarn("no chat rounds recorded for this paper -- reporting on the default question");
+		onWarn("no chat rounds recorded for this session -- reporting on the default question");
 	}
 
 	// 3. Index, then ONE embed call for all queries.

@@ -193,6 +193,20 @@ function piModelBackend(ctx: ExtensionContext, embed: LlmBackend["embed"]): LlmB
 }
 
 /**
+ * The pi session id scopes the sticky current paper and the protocol rounds
+ * a report covers (user decision 2026-07-21: nothing chat-related survives
+ * the session). Fetched fresh on every call -- /new switches the id within
+ * the same pi process. Undefined when pi exposes no session manager.
+ */
+function sessionId(ctx: ExtensionContext): string | undefined {
+	try {
+		return ctx.sessionManager.getSessionId() || undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
  * Run ONE grounded chat turn against `base` and show the validated answer in
  * the CHAT_WIDGET (answerWidgetLines) -- the same reliable rendering the tool
  * path uses. Used by the /lit-chat <question> one-shot command; agent-free,
@@ -225,6 +239,7 @@ async function answerInChat(
 		const answer = await runChat({
 			question,
 			paper: `${base}.pdf`,
+			session: sessionId(ctx),
 			model,
 			onWarn: progress,
 			signal: ctx.signal,
@@ -395,7 +410,7 @@ export default async function literatureChat(pi: ExtensionAPI) {
 			const root = outputRoot();
 			let paper = params.paper?.trim() || undefined;
 			if (!paper && params.pick !== true) {
-				const sticky = readCurrentPaper(root);
+				const sticky = readCurrentPaper(root, sessionId(ctx));
 				if (sticky) {
 					paper = `${sticky}.pdf`;
 					report(`using the session's current paper: ${paper} (pick: true switches papers)`);
@@ -460,7 +475,7 @@ export default async function literatureChat(pi: ExtensionAPI) {
 				diagnostics.push(`paper picked in the dialog: ${paper}`);
 				// Remember immediately: the opening move may end before any
 				// engine run (question follows in the next call).
-				writeCurrentPaper(root, picked.base, undefined, (message) => diagnostics.push(message));
+				writeCurrentPaper(root, picked.base, sessionId(ctx), undefined, (message) => diagnostics.push(message));
 			}
 			if (!question && !wantsReport) {
 				// Opening move complete: the paper is settled, the question is not.
@@ -516,6 +531,7 @@ export default async function literatureChat(pi: ExtensionAPI) {
 					const result = await runChatReport({
 						question: question || undefined,
 						paper,
+						session: sessionId(ctx),
 						model,
 						language: params.language,
 						reindex: params.reindex,
@@ -538,6 +554,7 @@ export default async function literatureChat(pi: ExtensionAPI) {
 				const answer = await runChat({
 					question,
 					paper,
+					session: sessionId(ctx),
 					model,
 					topK: params.top_k,
 					language: params.language,
@@ -595,7 +612,7 @@ export default async function literatureChat(pi: ExtensionAPI) {
 			const question = (args ?? "").trim();
 			const root = outputRoot();
 			const progress = (message: string) => ctx.ui.notify(message, "info");
-			let base = readCurrentPaper(root);
+			let base = readCurrentPaper(root, sessionId(ctx));
 			if (!question || !base) {
 				// Bare invocation always offers the picker (that is how the
 				// user switches papers without any agent involved).
@@ -619,7 +636,7 @@ export default async function literatureChat(pi: ExtensionAPI) {
 				}
 				if (picked.kind !== "paper") return; // cancelled / not listed
 				base = picked.base;
-				writeCurrentPaper(root, base);
+				writeCurrentPaper(root, base, sessionId(ctx));
 			}
 			if (question) {
 				await answerInChat(pi, ctx, base, question);
@@ -637,10 +654,47 @@ export default async function literatureChat(pi: ExtensionAPI) {
 					+ "Ask them now, in ONE short sentence, what they would like to know about this paper -- "
 					+ "mention that an overview, specific details, or bullet points are all fine, in German or "
 					+ "English. Route EVERY question about the paper through the pi-literature-chat tool: pass "
-					+ "only the question (the tool remembers the paper) and relay each validated answer verbatim.",
+					+ "only the question (the tool remembers the paper) and relay each validated answer verbatim. "
+					+ "If they ask for a summary, an HTML, or to save/export anything from this chat, call the "
+					+ "tool with report: true -- never write such a file yourself.",
 				display: false,
 			}, { triggerTurn: true });
 		},
+	});
+
+	// HTML-export gate (field failure 2026-07-21, second occurrence of the
+	// v20 finding): despite the explicit rule in the tool description, a 9B
+	// agent asked for "eine html" hand-wrote an ad-hoc HTML file instead of
+	// calling report: true. Instructions do not hold -- this is now a CODE
+	// gate: while a paper chat is active in THIS session (session-scoped
+	// sticky paper set), any agent write/edit of an .html file opens a
+	// blocking dialog; the default is to block and send the agent to report
+	// mode. "Allow" keeps deliberate, unrelated HTML writes possible.
+	pi.on("tool_call", async (event, ctx) => {
+		if (event.toolName !== "write" && event.toolName !== "edit") return;
+		// pi's write/edit accept file_path with path as a fallback alias.
+		const input = event.input as { file_path?: unknown; path?: unknown } | undefined;
+		const path = typeof input?.file_path === "string" ? input.file_path
+			: typeof input?.path === "string" ? input.path : "";
+		if (!/\.html?$/i.test(path)) return;
+		const sticky = readCurrentPaper(outputRoot(), sessionId(ctx));
+		if (!sticky) return;
+		const blockReason =
+			`Blocked by pi-literature-review: a paper chat about ${sticky}.pdf is active. HTML exports of `
+			+ "the chat come from the pi-literature-chat tool with report: true (deterministic HTML with "
+			+ "verified citations and page-exact PDF links; question becomes an optional focus). Call that "
+			+ "tool now instead of writing a file yourself.";
+		if (!ctx.hasUI) return { block: true, reason: blockReason };
+		const OPTION_BLOCK = "Block it: generate the deterministic report instead (report: true)";
+		const OPTION_ALLOW = "Allow this write: the file is unrelated to the paper chat";
+		const choice = await ctx.ui.select(
+			`The agent wants to hand-write ${path} while a paper chat (${sticky}.pdf) is active. `
+			+ "Chat exports should be the code-validated report, never an agent-written file.",
+			[OPTION_BLOCK, OPTION_ALLOW],
+			{ signal: ctx.signal },
+		);
+		if (choice === OPTION_ALLOW) return;
+		return { block: true, reason: blockReason }; // chosen block, Esc or abort
 	});
 
 	// Rich transcript rendering for validated answers: register a pi-tui entry

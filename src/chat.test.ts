@@ -157,9 +157,9 @@ const chatPaperA: ChatPaper = {
 	year: paperA.year, doi: paperA.doi, arxiv_id: "", pdf_path: "/papers/a.pdf", verified: true,
 };
 
-function makeRound(question: string): ChatRound {
+function makeRound(question: string, session: string | null = null): ChatRound {
 	return {
-		asked: "2026-07-16T10:00:00.000Z", question, language: null, model: "fake-gen",
+		asked: "2026-07-16T10:00:00.000Z", question, language: null, model: "fake-gen", session,
 		top_k: 8, grounded: true, prose: `Antwort [1].`,
 		references: [{
 			n: 1, key: paperA.key, title: paperA.title, authors: paperA.authors, year: paperA.year,
@@ -349,6 +349,7 @@ function makeRound(question: string): ChatRound {
 	// Two files: the protocol and the sticky current-paper marker.
 	assert.equal(files.size, 2);
 	assert.equal(JSON.parse(files.get("/chats/current-paper.json")!).base, "a");
+	assert.equal(JSON.parse(files.get("/chats/current-paper.json")!).session, null); // no session passed
 	const protocol = JSON.parse(files.get("/chats/2026-07-16_a.json")!) as ChatProtocol;
 	assert.equal(protocol.schema, CHAT_SCHEMA);
 	assert.equal(protocol.base, "a");
@@ -361,6 +362,7 @@ function makeRound(question: string): ChatRound {
 	assert.equal(protocol.rounds[0].cited_chunks[0].id, 1);
 	assert.equal(protocol.rounds[0].grounded, true);
 	assert.equal(protocol.rounds[0].asked, "2026-07-16T10:00:00.000Z");
+	assert.equal(protocol.rounds[0].session, null); // recorded session-less without a session option
 }
 
 /* ---------------- protocol: quarantine, never overwrite ---------------- */
@@ -414,7 +416,7 @@ function makeRound(question: string): ChatRound {
 	assert.ok(warnings.some((m) => m.includes("could not persist") && m.includes("disk full")));
 }
 
-/* ---------------- loadChatRounds: anchored matching, multi-day ---------------- */
+/* ---------------- loadChatRounds: anchored matching, one session ---------------- */
 {
 	const { chatLog, files } = memoryChatLog();
 	const protocolOf = (date: string, rounds: ChatRound[], key = paperA.key): string => JSON.stringify({
@@ -422,19 +424,23 @@ function makeRound(question: string): ChatRound {
 		paper: { key, title: paperA.title, authors: paperA.authors, year: paperA.year, doi: paperA.doi, arxiv_id: "" },
 		rounds,
 	} satisfies ChatProtocol);
-	files.set("/chats/2026-07-15_a.json", protocolOf("2026-07-15", [makeRound("Dienstag")]));
-	files.set("/chats/2026-07-16_a.json", protocolOf("2026-07-16", [makeRound("Mittwoch 1"), makeRound("Mittwoch 2")]));
-	files.set("/chats/2026-07-16_a_2.json", protocolOf("2026-07-16", [makeRound("Quarantaene-Nachfolger")]));
+	// Multi-day within ONE session (/resume keeps the id) plus rounds of an
+	// earlier session and legacy session-less rounds in the same files.
+	files.set("/chats/2026-07-15_a.json", protocolOf("2026-07-15", [makeRound("Dienstag", "s1"), makeRound("fruehere Session", "s0")]));
+	files.set("/chats/2026-07-16_a.json", protocolOf("2026-07-16", [makeRound("Mittwoch 1", "s1"), makeRound("Mittwoch 2", "s1"), makeRound("Altbestand ohne Session")]));
+	files.set("/chats/2026-07-16_a_2.json", protocolOf("2026-07-16", [makeRound("Quarantaene-Nachfolger", "s1")]));
+	files.set("/chats/2026-07-12_a.json", protocolOf("2026-07-12", [makeRound("nur fremde Session", "s0")]));
 	files.set("/chats/2026-07-14_a.json", "{ corrupt");
-	files.set("/chats/2026-07-13_a.json", protocolOf("2026-07-13", [makeRound("fremd")], "doi:10.9999/other"));
-	files.set("/chats/2026-07-16_ab.json", protocolOf("2026-07-16", [makeRound("anderes Paper")])); // base "ab" != "a"
+	files.set("/chats/2026-07-13_a.json", protocolOf("2026-07-13", [makeRound("fremd", "s1")], "doi:10.9999/other"));
+	files.set("/chats/2026-07-16_ab.json", protocolOf("2026-07-16", [makeRound("anderes Paper", "s1")])); // base "ab" != "a"
 	files.set("/chats/2026-07-16_Paper_chat_report_a.json", "{}"); // report sidecar, never ingested
 	const warnings: string[] = [];
-	const { rounds, files: used } = loadChatRounds("/", "a", paperA.key, chatLog, (m) => warnings.push(m));
+	const { rounds, files: used } = loadChatRounds("/", "a", paperA.key, "s1", chatLog, (m) => warnings.push(m));
 	assert.deepEqual(
 		rounds.map((round) => round.question),
 		["Dienstag", "Mittwoch 1", "Mittwoch 2", "Quarantaene-Nachfolger"],
 	);
+	// Only files contributing rounds of THIS session are listed.
 	assert.deepEqual(used, [
 		"/chats/2026-07-15_a.json",
 		"/chats/2026-07-16_a.json",
@@ -442,31 +448,52 @@ function makeRound(question: string): ChatRound {
 	]);
 	assert.ok(warnings.some((m) => m.includes("unreadable") && m.includes("2026-07-14_a.json")));
 	assert.ok(warnings.some((m) => m.includes("different paper identity") && m.includes("2026-07-13_a.json")));
+	// Without a session id nothing matches -- session scoping is never off.
+	assert.deepEqual(loadChatRounds("/", "a", paperA.key, null, chatLog, () => {}).rounds, []);
 	// The dotted arXiv base must not match its dot-as-wildcard lookalikes.
 	const dotted = memoryChatLog();
-	dotted.files.set("/chats/2026-07-16_arxiv_2401x16393.json", protocolOf("2026-07-16", [makeRound("Falle")]));
-	const none = loadChatRounds("/", "arxiv_2401.16393", paperA.key, dotted.chatLog, () => {});
+	dotted.files.set("/chats/2026-07-16_arxiv_2401x16393.json", protocolOf("2026-07-16", [makeRound("Falle", "s1")]));
+	const none = loadChatRounds("/", "arxiv_2401.16393", paperA.key, "s1", dotted.chatLog, () => {});
 	assert.deepEqual(none.rounds, []);
 }
 
-/* ---------------- sticky current paper ---------------- */
+/* ---------------- sticky current paper (session-scoped) ---------------- */
 {
 	const { deps, files } = makeDeps("Antwort [1].");
-	files.set("/chats/current-paper.json", JSON.stringify({ base: "a" }));
-	// No paper option: the sticky marker resolves it.
-	const result = await runChat({ question: "q", root: "/", model: "fake-gen", embedModel: "fake-embed" }, deps);
+	files.set("/chats/current-paper.json", JSON.stringify({ base: "a", session: "s1" }));
+	// No paper option, SAME session: the sticky marker resolves it.
+	const result = await runChat({ question: "q", root: "/", session: "s1", model: "fake-gen", embedModel: "fake-embed" }, deps);
 	assert.equal(result.paper.base, "a");
-	// An explicit paper wins over the marker and updates it.
-	const explicit = await runChat({ question: "q", paper: "b", root: "/", model: "fake-gen", embedModel: "fake-embed" }, deps);
+	// A DIFFERENT session must not inherit the marker (bug 2026-07-21: the
+	// selection survived pi restarts) -- nor may a session-less call.
+	await assert.rejects(
+		() => runChat({ question: "q", root: "/", session: "s2", model: "fake-gen", embedModel: "fake-embed" }, deps),
+		/no paper selected/,
+	);
+	await assert.rejects(
+		() => runChat({ question: "q", root: "/", model: "fake-gen", embedModel: "fake-embed" }, deps),
+		/no paper selected/,
+	);
+	// An explicit paper wins over the marker and re-stamps it for ITS session.
+	const explicit = await runChat({ question: "q", paper: "b", root: "/", session: "s2", model: "fake-gen", embedModel: "fake-embed" }, deps);
 	assert.equal(explicit.paper.base, "b");
-	assert.equal(JSON.parse(files.get("/chats/current-paper.json")!).base, "b");
+	assert.deepEqual(JSON.parse(files.get("/chats/current-paper.json")!), { base: "b", session: "s2" });
+}
+{
+	// A legacy marker without a session field never matches (migration path).
+	const { deps, files } = makeDeps("never reached");
+	files.set("/chats/current-paper.json", JSON.stringify({ base: "a" }));
+	await assert.rejects(
+		() => runChat({ question: "q", root: "/", session: "s1", embedModel: "fake-embed" }, deps),
+		/no paper selected/,
+	);
 }
 {
 	// A corrupt marker falls back to the honest missing-paper error.
 	const { deps, files } = makeDeps("never reached");
 	files.set("/chats/current-paper.json", "{ garbage");
 	await assert.rejects(
-		() => runChat({ question: "q", root: "/", embedModel: "fake-embed" }, deps),
+		() => runChat({ question: "q", root: "/", session: "s1", embedModel: "fake-embed" }, deps),
 		/no paper selected/,
 	);
 }
@@ -524,13 +551,19 @@ function makeRound(question: string): ChatRound {
 	const protocol: ChatProtocol = {
 		schema: CHAT_SCHEMA, base: "a", date: "2026-07-15",
 		paper: { key: paperA.key, title: paperA.title, authors: paperA.authors, year: paperA.year, doi: paperA.doi, arxiv_id: "" },
-		rounds: [makeRound("Frage eins?"), makeRound("Frage zwei?"), makeRound("Frage eins?")],
+		// Rounds of an earlier session and legacy session-less rounds sit in
+		// the SAME file -- the report must ignore them (bug 2026-07-21: old
+		// questions resurfaced in every report).
+		rounds: [
+			makeRound("Frage eins?", "s1"), makeRound("Frage zwei?", "s1"), makeRound("Frage eins?", "s1"),
+			makeRound("Alte Frage?", "s0"), makeRound("Uralte Frage ohne Session?"),
+		],
 	};
 	files.set("/chats/2026-07-15_a.json", JSON.stringify(protocol));
 	const report = await runChatReport({
-		question: "Fokus: Validierung?", paper: "a.pdf", root: "/", model: "fake-gen", embedModel: "fake-embed",
+		question: "Fokus: Validierung?", paper: "a.pdf", session: "s1", root: "/", model: "fake-gen", embedModel: "fake-embed",
 	}, deps);
-	// ONE embed call carrying the deduplicated session questions + focus.
+	// ONE embed call carrying the deduplicated CURRENT-session questions + focus.
 	assert.equal(embedCalls.length, 1);
 	assert.deepEqual(embedCalls[0], ["Frage eins?", "Frage zwei?", "Fokus: Validierung?"]);
 	assert.deepEqual(report.session_questions, ["Frage eins?", "Frage zwei?"]);
@@ -548,19 +581,22 @@ function makeRound(question: string): ChatRound {
 	// protocol filename.
 	assert.equal(report.question, "Paper chat report: a.pdf");
 	assert.ok(querySlug(report.question).startsWith("Paper_chat_report_"));
-	// Appendix carried verbatim; the report itself did NOT append a round.
+	// Appendix: only THIS session's rounds, verbatim; the report itself did
+	// NOT append a round and the file keeps all 5.
 	assert.equal(report.rounds.length, 3);
+	assert.ok(report.rounds.every((round) => round.session === "s1"));
 	assert.deepEqual(report.protocol_files, ["/chats/2026-07-15_a.json"]);
-	assert.equal((JSON.parse(files.get("/chats/2026-07-15_a.json")!) as ChatProtocol).rounds.length, 3);
+	assert.equal((JSON.parse(files.get("/chats/2026-07-15_a.json")!) as ChatProtocol).rounds.length, 5);
 	// Determinism: an identical second run retrieves the identical excerpts.
 	const again = await runChatReport({
-		question: "Fokus: Validierung?", paper: "a.pdf", root: "/", model: "fake-gen", embedModel: "fake-embed",
+		question: "Fokus: Validierung?", paper: "a.pdf", session: "s1", root: "/", model: "fake-gen", embedModel: "fake-embed",
 	}, deps);
 	assert.deepEqual(again.chunks, report.chunks);
 }
 
-/* ---------------- runChatReport: no session, no focus ---------------- */
+/* ---------------- runChatReport: no session rounds, no focus ---------------- */
 {
+	// Without a session id, prior rounds are out of scope by design.
 	const { deps, embedCalls } = makeDeps("Antwort [1].");
 	const warnings: string[] = [];
 	const report = await runChatReport({
@@ -571,7 +607,27 @@ function makeRound(question: string): ChatRound {
 	assert.deepEqual(report.session_questions, []);
 	assert.equal(report.focus, null);
 	assert.deepEqual(report.protocol_files, []);
-	assert.ok(warnings.some((m) => m.includes("default question")));
+	assert.ok(warnings.some((m) => m.includes("no chat rounds recorded for this session")));
+}
+{
+	// A session with no recorded rounds behaves the same (fresh session,
+	// report as the first action).
+	const { deps, files, embedCalls } = makeDeps("Antwort [1].");
+	files.set("/chats/2026-07-15_a.json", JSON.stringify({
+		schema: CHAT_SCHEMA, base: "a", date: "2026-07-15",
+		paper: { key: paperA.key, title: paperA.title, authors: paperA.authors, year: paperA.year, doi: paperA.doi, arxiv_id: "" },
+		rounds: [makeRound("Alte Frage?", "s0")],
+	} satisfies ChatProtocol));
+	const warnings: string[] = [];
+	const report = await runChatReport({
+		paper: "a", session: "s1", root: "/", model: "fake-gen", embedModel: "fake-embed",
+		onWarn: (m) => warnings.push(m),
+	}, deps);
+	assert.deepEqual(embedCalls[0], [DEFAULT_REPORT_QUESTION]);
+	assert.deepEqual(report.session_questions, []);
+	assert.deepEqual(report.rounds, []);
+	assert.deepEqual(report.protocol_files, []);
+	assert.ok(warnings.some((m) => m.includes("no chat rounds recorded for this session")));
 }
 
 console.log("chat.test.ts: all assertions passed");
