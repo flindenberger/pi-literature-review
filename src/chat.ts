@@ -34,6 +34,7 @@ import { createBackend, type GenerateOptions, type LlmBackend } from "./llm.ts";
 import { outputRoot } from "./output.ts";
 import {
 	appendRound,
+	type CitationSite,
 	loadRounds,
 	type ProtocolDeps,
 	readCurrentScope,
@@ -50,7 +51,7 @@ import {
 	translateViaBackend,
 } from "./retrieve.ts";
 import {
-	buildReferences,
+	buildCitations,
 	DEFAULT_TOP_K,
 	enforceCitations,
 	MAX_TOP_K,
@@ -296,6 +297,9 @@ export interface ChatAnswer {
 	/** Validated prose with paper-level [n] markers. */
 	prose: string;
 	references: ReferenceEntry[];
+	/** Per-marker chunk provenance in document order (one entry per marker
+	 * in the prose; drives the clickable PDF superscripts). */
+	sites: CitationSite[];
 	/** Retrieval trail: every excerpt that was in the prompt. */
 	chunks: Array<{ id: number; page: number; score: number; text: string; lexical?: boolean }>;
 	/** Queries of the ONE embed call (original + disclosed English variant). */
@@ -411,7 +415,7 @@ export async function runChat(options: ChatOptions, deps?: ChatDeps): Promise<Ch
 	if (scan.strippedReferenceSection) {
 		onWarn("the model wrote its own reference section; it was cut (references come from verified records only)");
 	}
-	const { prose, references } = buildReferences(scan.text, retrieved);
+	const { prose, references, sites } = buildCitations(scan.text, retrieved, new Map([[paper.key, paper.file]]));
 
 	const now = deps?.now ?? (() => new Date());
 	const generated = now().toISOString();
@@ -447,6 +451,7 @@ export async function runChat(options: ChatOptions, deps?: ChatDeps): Promise<Ch
 		grounded: references.length > 0,
 		prose,
 		references,
+		sites,
 		cited_chunks: chunkTrail.filter((chunk) => citedIds.has(chunk.id)),
 		invalid_markers: scan.invalidMarkers,
 		unmarked_sentences: scan.unmarkedSentences,
@@ -476,6 +481,7 @@ export async function runChat(options: ChatOptions, deps?: ChatDeps): Promise<Ch
 		grounded: references.length > 0,
 		prose,
 		references,
+		sites,
 		chunks: chunkTrail,
 		query_variants: retrieval.variants,
 		lexical_terms: retrieval.lexical_terms,
@@ -532,6 +538,9 @@ export interface ChatReport {
 	grounded: boolean;
 	prose: string;
 	references: ReferenceEntry[];
+	/** Per-marker chunk provenance in document order (one entry per marker
+	 * in the prose; drives the clickable PDF superscripts). */
+	sites: CitationSite[];
 	chunks: Array<{ id: number; page: number; score: number; text: string; lexical?: boolean }>;
 	/** Queries of the ONE embed call (originals + disclosed English variants). */
 	query_variants: QueryVariant[];
@@ -661,7 +670,7 @@ export async function runChatReport(options: ChatReportOptions, deps?: ChatDeps)
 	if (scan.strippedReferenceSection) {
 		onWarn("the model wrote its own reference section; it was cut (references come from verified records only)");
 	}
-	const { prose, references } = buildReferences(scan.text, retrieved);
+	const { prose, references, sites } = buildCitations(scan.text, retrieved, new Map([[paper.key, paper.file]]));
 
 	const now = deps?.now ?? (() => new Date());
 	return {
@@ -675,6 +684,7 @@ export async function runChatReport(options: ChatReportOptions, deps?: ChatDeps)
 		grounded: references.length > 0,
 		prose,
 		references,
+		sites,
 		chunks: retrieved.map((chunk) => ({
 			id: chunk.id,
 			page: chunk.page,

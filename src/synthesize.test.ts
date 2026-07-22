@@ -11,7 +11,8 @@ import type { CorpusDeps, LibraryMatch, PaperIndex } from "./corpus.ts";
 import type { GenerateOptions } from "./llm.ts";
 import {
 	buildPrompt,
-	buildReferences,
+	assembleReport,
+	buildCitations,
 	cosine,
 	enforceCitations,
 	promptTokens,
@@ -130,27 +131,71 @@ const indexB: PaperIndex = {
 	assert.equal(scan.strippedReferenceSection, false);
 }
 
-/* ---------------- buildReferences ---------------- */
+/* ---------------- buildCitations ---------------- */
 {
 	const chunks: RetrievedChunk[] = [
-		{ id: 1, paper: paperA, page: 2, score: 0.9, text: "a" },
+		{ id: 1, paper: paperA, page: 2, score: 0.9, text: "The adaptive threshold separates water from sand robustly." },
 		{ id: 2, paper: paperA, page: 5, score: 0.8, text: "b" },
 		{ id: 3, paper: paperB, page: 1, score: 0.7, text: "c" },
 	];
-	const { prose, references } = buildReferences(
-		"First [1]. Second [3]. Same paper again [2]. Adjacent same paper [1][2].",
+	const { prose, references, sites } = buildCitations(
+		"First [1]. Second [3]. Same paper again [2]. Adjacent same paper [1][2]. Same chunk [1] [1].",
 		chunks,
+		new Map([[paperA.key, "/papers/a.pdf"]]),
 	);
-	// Paper-level renumbering in first-citation order: A=1, B=2.
-	assert.equal(prose, "First [1]. Second [2]. Same paper again [1]. Adjacent same paper [1].");
+	// Paper-level renumbering in first-citation order: A=1, B=2. Adjacent
+	// markers of the SAME paper but DIFFERENT chunks stay separate (v25:
+	// each keeps its page target); the same chunk back-to-back collapses.
+	assert.equal(prose, "First [1]. Second [2]. Same paper again [1]. Adjacent same paper [1][1]. Same chunk [1].");
 	assert.equal(references.length, 2);
 	assert.equal(references[0].key, paperA.key);
 	assert.equal(references[0].title, "Vistula sandbars"); // verbatim from the record
 	assert.equal(references[0].doi, "10.3390/rs13081505");
 	assert.deepEqual(references[0].pages, [2, 5]);
 	assert.deepEqual(references[0].chunk_ids, [1, 2]);
+	assert.equal(references[0].pdf_path, "/papers/a.pdf"); // code-constructed library path
 	assert.equal(references[1].key, paperB.key);
 	assert.deepEqual(references[1].pages, [1]);
+	assert.equal(references[1].pdf_path, undefined); // no path known -> field absent
+	// THE invariant: one site per marker in the prose, in document order.
+	assert.equal((prose.match(/\[\d+\]/g) ?? []).length, sites.length);
+	assert.deepEqual(sites.map((site) => [site.ref, site.chunk_id, site.page]), [
+		[1, 1, 2], [2, 3, 1], [1, 2, 5], [1, 1, 2], [1, 2, 5], [1, 1, 2],
+	]);
+	assert.equal(sites[0].paper_key, paperA.key);
+	assert.equal(sites[0].snippet, "The adaptive threshold separates water"); // clean-word run for the PDF highlight
+	assert.equal(sites[2].snippet, null); // too short for a distinctive phrase
+}
+{
+	// No markers, no sites; unknown markers pass through untouched.
+	const chunks: RetrievedChunk[] = [{ id: 1, paper: paperA, page: 2, score: 0.9, text: "a" }];
+	assert.deepEqual(buildCitations("No citations at all.", chunks).sites, []);
+}
+
+/* ---------------- assembleReport ---------------- */
+{
+	const chunksA: RetrievedChunk[] = [{ id: 1, paper: paperA, page: 2, score: 0.9, text: "a" }];
+	const chunksB: RetrievedChunk[] = [
+		{ id: 1, paper: paperB, page: 1, score: 0.9, text: "b" },
+		{ id: 2, paper: paperA, page: 5, score: 0.8, text: "c" },
+	];
+	const unitOne = buildCitations("Alpha [1].", chunksA, new Map([[paperA.key, "/papers/a.pdf"]]));
+	const unitTwo = buildCitations("Beta [1]. Gamma [2].", chunksB);
+	const { units, references } = assembleReport([unitOne, unitTwo]);
+	// Global numbering in first-citation order across units: A=1, B=2; the
+	// second unit's local B=1/A=2 markers are rewritten.
+	assert.equal(units[0].prose, "Alpha [1].");
+	assert.equal(units[1].prose, "Beta [2]. Gamma [1].");
+	assert.deepEqual(units[1].sites.map((site) => site.ref), [2, 1]);
+	assert.deepEqual(references.map((reference) => [reference.n, reference.key]), [[1, paperA.key], [2, paperB.key]]);
+	// Pages merge per paper across units; the path survives from whichever
+	// unit knew it.
+	assert.deepEqual(references[0].pages, [2, 5]);
+	assert.equal(references[0].pdf_path, "/papers/a.pdf");
+	// A single unit assembles to itself (identity on the prose).
+	const single = assembleReport([buildCitations("Solo [1].", chunksA)]);
+	assert.equal(single.units[0].prose, "Solo [1].");
+	assert.deepEqual(single.references.map((reference) => reference.key), [paperA.key]);
 }
 
 /* ---------------- runSynthesize with fake deps ---------------- */

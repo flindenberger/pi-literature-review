@@ -33,6 +33,7 @@ import {
 } from "./corpus.ts";
 import { createBackend, type GenerateOptions, type LlmBackend } from "./llm.ts";
 import { outputRoot } from "./output.ts";
+import type { CitationSite } from "./protocol.ts";
 import {
 	type QueryVariant,
 	retrieve,
@@ -196,55 +197,173 @@ export interface ReferenceEntry {
 	pages: number[];
 	/** Prompt excerpt numbers this reference rests on. */
 	chunk_ids: number[];
+	/** Local PDF of the cited paper -- a code-constructed library path (the
+	 * trust boundary of localPdfHref), never model or API text. Absent when
+	 * the caller knows no path. */
+	pdf_path?: string;
+}
+
+/**
+ * Deterministic search phrase for the PDF #search fragment: the first run
+ * of at least 3 CONSECUTIVE words containing only letters/digits (capped
+ * at 5). Phrase search matches the text layer verbatim, so a single comma
+ * inside the snippet -- or a word we trimmed punctuation from -- would
+ * kill the match (live finding 2026-07-16); shorter also means fewer
+ * line-break crossings. Null when no such run exists or it is too short
+ * to be distinctive -- the #page anchor alone is then the honest offer.
+ * (Moved here from render.ts in E2b: the snippet is citation provenance,
+ * persisted in CitationSite, not a rendering detail.)
+ */
+export function searchSnippet(text: string): string | null {
+	const words = text.replace(/\[\d+\]/g, " ").split(/\s+/).filter(Boolean);
+	let run: string[] = [];
+	for (const word of words) {
+		if (/^[\p{L}\p{N}]+$/u.test(word)) {
+			run.push(word);
+			if (run.length === 5) break;
+		} else if (run.length >= 3) {
+			break; // first usable run wins -- deterministic
+		} else {
+			run = [];
+		}
+	}
+	const snippet = run.join(" ");
+	return run.length >= 3 && snippet.length >= 15 ? snippet : null;
 }
 
 /**
  * Renumber validated chunk-level markers to paper-level reference numbers
- * (several excerpts of one paper become ONE reference) and build the
+ * (several excerpts of one paper become ONE reference), build the
  * reference list -- exclusively from the verified paper records carried by
- * the retrieved chunks. This is the only place the final citation numbers
- * are produced, and no model output flows into any field but the marker
+ * the retrieved chunks -- and record one CitationSite per surviving marker
+ * in document order: the exact chunk (page, snippet) behind every number
+ * the reader sees. This is the only place the final citation numbers are
+ * produced, and no model output flows into any field but the marker
  * positions themselves.
+ *
+ * Collapse rule (changed in v25 E2b): adjacent markers merge ONLY when
+ * they cite the same CHUNK. The old same-paper collapse destroyed the
+ * page targets ([page 4][page 18] became one number pointing nowhere
+ * specific); now every kept marker still knows its page. The cost is more
+ * visible markers -- a deliberate trade, evaluated in the field.
+ *
+ * Invariant (tested): the number of markers in the returned prose equals
+ * sites.length.
  */
-export function buildReferences(
+export function buildCitations(
 	text: string,
 	chunks: RetrievedChunk[],
-): { prose: string; references: ReferenceEntry[] } {
+	pdfPathByKey?: Map<string, string>,
+): { prose: string; references: ReferenceEntry[]; sites: CitationSite[] } {
 	const byId = new Map(chunks.map((chunk) => [chunk.id, chunk]));
 	const references: ReferenceEntry[] = [];
 	const numberByKey = new Map<string, number>();
-	const prose = text
-		.replace(/\[(\d+)\]/g, (match, digits: string) => {
-			const chunk = byId.get(Number.parseInt(digits, 10));
-			if (!chunk) return match; // cannot happen after enforceCitations
-			let n = numberByKey.get(chunk.paper.key);
-			if (n === undefined) {
-				n = references.length + 1;
-				numberByKey.set(chunk.paper.key, n);
-				references.push({
-					n,
-					key: chunk.paper.key,
-					title: chunk.paper.title,
-					authors: chunk.paper.authors,
-					year: chunk.paper.year,
-					doi: chunk.paper.doi,
-					arxiv_id: chunk.paper.arxiv_id,
-					pages: [],
-					chunk_ids: [],
-				});
+	const sites: CitationSite[] = [];
+	let prose = "";
+	let cursor = 0;
+	let lastChunkId: number | null = null;
+	for (const match of text.matchAll(/\[(\d+)\]/g)) {
+		const between = text.slice(cursor, match.index);
+		cursor = match.index + match[0].length;
+		const chunk = byId.get(Number.parseInt(match[1], 10));
+		if (!chunk) { // cannot happen after enforceCitations
+			prose += between + match[0];
+			lastChunkId = null;
+			continue;
+		}
+		if (between.trim()) lastChunkId = null;
+		if (lastChunkId === chunk.id) continue; // same chunk back-to-back: one marker
+		prose += between;
+		let n = numberByKey.get(chunk.paper.key);
+		if (n === undefined) {
+			n = references.length + 1;
+			numberByKey.set(chunk.paper.key, n);
+			references.push({
+				n,
+				key: chunk.paper.key,
+				title: chunk.paper.title,
+				authors: chunk.paper.authors,
+				year: chunk.paper.year,
+				doi: chunk.paper.doi,
+				arxiv_id: chunk.paper.arxiv_id,
+				pages: [],
+				chunk_ids: [],
+				...(pdfPathByKey?.has(chunk.paper.key) ? { pdf_path: pdfPathByKey.get(chunk.paper.key) } : {}),
+			});
+		}
+		const entry = references[n - 1];
+		if (!entry.chunk_ids.includes(chunk.id)) {
+			entry.chunk_ids.push(chunk.id);
+			if (!entry.pages.includes(chunk.page)) {
+				entry.pages.push(chunk.page);
+				entry.pages.sort((a, b) => a - b);
 			}
+		}
+		prose += `[${n}]`;
+		sites.push({
+			ref: n,
+			chunk_id: chunk.id,
+			paper_key: chunk.paper.key,
+			page: chunk.page,
+			snippet: searchSnippet(chunk.text),
+		});
+		lastChunkId = chunk.id;
+	}
+	prose += text.slice(cursor);
+	return { prose, references, sites };
+}
+
+/** One grounded prose unit as assembleReport consumes it. */
+export interface CitedUnit {
+	prose: string;
+	references: ReferenceEntry[];
+	sites: CitationSite[];
+}
+
+/**
+ * Merge several independently numbered units into ONE report numbering:
+ * papers are numbered globally in first-citation order across units, the
+ * unit prose markers and sites[].ref are rewritten accordingly, and the
+ * global reference list merges pages per paper (chunk ids stay with the
+ * units -- they are prompt-local). For a single unit this is the identity
+ * on the prose. Pure; marker rewriting walks the markers in document
+ * order, mirrored one-to-one by the unit's sites (the buildCitations
+ * invariant), so no text is ever interpreted beyond the validated markers.
+ */
+export function assembleReport(units: CitedUnit[]): { units: CitedUnit[]; references: ReferenceEntry[] } {
+	const references: ReferenceEntry[] = [];
+	const numberByKey = new Map<string, number>();
+	const globalOf = (local: ReferenceEntry): number => {
+		let n = numberByKey.get(local.key);
+		if (n === undefined) {
+			n = references.length + 1;
+			numberByKey.set(local.key, n);
+			references.push({ ...local, n, chunk_ids: [], pages: [...local.pages] });
+		} else {
 			const entry = references[n - 1];
-			if (!entry.chunk_ids.includes(chunk.id)) {
-				entry.chunk_ids.push(chunk.id);
-				if (!entry.pages.includes(chunk.page)) {
-					entry.pages.push(chunk.page);
-					entry.pages.sort((a, b) => a - b);
-				}
+			for (const page of local.pages) {
+				if (!entry.pages.includes(page)) entry.pages.push(page);
 			}
-			return `[${n}]`;
-		})
-		.replace(/\[(\d+)\](?:\s*\[\1\])+/g, "[$1]"); // same paper, adjacent excerpts
-	return { prose, references };
+			entry.pages.sort((a, b) => a - b);
+			if (!entry.pdf_path && local.pdf_path) entry.pdf_path = local.pdf_path;
+		}
+		return n;
+	};
+	const rewritten = units.map((unit) => {
+		const byLocalN = new Map(unit.references.map((entry) => [entry.n, globalOf(entry)]));
+		let index = 0;
+		const prose = unit.prose.replace(/\[(\d+)\]/g, (match, digits: string) => {
+			const site = unit.sites[index++];
+			const global = byLocalN.get(Number.parseInt(digits, 10));
+			return site && global !== undefined ? `[${global}]` : match;
+		});
+		return {
+			...unit,
+			prose,
+			sites: unit.sites.map((site) => ({ ...site, ref: byLocalN.get(site.ref) ?? site.ref })),
+		};
+	});
+	return { units: rewritten, references };
 }
 
 /* ------------------------------------------------------------------ *
@@ -291,6 +410,9 @@ export interface SynthesisResult {
 	/** Final prose with paper-level [n] markers. */
 	prose: string;
 	references: ReferenceEntry[];
+	/** Per-marker chunk provenance in document order (one entry per marker
+	 * in the prose; drives the clickable PDF superscripts). */
+	sites: CitationSite[];
 	/** Retrieval trail: every excerpt that was in the prompt. */
 	chunks: Array<{ id: number; paper_key: string; title: string; page: number; score: number; text: string; lexical?: boolean }>;
 	/** Queries of the ONE embed call (original + disclosed English variant). */
@@ -434,7 +556,8 @@ export async function runSynthesize(
 	if (scan.strippedReferenceSection) {
 		onWarn("the model wrote its own reference section; it was cut (references come from verified records only)");
 	}
-	const { prose, references } = buildReferences(scan.text, retrieved);
+	const pdfPathByKey = new Map(papers.map((paper) => [paper.key, paper.file]));
+	const { prose, references, sites } = buildCitations(scan.text, retrieved, pdfPathByKey);
 	const citedKeys = new Set(references.map((reference) => reference.key));
 	const retrievedKeys = [...new Set(retrieved.map((chunk) => chunk.paper.key))];
 
@@ -448,6 +571,7 @@ export async function runSynthesize(
 		grounded: references.length > 0,
 		prose,
 		references,
+		sites,
 		chunks: retrieved.map((chunk) => ({
 			id: chunk.id,
 			paper_key: chunk.paper.key,

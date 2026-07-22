@@ -39,7 +39,12 @@ interface RenderRecord {
 }
 
 import type { ChatReport } from "./chat.ts";
-import type { SynthesisResult } from "./synthesize.ts";
+import type { CitationSite } from "./protocol.ts";
+import { searchSnippet, type SynthesisResult } from "./synthesize.ts";
+
+// Moved to synthesize.ts in v25 E2b (the snippet is citation provenance);
+// re-exported here for existing importers.
+export { searchSnippet } from "./synthesize.ts";
 
 export interface RenderPayload {
 	query: string;
@@ -503,8 +508,18 @@ const REVIEW_STYLE = `
 
 /** Escaped prose with validated [n] markers turned into reference links.
  * The regex only ever touches bracketed digits that survived the citation
- * gate -- no other model text is interpreted as markup. */
-function proseHtml(prose: string): string {
+ * gate -- no other model text is interpreted as markup. With `cite`, each
+ * marker instance is resolved through its CitationSite (one site per
+ * marker, in document order -- the buildCitations invariant) to a clickable
+ * superscript that opens the source PDF at the cited page; a site the
+ * resolver cannot turn into a link (no local PDF) falls back to the
+ * in-page reference anchor. All hrefs come from localPdfHref over
+ * code-constructed library paths -- never from model or API text. */
+function proseHtml(
+	prose: string,
+	cite?: { sites: CitationSite[]; hrefFor: (site: CitationSite) => string | null },
+): string {
+	let markerIndex = 0;
 	return prose
 		.split(/\n{2,}/)
 		.map((paragraph) => paragraph.trim())
@@ -512,11 +527,22 @@ function proseHtml(prose: string): string {
 		.map((paragraph) => {
 			const withLinks = esc(paragraph)
 				.replaceAll("\n", "<br>")
-				.replace(/\[(\d+)\]/g, '<a class="cite" href="#ref-$1">[$1]</a>');
+				.replace(/\[(\d+)\]/g, (match, digits: string) => {
+					const site = cite?.sites[markerIndex++];
+					const href = site ? cite?.hrefFor(site) : null;
+					return href
+						? `<sup><a class="cite" href="${esc(href)}" target="_blank" rel="noopener">${digits}</a></sup>`
+						: `<a class="cite" href="#ref-${digits}">[${digits}]</a>`;
+				});
 			return `<p>${withLinks}</p>`;
 		})
 		.join("\n");
 }
+
+/** Honest footnote under superscript-cited prose (Chromium ignores the
+ * #search highlight; the page anchor is the floor everywhere). */
+const SUP_NOTE = '<p class="meta">Superscript numbers open the cited page of the source PDF in a new tab;'
+	+ " Firefox also highlights the cited passage (Chromium opens the page without the highlight).</p>";
 
 function referenceHref(reference: { doi: string; arxiv_id: string }): string | null {
 	if (reference.doi) return safeHref(`https://doi.org/${reference.doi}`);
@@ -603,6 +629,20 @@ ${referenceRows}
 	const uncitedRow = result.papers_uncited.length
 		? `\n<dt>Retrieved, uncited</dt><dd>${esc(result.papers_uncited.join(", "))}</dd>`
 		: "";
+	// Clickable superscripts: resolve each marker through its citation site
+	// to the cited page of the paper's local PDF (path from the verified
+	// library scan, carried on the reference entry).
+	const pdfPathByKey = new Map(result.references.map((reference) => [reference.key, reference.pdf_path]));
+	const cite = (result.sites ?? []).length
+		? {
+			sites: result.sites,
+			hrefFor: (site: CitationSite): string | null => {
+				const path = pdfPathByKey.get(site.paper_key);
+				return path ? localPdfHref(path, site.page, site.snippet) : null;
+			},
+		}
+		: undefined;
+
 	const integrity: string[] = [];
 	integrity.push(`${result.invalid_markers.length} invalid citation marker(s) stripped`
 		+ (result.invalid_markers.length ? ` (${result.invalid_markers.join(" ")})` : ""));
@@ -629,8 +669,8 @@ ${referenceRows}
 <dt>Generated</dt><dd>${esc(result.generated)} (UTC)</dd>
 </dl>${banner}
 <div class="prose">
-${proseHtml(result.prose)}
-</div>
+${proseHtml(result.prose, cite)}
+</div>${cite ? `\n${SUP_NOTE}` : ""}
 ${referencesSection}
 <h2>Method &amp; transparency</h2>
 <dl class="meta">
@@ -684,32 +724,6 @@ export function localPdfHref(pdfPath: string, page?: number, snippet?: string | 
 		if (snippet) href += `&search=${encodeURIComponent(snippet)}&phrase=true`;
 	}
 	return href;
-}
-
-/**
- * Deterministic search phrase for the #search fragment: the first run of
- * at least 3 CONSECUTIVE words containing only letters/digits (capped at
- * 5). Phrase search matches the text layer verbatim, so a single comma
- * inside the snippet -- or a word we trimmed punctuation from -- would
- * kill the match (live finding 2026-07-16); shorter also means fewer
- * line-break crossings. Null when no such run exists or it is too short
- * to be distinctive -- the #page anchor alone is then the honest offer.
- */
-export function searchSnippet(text: string): string | null {
-	const words = text.replace(/\[\d+\]/g, " ").split(/\s+/).filter(Boolean);
-	let run: string[] = [];
-	for (const word of words) {
-		if (/^[\p{L}\p{N}]+$/u.test(word)) {
-			run.push(word);
-			if (run.length === 5) break;
-		} else if (run.length >= 3) {
-			break; // first usable run wins -- deterministic
-		} else {
-			run = [];
-		}
-	}
-	const snippet = run.join(" ");
-	return run.length >= 3 && snippet.length >= 15 ? snippet : null;
 }
 
 /**
@@ -779,16 +793,31 @@ ${referenceRows}
 		const pages = [...new Set(round.references.flatMap((reference) => reference.pages))].sort((a, b) => a - b);
 		const state = round.grounded ? "" : " -- UNGROUNDED (no verifiable citations)";
 		const cited = pages.length ? `<p class="roundmeta">Cited pages: ${pageLinks(pages)}</p>` : "";
+		// Rounds recorded since v25 carry per-marker citation sites -- their
+		// markers then link into the PDF exactly like the summary's (field
+		// wish 2026-07-22: dead round answers annoyed). The count guard keeps
+		// a hand-edited or legacy round from misaligning marker and site;
+		// such rounds fall back to plain text, honestly.
+		const markerCount = (round.prose.match(/\[\d+\]/g) ?? []).length;
+		const roundCite = round.sites && round.sites.length === markerCount && markerCount > 0
+			? {
+				sites: round.sites,
+				hrefFor: (site: CitationSite): string | null => localPdfHref(paper.pdf_path, site.page, site.snippet),
+			}
+			: undefined;
+		const answer = roundCite
+			? `<div class="answer">${proseHtml(round.prose, roundCite)}</div>`
+			: `<p class="answer">${esc(round.prose)}</p>`;
 		return `<div class="round">
 <p class="roundmeta">Round ${i + 1} -- ${esc(round.asked)} (UTC), ${esc(round.model)}${state}</p>
 <p class="question">${esc(round.question)}</p>
-<p class="answer">${esc(round.prose)}</p>
+${answer}
 ${cited}</div>`;
 	}).join("\n");
 	const protocolSection = report.rounds.length
 		? `<h2>Chat protocol</h2>
 <p class="meta">The code-validated rounds of this session (from ${esc(report.protocol_files.map((file) => file.split("/").pop() ?? file).join(", "))}).
-Bracketed numbers inside the answers refer to each round's own excerpts and are left as plain text here.</p>
+Superscript markers open the cited PDF page; rounds recorded before v25 keep their bracketed numbers as plain text.</p>
 ${roundBlocks}`
 		: "";
 
@@ -798,6 +827,15 @@ ${roundBlocks}`
 	const failureRows = report.extraction_failures.length
 		? `\n<dt>Extraction</dt><dd>${esc(report.extraction_failures.map((f) => `${f.file}: ${f.reason}`).join("; "))}</dd>`
 		: "";
+	// Clickable superscripts: every marker resolves into the ONE paper's
+	// local PDF at the cited page.
+	const cite = (report.sites ?? []).length
+		? {
+			sites: report.sites,
+			hrefFor: (site: CitationSite): string | null => localPdfHref(paper.pdf_path, site.page, site.snippet),
+		}
+		: undefined;
+
 	const integrity: string[] = [];
 	integrity.push(`${report.invalid_markers.length} invalid citation marker(s) stripped`
 		+ (report.invalid_markers.length ? ` (${report.invalid_markers.join(" ")})` : ""));
@@ -830,8 +868,8 @@ ${roundBlocks}`
 ${report.session_questions.length ? `<h2>Questions of the session</h2>\n<ol>\n${questionItems}\n</ol>` : ""}
 <h2>Summary</h2>
 <div class="prose">
-${proseHtml(report.prose)}
-</div>
+${proseHtml(report.prose, cite)}
+</div>${cite ? `\n${SUP_NOTE}` : ""}
 ${referencesSection}
 <h2>Method &amp; transparency</h2>
 <dl class="meta">

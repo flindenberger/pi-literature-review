@@ -276,6 +276,10 @@ const synthesis: SynthesisResult = {
 		{ id: 2, paper_key: "arxiv:2401.16393", title: "Paper Two", page: 1, score: 0.52, text: "Excerpt two." },
 		{ id: 3, paper_key: "doi:10.1/x", title: "Paper <One>", page: 5, score: 0.4, text: "Excerpt three." },
 	],
+	sites: [],
+	query_variants: [],
+	lexical_terms: [],
+	lexical_added: 0,
 	invalid_markers: ["[9]"],
 	unmarked_sentences: 1,
 	stripped_reference_section: true,
@@ -326,6 +330,32 @@ const synthesis: SynthesisResult = {
 	assert.ok(html.includes("None -- no valid citations survived the gate."));
 }
 
+/* ---------------- renderReviewHtml: clickable superscripts ---------------- */
+{
+	// With citation sites and a known local PDF, markers become superscript
+	// links to the cited page; a reference without a path falls back to the
+	// in-page anchor. Marker order maps one-to-one onto sites.
+	const cited: SynthesisResult = {
+		...synthesis,
+		references: [
+			{ ...synthesis.references[0], pdf_path: "/papers/one.pdf" },
+			synthesis.references[1], // no local PDF known
+		],
+		sites: [
+			{ ref: 1, chunk_id: 1, paper_key: "doi:10.1/x", page: 2, snippet: "adaptive threshold applied" },
+			{ ref: 2, chunk_id: 2, paper_key: "arxiv:2401.16393", page: 1, snippet: null },
+			{ ref: 1, chunk_id: 3, paper_key: "doi:10.1/x", page: 5, snippet: null },
+		],
+	};
+	const html = renderReviewHtml(cited);
+	assert.ok(html.includes(
+		'<sup><a class="cite" href="file:///papers/one.pdf#page=2&amp;search=adaptive%20threshold%20applied&amp;phrase=true" target="_blank" rel="noopener">1</a></sup>',
+	));
+	assert.ok(html.includes('<sup><a class="cite" href="file:///papers/one.pdf#page=5" target="_blank" rel="noopener">1</a></sup>'));
+	assert.ok(html.includes('<a class="cite" href="#ref-2">[2]</a>')); // no path -> classic anchor
+	assert.ok(html.includes("Superscript numbers open the cited page")); // honest Chromium footnote
+}
+
 /* ---------------- localPdfHref / searchSnippet ---------------- */
 {
 	// pathToFileURL percent-encodes; page, search and phrase=true (contiguous
@@ -373,6 +403,10 @@ const chatReport: ChatReport = {
 		{ id: 1, page: 2, score: 0.91, text: "Excerpt <text> one about the adaptive threshold method used." },
 		{ id: 2, page: 5, score: 0.83, text: "shrt" },
 	],
+	sites: [],
+	query_variants: [],
+	lexical_terms: [],
+	lexical_added: 0,
 	invalid_markers: ["[9]"],
 	unmarked_sentences: 0,
 	stripped_reference_section: false,
@@ -434,6 +468,54 @@ const chatReport: ChatReport = {
 	const html = renderPaperChatReportHtml({ ...chatReport, grounded: false, references: [] });
 	assert.ok(html.includes("UNGROUNDED DRAFT"));
 	assert.ok(html.includes("None -- no valid citations survived the gate."));
+}
+
+/* ---------------- renderPaperChatReportHtml: clickable superscripts ---------------- */
+{
+	// With sites, every summary marker becomes a superscript into the ONE
+	// paper's PDF at ITS page -- two markers of the same reference keep
+	// distinct page targets (the point of the v25 collapse-rule change).
+	const cited: ChatReport = {
+		...chatReport,
+		sites: [
+			{ ref: 1, chunk_id: 1, paper_key: "doi:10.1234/abc", page: 2, snippet: "one about the adaptive threshold" },
+			{ ref: 1, chunk_id: 2, paper_key: "doi:10.1234/abc", page: 5, snippet: null },
+		],
+		prose: "Die Methode nutzt einen Schwellwert [1].\n\nValidiert wird mit Felddaten [1].",
+	};
+	const html = renderPaperChatReportHtml(cited);
+	assert.ok(html.includes(
+		'<sup><a class="cite" href="file:///papers%20dir/a.pdf#page=2&amp;search=one%20about%20the%20adaptive%20threshold&amp;phrase=true" target="_blank" rel="noopener">1</a></sup>',
+	));
+	assert.ok(html.includes('<sup><a class="cite" href="file:///papers%20dir/a.pdf#page=5" target="_blank" rel="noopener">1</a></sup>'));
+	assert.ok(html.includes("Superscript numbers open the cited page"));
+	// The appendix round still shows its markers as plain text.
+	assert.ok(html.includes("Antwort mit Marker [1] als Klartext."));
+}
+
+/* ---------------- chat protocol appendix: rounds with sites link too ---------------- */
+{
+	// A round recorded since v25 carries its own sites -- its markers become
+	// PDF superscripts like the summary's (field wish 2026-07-22); a round
+	// whose sites do not match its markers falls back to plain text.
+	const cited: ChatReport = {
+		...chatReport,
+		rounds: [
+			{
+				...chatReport.rounds[0],
+				prose: "Antwort mit klickbarem Marker [1].",
+				sites: [{ ref: 1, chunk_id: 1, paper_key: "doi:10.1234/abc", page: 2, snippet: null }],
+			},
+			{
+				...chatReport.rounds[0],
+				prose: "Kaputte Runde [1][1].",
+				sites: [{ ref: 1, chunk_id: 1, paper_key: "doi:10.1234/abc", page: 2, snippet: null }], // 1 site, 2 markers
+			},
+		],
+	};
+	const html = renderPaperChatReportHtml(cited);
+	assert.ok(html.includes('Antwort mit klickbarem Marker <sup><a class="cite" href="file:///papers%20dir/a.pdf#page=2"'));
+	assert.ok(html.includes("Kaputte Runde [1][1].")); // mismatch -> honest plain text
 }
 
 {
