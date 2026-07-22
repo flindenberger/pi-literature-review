@@ -110,6 +110,7 @@ export function renderSynthesisDigest(result: SynthesisResult, htmlPath: string 
 		);
 	}
 	lines.push(`Question: ${result.question}`);
+	pushRetrievalLines(lines, result);
 	if (htmlPath) {
 		lines.push("Full review (prose, references, excerpts, method notes):");
 		lines.push(`  ${htmlPath}`);
@@ -150,6 +151,27 @@ export function renderSynthesisDigest(result: SynthesisResult, htmlPath: string 
 		}
 	}
 	return lines.join("\n");
+}
+
+/**
+ * Retrieval transparency (v24): the disclosed English query variant(s) and
+ * the lexical exact-match layer. The variant is the ONE place an LLM shapes
+ * retrieval -- shown wherever the result is shown; citations are unaffected.
+ */
+function pushRetrievalLines(
+	lines: string[],
+	result: { query_variants?: Array<{ query: string; kind: string }>; lexical_terms?: string[]; lexical_added?: number },
+): void {
+	const english = (result.query_variants ?? []).filter((variant) => variant.kind === "english");
+	if (english.length) {
+		lines.push(`Retrieval also used the English query variant(s): ${english.map((v) => v.query).join("; ")}`);
+	}
+	if (result.lexical_terms?.length) {
+		lines.push(`Lexical layer exact-matched: ${result.lexical_terms.join(", ")}`
+			+ (result.lexical_added
+				? ` -- ${result.lexical_added} excerpt(s) guaranteed in the prompt`
+				: " -- no additional excerpts"));
+	}
 }
 
 /* ---------------- paper chat (pi-literature-chat) ---------------- */
@@ -200,6 +222,7 @@ export function renderChatDigest(answer: ChatAnswer): string {
 		);
 	}
 	lines.push(paperLine(answer.paper));
+	pushRetrievalLines(lines, answer);
 	lines.push(`Pass paper: "${answer.paper.base}.pdf" on every follow-up call about this paper.`);
 	const label = answer.grounded
 		? "answer (relay to the user EXACTLY as written, including [n] markers)"
@@ -255,6 +278,7 @@ export function renderChatReportDigest(report: ChatReport, htmlPath: string | nu
 	}
 	lines.push(paperLine(report.paper));
 	if (report.focus) lines.push(`Focus: ${report.focus}`);
+	pushRetrievalLines(lines, report);
 	if (htmlPath) {
 		lines.push("Full report (summary, references, excerpts, chat protocol):");
 		lines.push(`  ${htmlPath}`);

@@ -46,6 +46,16 @@ export interface GenerateOptions {
 	temperature?: number;
 	/** Cap on generated tokens (Ollama num_predict / OpenAI max_tokens). */
 	maxTokens?: number;
+	/**
+	 * Ollama dialect only: turn hidden reasoning on/off (top-level "think"
+	 * field; models without a thinking mode accept and ignore it -- verified
+	 * live 2026-07-22). Needed because a thinking model otherwise spends a
+	 * capped call's entire budget on reasoning and returns empty content
+	 * (the v22 failure, re-found on the translation call). The OpenAI
+	 * dialect ignores it: thinking control lives in the server/provider
+	 * config there (pi's models.json thinkingFormat).
+	 */
+	think?: boolean;
 }
 
 export interface LlmBackend {
@@ -95,18 +105,17 @@ export function ollamaChatRequest(
 	if (opts.numCtx !== undefined) options.num_ctx = opts.numCtx;
 	if (opts.temperature !== undefined) options.temperature = opts.temperature;
 	if (opts.maxTokens !== undefined) options.num_predict = opts.maxTokens;
-	return {
-		url: `${base(baseUrl)}/api/chat`,
-		body: {
-			model,
-			messages: [
-				{ role: "system", content: system },
-				{ role: "user", content: user },
-			],
-			stream: false,
-			options,
-		},
+	const body: Record<string, unknown> = {
+		model,
+		messages: [
+			{ role: "system", content: system },
+			{ role: "user", content: user },
+		],
+		stream: false,
+		options,
 	};
+	if (opts.think !== undefined) body.think = opts.think;
+	return { url: `${base(baseUrl)}/api/chat`, body };
 }
 
 export function parseOllamaChatResponse(json: unknown): string {

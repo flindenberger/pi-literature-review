@@ -23,11 +23,10 @@ import {
 	runChat,
 	runChatReport,
 	selectPaper,
-	unionChunks,
 } from "./chat.ts";
 import type { CorpusDeps, LibraryMatch, PaperIndex } from "./corpus.ts";
 import { querySlug } from "./output.ts";
-import type { RetrievedChunk } from "./synthesize.ts";
+import { type RetrievedChunk, TRANSLATE_SYSTEM_PROMPT, unionChunks } from "./retrieve.ts";
 
 /* ---------------- fixtures ---------------- */
 
@@ -144,6 +143,10 @@ function makeDeps(generatorOutput: string): {
 				},
 			},
 			chatLog,
+			// The English query variant is off in the orchestration tests --
+			// the fake generator would otherwise answer the translation call
+			// too. buildQueryVariants/retrieve are covered in retrieve.test.ts.
+			translate: null,
 			now: () => new Date("2026-07-16T10:00:00Z"),
 		},
 		generateCalls,
@@ -543,6 +546,26 @@ function makeRound(question: string, session: string | null = null): ChatRound {
 	// the tail after ranking.
 	const twoPages = unionChunks([[c(1, "same", 0.9), c(2, "same", 0.8), c(3, "tail", 0.1)]], 2);
 	assert.deepEqual(twoPages.map((x) => [x.id, x.page]), [[1, 1], [2, 2]]);
+}
+
+/* ---------------- default translation wiring ---------------- */
+{
+	// Without an injected translator the engine asks its own backend for the
+	// English query variant (regression guard: the default must never come
+	// unwired). The fake generator answers the translation call too, so its
+	// output shows up as the disclosed english variant.
+	const { deps, generateCalls, embedCalls } = makeDeps("Antwort [1].");
+	const answer = await runChat({
+		question: "welche kamera?", paper: "a.pdf", root: "/", model: "fake-gen", embedModel: "fake-embed",
+	}, { ...deps, translate: undefined });
+	assert.equal(generateCalls.length, 2);
+	assert.equal(generateCalls[0].system, TRANSLATE_SYSTEM_PROMPT);
+	assert.equal(generateCalls[0].user, "welche kamera?");
+	assert.deepEqual(answer.query_variants, [
+		{ query: "welche kamera?", kind: "original" },
+		{ query: "Antwort [1].", kind: "english" },
+	]);
+	assert.deepEqual(embedCalls[0], ["welche kamera?", "Antwort [1]."]);
 }
 
 /* ---------------- runChatReport: session questions drive retrieval ---------------- */

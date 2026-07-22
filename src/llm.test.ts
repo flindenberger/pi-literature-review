@@ -37,8 +37,13 @@ import {
 		stream: false,
 		options: { num_ctx: 8192, temperature: 0.2, num_predict: 16 },
 	});
-	// No opts -> empty options object, nothing invented.
+	// No opts -> empty options object, nothing invented; in particular no
+	// think field unless the caller sets one.
 	assert.deepEqual(ollamaChatRequest("http://h", "m", "s", "u").body.options, {});
+	assert.ok(!("think" in ollamaChatRequest("http://h", "m", "s", "u").body));
+	// think rides top-level in the Ollama dialect (reasoning off for capped
+	// helper calls like the query translation).
+	assert.equal(ollamaChatRequest("http://h", "m", "s", "u", { think: false }).body.think, false);
 
 	const oaiEmbed = openaiEmbedRequest("http://host:8080", "e", ["x"]);
 	assert.equal(oaiEmbed.url, "http://host:8080/v1/embeddings");

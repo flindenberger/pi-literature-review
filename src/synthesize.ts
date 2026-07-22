@@ -3,9 +3,10 @@
  * PDF library -- grounded RAG in the OpenScholar spirit, sized for a
  * 10-100 paper corpus on a local GPU.
  *
- * Pipeline: match library -> ensure embedding index -> embed the question
- * -> cosine top-k chunks -> ONE generation pass -> deterministic citation
- * enforcement -> paper-level references.
+ * Pipeline: match library -> ensure embedding index -> shared retrieval
+ * (query variants + embedding union + lexical layer, retrieve.ts) -> ONE
+ * generation pass -> deterministic citation enforcement -> paper-level
+ * references.
  *
  * THE ONE INVIOLABLE RULE, enforced structurally here: the generator sees
  * numbered excerpts and may cite ONLY by bracketed numbers. Its raw output
@@ -28,11 +29,27 @@ import {
 	type LibraryMatch,
 	type LibraryPaper,
 	matchLibrary,
-	type PaperIndex,
 	realCorpusDeps,
 } from "./corpus.ts";
 import { createBackend, type GenerateOptions, type LlmBackend } from "./llm.ts";
 import { outputRoot } from "./output.ts";
+import {
+	type QueryVariant,
+	retrieve,
+	type RetrievedChunk,
+	type TranslateFn,
+	translateViaBackend,
+} from "./retrieve.ts";
+
+// The retrieval primitives moved to retrieve.ts (v24 Stage 1); re-exported
+// so existing importers (chat.ts, tests) keep one stable surface.
+export {
+	cosine,
+	type QueryVariant,
+	type RetrievedChunk,
+	topKChunks,
+	unionChunks,
+} from "./retrieve.ts";
 
 /** Context window requested from the backend (Ollama defaults to ~4k and
  * silently truncates -- it MUST be set explicitly). */
@@ -60,54 +77,6 @@ export function requireOutput(rawOutput: string): void {
 		+ "token budget on hidden reasoning. Ask again (thinking length varies), rephrase the "
 		+ "question, or switch to a non-thinking model",
 	);
-}
-
-/* ------------------------------------------------------------------ *
- * Retrieval -- pure                                                    *
- * ------------------------------------------------------------------ */
-
-export interface RetrievedChunk {
-	/** 1-based number the excerpt carries in the prompt ([1]..[k]). */
-	id: number;
-	paper: PaperIndex["paper"];
-	page: number;
-	score: number;
-	text: string;
-}
-
-export function cosine(a: number[], b: number[]): number {
-	let dot = 0;
-	let normA = 0;
-	let normB = 0;
-	for (let i = 0; i < Math.min(a.length, b.length); i++) {
-		dot += a[i] * b[i];
-		normA += a[i] * a[i];
-		normB += b[i] * b[i];
-	}
-	const norm = Math.sqrt(normA) * Math.sqrt(normB);
-	return norm === 0 ? 0 : dot / norm;
-}
-
-/** Best k chunks across all papers by cosine similarity. Deterministic
- * tie-break (paper key, then chunk id) so equal scores never reorder
- * between runs. */
-export function topKChunks(queryVector: number[], indexes: PaperIndex[], k: number): RetrievedChunk[] {
-	const scored: Array<Omit<RetrievedChunk, "id">> = [];
-	for (const index of indexes) {
-		for (const chunk of index.chunks) {
-			scored.push({
-				paper: index.paper,
-				page: chunk.page,
-				score: cosine(queryVector, chunk.embedding),
-				text: chunk.text,
-			});
-		}
-	}
-	scored.sort((a, b) => b.score - a.score
-		|| a.paper.key.localeCompare(b.paper.key)
-		|| a.page - b.page
-		|| a.text.localeCompare(b.text));
-	return scored.slice(0, k).map((chunk, i) => ({ id: i + 1, ...chunk }));
 }
 
 /* ------------------------------------------------------------------ *
@@ -305,6 +274,9 @@ export interface SynthesizeDeps {
 	library?: (root: string, onWarn: (message: string) => void) => LibraryMatch;
 	/** Adoption of unmatched PDFs; injectable for offline tests. */
 	adopt?: (unmatched: string[], papersDir: string) => Promise<AdoptionResult[]>;
+	/** English-variant translator for retrieval (see retrieve.ts). Omitted:
+	 * one small generate() call on the backend; null: variant disabled. */
+	translate?: TranslateFn | null;
 }
 
 /** Full payload; written as the JSON sidecar next to the HTML. */
@@ -320,7 +292,13 @@ export interface SynthesisResult {
 	prose: string;
 	references: ReferenceEntry[];
 	/** Retrieval trail: every excerpt that was in the prompt. */
-	chunks: Array<{ id: number; paper_key: string; title: string; page: number; score: number; text: string }>;
+	chunks: Array<{ id: number; paper_key: string; title: string; page: number; score: number; text: string; lexical?: boolean }>;
+	/** Queries of the ONE embed call (original + disclosed English variant). */
+	query_variants: QueryVariant[];
+	/** Salient terms the lexical layer exact-matched over the chunk texts. */
+	lexical_terms: string[];
+	/** Excerpts in the prompt only because a term matched exactly. */
+	lexical_added: number;
 	invalid_markers: string[];
 	unmarked_sentences: number;
 	stripped_reference_section: boolean;
@@ -412,10 +390,21 @@ export async function runSynthesize(
 		throw new Error("no paper in the selection has extractable text -- nothing to synthesize from");
 	}
 	if (options.signal?.aborted) throw new Error("synthesis aborted by the user");
-	const [queryVector] = await corpus.embed([question], options.signal);
 
-	// 3. Retrieval + context-budget guard (NUM_CTX minus the answer reserve).
-	let retrieved = topKChunks(queryVector, indexes, topK);
+	// 3. Retrieval (query variants + lexical layer, see retrieve.ts) +
+	// context-budget guard (NUM_CTX minus the answer reserve).
+	const translate = deps?.translate !== undefined ? deps.translate : translateViaBackend(backend, model);
+	const retrieval = await retrieve({
+		queries: [question],
+		indexes,
+		perQueryK: topK,
+		cap: topK,
+		embed: (texts, signal) => corpus.embed(texts, signal),
+		translate,
+		onWarn,
+		signal: options.signal,
+	});
+	let retrieved = retrieval.chunks;
 	let prompt = buildPrompt(question, retrieved, options.language);
 	let trimmed = 0;
 	const budget = NUM_CTX - OUTPUT_RESERVE_TOKENS;
@@ -463,7 +452,11 @@ export async function runSynthesize(
 			page: chunk.page,
 			score: Number(chunk.score.toFixed(4)),
 			text: chunk.text,
+			...(chunk.lexical ? { lexical: true } : {}),
 		})),
+		query_variants: retrieval.variants,
+		lexical_terms: retrieval.lexical_terms,
+		lexical_added: retrieval.lexical_added,
 		invalid_markers: scan.invalidMarkers,
 		unmarked_sentences: scan.unmarkedSentences,
 		stripped_reference_section: scan.strippedReferenceSection,

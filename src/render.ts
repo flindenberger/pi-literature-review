@@ -532,6 +532,28 @@ function referenceHref(reference: { doi: string; arxiv_id: string }): string | n
  * with an unmissable warning banner instead of being suppressed -- the
  * draft stays inspectable, but nobody can mistake it for a review.
  */
+/**
+ * Retrieval transparency rows (v24): the disclosed English query variant(s)
+ * -- the ONE place an LLM shapes retrieval, citations unaffected -- and the
+ * deterministic lexical exact-match layer.
+ */
+function retrievalMetaRows(
+	result: { query_variants?: Array<{ query: string; kind: string }>; lexical_terms?: string[]; lexical_added?: number },
+): string {
+	const english = (result.query_variants ?? []).filter((variant) => variant.kind === "english");
+	const variantRow = english.length
+		? `\n<dt>Query variants</dt><dd>English translation(s) used for retrieval: ${
+			esc(english.map((variant) => variant.query).join("; "))} (LLM-shaped search query; citations unaffected)</dd>`
+		: "";
+	const lexicalRow = result.lexical_terms?.length
+		? `\n<dt>Lexical layer</dt><dd>exact whole-word match for: ${esc(result.lexical_terms.join(", "))}${
+			result.lexical_added
+				? `; ${result.lexical_added} excerpt(s) guaranteed in the prompt`
+				: "; no additional excerpts"}</dd>`
+		: "";
+	return `${variantRow}${lexicalRow}`;
+}
+
 export function renderReviewHtml(result: SynthesisResult): string {
 	const banner = result.grounded
 		? ""
@@ -562,7 +584,7 @@ ${referenceRows}
 		: "<h2>References</h2>\n<p>None -- no valid citations survived the gate.</p>";
 
 	const excerptItems = result.chunks.map((chunk) =>
-		`<details><summary>[${chunk.id}] ${esc(chunk.title || chunk.paper_key)} -- page ${chunk.page}, similarity ${chunk.score.toFixed(3)}</summary>
+		`<details><summary>[${chunk.id}] ${esc(chunk.title || chunk.paper_key)} -- page ${chunk.page}, similarity ${chunk.score.toFixed(3)}${chunk.lexical ? ", exact term match" : ""}</summary>
 <p class="excerpt">${esc(chunk.text)}</p></details>`).join("\n");
 
 	const adoptionReasons = new Map(result.adoption_failures.map((failure) => [failure.file, failure.reason]));
@@ -614,7 +636,7 @@ ${referencesSection}
 <dl class="meta">
 <dt>Generator</dt><dd>${esc(result.model)} (${esc(result.backend)})</dd>
 <dt>Embeddings</dt><dd>${esc(result.embedding_model)}</dd>
-<dt>Retrieval</dt><dd>top ${esc(result.top_k)} excerpts by cosine similarity; ${result.chunks.length} in the prompt</dd>
+<dt>Retrieval</dt><dd>top ${esc(result.top_k)} excerpts by cosine similarity; ${result.chunks.length} in the prompt</dd>${retrievalMetaRows(result)}
 <dt>Corpus</dt><dd>${result.papers_matched} paper(s) with verified metadata; ${result.papers_cited} cited</dd>${uncitedRow}${adoptedRow}${exclusionRows}
 <dt>Integrity</dt><dd>${esc(integrity.join("; "))}</dd>
 </dl>
@@ -745,7 +767,7 @@ ${referenceRows}
 
 	const excerptItems = report.chunks.map((chunk) => {
 		const href = localPdfHref(paper.pdf_path, chunk.page, searchSnippet(chunk.text));
-		return `<details><summary>[${chunk.id}] page ${chunk.page}, similarity ${chunk.score.toFixed(3)}</summary>
+		return `<details><summary>[${chunk.id}] page ${chunk.page}, similarity ${chunk.score.toFixed(3)}${chunk.lexical ? ", exact term match" : ""}</summary>
 <p class="excerpt">${esc(chunk.text)}</p>
 <p class="meta">${pdfAnchor(href, `Open the PDF at page ${chunk.page}`)} (Firefox also highlights the passage)</p>
 </details>`;
@@ -815,7 +837,7 @@ ${referencesSection}
 <dl class="meta">
 <dt>Generator</dt><dd>${esc(report.model)} (${esc(report.backend)})</dd>
 <dt>Embeddings</dt><dd>${esc(report.embedding_model)}</dd>
-<dt>Retrieval</dt><dd>union of the best excerpts per session question; ${report.chunks.length} in the prompt</dd>${adoptedRow}${failureRows}
+<dt>Retrieval</dt><dd>union of the best excerpts per session question; ${report.chunks.length} in the prompt</dd>${retrievalMetaRows(report)}${adoptedRow}${failureRows}
 <dt>Integrity</dt><dd>${esc(integrity.join("; "))}</dd>
 </dl>
 <h2>Excerpts given to the model</h2>

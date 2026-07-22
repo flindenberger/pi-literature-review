@@ -4,10 +4,10 @@
  * synthesis in synthesize.ts, sharing its retrieval and citation machinery.
  *
  * Pipeline per question: match library (adopting loose PDFs) -> select the
- * ONE paper -> ensure its embedding index -> embed the question -> cosine
- * top-k chunks WITHIN that paper -> one generation pass with a didactic
- * prompt -> deterministic citation enforcement -> references from the
- * verified record.
+ * ONE paper -> ensure its embedding index -> shared retrieval WITHIN that
+ * paper (query variants + embedding union + lexical layer, retrieve.ts) ->
+ * one generation pass with a didactic prompt -> deterministic citation
+ * enforcement -> references from the verified record.
  *
  * THE ONE INVIOLABLE RULE holds unchanged: the generator sees numbered
  * excerpts and may cite ONLY by bracketed numbers; everything bibliographic
@@ -34,6 +34,13 @@ import {
 import { createBackend, type GenerateOptions, type LlmBackend } from "./llm.ts";
 import { outputRoot } from "./output.ts";
 import {
+	type QueryVariant,
+	retrieve,
+	type RetrievedChunk,
+	type TranslateFn,
+	translateViaBackend,
+} from "./retrieve.ts";
+import {
 	buildReferences,
 	DEFAULT_TOP_K,
 	enforceCitations,
@@ -43,8 +50,6 @@ import {
 	promptTokens,
 	type ReferenceEntry,
 	requireOutput,
-	type RetrievedChunk,
-	topKChunks,
 } from "./synthesize.ts";
 
 /** Explanatory tone comes from the prompt, not from sampling. */
@@ -479,6 +484,9 @@ export interface ChatDeps {
 	/** Adoption of unmatched PDFs; injectable for offline tests. */
 	adopt?: ChatLibraryOptions["adopt"];
 	chatLog?: ChatLogDeps;
+	/** English-variant translator for retrieval (see retrieve.ts). Omitted:
+	 * one small generate() call on the backend; null: variant disabled. */
+	translate?: TranslateFn | null;
 	/** Clock; injectable for deterministic protocol tests. */
 	now?: () => Date;
 }
@@ -512,7 +520,13 @@ export interface ChatAnswer {
 	prose: string;
 	references: ReferenceEntry[];
 	/** Retrieval trail: every excerpt that was in the prompt. */
-	chunks: Array<{ id: number; page: number; score: number; text: string }>;
+	chunks: Array<{ id: number; page: number; score: number; text: string; lexical?: boolean }>;
+	/** Queries of the ONE embed call (original + disclosed English variant). */
+	query_variants: QueryVariant[];
+	/** Salient terms the lexical layer exact-matched over the chunk texts. */
+	lexical_terms: string[];
+	/** Excerpts in the prompt only because a term matched exactly. */
+	lexical_added: number;
 	invalid_markers: string[];
 	unmarked_sentences: number;
 	stripped_reference_section: boolean;
@@ -577,10 +591,21 @@ export async function runChat(options: ChatOptions, deps?: ChatDeps): Promise<Ch
 		);
 	}
 	if (options.signal?.aborted) throw new Error("paper chat aborted by the user");
-	const [queryVector] = await corpus.embed([question], options.signal);
 
-	// 3. Retrieval WITHIN the paper + context-budget guard.
-	let retrieved = topKChunks(queryVector, indexes, topK);
+	// 3. Retrieval WITHIN the paper (query variants + lexical layer, see
+	// retrieve.ts) + context-budget guard.
+	const translate = deps?.translate !== undefined ? deps.translate : translateViaBackend(backend, model);
+	const retrieval = await retrieve({
+		queries: [question],
+		indexes,
+		perQueryK: topK,
+		cap: topK,
+		embed: (texts, signal) => corpus.embed(texts, signal),
+		translate,
+		onWarn,
+		signal: options.signal,
+	});
+	let retrieved = retrieval.chunks;
 	let prompt = buildChatPrompt(question, retrieved, options.language);
 	let trimmed = 0;
 	const budget = NUM_CTX - OUTPUT_RESERVE_TOKENS;
@@ -626,6 +651,7 @@ export async function runChat(options: ChatOptions, deps?: ChatDeps): Promise<Ch
 		page: chunk.page,
 		score: Number(chunk.score.toFixed(4)),
 		text: chunk.text,
+		...(chunk.lexical ? { lexical: true } : {}),
 	}));
 
 	// 6. Persist the validated round. A write failure must never lose the
@@ -671,6 +697,9 @@ export async function runChat(options: ChatOptions, deps?: ChatDeps): Promise<Ch
 		prose,
 		references,
 		chunks: chunkTrail,
+		query_variants: retrieval.variants,
+		lexical_terms: retrieval.lexical_terms,
+		lexical_added: retrieval.lexical_added,
 		invalid_markers: scan.invalidMarkers,
 		unmarked_sentences: scan.unmarkedSentences,
 		stripped_reference_section: scan.strippedReferenceSection,
@@ -688,25 +717,6 @@ export async function runChat(options: ChatOptions, deps?: ChatDeps): Promise<Ch
 /* ------------------------------------------------------------------ *
  * Report mode -- grounded summary from the session's questions         *
  * ------------------------------------------------------------------ */
-
-/** Union of the per-question retrievals: each distinct excerpt once (max
- * score wins), ranked by score with a deterministic tie-break, capped and
- * renumbered 1..m. The dedupe key includes the page -- identical
- * boilerplate text CAN legitimately occur on two pages. Pure. */
-export function unionChunks(perQuery: RetrievedChunk[][], cap: number): RetrievedChunk[] {
-	const byKey = new Map<string, RetrievedChunk>();
-	for (const list of perQuery) {
-		for (const chunk of list) {
-			const key = `${chunk.page}\u0000${chunk.text}`;
-			const existing = byKey.get(key);
-			if (!existing || chunk.score > existing.score) byKey.set(key, chunk);
-		}
-	}
-	return [...byKey.values()]
-		.sort((a, b) => b.score - a.score || a.page - b.page || a.text.localeCompare(b.text))
-		.slice(0, cap)
-		.map((chunk, i) => ({ ...chunk, id: i + 1 }));
-}
 
 export interface ChatReportOptions {
 	/** Optional extra focus, added to the session's questions. */
@@ -742,7 +752,13 @@ export interface ChatReport {
 	grounded: boolean;
 	prose: string;
 	references: ReferenceEntry[];
-	chunks: Array<{ id: number; page: number; score: number; text: string }>;
+	chunks: Array<{ id: number; page: number; score: number; text: string; lexical?: boolean }>;
+	/** Queries of the ONE embed call (originals + disclosed English variants). */
+	query_variants: QueryVariant[];
+	/** Salient terms the lexical layer exact-matched over the chunk texts. */
+	lexical_terms: string[];
+	/** Excerpts in the prompt only because a term matched exactly. */
+	lexical_added: number;
 	invalid_markers: string[];
 	unmarked_sentences: number;
 	stripped_reference_section: boolean;
@@ -824,11 +840,21 @@ export async function runChatReport(options: ChatReportOptions, deps?: ChatDeps)
 		);
 	}
 	if (options.signal?.aborted) throw new Error("paper chat report aborted by the user");
-	const vectors = await corpus.embed(queries, options.signal);
 
-	// 4. Union of the per-question retrievals + context-budget guard.
-	const perQuery = vectors.map((vector) => topKChunks(vector, indexes, REPORT_PER_QUESTION_K));
-	let retrieved = unionChunks(perQuery, REPORT_MAX_CHUNKS);
+	// 4. Shared retrieval over all session questions (variants + lexical
+	// layer, one embed call; see retrieve.ts) + context-budget guard.
+	const translate = deps?.translate !== undefined ? deps.translate : translateViaBackend(backend, model);
+	const retrieval = await retrieve({
+		queries,
+		indexes,
+		perQueryK: REPORT_PER_QUESTION_K,
+		cap: REPORT_MAX_CHUNKS,
+		embed: (texts, signal) => corpus.embed(texts, signal),
+		translate,
+		onWarn,
+		signal: options.signal,
+	});
+	let retrieved = retrieval.chunks;
 	let prompt = buildReportPrompt(queries, retrieved, options.language);
 	let trimmed = 0;
 	const budget = NUM_CTX - OUTPUT_RESERVE_TOKENS;
@@ -871,7 +897,11 @@ export async function runChatReport(options: ChatReportOptions, deps?: ChatDeps)
 			page: chunk.page,
 			score: Number(chunk.score.toFixed(4)),
 			text: chunk.text,
+			...(chunk.lexical ? { lexical: true } : {}),
 		})),
+		query_variants: retrieval.variants,
+		lexical_terms: retrieval.lexical_terms,
+		lexical_added: retrieval.lexical_added,
 		invalid_markers: scan.invalidMarkers,
 		unmarked_sentences: scan.unmarkedSentences,
 		stripped_reference_section: scan.strippedReferenceSection,

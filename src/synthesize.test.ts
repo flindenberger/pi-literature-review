@@ -203,6 +203,10 @@ function makeDeps(generatorOutput: string): { deps: SynthesizeDeps; generateCall
 					return generatorOutput;
 				},
 			},
+			// The English query variant is off in the orchestration tests --
+			// the fake generator would otherwise answer the translation call
+			// too. buildQueryVariants/retrieve are covered in retrieve.test.ts.
+			translate: null,
 		},
 		generateCalls,
 	};
