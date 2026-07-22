@@ -18,6 +18,7 @@ import literatureSearch from "./extensions/search.ts";
 import literatureFetch from "./extensions/fetch.ts";
 import literatureSynthesize from "./extensions/synthesize.ts";
 import literatureChat from "./extensions/chat.ts";
+import { registerDialogDemo } from "./extensions/dialogs.ts";
 
 export default async function literatureReview(pi: ExtensionAPI) {
 	literatureSearch(pi);
@@ -26,4 +27,7 @@ export default async function literatureReview(pi: ExtensionAPI) {
 	// Awaited: literatureChat lazily imports pi-tui to register a transcript
 	// renderer; pi awaits this factory before startup completes.
 	await literatureChat(pi);
+	// TEMPORARY (v25 E2c gate): /lit-dialogs demo; removed when the E2e
+	// wizard wires the dialogs for real.
+	registerDialogDemo(pi);
 }
