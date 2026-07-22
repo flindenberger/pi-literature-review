@@ -25,16 +25,15 @@ import {
 	type ChatAnswer,
 	type ChatDeps,
 	chatPool,
-	readCurrentPaper,
 	runChat,
 	runChatReport,
-	writeCurrentPaper,
 } from "../src/chat.ts";
 import { llmConfig } from "../src/config.ts";
 import { type LibraryMatch, matchLibrary } from "../src/corpus.ts";
 import { renderChatDigest, renderChatReportDigest } from "../src/digest.ts";
 import { createBackend, type LlmBackend } from "../src/llm.ts";
 import { outputRoot, writeRunOutputs } from "../src/output.ts";
+import { readCurrentScope, singlePaperOf, writeCurrentScope } from "../src/protocol.ts";
 import { renderPaperChatReportHtml } from "../src/render.ts";
 import { DEFAULT_TOP_K, MAX_TOP_K, OUTPUT_RESERVE_TOKENS } from "../src/synthesize.ts";
 
@@ -410,7 +409,7 @@ export default async function literatureChat(pi: ExtensionAPI) {
 			const root = outputRoot();
 			let paper = params.paper?.trim() || undefined;
 			if (!paper && params.pick !== true) {
-				const sticky = readCurrentPaper(root, sessionId(ctx));
+				const sticky = singlePaperOf(readCurrentScope(root, sessionId(ctx)));
 				if (sticky) {
 					paper = `${sticky}.pdf`;
 					report(`using the session's current paper: ${paper} (pick: true switches papers)`);
@@ -475,7 +474,7 @@ export default async function literatureChat(pi: ExtensionAPI) {
 				diagnostics.push(`paper picked in the dialog: ${paper}`);
 				// Remember immediately: the opening move may end before any
 				// engine run (question follows in the next call).
-				writeCurrentPaper(root, picked.base, sessionId(ctx), undefined, (message) => diagnostics.push(message));
+				writeCurrentScope(root, { papers: [picked.base] }, sessionId(ctx), undefined, (message) => diagnostics.push(message));
 			}
 			if (!question && !wantsReport) {
 				// Opening move complete: the paper is settled, the question is not.
@@ -612,7 +611,7 @@ export default async function literatureChat(pi: ExtensionAPI) {
 			const question = (args ?? "").trim();
 			const root = outputRoot();
 			const progress = (message: string) => ctx.ui.notify(message, "info");
-			let base = readCurrentPaper(root, sessionId(ctx));
+			let base = singlePaperOf(readCurrentScope(root, sessionId(ctx)));
 			if (!question || !base) {
 				// Bare invocation always offers the picker (that is how the
 				// user switches papers without any agent involved).
@@ -636,7 +635,7 @@ export default async function literatureChat(pi: ExtensionAPI) {
 				}
 				if (picked.kind !== "paper") return; // cancelled / not listed
 				base = picked.base;
-				writeCurrentPaper(root, base, sessionId(ctx));
+				writeCurrentScope(root, { papers: [base] }, sessionId(ctx));
 			}
 			if (question) {
 				await answerInChat(pi, ctx, base, question);
@@ -677,7 +676,7 @@ export default async function literatureChat(pi: ExtensionAPI) {
 		const path = typeof input?.file_path === "string" ? input.file_path
 			: typeof input?.path === "string" ? input.path : "";
 		if (!/\.html?$/i.test(path)) return;
-		const sticky = readCurrentPaper(outputRoot(), sessionId(ctx));
+		const sticky = singlePaperOf(readCurrentScope(outputRoot(), sessionId(ctx)));
 		if (!sticky) return;
 		const blockReason =
 			`Blocked by pi-literature-review: a paper chat about ${sticky}.pdf is active. HTML exports of `

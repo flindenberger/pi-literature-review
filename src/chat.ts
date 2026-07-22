@@ -17,8 +17,7 @@
  * that protocol, never from the chat transcript).
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
 import { adoptUnmatched, type AdoptionResult, realAdoptDeps } from "./adopt.ts";
 import { chatModel, llmConfig } from "./config.ts";
@@ -33,6 +32,16 @@ import {
 } from "./corpus.ts";
 import { createBackend, type GenerateOptions, type LlmBackend } from "./llm.ts";
 import { outputRoot } from "./output.ts";
+import {
+	appendRound,
+	loadRounds,
+	type ProtocolDeps,
+	readCurrentScope,
+	realProtocolDeps,
+	type Round,
+	singlePaperOf,
+	writeCurrentScope,
+} from "./protocol.ts";
 import {
 	type QueryVariant,
 	retrieve,
@@ -215,231 +224,6 @@ export async function ensureChatLibrary(
 }
 
 /* ------------------------------------------------------------------ *
- * Chat protocol -- the code-validated record of a session             *
- * ------------------------------------------------------------------ */
-
-export const CHAT_SCHEMA = 1;
-
-/** One validated question round as persisted: everything in here has
- * passed the citation gate; nothing comes from the Pi chat transcript. */
-export interface ChatRound {
-	/** ISO timestamp of the question. */
-	asked: string;
-	question: string;
-	language: string | null;
-	model: string;
-	/** Pi session the round belongs to (null: recorded without a session,
-	 * e.g. by a CLI run outside any pi session or before session scoping). */
-	session: string | null;
-	top_k: number;
-	grounded: boolean;
-	prose: string;
-	references: ReferenceEntry[];
-	/** Only the excerpts the answer actually cites (bounds file growth;
-	 * the report re-retrieves, so nothing is lost). */
-	cited_chunks: Array<{ id: number; page: number; score: number; text: string }>;
-	invalid_markers: string[];
-	unmarked_sentences: number;
-	stripped_reference_section: boolean;
-}
-
-/** On-disk shape -- never a bare array, so the schema can evolve. */
-export interface ChatProtocol {
-	schema: number;
-	base: string;
-	paper: { key: string; title: string; authors: string[]; year: string | null; doi: string; arxiv_id: string };
-	/** UTC date the file is named after. */
-	date: string;
-	rounds: ChatRound[];
-}
-
-export function realChatLogDeps(): ChatLogDeps {
-	return {
-		read: (path) => {
-			try {
-				return readFileSync(path, "utf8");
-			} catch {
-				return null;
-			}
-		},
-		write: (path, text) => {
-			mkdirSync(dirname(path), { recursive: true });
-			writeFileSync(path, text, "utf8");
-		},
-		exists: (path) => existsSync(path),
-		list: (dir) => {
-			try {
-				return readdirSync(dir);
-			} catch {
-				return [];
-			}
-		},
-	};
-}
-
-/** Protocol file for a paper on a given day. Dates are UTC (the ISO date
- * of the round's timestamp), matching writeRunOutputs' date handling. */
-export function chatLogPath(root: string, dateIso10: string, base: string, suffix = 0): string {
-	const name = suffix > 1 ? `${dateIso10}_${base}_${suffix}.json` : `${dateIso10}_${base}.json`;
-	return join(root, "chats", name);
-}
-
-/** Marker file remembering the session's current paper (sticky selection).
- * The date-anchored protocol filename pattern never matches it. */
-export function currentPaperPath(root: string): string {
-	return join(root, "chats", "current-paper.json");
-}
-
-/**
- * The sticky selection: set after every successful round, used whenever a
- * call names no paper -- a weak agent model then only has to transport the
- * user's question (user decision 2026-07-16, after a field test with an
- * agent that could not carry the paper name across turns). SESSION-SCOPED
- * (user decision 2026-07-21): the marker only counts inside the pi session
- * that wrote it -- a new pi session starts with no current paper. Null when
- * unset, unreadable, or written by a different session.
- */
-export function readCurrentPaper(
-	root: string,
-	session: string | null | undefined,
-	deps: ChatLogDeps = realChatLogDeps(),
-): string | null {
-	if (!session) return null;
-	try {
-		const parsed = JSON.parse(deps.read(currentPaperPath(root)) ?? "null") as
-			| { base?: unknown; session?: unknown }
-			| null;
-		if (!parsed || typeof parsed.base !== "string" || !parsed.base.trim()) return null;
-		return parsed.session === session ? parsed.base.trim() : null;
-	} catch {
-		return null;
-	}
-}
-
-/** Best-effort: failure to remember the paper must never break a run. */
-export function writeCurrentPaper(
-	root: string,
-	base: string,
-	session: string | null | undefined,
-	deps: ChatLogDeps = realChatLogDeps(),
-	onWarn: (message: string) => void = () => {},
-): void {
-	try {
-		deps.write(currentPaperPath(root), JSON.stringify({ base, session: session ?? null }, null, 2) + "\n");
-	} catch (error) {
-		onWarn(`could not remember the current paper: ${error instanceof Error ? error.message : error}`);
-	}
-}
-
-function parseProtocol(text: string | null): ChatProtocol | null {
-	if (text === null) return null;
-	try {
-		const parsed = JSON.parse(text) as ChatProtocol;
-		if (parsed && parsed.schema === CHAT_SCHEMA && typeof parsed.base === "string"
-			&& parsed.paper && typeof parsed.paper.key === "string" && Array.isArray(parsed.rounds)) {
-			return parsed;
-		}
-	} catch {
-		// fall through -- caller treats null as unreadable
-	}
-	return null;
-}
-
-/**
- * Append one validated round to the paper's protocol of the day. A file
- * that is corrupt or records a DIFFERENT paper identity (renamed PDF) is
- * never overwritten: it stays untouched with a warning and the round goes
- * to the next _2/_3 file -- the same quarantine policy as the output
- * collision suffixes. Writing is not atomic; a crash mid-write corrupts
- * at most one day file, which this fallback then quarantines.
- */
-export function appendChatRound(
-	root: string,
-	paper: ChatPaper,
-	round: ChatRound,
-	deps: ChatLogDeps,
-	onWarn: (message: string) => void,
-): { path: string; roundNumber: number } {
-	const date = round.asked.slice(0, 10);
-	for (let suffix = 0; ; suffix = suffix < 2 ? 2 : suffix + 1) {
-		const path = chatLogPath(root, date, paper.base, suffix);
-		if (!deps.exists(path)) {
-			const protocol: ChatProtocol = {
-				schema: CHAT_SCHEMA,
-				base: paper.base,
-				paper: {
-					key: paper.key,
-					title: paper.title,
-					authors: paper.authors,
-					year: paper.year,
-					doi: paper.doi,
-					arxiv_id: paper.arxiv_id,
-				},
-				date,
-				rounds: [round],
-			};
-			deps.write(path, JSON.stringify(protocol, null, 2) + "\n");
-			return { path, roundNumber: 1 };
-		}
-		const existing = parseProtocol(deps.read(path));
-		if (existing && existing.paper.key === paper.key) {
-			existing.rounds.push(round);
-			deps.write(path, JSON.stringify(existing, null, 2) + "\n");
-			return { path, roundNumber: existing.rounds.length };
-		}
-		onWarn(`chat protocol ${path} is ${existing ? "for a different paper" : "not readable"}`
-			+ " -- keeping it untouched, continuing in a new file");
-	}
-}
-
-function escapeRegExp(value: string): string {
-	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-/**
- * The protocol rounds of ONE pi session for this paper (user decision
- * 2026-07-21: reports cover only the current session; earlier sessions stay
- * on disk as ground truth but are never re-surfaced). The scan still spans
- * all day files -- /resume keeps the session id, so "chat on Tuesday, report
- * on Wednesday" works within the resumed session. Filenames are matched with
- * an anchored pattern so report sidecars and other papers sharing a name
- * prefix are never ingested; files recording a different paper identity are
- * skipped with a warning. Without a session id nothing matches.
- */
-export function loadChatRounds(
-	root: string,
-	base: string,
-	paperKey: string,
-	session: string | null,
-	deps: ChatLogDeps,
-	onWarn: (message: string) => void,
-): { rounds: ChatRound[]; files: string[] } {
-	if (!session) return { rounds: [], files: [] };
-	const dir = join(root, "chats");
-	const pattern = new RegExp(`^\\d{4}-\\d{2}-\\d{2}_${escapeRegExp(base)}(_\\d+)?\\.json$`);
-	const names = deps.list(dir).filter((name) => pattern.test(name)).sort();
-	const rounds: ChatRound[] = [];
-	const files: string[] = [];
-	for (const name of names) {
-		const path = join(dir, name);
-		const protocol = parseProtocol(deps.read(path));
-		if (!protocol) {
-			onWarn(`skipping unreadable chat protocol ${path}`);
-			continue;
-		}
-		if (protocol.paper.key !== paperKey) {
-			onWarn(`skipping ${path}: it records a different paper identity`);
-			continue;
-		}
-		const ofSession = protocol.rounds.filter((round) => round.session === session);
-		if (!ofSession.length) continue;
-		rounds.push(...ofSession);
-		files.push(path);
-	}
-	return { rounds, files };
-}
-
-/* ------------------------------------------------------------------ *
  * Orchestration                                                       *
  * ------------------------------------------------------------------ */
 
@@ -463,15 +247,6 @@ export interface ChatOptions {
 	signal?: AbortSignal;
 }
 
-/** Injectable persistence for the chat protocol (wired in the protocol
- * step; a no-op until then). Everything tests offline through this. */
-export interface ChatLogDeps {
-	read(path: string): string | null;
-	write(path: string, text: string): void;
-	exists(path: string): boolean;
-	list(dir: string): string[];
-}
-
 export interface ChatDeps {
 	/** Both optional: omitted pieces are wired from the local config. The
 	 * Pi adapter injects a backend whose generate() calls the model
@@ -483,7 +258,9 @@ export interface ChatDeps {
 	library?: ChatLibraryOptions["library"];
 	/** Adoption of unmatched PDFs; injectable for offline tests. */
 	adopt?: ChatLibraryOptions["adopt"];
-	chatLog?: ChatLogDeps;
+	/** Protocol/sticky persistence (see protocol.ts); injectable for
+	 * offline tests. */
+	protocol?: ProtocolDeps;
 	/** English-variant translator for retrieval (see retrieve.ts). Omitted:
 	 * one small generate() call on the backend; null: variant disabled. */
 	translate?: TranslateFn | null;
@@ -556,7 +333,7 @@ export async function runChat(options: ChatOptions, deps?: ChatDeps): Promise<Ch
 	const topK = Math.max(1, Math.min(options.topK ?? DEFAULT_TOP_K, MAX_TOP_K));
 	const backend = deps?.backend ?? createBackend({ ...cfg, generateModel: model, embedModel });
 	const corpus = deps?.corpus ?? realCorpusDeps((texts, signal) => backend.embed(texts, signal));
-	const chatLog = deps?.chatLog ?? realChatLogDeps();
+	const protocolDeps = deps?.protocol ?? realProtocolDeps();
 
 	// 1. Library (loose PDFs get an adoption attempt; whatever stays
 	// unverified remains choosable by filename), then the ONE paper --
@@ -571,7 +348,7 @@ export async function runChat(options: ChatOptions, deps?: ChatDeps): Promise<Ch
 		throw new Error("no PDFs in the library -- run a search and fetch first, or start pi in the folder holding the PDFs");
 	}
 	const session = options.session?.trim() || null;
-	const wanted = options.paper?.trim() || readCurrentPaper(root, session, chatLog) || "";
+	const wanted = options.paper?.trim() || singlePaperOf(readCurrentScope(root, session, protocolDeps)) || "";
 	const paper = selectPaper(pool, wanted);
 	if (paper.key.startsWith(FILE_KEY_PREFIX)) {
 		onWarn(`${paper.base}.pdf has no verified bibliographic record -- citations identify it by filename and page only`);
@@ -660,7 +437,7 @@ export async function runChat(options: ChatOptions, deps?: ChatDeps): Promise<Ch
 	// 6. Persist the validated round. A write failure must never lose the
 	// answer -- it degrades to a warning and protocol_path stays null.
 	const citedIds = new Set(references.flatMap((reference) => reference.chunk_ids));
-	const chatRound: ChatRound = {
+	const chatRound: Round = {
 		asked: generated,
 		question,
 		language: options.language?.trim() || null,
@@ -678,7 +455,7 @@ export async function runChat(options: ChatOptions, deps?: ChatDeps): Promise<Ch
 	let protocolPath: string | null = null;
 	let roundNumber = 0;
 	try {
-		const appended = appendChatRound(root, chatPaper, chatRound, chatLog, onWarn);
+		const appended = appendRound(root, chatPaper, chatRound, protocolDeps, onWarn);
 		protocolPath = appended.path;
 		roundNumber = appended.roundNumber;
 	} catch (error) {
@@ -687,7 +464,7 @@ export async function runChat(options: ChatOptions, deps?: ChatDeps): Promise<Ch
 	}
 	// Sticky selection: the next call of THIS session without a paper name
 	// means this paper.
-	writeCurrentPaper(root, paper.base, session, chatLog, onWarn);
+	writeCurrentScope(root, { papers: [paper.base] }, session, protocolDeps, onWarn);
 
 	return {
 		question,
@@ -768,7 +545,7 @@ export interface ChatReport {
 	trimmed_chunks: number;
 	paper: ChatPaper;
 	/** The session's validated rounds, verbatim (report appendix). */
-	rounds: ChatRound[];
+	rounds: Round[];
 	protocol_files: string[];
 	adopted_pdfs: string[];
 	adoption_failures: Array<{ file: string; reason: string }>;
@@ -806,14 +583,14 @@ export async function runChatReport(options: ChatReportOptions, deps?: ChatDeps)
 	if (!pool.length) {
 		throw new Error("no PDFs in the library -- run a search and fetch first, or start pi in the folder holding the PDFs");
 	}
-	const chatLog = deps?.chatLog ?? realChatLogDeps();
+	const protocolDeps = deps?.protocol ?? realProtocolDeps();
 	const session = options.session?.trim() || null;
-	const wanted = options.paper?.trim() || readCurrentPaper(root, session, chatLog) || "";
+	const wanted = options.paper?.trim() || singlePaperOf(readCurrentScope(root, session, protocolDeps)) || "";
 	const paper = selectPaper(pool, wanted);
 	if (paper.key.startsWith(FILE_KEY_PREFIX)) {
 		onWarn(`${paper.base}.pdf has no verified bibliographic record -- citations identify it by filename and page only`);
 	}
-	const { rounds, files: protocolFiles } = loadChatRounds(root, paper.base, paper.key, session, chatLog, onWarn);
+	const { rounds, files: protocolFiles } = loadRounds(root, paper.base, paper.key, session, protocolDeps, onWarn);
 
 	// 2. Retrieval queries: the session's questions (deduplicated, order
 	// kept) plus the optional focus; the default question when both are
