@@ -25,6 +25,7 @@ import {
 	selectPaper,
 } from "./chat.ts";
 import type { CorpusDeps, LibraryMatch, PaperIndex } from "./corpus.ts";
+import type { GenerateOptions } from "./llm.ts";
 import { querySlug } from "./output.ts";
 import { type RetrievedChunk, TRANSLATE_SYSTEM_PROMPT, unionChunks } from "./retrieve.ts";
 
@@ -113,7 +114,7 @@ function memoryChatLog(): { chatLog: ChatLogDeps; files: Map<string, string> } {
 
 function makeDeps(generatorOutput: string): {
 	deps: ChatDeps;
-	generateCalls: Array<{ system: string; user: string }>;
+	generateCalls: Array<{ system: string; user: string; opts?: GenerateOptions }>;
 	embedCalls: string[][];
 	files: Map<string, string>;
 } {
@@ -124,7 +125,7 @@ function makeDeps(generatorOutput: string): {
 		embedCalls.push([...texts]);
 		return baseEmbed(texts, signal);
 	};
-	const generateCalls: Array<{ system: string; user: string }> = [];
+	const generateCalls: Array<{ system: string; user: string; opts?: GenerateOptions }> = [];
 	const { chatLog, files } = memoryChatLog();
 	return {
 		deps: {
@@ -137,8 +138,8 @@ function makeDeps(generatorOutput: string): {
 			})),
 			backend: {
 				embed: corpus.embed,
-				generate: async (system, user) => {
-					generateCalls.push({ system, user });
+				generate: async (system, user, opts) => {
+					generateCalls.push({ system, user, opts });
 					return generatorOutput;
 				},
 			},
@@ -223,6 +224,8 @@ function makeRound(question: string, session: string | null = null): ChatRound {
 	assert.equal(result.grounded, true);
 	assert.equal(result.model, "fake-gen");
 	assert.equal(generateCalls.length, 1);
+	// Excerpt-grounded answers run with hidden reasoning off (Ollama dialect).
+	assert.equal(generateCalls[0].opts?.think, false);
 	// Confinement: paper B's chunk is the best GLOBAL match for the question
 	// vector, but retrieval ran only over paper A.
 	assert.equal(result.chunks.length, 2);

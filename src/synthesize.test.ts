@@ -8,6 +8,7 @@
 
 import assert from "node:assert/strict";
 import type { CorpusDeps, LibraryMatch, PaperIndex } from "./corpus.ts";
+import type { GenerateOptions } from "./llm.ts";
 import {
 	buildPrompt,
 	buildReferences,
@@ -183,9 +184,12 @@ function fakeCorpus(): CorpusDeps {
 	};
 }
 
-function makeDeps(generatorOutput: string): { deps: SynthesizeDeps; generateCalls: Array<{ system: string; user: string }> } {
+function makeDeps(generatorOutput: string): {
+	deps: SynthesizeDeps;
+	generateCalls: Array<{ system: string; user: string; opts?: GenerateOptions }>;
+} {
 	const corpus = fakeCorpus();
-	const generateCalls: Array<{ system: string; user: string }> = [];
+	const generateCalls: Array<{ system: string; user: string; opts?: GenerateOptions }> = [];
 	return {
 		deps: {
 			corpus,
@@ -198,8 +202,8 @@ function makeDeps(generatorOutput: string): { deps: SynthesizeDeps; generateCall
 			})),
 			backend: {
 				embed: corpus.embed,
-				generate: async (system, user) => {
-					generateCalls.push({ system, user });
+				generate: async (system, user, opts) => {
+					generateCalls.push({ system, user, opts });
 					return generatorOutput;
 				},
 			},
@@ -231,6 +235,8 @@ function makeDeps(generatorOutput: string): { deps: SynthesizeDeps; generateCall
 	assert.equal(result.top_k, 8);
 	assert.equal(result.chunks.length, 3); // whole corpus, never padded
 	assert.equal(generateCalls.length, 1);
+	// Excerpt-grounded synthesis runs with hidden reasoning off (Ollama dialect).
+	assert.equal(generateCalls[0].opts?.think, false);
 	assert.ok(generateCalls[0].user.includes("Question: How are river sandbars detected?"));
 	// References: verbatim verified records, paper-level numbering.
 	assert.equal(result.references.length, 2);

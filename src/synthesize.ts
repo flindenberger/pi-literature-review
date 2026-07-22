@@ -418,7 +418,10 @@ export async function runSynthesize(
 	// 4. ONE generation pass; the output is untrusted prose from here on.
 	if (options.signal?.aborted) throw new Error("synthesis aborted by the user");
 	onWarn(`generating with ${model} (${retrieved.length} excerpts; this can take a few minutes on a local GPU)`);
-	const generateOptions: GenerateOptions = { model, numCtx: NUM_CTX, temperature: TEMPERATURE };
+	// think:false -- excerpt-grounded answers need no hidden reasoning; a
+	// thinking model would burn the output budget on it (Ollama dialect
+	// only; the OpenAI dialect and the pi backend ignore the field).
+	const generateOptions: GenerateOptions = { model, numCtx: NUM_CTX, temperature: TEMPERATURE, think: false };
 	const rawOutput = await backend.generate(prompt.system, prompt.user, generateOptions, options.signal);
 	requireOutput(rawOutput);
 

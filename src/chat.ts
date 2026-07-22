@@ -619,7 +619,10 @@ export async function runChat(options: ChatOptions, deps?: ChatDeps): Promise<Ch
 	// 4. ONE generation pass; untrusted prose from here on.
 	if (options.signal?.aborted) throw new Error("paper chat aborted by the user");
 	onWarn(`generating with ${model} (${retrieved.length} excerpts from ${paper.base}.pdf)`);
-	const generateOptions: GenerateOptions = { model, numCtx: NUM_CTX, temperature: ASK_TEMPERATURE };
+	// think:false -- excerpt-grounded answers need no hidden reasoning; a
+	// thinking model would burn the output budget on it (Ollama dialect
+	// only; the OpenAI dialect and the pi backend ignore the field).
+	const generateOptions: GenerateOptions = { model, numCtx: NUM_CTX, temperature: ASK_TEMPERATURE, think: false };
 	const rawOutput = await backend.generate(prompt.system, prompt.user, generateOptions, options.signal);
 	requireOutput(rawOutput);
 
@@ -868,7 +871,10 @@ export async function runChatReport(options: ChatReportOptions, deps?: ChatDeps)
 	// 5. ONE generation pass, then the same trust gate as every answer.
 	if (options.signal?.aborted) throw new Error("paper chat report aborted by the user");
 	onWarn(`generating the report with ${model} (${retrieved.length} excerpts, ${queries.length} question(s))`);
-	const generateOptions: GenerateOptions = { model, numCtx: NUM_CTX, temperature: ASK_TEMPERATURE };
+	// think:false -- excerpt-grounded answers need no hidden reasoning; a
+	// thinking model would burn the output budget on it (Ollama dialect
+	// only; the OpenAI dialect and the pi backend ignore the field).
+	const generateOptions: GenerateOptions = { model, numCtx: NUM_CTX, temperature: ASK_TEMPERATURE, think: false };
 	const rawOutput = await backend.generate(prompt.system, prompt.user, generateOptions, options.signal);
 	requireOutput(rawOutput);
 	const scan = enforceCitations(rawOutput, retrieved.length);
