@@ -210,10 +210,16 @@ function drive(state: WizardState, events: string[]): { state: WizardState; done
 
 {
 	// Finish guard: submitting cannot succeed while a required step is
-	// incomplete -- the wizard jumps there instead of finishing.
+	// incomplete -- the wizard jumps there instead of finishing. The summary
+	// step's initial is only a RECOMMENDATION, so it counts as open here.
 	let { state, done } = drive(initWizard(wizardSteps), ["right", "right", "up", "confirm", "confirm"]);
-	// (save answered "Nein" -> submit page -> Absenden)
-	assert.equal(done, "confirmed"); // papers preselected + summary initial + save answered -> valid
+	// (save answered "Nein" -> submit page -> Absenden -> jump to summary)
+	assert.equal(done, undefined);
+	assert.equal(state.tab, 1);
+	// Answering it (Enter on the recommended option) unblocks the submit.
+	({ state, done } = drive(state, ["confirm", "right", "confirm"]));
+	assert.equal(done, "confirmed");
+	assert.equal(wizardResult(state).summary, "bullets");
 	assert.equal(wizardResult(state).save, "no");
 	// Now WITHOUT preselection: the empty checkbox blocks the submit.
 	const bare = wizardSteps.map((step) => (step.kind === "checkbox" ? { ...step, preselected: [] } : step));
@@ -233,10 +239,11 @@ function drive(state: WizardState, events: string[]): { state: WizardState; done
 	// View: tab bar, active row marker, chosen mark, per-kind hint.
 	let { state } = drive(initWizard(wizardSteps), ["down"]);
 	let view = wizardView(state);
-	// Answered tabs carry a check mark: papers is preselected, summary has
-	// an initial; the save step is still open.
+	// Answered tabs carry a check mark: papers is preselected (a REAL prior
+	// answer -- the sticky scope); the summary's initial is only a cursor
+	// recommendation and stays open, like the save step.
 	assert.deepEqual(view.tabs.map((tab) => [tab.label, tab.active]), [
-		["Dokumente ✔", true], ["Zusammenfassung ✔", false], ["HTML", false], ["Bestätigen", false],
+		["Dokumente ✔", true], ["Zusammenfassung", false], ["HTML", false], ["Bestätigen", false],
 	]);
 	assert.equal(view.rows.length, 5);
 	assert.ok(view.rows[1].active && view.rows[1].text.startsWith("❯ 1. "));
@@ -244,8 +251,11 @@ function drive(state: WizardState, events: string[]): { state: WizardState; done
 	assert.ok(view.hint.includes("Weiter-Zeile"));
 	({ state } = drive(state, ["right"]));
 	view = wizardView(state);
-	assert.ok(view.rows[1].text.includes("Bulletpoints ✔")); // initial shown as chosen
+	assert.ok(view.rows[1].active); // cursor starts on the recommendation...
+	assert.ok(!view.rows[1].text.includes("✔")); // ...but nothing is chosen yet
 	assert.ok(view.hint.includes("Enter wählt"));
+	({ state } = drive(state, ["confirm", "left"]));
+	assert.ok(wizardView(state).rows[1].text.includes("Bulletpoints ✔")); // now explicitly chosen
 }
 
 console.log("dialog-state tests passed");

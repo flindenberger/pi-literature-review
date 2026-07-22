@@ -153,7 +153,9 @@ export type WizardStepDef =
 		tab: string;
 		title: string;
 		options: WizardChoiceOption[];
-		/** Preselected answer; also the cursor start. */
+		/** RECOMMENDED option: the cursor starts here, but the step counts
+		 * as answered only after an explicit Enter (field decision
+		 * 2026-07-22: a recommendation must never silently be an answer). */
 		initial?: string;
 	};
 
@@ -201,7 +203,8 @@ export function initWizard(steps: WizardStepDef[]): WizardState {
 			const known = new Set(step.items.map((item) => item.id));
 			return new Set((step.preselected ?? []).filter((id) => known.has(id)));
 		}),
-		chosen: steps.map((step) => (step.kind === "choice" ? step.initial ?? null : null)),
+		// initial is a cursor recommendation, never a pre-answer.
+		chosen: steps.map(() => null),
 	};
 }
 
@@ -325,6 +328,8 @@ export function wizardResult(state: WizardState): WizardResult {
 		if (step.kind === "checkbox") {
 			result[step.id] = step.items.filter((item) => state.selected[i].has(item.id)).map((item) => item.id);
 		} else {
+			// The finish guard means chosen is set on confirmed wizards; the
+			// fallbacks only serve direct wizardResult calls in tests.
 			result[step.id] = state.chosen[i] ?? step.initial ?? step.options[0].value;
 		}
 	});
