@@ -13,7 +13,7 @@
  * the tool description tells the agent the sidecar sits next to the HTML.
  */
 
-import type { ChatAnswer, ChatReport } from "./chat.ts";
+import type { ChatAnswer, ChatReport, SynthReport } from "./synthesize.ts";
 import type { RenderPayload } from "./render.ts";
 import type { ReferenceEntry, SynthesisResult } from "./synthesize.ts";
 
@@ -291,6 +291,54 @@ export function renderChatReportDigest(report: ChatReport, htmlPath: string | nu
 	}
 	if (report.stripped_reference_section) {
 		lines.push("Integrity: a model-written reference section was cut; references come from verified records only.");
+	}
+	if (report.references.length) {
+		lines.push(
+			"When referring to a reference, copy its line below EXACTLY; never re-type titles,",
+			"authors or identifiers from memory. Do not quote or summarize the report prose;",
+			"point the user at the HTML file instead.",
+		);
+		lines.push("");
+		for (const reference of report.references) {
+			lines.push(referenceLine(reference));
+		}
+	}
+	return lines.join("\n");
+}
+
+/**
+ * Digest of a composable report (v25) -- synthesis philosophy: counts, the
+ * HTML path and copyable reference lines; the prose lives in the HTML.
+ */
+export function renderReportDigest(report: SynthReport, htmlPath: string | null): string {
+	const lines: string[] = [];
+	const counts: string[] = [];
+	const summaries = report.units.filter((unit) => unit.kind === "summary").length;
+	const details = report.units.filter((unit) => unit.kind.startsWith("detail")).length;
+	if (summaries) counts.push(`${summaries} summar${summaries === 1 ? "y" : "ies"}`);
+	if (details) counts.push(`${details} question answer(s), mode ${report.detail_mode === "cross-paper" ? "B (cross-paper)" : "A (per paper)"}`);
+	if (report.include_review) counts.push("1 review synthesis");
+	if (report.grounded) {
+		lines.push(`Report complete over ${report.papers.length} document(s): ${counts.join(", ")}; `
+			+ `${report.references.length} reference(s).`);
+	} else {
+		lines.push(
+			"Report FAILED to ground in at least one unit: the model produced no valid citations there. "
+			+ "The report was saved for inspection but the affected sections must NOT be presented as "
+			+ "evidenced statements. Relay this to the user.",
+		);
+	}
+	lines.push(`Scope: ${report.scope.library ? "whole library" : report.scope.papers.map((base) => `${base}.pdf`).join(", ")}`);
+	for (const question of report.questions) lines.push(`Question: ${question}`);
+	const english = [...new Set(report.units.flatMap((unit) =>
+		unit.query_variants.filter((variant) => variant.kind === "english").map((variant) => variant.query)))];
+	if (english.length) lines.push(`Retrieval also used the English query variant(s): ${english.join("; ")}`);
+	if (htmlPath) {
+		lines.push("Full report (summaries, answers, cited passages, method notes):");
+		lines.push(`  ${htmlPath}`);
+		lines.push("Tell the user to open the HTML file to read the report.");
+	} else {
+		lines.push("WARNING: the output files could not be written (see diagnostics).");
 	}
 	if (report.references.length) {
 		lines.push(

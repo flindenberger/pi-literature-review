@@ -29,20 +29,21 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { adoptUnmatched, realAdoptDeps } from "./adopt.ts";
-import { runChat, runChatReport } from "./chat.ts";
+import { runChatReport, runReport, runRound } from "./synthesize.ts";
 import { llmConfig } from "./config.ts";
 import { ensureIndexed, matchLibrary, realCorpusDeps } from "./corpus.ts";
 import { chunkPages, cleanPageText, extractPdfPages, isExtractionUsable } from "./extract.ts";
 import { renderFetchReport, runFetch } from "./fetch.ts";
 import { createBackend } from "./llm.ts";
 import { runSynthesize, type SynthesizeOptions } from "./synthesize.ts";
-import { renderChatDigest, renderChatReportDigest, renderDigest, renderSynthesisDigest } from "./digest.ts";
+import { renderChatDigest, renderChatReportDigest, renderDigest, renderReportDigest, renderSynthesisDigest } from "./digest.ts";
 import { runSearch, SEARCHERS, type SearchOptions } from "./search.ts";
 import { parseGroupTerms } from "./intake.ts";
 import { outputRoot, writeRunOutputs } from "./output.ts";
+import { readCurrentScope } from "./protocol.ts";
 import { resolvePiSessionId } from "./pisession.ts";
 import type { ResultFilters, SortKey } from "./pipeline.ts";
-import { renderHtml, renderPaperChatReportHtml, renderReviewHtml } from "./render.ts";
+import { renderHtml, renderPaperChatReportHtml, renderReviewHtml, renderSynthReportHtml } from "./render.ts";
 import { warn } from "./types.ts";
 
 interface CliArgs {
@@ -76,20 +77,19 @@ function usage(): never {
 	warn("       shows pages, the usability gate and the chunking for one PDF");
 	warn("or:    node src/cli.ts index [--reindex]");
 	warn("       matches papers/ against the saved searches and updates the embedding index");
-	warn('or:    node src/cli.ts synthesize "<question>" [--papers "a.pdf,b.pdf"] [--model M]');
-	warn("       [--embed-model E] [--top-k N] [--language L] [--reindex] [--html [FILE]] [--digest]");
-	warn("       grounded synthesis over the local PDF library (citations from verified records);");
-	warn("       --html writes pi-literature-review/reviews/<date>_<question>.html + JSON sidecar");
-	warn('or:    node src/cli.ts chat "<question>" [--paper <file.pdf>] [--session ID] [--model M]');
+	warn('or:    node src/cli.ts synth "<question>" [--paper <file.pdf>] [--session ID] [--model M]');
 	warn("       [--embed-model E] [--top-k N] [--language L] [--reindex] [--digest]");
-	warn("       paper chat: answers ONE question about ONE paper with page-exact citations;");
-	warn("       --paper omitted = the sticky paper of the current pi session (--session omitted =");
-	warn("       the newest pi session of this folder; no session -> --paper is required);");
-	warn("       every validated round is appended to pi-literature-review/chats/<date>_<paper>.json");
-	warn('or:    node src/cli.ts chat --report --paper <file.pdf> ["<focus>"] [--session ID]');
+	warn("       one grounded chat round about ONE paper (page-exact citations; sticky paper");
+	warn("       of the session when --paper is omitted); recorded in chats/<date>_<paper>.json");
+	warn('or:    node src/cli.ts synth --report [--papers "a.pdf,b.pdf" | --all | --paper X]');
+	warn('       [--questions "q1;q2"] [--summary bullets|prose] [--detail-mode per-paper|cross-paper]');
+	warn("       [--review] [--session ID] [--model M] [--embed-model E] [--top-k N] [--language L]");
+	warn("       [--ui-language de|en] [--reindex] [--html [FILE]] [--digest]");
+	warn("       composable report: per-paper summaries, detail questions (mode A per paper /");
+	warn("       mode B cross-paper), optional review synthesis; writes reports/<date>_Report_...html");
+	warn('or:    node src/cli.ts synth --session-report [--paper <file.pdf>] ["<focus>"] [--session ID]');
 	warn("       [--html [FILE]] [--digest]");
-	warn("       grounded summary report of ONE pi session's questions (only that session); writes");
-	warn("       pi-literature-review/chats/<date>_Paper_chat_report_<paper>.html + JSON sidecar");
+	warn("       grounded summary of ONE pi session's chat rounds (the classic session report)");
 	process.exit(2);
 }
 
@@ -194,105 +194,56 @@ if (process.argv[2] === "llm-check") {
 	}
 }
 
-if (process.argv[2] === "synthesize") {
-	// Full pipeline: engine run, then reviews/<date>_<question>.html + JSON
-	// sidecar (--html), console text or the agent-facing digest (--digest).
-	const argv = process.argv.slice(3);
-	const options: SynthesizeOptions = { question: "", onWarn: warn };
-	let synthHtml: string | undefined;
-	let synthDigest = false;
-	for (let i = 0; i < argv.length; i++) {
-		const arg = argv[i];
-		if (arg === "--html") {
-			const next = argv[i + 1];
-			if (next !== undefined && !next.startsWith("-")) {
-				synthHtml = next.trim();
-				i++;
-				if (!synthHtml) usage();
-			} else {
-				synthHtml = "";
-			}
-		} else if (arg === "--digest") {
-			synthDigest = true;
-		} else if (arg === "--papers") {
-			options.papers = (argv[++i] ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-			if (!options.papers.length) usage();
-		} else if (arg === "--model") {
-			options.model = (argv[++i] ?? "").trim() || undefined;
-		} else if (arg === "--embed-model") {
-			options.embedModel = (argv[++i] ?? "").trim() || undefined;
-		} else if (arg === "--top-k") {
-			options.topK = parseIntArg(argv[++i]);
-		} else if (arg === "--language") {
-			options.language = (argv[++i] ?? "").trim() || undefined;
-		} else if (arg === "--reindex") {
-			options.reindex = true;
-		} else if (!options.question && !arg.startsWith("-")) {
-			options.question = arg;
-		} else {
-			usage();
-		}
-	}
-	if (!options.question.trim()) usage();
-	// The digest is the agent-facing view, and the tool always writes the
-	// HTML/JSON pair -- so --digest implies --html (default location).
-	if (synthDigest && synthHtml === undefined) synthHtml = "";
-	const result = await runSynthesize(options);
-	let htmlPath: string | null = null;
-	if (synthHtml !== undefined) {
-		const written = writeRunOutputs(renderReviewHtml(result), result, synthHtml || undefined, "reviews");
-		htmlPath = written.htmlPath;
-		warn(`wrote HTML review to ${written.htmlPath}`);
-		warn(`wrote JSON copy to ${written.jsonPath}`);
-	}
-	if (synthDigest) {
-		process.stdout.write(`${renderSynthesisDigest(result, htmlPath)}\n`);
-		process.exit(0);
-	}
-	const lines: string[] = [];
-	lines.push(result.grounded
-		? `Synthesis grounded: ${result.references.length} reference(s) from ${result.papers_cited} paper(s).`
-		: "Synthesis FAILED to ground: 0 valid citations. The draft below must not be used as a review.");
-	lines.push("");
-	lines.push(result.prose);
-	if (result.references.length) {
-		lines.push("");
-		lines.push("References (verified records):");
-		for (const reference of result.references) {
-			const id = reference.doi || (reference.arxiv_id ? `arXiv:${reference.arxiv_id}` : reference.key);
-			lines.push(`[${reference.n}] ${reference.year ?? "n.d."} | ${id} | ${reference.title} (pages ${reference.pages.join(", ")})`);
-		}
-	}
-	lines.push("");
-	lines.push(`model ${result.model}; embeddings ${result.embedding_model}; top-k ${result.top_k}; `
-		+ `${result.chunks.length} excerpt(s); ${result.invalid_markers.length} invalid marker(s) stripped; `
-		+ `${result.unmarked_sentences} unmarked sentence(s); reference section cut: ${result.stripped_reference_section ? "yes" : "no"}`);
-	if (result.unmatched_pdfs.length) lines.push(`excluded (no verified record): ${result.unmatched_pdfs.join(", ")}`);
-	for (const failure of result.extraction_failures) lines.push(`excluded (${failure.reason}): ${failure.file}`);
-	process.stdout.write(`${lines.join("\n")}\n`);
-	process.exit(0);
+if (process.argv[2] === "synthesize" || process.argv[2] === "chat") {
+	warn(`the "${process.argv[2]}" subcommand was merged into "synth" (v25) -- see usage`);
+	usage();
 }
 
-if (process.argv[2] === "chat") {
-	// Paper chat: one question about ONE paper; --report builds the grounded
-	// session summary instead (and always writes the HTML pair into chats/).
+if (process.argv[2] === "synth") {
+	// The fused stage (v25): one grounded round, the composable report
+	// (--report) or the classic session report (--session-report).
 	const argv = process.argv.slice(3);
 	let question = "";
 	let paper: string | undefined;
+	let papers: string[] | undefined;
+	let all = false;
+	let questionsArg: string[] = [];
+	let summary: "bullets" | "prose" | undefined;
+	let detailMode: "per-paper" | "cross-paper" | undefined;
+	let review = false;
 	let session: string | undefined;
 	let model: string | undefined;
 	let embedModel: string | undefined;
 	let topK: number | undefined;
 	let language: string | undefined;
+	let uiLanguage: string | undefined;
 	let report = false;
+	let sessionReport = false;
 	let reindex = false;
-	let chatHtml: string | undefined;
-	let chatDigest = false;
+	let htmlArg: string | undefined;
+	let digest = false;
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i];
 		if (arg === "--paper") {
 			paper = (argv[++i] ?? "").trim() || undefined;
 			if (!paper) usage();
+		} else if (arg === "--papers") {
+			papers = (argv[++i] ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+			if (!papers.length) usage();
+		} else if (arg === "--all") {
+			all = true;
+		} else if (arg === "--questions") {
+			questionsArg = (argv[++i] ?? "").split(";").map((s) => s.trim()).filter(Boolean);
+		} else if (arg === "--summary") {
+			const value = (argv[++i] ?? "").trim();
+			if (value !== "bullets" && value !== "prose") usage();
+			summary = value;
+		} else if (arg === "--detail-mode") {
+			const value = (argv[++i] ?? "").trim();
+			if (value !== "per-paper" && value !== "cross-paper") usage();
+			detailMode = value;
+		} else if (arg === "--review") {
+			review = true;
 		} else if (arg === "--session") {
 			session = (argv[++i] ?? "").trim() || undefined;
 			if (!session) usage();
@@ -304,56 +255,89 @@ if (process.argv[2] === "chat") {
 			topK = parseIntArg(argv[++i]);
 		} else if (arg === "--language") {
 			language = (argv[++i] ?? "").trim() || undefined;
+		} else if (arg === "--ui-language") {
+			uiLanguage = (argv[++i] ?? "").trim() || undefined;
 		} else if (arg === "--report") {
 			report = true;
+		} else if (arg === "--session-report") {
+			sessionReport = true;
 		} else if (arg === "--reindex") {
 			reindex = true;
 		} else if (arg === "--html") {
-			// Report mode only (question mode writes no files).
 			const next = argv[i + 1];
 			if (next !== undefined && !next.startsWith("-")) {
-				chatHtml = next.trim();
+				htmlArg = next.trim();
 				i++;
-				if (!chatHtml) usage();
+				if (!htmlArg) usage();
 			} else {
-				chatHtml = "";
+				htmlArg = "";
 			}
 		} else if (arg === "--digest") {
-			chatDigest = true;
+			digest = true;
 		} else if (!question && !arg.startsWith("-")) {
 			question = arg;
 		} else {
 			usage();
 		}
 	}
-	if (!report && !question.trim()) usage();
 
-	// Session scoping (user decision 2026-07-21): sticky paper and report
-	// rounds belong to ONE pi session. The CLI resolves the newest pi
-	// session of this folder unless --session names one explicitly.
+	// Session scoping (v23): sticky scope and session rounds belong to ONE
+	// pi session; the CLI resolves the newest session of this folder.
 	if (!session) {
 		session = resolvePiSessionId(process.cwd()) ?? undefined;
 		warn(session
 			? `scoping to the newest pi session of this folder: ${session} (--session overrides)`
-			: "no pi session found for this folder -- no sticky paper; a report covers no prior rounds");
+			: "no pi session found for this folder -- no sticky scope; reports cover no prior rounds");
 	}
 
-	if (report) {
+	if (sessionReport) {
 		const result = await runChatReport({
 			question: question.trim() || undefined,
 			paper, session, model, embedModel, language, reindex, onWarn: warn,
 		});
-		const written = writeRunOutputs(renderPaperChatReportHtml(result), result, chatHtml || undefined, "chats");
+		const written = writeRunOutputs(renderPaperChatReportHtml(result), result, htmlArg || undefined, "chats");
 		warn(`wrote HTML report to ${written.htmlPath}`);
 		warn(`wrote JSON copy to ${written.jsonPath}`);
 		process.stdout.write(`${renderChatReportDigest(result, written.htmlPath)}\n`);
 		process.exit(0);
 	}
 
-	const answer = await runChat({
+	if (report) {
+		// Scope: --all > --papers > --paper > the session's sticky scope.
+		let scope: string[] | "library" | undefined = all ? "library" : papers ?? (paper ? [paper] : undefined);
+		if (!scope) {
+			const sticky = readCurrentScope(outputRoot(), session ?? null);
+			if (sticky) {
+				scope = sticky.papers;
+				warn(`using the session's sticky scope: ${scope === "library" ? "whole library" : scope.join(", ")}`);
+			}
+		}
+		if (!scope) {
+			warn("no scope -- pass --papers, --paper or --all (no sticky scope in this session)");
+			usage();
+		}
+		const result = await runReport({
+			papers: scope,
+			questions: questionsArg.length ? questionsArg : question.trim() ? [question.trim()] : [],
+			summary,
+			detailMode,
+			includeReview: review,
+			session, model, embedModel, topK, language, uiLanguage, reindex,
+			onWarn: warn,
+			onProgress: warn,
+		});
+		const written = writeRunOutputs(renderSynthReportHtml(result), result, htmlArg || undefined, "reports");
+		warn(`wrote HTML report to ${written.htmlPath}`);
+		warn(`wrote JSON copy to ${written.jsonPath}`);
+		process.stdout.write(`${renderReportDigest(result, written.htmlPath)}\n`);
+		process.exit(0);
+	}
+
+	if (!question.trim()) usage();
+	const answer = await runRound({
 		question, paper, session, model, embedModel, topK, language, reindex, onWarn: warn,
 	});
-	if (chatDigest) {
+	if (digest) {
 		process.stdout.write(`${renderChatDigest(answer)}\n`);
 		process.exit(0);
 	}

@@ -1,5 +1,6 @@
 /**
- * Offline tests for the paper-chat engine. Centerpieces: the single-paper
+ * Offline tests for the round & session-report half of the fused engine
+ * (formerly src/chat.ts; absorbed into synthesize.ts in v25 E2d). Centerpieces: the single-paper
  * confinement (a two-paper library must never leak chunks of the other
  * paper into the prompt) and the citation trust gate on the didactic
  * answer. No filesystem, no network, no models.
@@ -11,11 +12,15 @@ import {
 	buildChatPrompt,
 	chatPool,
 	DEFAULT_REPORT_QUESTION,
-	ensureChatLibrary,
-	runChat,
+	DEFAULT_REVIEW_QUESTION,
+	ensureLibrary,
+	runReport,
+	runRound,
 	runChatReport,
 	selectPaper,
-} from "./chat.ts";
+	SUMMARY_FACETS,
+	summarySystemPrompt,
+} from "./synthesize.ts";
 import type { CorpusDeps, LibraryMatch, PaperIndex } from "./corpus.ts";
 import type { GenerateOptions } from "./llm.ts";
 import { querySlug } from "./output.ts";
@@ -194,13 +199,13 @@ function makeRound(question: string, session: string | null = null): Round {
 	assert.throws(() => selectPaper([], "x"), /available: \(none\)/);
 }
 
-/* ---------------- runChat: confinement + trust gate ---------------- */
+/* ---------------- runRound: confinement + trust gate ---------------- */
 {
 	const { deps, generateCalls } = makeDeps(
 		"Die Methode nutzt Sentinel-2 [1]. Wechselbaenke treten auf [2]. Erfunden [9].",
 	);
 	const warnings: string[] = [];
-	const result = await runChat({
+	const result = await runRound({
 		question: "Wie funktioniert die Methode?",
 		paper: "a.pdf",
 		root: "/",
@@ -243,10 +248,10 @@ function makeRound(question: string, session: string | null = null): Round {
 	assert.equal(result.raw_output.includes("[9]"), true); // raw kept for inspection
 }
 
-/* ---------------- runChat: ungrounded answer ---------------- */
+/* ---------------- runRound: ungrounded answer ---------------- */
 {
 	const { deps } = makeDeps("Eine fluessige Antwort ohne einen einzigen Beleg.");
-	const result = await runChat({
+	const result = await runRound({
 		question: "Wie funktioniert die Methode?",
 		paper: "a", root: "/", model: "fake-gen", embedModel: "fake-embed",
 	}, deps);
@@ -254,29 +259,29 @@ function makeRound(question: string, session: string | null = null): Round {
 	assert.deepEqual(result.references, []);
 }
 
-/* ---------------- runChat: honest errors ---------------- */
+/* ---------------- runRound: honest errors ---------------- */
 {
 	const { deps } = makeDeps("never reached");
 	// Missing paper: the error names the available files.
 	await assert.rejects(
-		() => runChat({ question: "q", root: "/", embedModel: "fake-embed" }, deps),
+		() => runRound({ question: "q", root: "/", embedModel: "fake-embed" }, deps),
 		/no paper selected.*a\.pdf, b\.pdf/,
 	);
 	// Empty question.
 	await assert.rejects(
-		() => runChat({ question: "  ", paper: "a", root: "/", embedModel: "fake-embed" }, deps),
+		() => runRound({ question: "  ", paper: "a", root: "/", embedModel: "fake-embed" }, deps),
 		/empty question/,
 	);
 	// Abort before generation throws instead of returning a partial result.
 	const controller = new AbortController();
 	controller.abort();
 	await assert.rejects(
-		() => runChat({ question: "q", paper: "a", root: "/", embedModel: "fake-embed", signal: controller.signal }, deps),
+		() => runRound({ question: "q", paper: "a", root: "/", embedModel: "fake-embed", signal: controller.signal }, deps),
 		/aborted/,
 	);
 	// Empty library.
 	await assert.rejects(
-		() => runChat({ question: "q", paper: "a", root: "/", embedModel: "fake-embed" }, {
+		() => runRound({ question: "q", paper: "a", root: "/", embedModel: "fake-embed" }, {
 			...deps,
 			library: () => ({ matched: [], unmatched: [], papersDir: "/papers" }),
 		}),
@@ -288,17 +293,17 @@ function makeRound(question: string, session: string | null = null): Round {
 	// "ungrounded draft").
 	const { deps: emptyDeps } = makeDeps("  \n ");
 	await assert.rejects(
-		() => runChat({ question: "q", paper: "a", root: "/", model: "fake-gen", embedModel: "fake-embed" }, emptyDeps),
+		() => runRound({ question: "q", paper: "a", root: "/", model: "fake-gen", embedModel: "fake-embed" }, emptyDeps),
 		/no answer text/,
 	);
 }
 
-/* ---------------- ensureChatLibrary: adoption re-match ---------------- */
+/* ---------------- ensureLibrary: adoption re-match ---------------- */
 {
 	let scans = 0;
 	const adoptCalls: Array<{ files: string[]; dir: string }> = [];
 	const warnings: string[] = [];
-	const { match, adopted, adoptionFailures } = await ensureChatLibrary("/", (m) => warnings.push(m), {
+	const { match, adopted, adoptionFailures } = await ensureLibrary("/", (m) => warnings.push(m), {
 		library: () => {
 			scans++;
 			return scans === 1
@@ -323,12 +328,12 @@ function makeRound(question: string, session: string | null = null): Round {
 {
 	// Output cites only excerpt [1] -- the protocol must store only that chunk.
 	const { deps, files } = makeDeps("Nur die erste Quelle [1].");
-	const first = await runChat({
+	const first = await runRound({
 		question: "Frage eins?", paper: "a", root: "/", model: "fake-gen", embedModel: "fake-embed",
 	}, deps);
 	assert.equal(first.round, 1);
 	assert.equal(first.protocol_path, "/chats/2026-07-16_a.json");
-	const second = await runChat({
+	const second = await runRound({
 		question: "Frage zwei?", paper: "a", root: "/", model: "fake-gen", embedModel: "fake-embed",
 	}, deps);
 	assert.equal(second.round, 2);
@@ -363,7 +368,7 @@ function makeRound(question: string, session: string | null = null): Round {
 		list: () => [],
 	};
 	const warnings: string[] = [];
-	const result = await runChat({
+	const result = await runRound({
 		question: "q", paper: "a", root: "/", model: "fake-gen", embedModel: "fake-embed",
 		onWarn: (m) => warnings.push(m),
 	}, deps);
@@ -381,22 +386,22 @@ function makeRound(question: string, session: string | null = null): Round {
 	// resolves the paper (read for one more release).
 	files.set("/chats/current-paper.json", JSON.stringify({ base: "a", session: "s1" }));
 	// No paper option, SAME session: the sticky marker resolves it.
-	const result = await runChat({ question: "q", root: "/", session: "s1", model: "fake-gen", embedModel: "fake-embed" }, deps);
+	const result = await runRound({ question: "q", root: "/", session: "s1", model: "fake-gen", embedModel: "fake-embed" }, deps);
 	assert.equal(result.paper.base, "a");
 	// A DIFFERENT session must not inherit the marker (bug 2026-07-21: the
 	// selection survived pi restarts) -- nor may a session-less call.
 	await assert.rejects(
-		() => runChat({ question: "q", root: "/", session: "s2", model: "fake-gen", embedModel: "fake-embed" }, deps),
+		() => runRound({ question: "q", root: "/", session: "s2", model: "fake-gen", embedModel: "fake-embed" }, deps),
 		/no paper selected/,
 	);
 	await assert.rejects(
-		() => runChat({ question: "q", root: "/", model: "fake-gen", embedModel: "fake-embed" }, deps),
+		() => runRound({ question: "q", root: "/", model: "fake-gen", embedModel: "fake-embed" }, deps),
 		/no paper selected/,
 	);
 	// An explicit paper wins over the marker and re-stamps the NEW scope
 	// marker for ITS session (the legacy file is left behind, never re-read
 	// once a scope file exists).
-	const explicit = await runChat({ question: "q", paper: "b", root: "/", session: "s2", model: "fake-gen", embedModel: "fake-embed" }, deps);
+	const explicit = await runRound({ question: "q", paper: "b", root: "/", session: "s2", model: "fake-gen", embedModel: "fake-embed" }, deps);
 	assert.equal(explicit.paper.base, "b");
 	assert.deepEqual(JSON.parse(files.get("/chats/current-scope.json")!), { papers: ["b"], session: "s2" });
 }
@@ -405,7 +410,7 @@ function makeRound(question: string, session: string | null = null): Round {
 	const { deps, files } = makeDeps("never reached");
 	files.set("/chats/current-paper.json", JSON.stringify({ base: "a" }));
 	await assert.rejects(
-		() => runChat({ question: "q", root: "/", session: "s1", embedModel: "fake-embed" }, deps),
+		() => runRound({ question: "q", root: "/", session: "s1", embedModel: "fake-embed" }, deps),
 		/no paper selected/,
 	);
 }
@@ -414,7 +419,7 @@ function makeRound(question: string, session: string | null = null): Round {
 	const { deps, files } = makeDeps("never reached");
 	files.set("/chats/current-paper.json", "{ garbage");
 	await assert.rejects(
-		() => runChat({ question: "q", root: "/", session: "s1", embedModel: "fake-embed" }, deps),
+		() => runRound({ question: "q", root: "/", session: "s1", embedModel: "fake-embed" }, deps),
 		/no paper selected/,
 	);
 }
@@ -430,7 +435,7 @@ function makeRound(question: string, session: string | null = null): Round {
 	const { deps } = makeDeps("Kameras werden beschrieben [1].");
 	deps.library = () => ({ matched: library.matched, unmatched: ["c.pdf"], papersDir: "/papers" });
 	const warnings: string[] = [];
-	const result = await runChat({
+	const result = await runRound({
 		question: "Welche Kameras?", paper: "c.pdf", root: "/", model: "fake-gen", embedModel: "fake-embed",
 		onWarn: (m) => warnings.push(m),
 	}, deps);
@@ -473,7 +478,7 @@ function makeRound(question: string, session: string | null = null): Round {
 	// unwired). The fake generator answers the translation call too, so its
 	// output shows up as the disclosed english variant.
 	const { deps, generateCalls, embedCalls } = makeDeps("Antwort [1].");
-	const answer = await runChat({
+	const answer = await runRound({
 		question: "welche kamera?", paper: "a.pdf", root: "/", model: "fake-gen", embedModel: "fake-embed",
 	}, { ...deps, translate: undefined });
 	assert.equal(generateCalls.length, 2);
@@ -571,4 +576,111 @@ function makeRound(question: string, session: string | null = null): Round {
 	assert.ok(warnings.some((m) => m.includes("no chat rounds recorded for this session")));
 }
 
-console.log("chat.test.ts: all assertions passed");
+/* ---------------- runReport: the composable report (v25 E2d) ---------------- */
+{
+	// Full menu over the whole library: summaries + mode A + review.
+	const { deps, files, generateCalls, embedCalls } = makeDeps("Antwort [1].");
+	const progress: string[] = [];
+	const report = await runReport({
+		papers: "library",
+		questions: ["Welche Kamera?", "Wo installiert?"],
+		summary: "bullets",
+		detailMode: "per-paper",
+		includeReview: true,
+		session: "s1",
+		root: "/",
+		model: "fake-gen",
+		embedModel: "fake-embed",
+		onProgress: (m) => progress.push(m),
+	}, deps);
+	// Unit count: 2 summaries + 2x2 mode A + 1 review = 7 generation calls
+	// (translate is off in these deps, so no extra calls).
+	assert.equal(generateCalls.length, 7);
+	assert.equal(report.units.length, 7);
+	assert.deepEqual(report.units.map((unit) => unit.kind), [
+		"summary", "summary",
+		"detail-per-paper", "detail-per-paper", "detail-per-paper", "detail-per-paper",
+		"review",
+	]);
+	// Summaries: fixed rubric in the system prompt, six facet queries in ONE
+	// embed call, confined to the unit's paper.
+	assert.ok(generateCalls[0].system.includes("Forschungsziel"));
+	assert.ok(generateCalls[0].system.includes("Zukunftsausblick"));
+	assert.ok(generateCalls[0].system.includes('lines starting with "- "'));
+	assert.deepEqual(embedCalls[0], [...SUMMARY_FACETS]);
+	assert.equal(report.units[0].paper_base, "a");
+	assert.ok(report.units[0].chunks.every((chunk) => chunk.paper_key === paperA.key));
+	assert.equal(report.units[0].format, "bullets");
+	// Mode A: didactic prompt, one call per paper x question, confined.
+	assert.ok(generateCalls[2].system.includes("understand ONE scientific paper"));
+	assert.ok(generateCalls[2].user.includes("Question: Welche Kamera?"));
+	assert.equal(report.units[2].paper_base, "a");
+	assert.ok(report.units[2].chunks.every((chunk) => chunk.paper_key === paperA.key));
+	assert.equal(report.units[5].paper_base, "b");
+	// Review: synthesis prompt over the whole scope with the default focus.
+	assert.ok(generateCalls[6].system.includes("literature review"));
+	assert.ok(generateCalls[6].user.includes(DEFAULT_REVIEW_QUESTION));
+	assert.equal(report.units[6].paper_base, null);
+	// Global numbering: unit 0 cites paper A -> [1]; unit 1 (summary of B)
+	// cites paper B -> its marker was rewritten to the GLOBAL [2].
+	assert.equal(report.units[0].prose, "Antwort [1].");
+	assert.equal(report.units[1].prose, "Antwort [2].");
+	assert.deepEqual(report.references.map((reference) => [reference.n, reference.key]), [
+		[1, paperA.key], [2, paperB.key],
+	]);
+	assert.ok(report.references.every((reference) => reference.pdf_path));
+	assert.equal(report.grounded, true);
+	// Ticker: one progress line per unit, numbered.
+	assert.equal(progress.length, 7);
+	assert.ok(progress[0].startsWith("Einheit 1/7: Zusammenfassung"));
+	assert.ok(progress[6].includes("Review-Synthese"));
+	// Scope + sticky: the library scope was remembered for the session.
+	assert.deepEqual(report.scope, { papers: ["a", "b"], library: true });
+	assert.deepEqual(JSON.parse(files.get("/chats/current-scope.json")!), { papers: "library", session: "s1" });
+	assert.equal(report.ui_language, "de");
+	assert.equal(report.question, "Report: library");
+}
+
+{
+	// Mode B: ONE call per question across the whole scope; chunks may span
+	// papers. Selection scope of both papers.
+	const { deps, generateCalls } = makeDeps("Antwort [1][2].");
+	const report = await runReport({
+		papers: ["a", "b"],
+		questions: ["Welche Methoden?"],
+		detailMode: "cross-paper",
+		root: "/", model: "fake-gen", embedModel: "fake-embed",
+	}, deps);
+	assert.equal(generateCalls.length, 1);
+	assert.equal(report.units[0].kind, "detail-cross");
+	assert.ok(generateCalls[0].system.includes("literature review")); // synthesis genre
+	const cited = new Set(report.units[0].chunks.map((chunk) => chunk.paper_key));
+	assert.ok(cited.size >= 1); // cross-paper retrieval ran over ALL indexes
+	assert.equal(report.question, "Report: 2 Dokumente");
+	assert.equal(report.detail_mode, "cross-paper");
+}
+
+{
+	// Summary-only single paper; and the empty report is a loud error.
+	const { deps, generateCalls } = makeDeps("- Ziel: klar [1].");
+	const report = await runReport({
+		papers: ["a"], summary: "prose", root: "/", model: "fake-gen", embedModel: "fake-embed",
+	}, deps);
+	assert.equal(generateCalls.length, 1);
+	assert.ok(generateCalls[0].system.includes("one short prose paragraph"));
+	assert.equal(report.question, "Report: a.pdf");
+	assert.equal(report.summary, "prose");
+	assert.equal(report.detail_mode, null);
+	await assert.rejects(
+		() => runReport({ papers: ["a"], root: "/", embedModel: "fake-embed" }, deps),
+		/empty report/,
+	);
+}
+
+{
+	// The rubric prompt is pinned: bullets vs prose differ only in style.
+	assert.ok(summarySystemPrompt("bullets", "German").includes("Untersuchungsort"));
+	assert.ok(summarySystemPrompt("prose", "German").includes("Write in German"));
+}
+
+console.log("round/report engine tests passed");

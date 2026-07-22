@@ -25,9 +25,9 @@ import {
 	type ChatAnswer,
 	type ChatDeps,
 	chatPool,
-	runChat,
+	runRound,
 	runChatReport,
-} from "../src/chat.ts";
+} from "../src/synthesize.ts";
 import { llmConfig } from "../src/config.ts";
 import { type LibraryMatch, matchLibrary } from "../src/corpus.ts";
 import { renderChatDigest, renderChatReportDigest } from "../src/digest.ts";
@@ -235,7 +235,7 @@ async function answerInChat(
 	ctx.ui.setWidget(CHAT_WIDGET, widgetLines);
 	const stopTicker = startElapsedTicker((line) => ctx.ui.setWidget(CHAT_WIDGET, [...widgetLines, line]));
 	try {
-		const answer = await runChat({
+		const answer = await runRound({
 			question,
 			paper: `${base}.pdf`,
 			session: sessionId(ctx),
@@ -550,7 +550,7 @@ export default async function literatureChat(pi: ExtensionAPI) {
 						details: { diagnostics },
 					};
 				}
-				const answer = await runChat({
+				const answer = await runRound({
 					question,
 					paper,
 					session: sessionId(ctx),

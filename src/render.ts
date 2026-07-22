@@ -38,9 +38,9 @@ interface RenderRecord {
 	journal_2yr_citedness?: number | null;
 }
 
-import type { ChatReport } from "./chat.ts";
+import type { ChatReport } from "./synthesize.ts";
 import type { CitationSite } from "./protocol.ts";
-import { searchSnippet, type SynthesisResult } from "./synthesize.ts";
+import { type ReportUnit, searchSnippet, type SynthesisResult, type SynthReport } from "./synthesize.ts";
 
 // Moved to synthesize.ts in v25 E2b (the snippet is citation provenance);
 // re-exported here for existing importers.
@@ -515,28 +515,76 @@ const REVIEW_STYLE = `
  * resolver cannot turn into a link (no local PDF) falls back to the
  * in-page reference anchor. All hrefs come from localPdfHref over
  * code-constructed library paths -- never from model or API text. */
-function proseHtml(
-	prose: string,
-	cite?: { sites: CitationSite[]; hrefFor: (site: CitationSite) => string | null },
-): string {
+interface CiteContext {
+	sites: CitationSite[];
+	hrefFor: (site: CitationSite) => string | null;
+	/** Override of the DISPLAYED number (v25 single-paper reports number
+	 * cited passages, not papers); defaults to the marker's own digits. */
+	labelFor?: (site: CitationSite, digits: string) => string;
+	/** In-page anchor prefix of the fallback link (default "ref"). */
+	anchorPrefix?: string;
+}
+
+/** One shared marker renderer per prose unit: replaces [n] markers in an
+ * ALREADY-ESCAPED string, consuming the unit's sites in document order. */
+function makeMarkerRenderer(cite?: CiteContext): (escaped: string) => string {
 	let markerIndex = 0;
+	return (escaped) => escaped.replace(/\[(\d+)\]/g, (match, digits: string) => {
+		const site = cite?.sites[markerIndex++];
+		const label = site && cite?.labelFor ? cite.labelFor(site, digits) : digits;
+		const href = site ? cite?.hrefFor(site) : null;
+		if (href) {
+			return `<sup><a class="cite" href="${esc(href)}" target="_blank" rel="noopener">${label}</a></sup>`;
+		}
+		return `<a class="cite" href="#${cite?.anchorPrefix ?? "ref"}-${label}">[${label}]</a>`;
+	});
+}
+
+function proseHtml(prose: string, cite?: CiteContext): string {
+	const renderMarkers = makeMarkerRenderer(cite);
 	return prose
 		.split(/\n{2,}/)
 		.map((paragraph) => paragraph.trim())
 		.filter(Boolean)
-		.map((paragraph) => {
-			const withLinks = esc(paragraph)
-				.replaceAll("\n", "<br>")
-				.replace(/\[(\d+)\]/g, (match, digits: string) => {
-					const site = cite?.sites[markerIndex++];
-					const href = site ? cite?.hrefFor(site) : null;
-					return href
-						? `<sup><a class="cite" href="${esc(href)}" target="_blank" rel="noopener">${digits}</a></sup>`
-						: `<a class="cite" href="#ref-${digits}">[${digits}]</a>`;
-				});
-			return `<p>${withLinks}</p>`;
-		})
+		.map((paragraph) => `<p>${renderMarkers(esc(paragraph).replaceAll("\n", "<br>"))}</p>`)
 		.join("\n");
+}
+
+/**
+ * Prose where "- "/"* " line groups become real lists (the bullets summary
+ * format, v25) -- a deterministic text transformation; markers keep their
+ * document order across paragraphs and list items via the shared renderer.
+ */
+function bulletsHtml(prose: string, cite?: CiteContext): string {
+	const renderMarkers = makeMarkerRenderer(cite);
+	const lines = prose.split("\n").map((line) => line.trim());
+	const parts: string[] = [];
+	let list: string[] = [];
+	let paragraph: string[] = [];
+	const flushList = (): void => {
+		if (list.length) parts.push(`<ul>\n${list.map((item) => `<li>${item}</li>`).join("\n")}\n</ul>`);
+		list = [];
+	};
+	const flushParagraph = (): void => {
+		if (paragraph.length) parts.push(`<p>${paragraph.join("<br>")}</p>`);
+		paragraph = [];
+	};
+	for (const line of lines) {
+		const bullet = /^[-*]\s+(.*)$/.exec(line);
+		if (bullet) {
+			flushParagraph();
+			list.push(renderMarkers(esc(bullet[1])));
+		} else if (!line) {
+			flushList();
+			flushParagraph();
+		} else {
+			flushList();
+			paragraph.push(renderMarkers(esc(line)));
+		}
+	}
+	flushList();
+	flushParagraph();
+	return parts.join("\n");
 }
 
 /** Honest footnote under superscript-cited prose (Chromium ignores the
@@ -886,6 +934,324 @@ ${protocolSection}
 the prose and chose excerpt numbers only; every reference on this page was inserted by fixed code from
 HTTP-verified search records. Links into the PDF are built by code from the scanned library path -- never
 from model output. No language model produced or modified any citation data.</footer>
+</body>
+</html>
+`;
+}
+
+/* ------------------------------------------------------------------ *
+ * Composable report page (v25 E2d)                                    *
+ * ------------------------------------------------------------------ */
+
+/** Page chrome per uiLanguage; "de" is the default (user decision: the
+ * report audience reads German -- "Excerpts" was not understood). */
+const REPORT_LABELS = {
+	de: {
+		pageTitle: "Literaturbericht",
+		generated: "Erstellt",
+		scope: "Umfang",
+		scopeLibrary: "gesamte Bibliothek",
+		questionsLabel: "Fragen",
+		toc: "Inhalt",
+		method: "Methode & Transparenz",
+		generator: "Generator",
+		embeddings: "Embeddings",
+		retrieval: "Retrieval",
+		retrievalNote: "beste Textauszüge je Einheit (Kosinus-Ähnlichkeit), Zitat-Gate im Code",
+		integrity: "Integrität",
+		summary: "Zusammenfassung",
+		crossQuestions: "Detailfragen (paperübergreifend)",
+		review: "Stand der Literatur",
+		reviewNote: "Review-Synthese über die gewählten Dokumente -- bei kleiner Auswahl mit Vorsicht zu lesen.",
+		references: "Referenzen",
+		passages: "Belegstellen",
+		passagesNote: "Hochgestellte Zahlen öffnen die zitierte Seite des Quell-PDFs in einem neuen Tab; "
+			+ "Firefox markiert zusätzlich die Passage (Chromium öffnet nur die Seite).",
+		excerpts: "Textauszüge",
+		excerptsNote: "Die vollständige Beweisspur: nur diese Auszüge hat das Modell gesehen.",
+		unverified: "UNVERIFIZIERT -- ohne bibliografischen Nachweis, zitiert nur über Dateiname und Seite",
+		authors: "Autoren",
+		year: "Jahr",
+		identifier: "Identifier",
+		localPdf: "Lokales PDF",
+		pages: "Seiten",
+		page: "S.",
+		noUnits: "Für dieses Dokument konnte kein Text extrahiert werden.",
+		ungrounded: "UNGEPRÜFTER ENTWURF: Mindestens eine Einheit dieses Berichts enthält keine gültigen "
+			+ "Zitatmarker und darf nicht als belegte Aussage gelesen werden.",
+		footer: "Deterministisch gerendert aus dem pi-literature-review-Report. Das Sprachmodell schrieb die "
+			+ "Prosa und wählte Auszugsnummern; jede Referenz und jeder PDF-Link auf dieser Seite wurde von "
+			+ "festem Code aus verifizierten Datensätzen bzw. dem Bibliotheks-Scan eingesetzt. Ungültige "
+			+ "Marker wurden entfernt und ausgewiesen. Kein Sprachmodell hat Zitatdaten erzeugt oder verändert.",
+	},
+	en: {
+		pageTitle: "Literature report",
+		generated: "Generated",
+		scope: "Scope",
+		scopeLibrary: "whole library",
+		questionsLabel: "Questions",
+		toc: "Contents",
+		method: "Method & transparency",
+		generator: "Generator",
+		embeddings: "Embeddings",
+		retrieval: "Retrieval",
+		retrievalNote: "best excerpts per unit (cosine similarity), citation gate in code",
+		integrity: "Integrity",
+		summary: "Summary",
+		crossQuestions: "Detail questions (cross-paper)",
+		review: "State of the literature",
+		reviewNote: "Review synthesis over the selected documents -- read with care on small selections.",
+		references: "References",
+		passages: "Cited passages",
+		passagesNote: "Superscript numbers open the cited page of the source PDF in a new tab; "
+			+ "Firefox also highlights the passage (Chromium opens the page only).",
+		excerpts: "Source passages",
+		excerptsNote: "The complete evidence trail: these are the only excerpts the model saw.",
+		unverified: "UNVERIFIED -- no bibliographic record, cited by filename and page only",
+		authors: "Authors",
+		year: "Year",
+		identifier: "Identifier",
+		localPdf: "Local PDF",
+		pages: "Pages",
+		page: "p.",
+		noUnits: "No text could be extracted from this document.",
+		ungrounded: "UNGROUNDED DRAFT: at least one unit of this report carries no valid citation markers "
+			+ "and must not be read as an evidenced statement.",
+		footer: "Rendered deterministically from the pi-literature-review report payload. The language model "
+			+ "wrote the prose and chose excerpt numbers only; every reference and PDF link on this page was "
+			+ "inserted by fixed code from verified records and the library scan. Invalid markers were "
+			+ "stripped and disclosed. No language model produced or modified any citation data.",
+	},
+} as const;
+
+function unitLabel(unit: ReportUnit, labels: (typeof REPORT_LABELS)["de" | "en"]): string {
+	switch (unit.kind) {
+		case "summary":
+			return `${labels.summary}: ${unit.paper_base}.pdf`;
+		case "detail-per-paper":
+			return `${unit.paper_base}.pdf -- ${unit.question}`;
+		case "detail-cross":
+			return unit.question ?? "";
+		case "review":
+			return labels.review;
+	}
+}
+
+const REPORT_STYLE = `
+	section.paper { margin: 1.4rem 0; }
+	hr.paper { border: none; border-top: 2px solid #c8d0d8; margin: 1.6rem 0; }
+	.reviewnote { background: #eef3f8; border-left: 4px solid #4a6fa5; padding: 0.5rem 0.9rem;
+		font-size: 0.86rem; color: #2c3e50; margin: 0.6rem 0; }
+	ol.passages li { margin: 0.25rem 0; }
+	nav.toc ul { margin: 0.3rem 0 0.8rem 1.2rem; }
+`;
+
+/**
+ * Deterministic rendering of the composable report (v25). Layout follows
+ * the 2026-07-22 field feedback: answers live up top inside each paper's
+ * section, method & transparency sits right under the head metadata, and
+ * SINGLE-paper reports number the cited PASSAGES (a reference table naming
+ * the one paper the reader is asking about carries no information) --
+ * multi-paper reports keep scholarly paper-level numbering.
+ */
+export function renderSynthReportHtml(report: SynthReport): string {
+	const labels = REPORT_LABELS[report.ui_language === "en" ? "en" : "de"];
+	const singleMode = report.papers.length === 1;
+	const pdfPathByKey = new Map(report.papers.map((paper) => [paper.key, paper.pdf_path]));
+	const pdfAnchor = (href: string, text: string): string =>
+		`<a href="${esc(href)}" target="_blank" rel="noopener">${esc(text)}</a>`;
+
+	// Single-paper mode: number distinct cited passages across all units in
+	// first-citation order (identity: paper, page, chunk text).
+	const passageOfSite = new Map<CitationSite, number>();
+	const passages: Array<{ n: number; page: number; text: string; snippet: string | null; paper_key: string }> = [];
+	if (singleMode) {
+		const byKey = new Map<string, number>();
+		for (const unit of report.units) {
+			for (const site of unit.sites) {
+				const chunk = unit.chunks.find((entry) => entry.id === site.chunk_id);
+				const key = `${site.paper_key}\u0000${site.page}\u0000${chunk?.text ?? site.snippet ?? ""}`;
+				let n = byKey.get(key);
+				if (n === undefined) {
+					n = passages.length + 1;
+					byKey.set(key, n);
+					passages.push({ n, page: site.page, text: chunk?.text ?? "", snippet: site.snippet, paper_key: site.paper_key });
+				}
+				passageOfSite.set(site, n);
+			}
+		}
+	}
+
+	const citeOf = (unit: ReportUnit): CiteContext | undefined => (unit.sites.length
+		? {
+			sites: unit.sites,
+			hrefFor: (site) => {
+				const path = pdfPathByKey.get(site.paper_key);
+				return path ? localPdfHref(path, site.page, site.snippet) : null;
+			},
+			...(singleMode
+				? {
+					labelFor: (site: CitationSite, digits: string) => String(passageOfSite.get(site) ?? digits),
+					anchorPrefix: "site",
+				}
+				: {}),
+		}
+		: undefined);
+
+	const unitHtml = (unit: ReportUnit): string => {
+		const body = unit.kind === "summary" && unit.format === "bullets"
+			? bulletsHtml(unit.prose, citeOf(unit))
+			: proseHtml(unit.prose, citeOf(unit));
+		return `<div class="prose">\n${body}\n</div>`;
+	};
+
+	// Head metadata + method block (method directly under the head, field
+	// wish 2026-07-22).
+	const scopeValue = report.scope.library
+		? `${labels.scopeLibrary} (${report.papers.length} PDFs)`
+		: report.papers.map((paper) => `${paper.base}.pdf`).join(", ");
+	const questionRows = report.questions.length
+		? `\n<dt>${labels.questionsLabel}</dt>${report.questions.map((question) => `<dd>${esc(question)}</dd>`).join("")}`
+		: "";
+	const models = [...new Set(report.units.map((unit) => unit.model))];
+	const englishVariants = [...new Set(report.units.flatMap((unit) =>
+		unit.query_variants.filter((variant) => variant.kind === "english").map((variant) => variant.query)))];
+	const lexicalTerms = [...new Set(report.units.flatMap((unit) => unit.lexical_terms))];
+	const lexicalAdded = report.units.reduce((sum, unit) => sum + unit.lexical_added, 0);
+	const variantRow = englishVariants.length
+		? `\n<dt>Query variants</dt><dd>${esc(englishVariants.join("; "))} (LLM-shaped search queries; citations unaffected)</dd>`
+		: "";
+	const lexicalRow = lexicalTerms.length
+		? `\n<dt>Lexical layer</dt><dd>${esc(lexicalTerms.join(", "))}${lexicalAdded ? `; ${lexicalAdded} excerpt(s) guaranteed` : ""}</dd>`
+		: "";
+	const integrity: string[] = [];
+	const invalid = report.units.reduce((sum, unit) => sum + unit.invalid_markers.length, 0);
+	const unmarked = report.units.reduce((sum, unit) => sum + unit.unmarked_sentences, 0);
+	const trimmed = report.units.reduce((sum, unit) => sum + unit.trimmed_chunks, 0);
+	integrity.push(`${invalid} invalid citation marker(s) stripped`);
+	integrity.push(`${unmarked} sentence(s) without a citation marker`);
+	if (report.units.some((unit) => unit.stripped_reference_section)) {
+		integrity.push("model-written reference section(s) cut");
+	}
+	if (trimmed) integrity.push(`${trimmed} excerpt(s) dropped by the context budget`);
+	const methodBlock = `<h2>${labels.method}</h2>
+<dl class="meta">
+<dt>${labels.generator}</dt><dd>${esc(models.join(", "))} (${esc(report.backend)})</dd>
+<dt>${labels.embeddings}</dt><dd>${esc(report.embedding_model)}</dd>
+<dt>${labels.retrieval}</dt><dd>${esc(labels.retrievalNote)}</dd>${variantRow}${lexicalRow}
+<dt>${labels.integrity}</dt><dd>${esc(integrity.join("; "))}</dd>
+</dl>`;
+
+	const banner = report.grounded ? "" : `\n<div class="warnbanner">${esc(labels.ungrounded)}</div>`;
+
+	// Paper sections: metadata, then the answers (summary + mode-A units).
+	const crossUnits = report.units.filter((unit) => unit.kind === "detail-cross");
+	const reviewUnits = report.units.filter((unit) => unit.kind === "review");
+	const paperSections = report.papers.map((paper) => {
+		const identifier = paper.doi || (paper.arxiv_id ? `arXiv:${paper.arxiv_id}` : paper.verified ? paper.key : "");
+		const identifierRow = paper.verified
+			? `\n<dt>${labels.identifier}</dt><dd>${link(referenceHref(paper), identifier || "&mdash;")}</dd>`
+			: `\n<dt>${labels.identifier}</dt><dd>${esc(labels.unverified)}</dd>`;
+		const authorsRow = paper.authors.length ? `\n<dt>${labels.authors}</dt><dd>${esc(paper.authors.join("; "))}</dd>` : "";
+		const paperUnits = report.units.filter((unit) => unit.paper_base === paper.base);
+		const unitBlocks = paperUnits.map((unit) => {
+			const heading = unit.kind === "summary" ? labels.summary : esc(unit.question ?? "");
+			return `<h3>${heading}</h3>\n${unitHtml(unit)}`;
+		});
+		const content = unitBlocks.length ? unitBlocks.join("\n") : `<p class="meta">${esc(labels.noUnits)}</p>`;
+		return `<section class="paper" id="paper-${esc(paper.base)}">
+<h2>${esc(paper.title || `${paper.base}.pdf`)}</h2>
+<dl class="meta">${authorsRow}
+<dt>${labels.year}</dt><dd>${esc(paper.year ?? "n.d.")}</dd>${identifierRow}
+<dt>${labels.localPdf}</dt><dd>${pdfAnchor(localPdfHref(paper.pdf_path), `${paper.base}.pdf`)}</dd>
+</dl>
+${content}
+</section>`;
+	}).join("\n<hr class=\"paper\">\n");
+
+	const crossSection = crossUnits.length
+		? `\n<h2 id="cross-questions">${labels.crossQuestions}</h2>\n${crossUnits
+			.map((unit) => `<h3>${esc(unit.question ?? "")}</h3>\n${unitHtml(unit)}`).join("\n")}`
+		: "";
+	const reviewSection = reviewUnits.length
+		? `\n<h2 id="review">${labels.review}</h2>\n<div class="reviewnote">${esc(labels.reviewNote)}</div>\n${
+			reviewUnits.map((unit) => unitHtml(unit)).join("\n")}`
+		: "";
+
+	// Sources: cited passages (single paper) or the reference table.
+	let sourcesSection: string;
+	if (singleMode) {
+		const paper = report.papers[0];
+		const items = passages.map((passage) => {
+			const href = localPdfHref(paper.pdf_path, passage.page, passage.snippet);
+			const excerpt = passage.text.length > 160 ? `${passage.text.slice(0, 160)}...` : passage.text;
+			return `<li id="site-${passage.n}">${pdfAnchor(href, `${labels.page} ${passage.page}`)} -- ${esc(excerpt)}</li>`;
+		}).join("\n");
+		sourcesSection = `<h2>${labels.passages}</h2>
+<p class="meta">${esc(labels.passagesNote)}</p>
+${items ? `<ol class="passages">\n${items}\n</ol>` : "<p>&mdash;</p>"}`;
+	} else {
+		const rows = report.references.map((reference) => {
+			const unverified = reference.key.startsWith("file:");
+			const id = reference.doi || (reference.arxiv_id ? `arXiv:${reference.arxiv_id}`
+				: unverified ? `${reference.key.slice(5)}.pdf (${labels.unverified.split(" -- ")[0]})` : reference.key);
+			const pdfCell = reference.pdf_path ? pdfAnchor(localPdfHref(reference.pdf_path), "PDF") : "&mdash;";
+			return `<tr id="ref-${reference.n}"><td>[${reference.n}]</td>
+<td>${esc(reference.title || id)}<br><span class="authors">${esc(reference.authors.join("; "))}</span></td>
+<td>${esc(reference.year ?? "n.d.")}</td>
+<td>${link(referenceHref(reference), id)}</td>
+<td>${esc(reference.pages.join(", "))}</td>
+<td>${pdfCell}</td></tr>`;
+		}).join("\n");
+		sourcesSection = `<h2 id="references">${labels.references}</h2>
+<p class="meta">${esc(labels.passagesNote)}</p>
+${rows ? `<table>\n<thead><tr><th></th><th>${labels.references}</th><th>${labels.year}</th><th>${labels.identifier}</th><th>${labels.pages}</th><th>PDF</th></tr></thead>\n<tbody>\n${rows}\n</tbody>\n</table>` : "<p>&mdash;</p>"}`;
+	}
+
+	// Table of contents when there is more than one destination.
+	const tocEntries: Array<{ href: string; label: string }> = [];
+	if (report.papers.length > 1 || crossUnits.length || reviewUnits.length) {
+		for (const paper of report.papers) tocEntries.push({ href: `#paper-${paper.base}`, label: paper.title || `${paper.base}.pdf` });
+		if (crossUnits.length) tocEntries.push({ href: "#cross-questions", label: labels.crossQuestions });
+		if (reviewUnits.length) tocEntries.push({ href: "#review", label: labels.review });
+	}
+	const toc = tocEntries.length
+		? `\n<nav class="toc"><h2>${labels.toc}</h2><ul>\n${tocEntries
+			.map((entry) => `<li><a href="${esc(entry.href)}">${esc(entry.label)}</a></li>`).join("\n")}\n</ul></nav>`
+		: "";
+
+	// Evidence appendix: one collapsible block per unit.
+	const excerptBlocks = report.units.map((unit) => {
+		const items = unit.chunks.map((chunk) => {
+			const path = pdfPathByKey.get(chunk.paper_key);
+			const anchor = path ? `\n<p class="meta">${pdfAnchor(localPdfHref(path, chunk.page, searchSnippet(chunk.text)), `${labels.page} ${chunk.page}`)}</p>` : "";
+			return `<details><summary>[${chunk.id}] ${labels.page} ${chunk.page}, similarity ${chunk.score.toFixed(3)}${chunk.lexical ? ", exact term match" : ""}</summary>
+<p class="excerpt">${esc(chunk.text)}</p>${anchor}</details>`;
+		}).join("\n");
+		return `<details><summary>${esc(unitLabel(unit, labels))} (${unit.chunks.length})</summary>\n${items}\n</details>`;
+	}).join("\n");
+
+	return `<!doctype html>
+<html lang="${esc(report.ui_language === "en" ? "en" : "de")}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${esc(labels.pageTitle)}: ${esc(report.question)}</title>
+<style>${STYLE}${REVIEW_STYLE}${REPORT_STYLE}</style>
+</head>
+<body>
+<h1>${esc(labels.pageTitle)}</h1>
+<dl class="meta">
+<dt>${labels.generated}</dt><dd>${esc(report.generated)} (UTC)</dd>
+<dt>${labels.scope}</dt><dd>${esc(scopeValue)}</dd>${questionRows}
+</dl>
+${methodBlock}${banner}${toc}
+${paperSections}${crossSection}${reviewSection}
+${sourcesSection}
+<h2>${labels.excerpts}</h2>
+<p class="meta">${esc(labels.excerptsNote)}</p>
+${excerptBlocks || "<p>&mdash;</p>"}
+<footer>${esc(labels.footer)}</footer>
 </body>
 </html>
 `;

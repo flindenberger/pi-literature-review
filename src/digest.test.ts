@@ -4,7 +4,7 @@
  */
 
 import assert from "node:assert/strict";
-import type { ChatAnswer, ChatReport } from "./chat.ts";
+import type { ChatAnswer, ChatReport } from "./synthesize.ts";
 import { MAX_DIGEST_RECORDS, renderChatDigest, renderChatReportDigest, renderDigest, renderSynthesisDigest } from "./digest.ts";
 import type { RenderPayload } from "./render.ts";
 import type { SynthesisResult } from "./synthesize.ts";

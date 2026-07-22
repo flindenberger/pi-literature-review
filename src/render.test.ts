@@ -7,11 +7,12 @@
  */
 
 import assert from "node:assert/strict";
-import type { ChatReport } from "./chat.ts";
+import type { ChatReport, SynthReport } from "./synthesize.ts";
 import {
 	localPdfHref,
 	renderHtml,
 	renderPaperChatReportHtml,
+	renderSynthReportHtml,
 	type RenderPayload,
 	renderReviewHtml,
 	searchSnippet,
@@ -533,6 +534,153 @@ const chatReport: ChatReport = {
 	assert.ok(!html.includes("doi.org")); // nothing bibliographic invented
 	// The local PDF links are unaffected (paths come from the file scan).
 	assert.ok(html.includes('href="file:///papers%20dir/a.pdf#page=2"'));
+}
+
+/* ---------------- renderSynthReportHtml (v25 composable report) ---------------- */
+
+function reportUnit(partial: Record<string, unknown>): SynthReport["units"][number] {
+	return {
+		kind: "summary", paper_base: "a", question: null, model: "fake-gen", grounded: true,
+		prose: "Antwort [1].",
+		references: [{ n: 1, key: "doi:10.1/x", title: "Paper One", authors: ["A B"], year: "2021",
+			doi: "10.1/x", arxiv_id: "", pages: [2], chunk_ids: [1], pdf_path: "/papers/a.pdf" }],
+		sites: [{ ref: 1, chunk_id: 1, paper_key: "doi:10.1/x", page: 2, snippet: "adaptive threshold applied" }],
+		chunks: [{ id: 1, paper_key: "doi:10.1/x", page: 2, score: 0.9, text: "The adaptive threshold applied per scene separates water." }],
+		query_variants: [], lexical_terms: [], lexical_added: 0,
+		invalid_markers: [], unmarked_sentences: 0, stripped_reference_section: false,
+		trimmed_chunks: 0, raw_output: "raw",
+		...partial,
+	} as SynthReport["units"][number];
+}
+
+const paperOne = {
+	base: "a", key: "doi:10.1/x", title: "Paper One", authors: ["A B"], year: "2021",
+	doi: "10.1/x", arxiv_id: "", pdf_path: "/papers/a.pdf", verified: true,
+};
+const paperTwo = {
+	base: "b", key: "arxiv:2401.16393", title: "Paper Two", authors: [], year: "2024",
+	doi: "", arxiv_id: "2401.16393", pdf_path: "/papers/b.pdf", verified: true,
+};
+
+const baseReport: SynthReport = {
+	question: "Report: a.pdf",
+	generated: "2026-07-22T12:00:00.000Z",
+	backend: "ollama at http://127.0.0.1:11434",
+	embedding_model: "bge-m3",
+	ui_language: "de",
+	language: null,
+	scope: { papers: ["a"], library: false },
+	questions: ["Welche Kamera?"],
+	summary: "bullets",
+	detail_mode: "per-paper",
+	include_review: false,
+	papers: [paperOne],
+	units: [],
+	references: [],
+	grounded: true,
+	adopted_pdfs: [], adoption_failures: [], unmatched_pdfs: [], extraction_failures: [],
+};
+
+{
+	// SINGLE-paper report: passages numbering replaces the reference table;
+	// two markers citing DIFFERENT chunks show DIFFERENT superscript numbers
+	// even though both cite reference [1] (the E2b field complaint).
+	const summaryUnit = reportUnit({
+		prose: "- Ziel: Wasserstand [1].\n- Methode: KI [1].",
+		format: "bullets",
+		sites: [
+			{ ref: 1, chunk_id: 1, paper_key: "doi:10.1/x", page: 2, snippet: "adaptive threshold applied" },
+			{ ref: 1, chunk_id: 2, paper_key: "doi:10.1/x", page: 4, snippet: null },
+		],
+		chunks: [
+			{ id: 1, paper_key: "doi:10.1/x", page: 2, score: 0.9, text: "Chunk one text about thresholds." },
+			{ id: 2, paper_key: "doi:10.1/x", page: 4, score: 0.8, text: "Chunk two text about cameras." },
+		],
+	});
+	const detailUnit = reportUnit({
+		kind: "detail-per-paper", question: "Welche Kamera?", format: undefined,
+		prose: "Die Kamera steht auf Seite vier [1].",
+		sites: [{ ref: 1, chunk_id: 1, paper_key: "doi:10.1/x", page: 4, snippet: null }],
+		chunks: [{ id: 1, paper_key: "doi:10.1/x", page: 4, score: 0.8, text: "Chunk two text about cameras." }],
+	});
+	const html = renderSynthReportHtml({
+		...baseReport,
+		units: [summaryUnit, detailUnit],
+		references: summaryUnit.references,
+	});
+	// Bullets became a real list; German chrome.
+	assert.ok(html.includes("<ul>"));
+	assert.ok(html.includes("<li>Ziel: Wasserstand"));
+	assert.ok(html.includes("<h2>Methode &amp; Transparenz</h2>") || html.includes("<h2>Methode & Transparenz</h2>"));
+	assert.ok(html.includes("Belegstellen"));
+	assert.ok(html.includes("Textauszüge"));
+	assert.ok(!html.includes("<h2 id=\"references\">")); // no reference table in single mode
+	// Passage numbering: chunk one -> 1, chunk two -> 2; the detail unit
+	// cites chunk two again -> ALSO 2 (stable identity across units).
+	assert.ok(html.includes('#page=2&amp;search=adaptive%20threshold%20applied&amp;phrase=true" target="_blank" rel="noopener">1</a>'));
+	assert.ok(html.includes('href="file:///papers/a.pdf#page=4" target="_blank" rel="noopener">2</a>'));
+	const detailSection = html.slice(html.indexOf("Die Kamera steht"));
+	assert.ok(detailSection.includes('rel="noopener">2</a>'));
+	// The passages list has exactly two entries with page links.
+	assert.ok(html.includes('<li id="site-1">'));
+	assert.ok(html.includes('<li id="site-2">'));
+	assert.ok(!html.includes('<li id="site-3">'));
+	// Method sits BEFORE the paper section (field wish: right under the head).
+	assert.ok(html.indexOf("Methode") < html.indexOf('id="paper-a"'));
+	// No TOC for a single paper without cross sections.
+	assert.ok(!html.includes('class="toc"'));
+}
+
+{
+	// MULTI-paper report: TOC, <hr> separators, cross section, review with
+	// its note, and the paper-level reference table.
+	const unitA = reportUnit({});
+	const unitB = reportUnit({
+		paper_base: "b",
+		prose: "Antwort [2].",
+		references: [{ n: 2, key: "arxiv:2401.16393", title: "Paper Two", authors: [], year: "2024",
+			doi: "", arxiv_id: "2401.16393", pages: [1], chunk_ids: [1], pdf_path: "/papers/b.pdf" }],
+		sites: [{ ref: 2, chunk_id: 1, paper_key: "arxiv:2401.16393", page: 1, snippet: null }],
+		chunks: [{ id: 1, paper_key: "arxiv:2401.16393", page: 1, score: 0.7, text: "B text." }],
+	});
+	const crossUnit = reportUnit({
+		kind: "detail-cross", paper_base: null, question: "Welche Methoden?", format: undefined,
+	});
+	const reviewUnit = reportUnit({ kind: "review", paper_base: null, question: null, format: undefined });
+	const html = renderSynthReportHtml({
+		...baseReport,
+		question: "Report: 2 Dokumente",
+		scope: { papers: ["a", "b"], library: false },
+		papers: [paperOne, paperTwo],
+		units: [unitA, unitB, crossUnit, reviewUnit],
+		references: [...unitA.references, ...unitB.references],
+		include_review: true,
+	});
+	assert.ok(html.includes('class="toc"'));
+	assert.ok(html.includes('<hr class="paper">'));
+	assert.ok(html.includes("Detailfragen (paperübergreifend)"));
+	assert.ok(html.includes("Stand der Literatur"));
+	assert.ok(html.includes('class="reviewnote"'));
+	assert.ok(html.includes('<h2 id="references">Referenzen</h2>'));
+	assert.ok(html.includes('id="ref-1"') && html.includes('id="ref-2"'));
+	// Multi mode keeps the marker's own (paper-level) numbers as labels.
+	assert.ok(html.includes('rel="noopener">1</a>'));
+	assert.ok(html.includes('rel="noopener">2</a>'));
+	assert.ok(html.includes('id="paper-a"') && html.includes('id="paper-b"'));
+}
+
+{
+	// uiLanguage "en" switches the chrome; an ungrounded report banners.
+	const html = renderSynthReportHtml({
+		...baseReport,
+		ui_language: "en",
+		units: [reportUnit({ grounded: false })],
+		grounded: false,
+	});
+	assert.ok(html.includes("Method &amp; transparency") || html.includes("Method & transparency"));
+	assert.ok(html.includes("Cited passages"));
+	assert.ok(html.includes("UNGROUNDED DRAFT"));
+	assert.ok(html.includes('<html lang="en">'));
 }
 
 console.log("render.test.ts: all assertions passed");
