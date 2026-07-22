@@ -17,7 +17,7 @@
  * Cancel is always null -- callers abort the WHOLE run before any LLM call.
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	type CheckboxEvent,
 	type CheckboxItem,
@@ -368,68 +368,4 @@ export async function questionList(
 	const text = await ctx.ui.editor(title, seed, { signal });
 	if (text === undefined) return null;
 	return parseQuestionLines(text);
-}
-
-/* ------------------------------------------------------------------ *
- * TEMPORARY field-test command (E2c gate) -- removed in E2e when the   *
- * wizard wires the dialogs for real                                    *
- * ------------------------------------------------------------------ */
-
-/** /lit-dialogs walks the ONE-dialog wizard (checkbox + two choices),
- * then the questions editor; "/lit-dialogs fallback" forces the select-loop
- * path even in the TUI (the mandatory RPC fallback, exercised without RPC). */
-export function registerDialogDemo(pi: ExtensionAPI): void {
-	pi.registerCommand("lit-dialogs", {
-		description: "TEMPORARY (v25 E2c): field-test the wizard dialog; arg 'fallback' forces the select-loop path",
-		handler: async (args: string, ctx: ExtensionContext) => {
-			if (!ctx.hasUI) return;
-			const forceFallback = (args ?? "").trim() === "fallback";
-			const steps: WizardStepDef[] = [
-				{
-					kind: "checkbox", id: "papers", tab: "Dokumente",
-					title: "Über welche Dokumente möchtest du sprechen?",
-					items: [
-						{ id: "a", label: "2021_Kryniecka_Vistula_sandbars.pdf" },
-						{ id: "b", label: "2024_Wagner_Amazon_drought.pdf" },
-						{ id: "c", label: "2026_Blanch_Water_Level_hess-30-797-2026.pdf" },
-						{ id: "d", label: "2023_Truong_Graph_Neural_Networks_for_Pressure_Estimation_long_name.pdf" },
-					],
-					// No preselection: the demo mirrors a FRESH session. The real
-					// wizard (E2e) preselects only from the session-scoped sticky
-					// scope (v23 rule: a new pi session starts blank).
-					selectAllLabel: "Alle auswählen", nextLabel: "Weiter",
-				},
-				{
-					kind: "choice", id: "summary", tab: "Zusammenfassung", title: "Zusammenfassen?",
-					options: [
-						{ value: "none", label: "Nein" },
-						{ value: "bullets", label: "Bulletpoints" },
-						{ value: "prose", label: "Fließtext" },
-					],
-					initial: "bullets",
-				},
-				{
-					kind: "choice", id: "save", tab: "HTML", title: "Als HTML speichern?",
-					options: [{ value: "yes", label: "Ja, HTML speichern" }, { value: "no", label: "Nein" }],
-				},
-			];
-			const answers = forceFallback
-				? await wizardSelectLoop(ctx, steps, ctx.signal) // the non-TUI rung, forced
-				: await runWizard(ctx, steps, ctx.signal);
-			if (answers === null) {
-				ctx.ui.notify("Wizard abgebrochen (Esc) -- Lauf würde hier enden.", "warning");
-				return;
-			}
-			const questions = await questionList(ctx, "Welche Frage(n) interessieren dich? (eine pro Zeile)", "", ctx.signal);
-			if (questions === null) {
-				ctx.ui.notify("Fragen-Editor abgebrochen (Esc).", "warning");
-				return;
-			}
-			ctx.ui.notify(
-				`Auswahl: [${(answers.papers as string[]).join(", ")}] | Zusammenfassung: ${answers.summary} | HTML: ${answers.save}`
-				+ ` | Fragen: ${questions.length ? questions.join(" / ") : "(keine)"}`,
-				"info",
-			);
-		},
-	});
 }

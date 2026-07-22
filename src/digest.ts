@@ -221,9 +221,16 @@ export function renderChatDigest(answer: ChatAnswer): string {
 			+ "user how to proceed (rephrase the question, try another model).",
 		);
 	}
-	lines.push(paperLine(answer.paper));
+	const scopePapers = answer.papers ?? [answer.paper];
+	if (scopePapers.length > 1 || answer.scope === "library") {
+		lines.push(`Scope: ${answer.scope === "library" ? "whole library" : `${scopePapers.length} documents`}`
+			+ ` (${scopePapers.map((paper) => `${paper.base}.pdf`).join(", ")})`);
+		lines.push("The scope is remembered for this session -- pass only the question on follow-up calls.");
+	} else {
+		lines.push(paperLine(answer.paper));
+		lines.push(`Pass paper: "${answer.paper.base}.pdf" on every follow-up call about this paper.`);
+	}
 	pushRetrievalLines(lines, answer);
-	lines.push(`Pass paper: "${answer.paper.base}.pdf" on every follow-up call about this paper.`);
 	const label = answer.grounded
 		? "answer (relay to the user EXACTLY as written, including [n] markers)"
 		: "ungrounded draft (present ONLY together with the warning above)";
@@ -310,7 +317,11 @@ export function renderChatReportDigest(report: ChatReport, htmlPath: string | nu
  * Digest of a composable report (v25) -- synthesis philosophy: counts, the
  * HTML path and copyable reference lines; the prose lives in the HTML.
  */
-export function renderReportDigest(report: SynthReport, htmlPath: string | null): string {
+export function renderReportDigest(
+	report: SynthReport,
+	htmlPath: string | null,
+	htmlSkipped = false,
+): string {
 	const lines: string[] = [];
 	const counts: string[] = [];
 	const summaries = report.units.filter((unit) => unit.kind === "summary").length;
@@ -337,6 +348,8 @@ export function renderReportDigest(report: SynthReport, htmlPath: string | null)
 		lines.push("Full report (summaries, answers, cited passages, method notes):");
 		lines.push(`  ${htmlPath}`);
 		lines.push("Tell the user to open the HTML file to read the report.");
+	} else if (htmlSkipped) {
+		lines.push("No HTML written (the user chose not to save one).");
 	} else {
 		lines.push("WARNING: the output files could not be written (see diagnostics).");
 	}

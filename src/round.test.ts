@@ -576,6 +576,44 @@ function makeRound(question: string, session: string | null = null): Round {
 	assert.ok(warnings.some((m) => m.includes("no chat rounds recorded for this session")));
 }
 
+/* ---------------- runRound: multi-paper and library scopes (v25 E2e) ---------------- */
+{
+	// A selection scope: retrieval across both papers, protocol under a
+	// SCOPE identity, sticky remembers the full scope.
+	const { deps, files, generateCalls } = makeDeps("Beide zeigen es [1][3].");
+	const answer = await runRound({
+		question: "Was zeigen die Paper?", papers: ["a", "b"], session: "s1",
+		root: "/", model: "fake-gen", embedModel: "fake-embed",
+	}, deps);
+	assert.ok(generateCalls[0].system.includes("SET of scientific papers"));
+	assert.equal(answer.papers.length, 2);
+	assert.deepEqual(answer.scope, ["a", "b"]);
+	assert.equal(answer.references.length, 2); // chunk 1 = paper A, chunk 3 = paper B
+	assert.equal(answer.protocol_path, "/chats/2026-07-16_scope_a+b.json");
+	const protocol = JSON.parse(files.get("/chats/2026-07-16_scope_a+b.json")!) as Protocol;
+	assert.equal(protocol.paper.key, "scope:a+b");
+	assert.deepEqual(protocol.rounds[0].scope, ["a", "b"]);
+	assert.deepEqual(JSON.parse(files.get("/chats/current-scope.json")!), { papers: ["a", "b"], session: "s1" });
+	// The next call of the SAME session without any scope reuses it.
+	const followUp = await runRound({
+		question: "Und die Methoden?", session: "s1", root: "/", model: "fake-gen", embedModel: "fake-embed",
+	}, deps);
+	assert.deepEqual(followUp.scope, ["a", "b"]);
+}
+{
+	// The library scope covers the whole pool and is protocolled as such.
+	const { deps, files } = makeDeps("Antwort [1].");
+	const answer = await runRound({
+		question: "Ueberblick?", papers: "library", session: "s1",
+		root: "/", model: "fake-gen", embedModel: "fake-embed",
+	}, deps);
+	assert.equal(answer.scope, "library");
+	assert.equal(answer.papers.length, 2);
+	assert.equal(answer.protocol_path, "/chats/2026-07-16_library.json");
+	assert.equal((JSON.parse(files.get("/chats/2026-07-16_library.json")!) as Protocol).paper.key, "scope:library");
+	assert.deepEqual(JSON.parse(files.get("/chats/current-scope.json")!), { papers: "library", session: "s1" });
+}
+
 /* ---------------- runReport: the composable report (v25 E2d) ---------------- */
 {
 	// Full menu over the whole library: summaries + mode A + review.

@@ -37,6 +37,7 @@ import {
 	appendRound,
 	type CitationSite,
 	loadRounds,
+	type PaperIdentity,
 	type ProtocolDeps,
 	readCurrentScope,
 	realProtocolDeps,
@@ -632,10 +633,14 @@ export const DEFAULT_REPORT_QUESTION = "What are the main contributions, methods
 /** The grounding contract of the chat: didactic, excerpts-only, marker
  * after every claim. Deliberately its own prompt (the synthesis prompt
  * asks for terse review prose; here the reader wants an explanation). */
-export function answerSystemPrompt(language: string): string {
+export function answerSystemPrompt(language: string, multi = false): string {
 	return [
-		"You are helping a reader understand ONE scientific paper by answering their question about it.",
-		"You are given numbered source excerpts [1]..[k] from that paper. Rules:",
+		multi
+			? "You are helping a reader understand a SET of scientific papers by answering their question about them."
+			: "You are helping a reader understand ONE scientific paper by answering their question about it.",
+		multi
+			? "You are given numbered source excerpts [1]..[k] from those papers. Rules:"
+			: "You are given numbered source excerpts [1]..[k] from that paper. Rules:",
 		"- Use ONLY information from the excerpts. If they do not answer the question, say so plainly.",
 		"- Explain in plain, accessible language; briefly unpack technical terms where they matter.",
 		"- After every claim taken from an excerpt, put its number in brackets, e.g. [3].",
@@ -650,10 +655,11 @@ export function buildChatPrompt(
 	question: string,
 	chunks: RetrievedChunk[],
 	language?: string,
+	multi = false,
 ): { system: string; user: string } {
 	const blocks = chunks.map((chunk) => `[${chunk.id}] (source ${chunk.id})\n${chunk.text}`);
 	return {
-		system: answerSystemPrompt(language?.trim() || "the language of the question"),
+		system: answerSystemPrompt(language?.trim() || "the language of the question", multi),
 		user: `Question: ${question}\n\nSource excerpts:\n\n${blocks.join("\n\n")}`,
 	};
 }
@@ -786,6 +792,11 @@ export interface ChatOptions {
 	question: string;
 	/** PDF filename in the library (basename, with or without .pdf). */
 	paper?: string;
+	/** Document scope for the round (v25 E2e): several PDFs or the whole
+	 * library. Takes precedence over paper; when both are absent the
+	 * session's sticky scope decides. Multi-paper rounds retrieve across
+	 * the scope and are protocolled under a scope identity. */
+	papers?: string[] | "library";
 	/** Pi session id; scopes the sticky current paper and the protocol
 	 * rounds a later report will cover. Absent: no sticky, rounds are
 	 * recorded session-less. */
@@ -867,7 +878,13 @@ export interface ChatAnswer {
 	stripped_reference_section: boolean;
 	/** Chunks dropped by the context-budget guard (lowest-ranked first). */
 	trimmed_chunks: number;
+	/** First scope paper (single-paper rounds: THE paper; kept for existing
+	 * consumers). */
 	paper: ChatPaper;
+	/** Every paper of the round's scope (v25: length > 1 on multi rounds). */
+	papers: ChatPaper[];
+	/** The scope as remembered in the sticky marker. */
+	scope: string[] | "library";
 	/** Loose PDFs that gained a verified identity this run. */
 	adopted_pdfs: string[];
 	adoption_failures: Array<{ file: string; reason: string }>;
@@ -906,22 +923,35 @@ export async function runRound(options: ChatOptions, deps?: ChatDeps): Promise<C
 		throw new Error("no PDFs in the library -- run a search and fetch first, or start pi in the folder holding the PDFs");
 	}
 	const session = options.session?.trim() || null;
-	const wanted = options.paper?.trim() || singlePaperOf(readCurrentScope(root, session, protocolDeps)) || "";
-	const paper = selectPaper(pool, wanted);
-	if (paper.key.startsWith(FILE_KEY_PREFIX)) {
-		onWarn(`${paper.base}.pdf has no verified bibliographic record -- citations identify it by filename and page only`);
+	const stickyScope = options.papers || options.paper?.trim() ? null : readCurrentScope(root, session, protocolDeps);
+	const libraryScope = options.papers === "library" || stickyScope?.papers === "library";
+	const scopePapers: LibraryPaper[] = libraryScope
+		? pool
+		: Array.isArray(options.papers)
+			? options.papers.map((name) => selectPaper(pool, name))
+			: options.paper?.trim()
+				? [selectPaper(pool, options.paper.trim())]
+				: Array.isArray(stickyScope?.papers)
+					? stickyScope.papers.map((name) => selectPaper(pool, name))
+					: [selectPaper(pool, "")]; // throws, listing what IS available
+	const multi = scopePapers.length > 1;
+	const paper = scopePapers[0];
+	for (const scoped of scopePapers) {
+		if (scoped.key.startsWith(FILE_KEY_PREFIX)) {
+			onWarn(`${scoped.base}.pdf has no verified bibliographic record -- citations identify it by filename and page only`);
+		}
 	}
 
-	// 2. Index for this paper only (cached after the first question), then
-	// the question vector.
-	const { indexes, failures } = await ensureIndexed([paper], join(root, "index"), embedModel, corpus, {
+	// 2. Index the scope (cached after the first question), then retrieval.
+	const { indexes, failures } = await ensureIndexed(scopePapers, join(root, "index"), embedModel, corpus, {
 		force: options.reindex,
 		onProgress: onWarn,
 		signal: options.signal,
 	});
 	if (!indexes.length) {
 		throw new Error(
-			`${paper.base}.pdf has no extractable text -- nothing to answer from`
+			(multi ? "no paper in the scope has extractable text" : `${paper.base}.pdf has no extractable text`)
+			+ " -- nothing to answer from"
 			+ (failures.length ? ` (${failures[0].reason})` : ""),
 		);
 	}
@@ -941,19 +971,20 @@ export async function runRound(options: ChatOptions, deps?: ChatDeps): Promise<C
 		signal: options.signal,
 	});
 	let retrieved = retrieval.chunks;
-	let prompt = buildChatPrompt(question, retrieved, options.language);
+	let prompt = buildChatPrompt(question, retrieved, options.language, multi);
 	let trimmed = 0;
 	const budget = NUM_CTX - OUTPUT_RESERVE_TOKENS;
 	while (retrieved.length > 1 && promptTokens(prompt) > budget) {
 		retrieved = retrieved.slice(0, -1).map((chunk, i) => ({ ...chunk, id: i + 1 }));
-		prompt = buildChatPrompt(question, retrieved, options.language);
+		prompt = buildChatPrompt(question, retrieved, options.language, multi);
 		trimmed++;
 	}
 	if (trimmed) onWarn(`context budget: dropped the ${trimmed} lowest-ranked chunk(s) to fit ${NUM_CTX} tokens`);
 
 	// 4. ONE generation pass; untrusted prose from here on.
 	if (options.signal?.aborted) throw new Error("paper chat aborted by the user");
-	onWarn(`generating with ${model} (${retrieved.length} excerpts from ${paper.base}.pdf)`);
+	onWarn(`generating with ${model} (${retrieved.length} excerpts from `
+		+ (multi ? `${scopePapers.length} documents)` : `${paper.base}.pdf)`));
 	// think:false -- excerpt-grounded answers need no hidden reasoning; a
 	// thinking model would burn the output budget on it (Ollama dialect
 	// only; the OpenAI dialect and the pi backend ignore the field).
@@ -969,38 +1000,65 @@ export async function runRound(options: ChatOptions, deps?: ChatDeps): Promise<C
 	if (scan.strippedReferenceSection) {
 		onWarn("the model wrote its own reference section; it was cut (references come from verified records only)");
 	}
-	const { prose, references, sites } = buildCitations(scan.text, retrieved, new Map([[paper.key, paper.file]]));
+	const { prose, references, sites } = buildCitations(
+		scan.text,
+		retrieved,
+		new Map(scopePapers.map((scoped) => [scoped.key, scoped.file])),
+	);
 
 	const now = deps?.now ?? (() => new Date());
 	const generated = now().toISOString();
-	const chatPaper: ChatPaper = {
-		base: paper.base,
-		key: paper.key,
-		title: paper.entry.title,
-		authors: paper.entry.authors ?? [],
-		year: paper.entry.year ?? null,
-		doi: paper.entry.doi,
-		arxiv_id: paper.entry.arxiv_id,
-		pdf_path: paper.file,
-		verified: !paper.key.startsWith(FILE_KEY_PREFIX),
-	};
+	const chatPapers: ChatPaper[] = scopePapers.map((scoped) => ({
+		base: scoped.base,
+		key: scoped.key,
+		title: scoped.entry.title,
+		authors: scoped.entry.authors ?? [],
+		year: scoped.entry.year ?? null,
+		doi: scoped.entry.doi,
+		arxiv_id: scoped.entry.arxiv_id,
+		pdf_path: scoped.file,
+		verified: !scoped.key.startsWith(FILE_KEY_PREFIX),
+	}));
+	const chatPaper = chatPapers[0];
+	const scope: string[] | "library" = libraryScope ? "library" : scopePapers.map((scoped) => scoped.base);
 	const chunkTrail = retrieved.map((chunk) => ({
 		id: chunk.id,
 		page: chunk.page,
 		score: Number(chunk.score.toFixed(4)),
 		text: chunk.text,
+		...(multi ? { paper_key: chunk.paper.key } : {}),
 		...(chunk.lexical ? { lexical: true } : {}),
 	}));
 
 	// 6. Persist the validated round. A write failure must never lose the
 	// answer -- it degrades to a warning and protocol_path stays null.
+	// Multi-paper and library rounds are protocolled under a SCOPE identity
+	// (v25: library rounds are recorded too); the key carries the full
+	// sorted member list, so the quarantine logic keeps different scopes in
+	// different files.
 	const citedIds = new Set(references.flatMap((reference) => reference.chunk_ids));
+	const identity: PaperIdentity = multi || libraryScope
+		? (() => {
+			const bases = scopePapers.map((scoped) => scoped.base).sort();
+			const joined = bases.join("+");
+			return {
+				base: libraryScope ? "library" : joined.length <= 60 ? `scope_${joined}` : `scope_${bases[0]}_and_${bases.length - 1}_more`,
+				key: `scope:${libraryScope ? "library" : joined}`,
+				title: libraryScope ? "Whole library" : `${scopePapers.length} documents`,
+				authors: [],
+				year: null,
+				doi: "",
+				arxiv_id: "",
+			};
+		})()
+		: chatPaper;
 	const chatRound: Round = {
 		asked: generated,
 		question,
 		language: options.language?.trim() || null,
 		model,
 		session,
+		...(multi || libraryScope ? { scope } : {}),
 		top_k: topK,
 		grounded: references.length > 0,
 		prose,
@@ -1014,16 +1072,16 @@ export async function runRound(options: ChatOptions, deps?: ChatDeps): Promise<C
 	let protocolPath: string | null = null;
 	let roundNumber = 0;
 	try {
-		const appended = appendRound(root, chatPaper, chatRound, protocolDeps, onWarn);
+		const appended = appendRound(root, identity, chatRound, protocolDeps, onWarn);
 		protocolPath = appended.path;
 		roundNumber = appended.roundNumber;
 	} catch (error) {
 		onWarn(`could not persist the chat round: ${error instanceof Error ? error.message : error}`
 			+ " -- the answer itself is unaffected");
 	}
-	// Sticky selection: the next call of THIS session without a paper name
-	// means this paper.
-	writeCurrentScope(root, { papers: [paper.base] }, session, protocolDeps, onWarn);
+	// Sticky scope: the next call of THIS session without a scope means the
+	// same documents.
+	writeCurrentScope(root, { papers: scope }, session, protocolDeps, onWarn);
 
 	return {
 		question,
@@ -1045,6 +1103,8 @@ export async function runRound(options: ChatOptions, deps?: ChatDeps): Promise<C
 		stripped_reference_section: scan.strippedReferenceSection,
 		trimmed_chunks: trimmed,
 		paper: chatPaper,
+		papers: chatPapers,
+		scope,
 		adopted_pdfs: adopted,
 		adoption_failures: adoptionFailures,
 		extraction_failures: failures,
@@ -1349,6 +1409,12 @@ export interface ReportOptions {
 	session?: string;
 	/** Overrides the per-genre model defaults for ALL units. */
 	model?: string;
+	/** Model for the didactic genres (summaries + mode A); default
+	 * chatModel(). The pi adapter passes the model selected in pi here. */
+	explainModel?: string;
+	/** Model for the synthesis genres (mode B + review); default the
+	 * configured generateModel (openscholar). */
+	reviewModel?: string;
 	embedModel?: string;
 	topK?: number;
 	/** Output language of the prose; default: the language of the question. */
@@ -1439,8 +1505,8 @@ export async function runReport(options: ReportOptions, deps?: ChatDeps): Promis
 	const cfg = llmConfig();
 	const embedModel = options.embedModel?.trim() || cfg.embedModel;
 	const topK = Math.max(1, Math.min(options.topK ?? DEFAULT_TOP_K, MAX_TOP_K));
-	const explainModel = options.model?.trim() || chatModel();
-	const reviewModel = options.model?.trim() || cfg.generateModel;
+	const explainModel = options.model?.trim() || options.explainModel?.trim() || chatModel();
+	const reviewModel = options.model?.trim() || options.reviewModel?.trim() || cfg.generateModel;
 	const backend = deps?.backend ?? createBackend({ ...cfg, generateModel: explainModel, embedModel });
 	const corpus = deps?.corpus ?? realCorpusDeps((texts, signal) => backend.embed(texts, signal));
 	const protocolDeps = deps?.protocol ?? realProtocolDeps();
