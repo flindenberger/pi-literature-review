@@ -540,13 +540,21 @@ function makeMarkerRenderer(cite?: CiteContext): (escaped: string) => string {
 	});
 }
 
+/** Inline markdown BOLD on an already-escaped string: models habitually
+ * write **heading** / **term:** and the literal asterisks read as noise
+ * (v27 field finding). Only the double-asterisk pair is interpreted --
+ * nothing else in the model's text becomes markup. */
+function strongHtml(escaped: string): string {
+	return escaped.replace(/\*\*([^*\n][^*]*?)\*\*/g, "<strong>$1</strong>");
+}
+
 function proseHtml(prose: string, cite?: CiteContext): string {
 	const renderMarkers = makeMarkerRenderer(cite);
 	return prose
 		.split(/\n{2,}/)
 		.map((paragraph) => paragraph.trim())
 		.filter(Boolean)
-		.map((paragraph) => `<p>${renderMarkers(esc(paragraph).replaceAll("\n", "<br>"))}</p>`)
+		.map((paragraph) => `<p>${renderMarkers(strongHtml(esc(paragraph)).replaceAll("\n", "<br>"))}</p>`)
 		.join("\n");
 }
 
@@ -573,13 +581,13 @@ function bulletsHtml(prose: string, cite?: CiteContext): string {
 		const bullet = /^[-*]\s+(.*)$/.exec(line);
 		if (bullet) {
 			flushParagraph();
-			list.push(renderMarkers(esc(bullet[1])));
+			list.push(renderMarkers(strongHtml(esc(bullet[1]))));
 		} else if (!line) {
 			flushList();
 			flushParagraph();
 		} else {
 			flushList();
-			paragraph.push(renderMarkers(esc(line)));
+			paragraph.push(renderMarkers(strongHtml(esc(line))));
 		}
 	}
 	flushList();
@@ -1143,12 +1151,12 @@ export function renderSynthReportHtml(report: SynthReport): string {
 		}
 		: undefined);
 
-	const unitHtml = (unit: ReportUnit): string => {
-		const body = unit.kind === "summary" && unit.format === "bullets"
-			? bulletsHtml(unit.prose, citeOf(unit))
-			: proseHtml(unit.prose, citeOf(unit));
-		return `<div class="prose">\n${body}\n</div>`;
-	};
+	// EVERY unit renders through the bullet-aware transformer: models write
+	// "- "/"* " lists in ANSWERS too, and proseHtml kept the asterisks
+	// literal (v27 field finding). bulletsHtml is a superset -- plain
+	// paragraphs pass through unchanged.
+	const unitHtml = (unit: ReportUnit): string =>
+		`<div class="prose">\n${bulletsHtml(unit.prose, citeOf(unit))}\n</div>`;
 
 	// ---- Numbered sections following the v27 user template: Contents ->
 	// Query metadata -> one section per document (N.1 Summary, N.2

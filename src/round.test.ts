@@ -717,9 +717,14 @@ function makeRound(question: string, session: string | null = null): Round {
 }
 
 {
-	// The rubric prompt is pinned: bullets vs prose differ only in style.
+	// The rubric prompt is pinned: bullets vs prose differ only in style,
+	// and the heading names are fixed by code in the OUTPUT language (v27:
+	// "translate the headings" was ignored by the model).
 	assert.ok(summarySystemPrompt("bullets", "German").includes("Untersuchungsort"));
 	assert.ok(summarySystemPrompt("prose", "German").includes("Write in German"));
+	assert.ok(summarySystemPrompt("bullets", "English").includes("Study area"));
+	assert.ok(!summarySystemPrompt("bullets", "English").includes("Untersuchungsort"));
+	assert.ok(summarySystemPrompt("bullets", "French").includes("translated into the output language"));
 }
 
 {

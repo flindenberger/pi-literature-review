@@ -1385,11 +1385,22 @@ export function summarySystemPrompt(format: "bullets" | "prose", language: strin
 	const style = format === "bullets"
 		? "- Write short bullet points (lines starting with \"- \") under each heading."
 		: "- Write one short prose paragraph under each heading.";
+	// Heading names in the OUTPUT language, fixed by code (v27 field
+	// finding: "translated into the output language" was ignored and German
+	// headings appeared in English reports). Unknown languages keep the
+	// translate instruction.
+	const headings = /german|deutsch/i.test(language)
+		? ["Structure the summary under EXACTLY these six headings, in this order:",
+			"Forschungsziel; Methodik; Untersuchungsort; Ergebnisse; Diskussion; Zukunftsausblick."]
+		: /english|englisch/i.test(language)
+			? ["Structure the summary under EXACTLY these six headings, in this order:",
+				"Research objective; Methods; Study area; Results; Discussion; Future work."]
+			: ["Structure the summary under EXACTLY these six headings, in this order, translated into the output language:",
+				"Forschungsziel (research objective); Methodik (methods); Untersuchungsort (study area);",
+				"Ergebnisse (results); Diskussion (discussion); Zukunftsausblick (future work)."];
 	return [
 		"You are writing a structured summary of ONE scientific paper from numbered source excerpts [1]..[k].",
-		"Structure the summary under EXACTLY these six headings, in this order, translated into the output language:",
-		"Forschungsziel (research objective); Methodik (methods); Untersuchungsort (study area);",
-		"Ergebnisse (results); Diskussion (discussion); Zukunftsausblick (future work).",
+		...headings,
 		style,
 		"- Use ONLY information from the excerpts. If they do not cover a heading, say so plainly under it.",
 		"- After every claim taken from an excerpt, put its number in brackets, e.g. [3].",
@@ -1618,7 +1629,8 @@ export async function runReport(options: ReportOptions, deps?: ChatDeps): Promis
 		const model = plan.kind === "summary" || plan.kind === "detail-per-paper" ? explainModel : reviewModel;
 		const translate = deps?.translate !== undefined ? deps.translate : translateViaBackend(backend, model);
 		const retrieval = plan.kind === "summary"
-			// The bilingual facet queries need no translation variant.
+			// The bilingual facet queries need no translation variant and no
+			// lexical layer -- they are code-owned, not user words.
 			? await retrieve({
 				queries: [...SUMMARY_FACETS],
 				indexes: unitIndexes,
@@ -1626,6 +1638,7 @@ export async function runReport(options: ReportOptions, deps?: ChatDeps): Promis
 				cap: topK,
 				embed: (texts, signal) => corpus.embed(texts, signal),
 				translate: null,
+				lexical: false,
 				onWarn,
 				signal: options.signal,
 			})

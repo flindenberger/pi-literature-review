@@ -353,6 +353,11 @@ export interface RetrieveOptions {
 	/** English-variant translator; null/omitted disables the variant
 	 * (offline tests, callers without a generator). */
 	translate?: TranslateFn | null;
+	/** false: skip the lexical layer entirely. For CODE-OWNED queries (the
+	 * summary facet rubric) whose capitalized nouns are not user salience
+	 * (v27 field finding: "Forschungsziel, Methodik, ..." showed up as
+	 * word-search terms in an English report). Default true. */
+	lexical?: boolean;
 	onWarn?: (message: string) => void;
 	signal?: AbortSignal;
 }
@@ -398,9 +403,10 @@ export async function retrieve(options: RetrieveOptions): Promise<RetrievalResul
 		options.cap,
 	);
 
-	// 3. Lexical layer over the ORIGINAL queries only.
+	// 3. Lexical layer over the ORIGINAL queries only (USER words; callers
+	// pass lexical: false for code-owned queries).
 	const terms: string[] = [];
-	{
+	if (options.lexical !== false) {
 		const seen = new Set<string>();
 		for (const query of queries) {
 			for (const term of salientTerms(query)) {

@@ -696,4 +696,22 @@ const baseReport: SynthReport = {
 	assert.ok(html.includes('<html lang="en">'));
 }
 
+{
+	// v27: **bold** becomes <strong>, and bullet lines inside ANSWER units
+	// become real lists (models write markdown-ish prose).
+	const unit = reportUnit({
+		kind: "detail-per-paper", question: "Welche Daten?", format: undefined,
+		prose: "**1. Satellite Imagery**\n* **SPOT4:** high resolution [1].\n* **Landsat:** wider range [1].",
+		sites: [
+			{ ref: 1, chunk_id: 1, paper_key: "doi:10.1/x", page: 2, snippet: null },
+			{ ref: 1, chunk_id: 1, paper_key: "doi:10.1/x", page: 2, snippet: null },
+		],
+		chunks: [{ id: 1, paper_key: "doi:10.1/x", page: 2, score: 0.9, text: "Chunk." }],
+	});
+	const html = renderSynthReportHtml({ ...baseReport, units: [unit], references: unit.references });
+	assert.ok(html.includes("<strong>1. Satellite Imagery</strong>"));
+	assert.ok(html.includes("<li><strong>SPOT4:</strong> high resolution"));
+	assert.ok(!html.includes("**"));
+}
+
 console.log("render.test.ts: all assertions passed");
