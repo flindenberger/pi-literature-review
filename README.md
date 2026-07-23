@@ -226,9 +226,11 @@ unverified is still usable -- cited honestly by filename and page.
 
 **Dialog language.** All code dialogs (question gate, wizard, warnings)
 follow the CHAT's language: the explicit `language` parameter wins, else a
-deterministic German/English detection over the question texts decides;
-German is the default and the bare-command language. The report page
-chrome (`ui_language`) follows the same resolution.
+deterministic German/English detection over the question texts, else the
+language OBSERVED in the user's recent plain chat input (a passive
+`pi.on("input")` listener -- opening moves carry no question text);
+German is the final default. The report page chrome (`ui_language`)
+follows the same resolution.
 
 **Scope.** Everything runs over a document SCOPE: one paper, a selection,
 or the whole library. The scope is picked in a Claude-Code-style wizard
