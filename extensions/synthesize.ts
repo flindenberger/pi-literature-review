@@ -20,9 +20,9 @@ import { Type } from "typebox";
 import { llmConfig } from "../src/config.ts";
 import {
 	type CheckboxItem,
+	decisiveDialogLang,
 	detectDialogLang,
 	type DialogLang,
-	langFromName,
 	parseQuestionLines,
 	type WizardAnswers,
 	type WizardResult,
@@ -62,17 +62,55 @@ export const UNIT_WARN_THRESHOLD = 15;
 let answerEntryReady = false;
 
 /**
- * Language of the most recent PLAIN user input, observed passively via
- * pi.on("input") (v27 field finding: the opening move carries no question
- * text, so detection had nothing to read and the gate opened German in an
- * English chat). This is the only reliable source of the chat's language
- * on question-less tool calls; neutral lines keep the previous value.
+ * Language of the chat, read from the SESSION itself (v27 field finding:
+ * the opening move carries no question text, and a passive input observer
+ * proved unreliable): walk the current branch's USER messages newest
+ * first and return the first DECISIVE detection (neutral lines like "ok"
+ * are skipped). Commands, bash lines and extension-injected messages
+ * (customType) are ignored; any API surprise just yields null. This is
+ * deliberately NOT the agent-passed language param -- the agent guesses
+ * that, the session records what the user actually typed.
  */
-let observedChatLang: DialogLang | null = null;
+function sessionChatLang(ctx: ExtensionContext): DialogLang | null {
+	try {
+		const manager = ctx.sessionManager as unknown as {
+			getBranch?: () => unknown[];
+			getEntries?: () => unknown[];
+		};
+		const entries = (manager.getBranch?.() ?? manager.getEntries?.() ?? []) as Array<Record<string, unknown>>;
+		let examined = 0;
+		for (let i = entries.length - 1; i >= 0 && examined < 8; i--) {
+			const entry = entries[i];
+			if (entry?.type !== "message") continue;
+			const message = entry.message as { role?: string; content?: unknown; customType?: string } | undefined;
+			if (message?.role !== "user") continue;
+			if ((entry as { customType?: string }).customType || message.customType) continue;
+			const content = message.content;
+			const text = (typeof content === "string"
+				? content
+				: Array.isArray(content)
+					? content
+						.filter((part): part is { type: string; text: string } =>
+							typeof part === "object" && part !== null && (part as { type?: string }).type === "text")
+						.map((part) => part.text)
+						.join(" ")
+					: "").trim();
+			if (!text || text.startsWith("/") || text.startsWith("!")) continue;
+			examined++;
+			const decisive = decisiveDialogLang(text);
+			if (decisive) return decisive;
+		}
+		return null;
+	} catch {
+		return null;
+	}
+}
 
-/** Fallback chain tail: the observed chat language, else German. */
-function chatLangDefault(): DialogLang {
-	return observedChatLang ?? "de";
+/** The dialog language: the chat's own language first (session user
+ * messages), question texts as fallback, German as the final default.
+ * The agent's language param drives the PROSE only, never the dialogs. */
+function dialogLangFor(ctx: ExtensionContext, texts: Array<string | undefined>): DialogLang {
+	return sessionChatLang(ctx) ?? detectDialogLang(texts, "de");
 }
 
 const MAX_LINE = 110;
@@ -851,8 +889,9 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 			"Chat about and report on the LOCAL PDF papers (papers/ or the current folder): grounded answers with " +
 			"page-exact, code-validated citations over ONE paper, a selection, or the whole library. Use this tool " +
 			"WHENEVER the user wants to chat about, understand, question, summarize, review or report on local " +
-			"papers/PDFs -- including German requests like 'zu einem Paper chatten', 'erklaere mir das Paper', " +
-			"'Frage zum Paper', 'zusammenfassen', 'Bericht/Report erstellen'. NOT this tool: searching ONLINE for " +
+			"papers/PDFs -- in ANY language, e.g. German 'zu einem Paper chatten', 'erklaere mir das Paper', " +
+			"'Frage zum Paper', 'zusammenfassen', 'Bericht/Report erstellen', Spanish 'hablar de un paper', " +
+			"French 'discuter d'un article'. NOT this tool: searching ONLINE for " +
 			"new literature (pi-literature-search) or downloading PDFs (pi-literature-fetch). " +
 			"Call this tool DIRECTLY and IMMEDIATELY, even without a concrete question ('ich moechte ueber ein " +
 			"Paper chatten'): when the document scope is missing, the tool shows a terminal dialog where the user " +
@@ -964,10 +1003,8 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 			// prefilled, editable -- because agents measurably rephrase the
 			// user's words; the confirmed text is what the engine runs.
 			if (!wantsReport) {
-				// Dialog language: explicit param > question text > the language
-				// OBSERVED in the user's recent chat input (opening moves carry
-				// no question) > German.
-				const lang = langFromName(params.language) ?? detectDialogLang([question], chatLangDefault());
+				// Dialog language: the chat itself decides (see dialogLangFor).
+				const lang = dialogLangFor(ctx, [question]);
 				let confirmedScope = scope;
 				if (ctx.hasUI) {
 					const gate = await questionGate(ctx, scope ?? null, question, lang, diagnostics, signal);
@@ -1021,8 +1058,7 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 			// REPORT mode: settle a missing scope in the picker first.
 			// Dialog language: explicit param, else detected from the
 			// agent-passed questions (the seed refines it below).
-			let reportLang = langFromName(params.language)
-				?? detectDialogLang(params.questions ?? [], chatLangDefault());
+			let reportLang = dialogLangFor(ctx, params.questions ?? []);
 			if (!scope) {
 				if (!ctx.hasUI) {
 					const pool = chatPool(matchLibrary(root, (message) => diagnostics.push(message)));
@@ -1061,8 +1097,7 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 				// Question seed: agent-passed questions, else what was actually
 				// asked in this session's chat ("fasse das zusammen").
 				const seed = questions?.length ? questions : sessionSeedQuestions(root, scope, sessionId(ctx));
-				reportLang = langFromName(params.language)
-					?? detectDialogLang([...(params.questions ?? []), ...seed], chatLangDefault());
+				reportLang = dialogLangFor(ctx, [...(params.questions ?? []), ...seed]);
 				const intake = await reportWizard(ctx, scopeSize, seed, {
 					...choices,
 					summary: summaryParam ?? (seed.length ? "none" : "bullets"),
@@ -1143,7 +1178,7 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 				// (dialog language follows the typed question).
 				let scope: string[] | "library" | null | "empty" = sticky ? sticky.papers : null;
 				if (!scope) {
-					scope = await pickScope(ctx, diagnostics, undefined, ctx.signal, detectDialogLang([question], chatLangDefault()));
+					scope = await pickScope(ctx, diagnostics, undefined, ctx.signal, dialogLangFor(ctx, [question]));
 				}
 				if (scope === null) return; // cancelled
 				if (scope === "empty") {
@@ -1174,7 +1209,7 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 				: undefined;
 			const scopeSizeOf = (answers: WizardAnswers): number =>
 				Array.isArray(answers.papers) ? answers.papers.length : 0;
-			const wizardLang = chatLangDefault();
+			const wizardLang = dialogLangFor(ctx, []);
 			const steps: WizardStepDef[] = [
 				scopeStep(items, preselected, wizardLang),
 				questionsStep(undefined, wizardLang),
@@ -1209,8 +1244,8 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 
 			const unitCount = reportUnitCount(scopeSize, questions.length, choices);
 			// The report chrome (and the warning) follow the language of the
-			// questions typed into the wizard, else the observed chat language.
-			const reportLang = detectDialogLang(questions, chatLangDefault());
+			// questions typed into the wizard, else the chat's language.
+			const reportLang = detectDialogLang(questions, sessionChatLang(ctx) ?? "de");
 			if (unitCount > UNIT_WARN_THRESHOLD) {
 				const warnText = SYNTH_TEXT[reportLang];
 				const go = await ctx.ui.select(
@@ -1235,17 +1270,6 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 			// The report itself is a transcript card (showReport); no widget
 			// digest on top of it.
 		},
-	});
-
-	// Passive chat-language observer (v27): plain user input updates the
-	// language the dialogs open in; commands, bash lines and
-	// extension-injected messages are ignored, and the input itself passes
-	// through untouched (no return value).
-	pi.on("input", (event) => {
-		const text = event.text?.trim();
-		if (!text || text.startsWith("/") || text.startsWith("!")) return;
-		if (event.source === "extension") return;
-		observedChatLang = detectDialogLang([text], chatLangDefault());
 	});
 
 	// HTML-export gate (v23 field failure, moved here in E2e and now hanging
