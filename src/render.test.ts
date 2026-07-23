@@ -611,15 +611,16 @@ const baseReport: SynthReport = {
 	// Bullets became a real list; German chrome.
 	assert.ok(html.includes("<ul>"));
 	assert.ok(html.includes("<li>Ziel: Wasserstand"));
-	// v27 template: numbered sections, metadata first, technical details
-	// collapsed and explained in plain language.
-	assert.ok(html.includes("<h2>1. Abfrage-Metadaten</h2>"));
+	// v27 layout (second iteration): metadata first, NO numbers, NO TOC;
+	// technical details collapsed and explained in plain language.
+	assert.ok(html.includes("<h2>Abfrage-Metadaten</h2>"));
+	assert.ok(!/<h2>\d+\./.test(html)); // no numbered headings
 	assert.ok(html.includes("Technische Details (einfach erklärt)"));
 	assert.ok(html.includes("Textstellen-Suche"));
 	assert.ok(html.includes("Qualitätsprüfung"));
 	assert.ok(html.includes("Belegstellen"));
 	assert.ok(html.includes("Textauszüge"));
-	assert.ok(!html.includes("<h2 id=\"references\">")); // no reference table in single mode
+	assert.ok(!html.includes('id="references"')); // no reference table in single mode
 	// Passage numbering: chunk one -> 1, chunk two -> 2; the detail unit
 	// cites chunk two again -> ALSO 2 (stable identity across units).
 	assert.ok(html.includes('#page=2&amp;search=adaptive%20threshold%20applied&amp;phrase=true" target="_blank" rel="noopener">1</a>'));
@@ -630,14 +631,16 @@ const baseReport: SynthReport = {
 	assert.ok(html.includes('<li id="site-1">'));
 	assert.ok(html.includes('<li id="site-2">'));
 	assert.ok(!html.includes('<li id="site-3">'));
-	// Metadata sits BEFORE the paper section; the TOC exists ALWAYS (v27
-	// template) with numbered entries and sub-entries.
+	// Metadata sits BEFORE the paper section; NO table of contents; the
+	// answers live in COLLAPSED blocks under the paper.
 	assert.ok(html.indexOf("Abfrage-Metadaten") < html.indexOf('id="paper-a"'));
-	assert.ok(html.includes('class="toc"'));
-	assert.ok(html.includes('<a href="#paper-a">2. Paper One</a>'));
-	assert.ok(html.includes('<a href="#paper-a-summary">2.1 Zusammenfassung</a>'));
-	assert.ok(html.includes('<a href="#paper-a-questions">2.2 Fragen</a>'));
-	assert.ok(html.includes("2.1 Zusammenfassung</h3>"));
+	assert.ok(!html.includes('class="toc"'));
+	assert.ok(html.includes('<details class="block"><summary>Zusammenfassung</summary>'));
+	assert.ok(html.includes('<details class="block"><summary>Fragen</summary>'));
+	assert.ok(html.includes('<details class="block"><summary>Belegstellen</summary>'));
+	assert.ok(html.includes('<details class="block"><summary>Textauszüge</summary>'));
+	// The anchor-opening script ships (targets live inside details).
+	assert.ok(html.includes("openTarget"));
 	// Summary/review choices are stated in plain rows.
 	assert.ok(html.includes("Ja, als Bulletpoints"));
 	assert.ok(html.includes("<dt>Review-Synthese</dt><dd>Nein</dd>"));
@@ -668,13 +671,17 @@ const baseReport: SynthReport = {
 		references: [...unitA.references, ...unitB.references],
 		include_review: true,
 	});
-	assert.ok(html.includes('class="toc"'));
+	assert.ok(!html.includes('class="toc"')); // no TOC anywhere (v27 layout)
 	assert.ok(html.includes('<hr class="paper">'));
 	assert.ok(html.includes("Detailfragen (paperübergreifend)"));
 	assert.ok(html.includes("Stand der Literatur"));
 	assert.ok(html.includes('class="reviewnote"'));
-	assert.ok(/<h2 id="references">\d+\. Referenzen<\/h2>/.test(html));
+	// References live WITH each paper (collapsed), not at the page bottom;
+	// each paper's block lists only ITS cited entries with global numbers.
+	assert.ok(html.includes('<details class="block"><summary>Referenzen</summary>'));
 	assert.ok(html.includes('id="ref-1"') && html.includes('id="ref-2"'));
+	const paperA = html.slice(html.indexOf('id="paper-a"'), html.indexOf('id="paper-b"'));
+	assert.ok(paperA.includes("[1]") && !paperA.includes('<tr id="ref-2">'));
 	// Multi mode keeps the marker's own (paper-level) numbers as labels.
 	assert.ok(html.includes('rel="noopener">1</a>'));
 	assert.ok(html.includes('rel="noopener">2</a>'));

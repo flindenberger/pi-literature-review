@@ -280,18 +280,21 @@ export. Building blocks:
   paper it would just be a weaker summary).
 
 The report page follows the CHAT's language in chrome AND prose (one
-language for the whole report; an explicit `language` parameter wins) and
-is structured as numbered sections (v27 template): Contents, Query
-metadata, one section per document (N.1 Summary, N.2 Questions), optional
-cross-paper questions, State of the literature, References/Cited
-passages, Source excerpts. Technical transparency (passage search, query
-variants, word search, quality check) sits in a COLLAPSED block explained
-in plain language -- lay readers should not need to know what "retrieval"
-means. Citation superscripts open the source PDF at the cited page
-(Firefox also highlights the passage; Chromium opens the page).
-Single-paper reports number the cited PASSAGES (a numbered list with page
-links) instead of a one-row reference table; multi-paper reports keep
-scholarly paper-level numbering plus a reference table.
+language for the whole report; an explicit `language` parameter wins).
+Layout (v27, second iteration): no table of contents, no section numbers
+-- Query metadata first, then one block per document (title + metadata
+open; Summary, Questions, References/Cited passages and Source excerpts
+each COLLAPSED), then cross-paper questions and the State of the
+literature, all separated by rules. References live WITH their paper (a
+collapsed table listing only that paper's cited entries, global numbers
+kept), not at the page bottom. Technical transparency (passage search,
+query variants, word search, quality check) sits in a collapsed block
+explained in plain language. Citation superscripts open the source PDF at
+the cited page (Firefox also highlights the passage; Chromium opens the
+page); a tiny inline script opens collapsed blocks when an in-page anchor
+is navigated. Single-paper reports number the cited PASSAGES instead of a
+one-row reference table; multi-paper reports keep scholarly paper-level
+numbering.
 
 **Retrieval** (all modes): the original question PLUS a disclosed English
 translation variant (one small generate() call; the LLM shapes queries,

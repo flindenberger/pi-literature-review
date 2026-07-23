@@ -1093,10 +1093,11 @@ const REPORT_STYLE = `
 	.reviewnote { background: #eef3f8; border-left: 4px solid #4a6fa5; padding: 0.5rem 0.9rem;
 		font-size: 0.86rem; color: #2c3e50; margin: 0.6rem 0; }
 	ol.passages li { margin: 0.25rem 0; }
-	nav.toc ul { margin: 0.3rem 0 0.8rem 1.2rem; list-style: none; }
-	nav.toc li.sub { margin-left: 1.4rem; }
 	details.technical { margin: 0.6rem 0; }
 	details.technical > summary { cursor: pointer; color: #4a6fa5; font-size: 0.9rem; }
+	details.block { margin: 0.8rem 0; }
+	details.block > summary { cursor: pointer; font-size: 1.05rem; font-weight: 600; color: #24435f; padding: 0.15rem 0; }
+	details.block[open] > summary { margin-bottom: 0.4rem; }
 `;
 
 /**
@@ -1203,19 +1204,16 @@ export function renderSynthReportHtml(report: SynthReport): string {
 <dt>${labels.integrity}</dt><dd>${esc(integrity.join("; "))}<br><span class="authors">${esc(labels.integrityPlain)}</span></dd>
 </dl></details>`;
 
-	let sectionNumber = 0;
-	const tocLines: string[] = [];
-	const sections: string[] = [];
-	const addToc = (num: string, id: string, title: string, sub = false): void => {
-		tocLines.push(`<li${sub ? ' class="sub"' : ""}><a href="#${esc(id)}">${esc(num)} ${esc(title)}</a></li>`);
-	};
+	// ---- Layout (v27 user decision, second iteration): NO table of
+	// contents, NO section numbers. Query metadata first, then one block
+	// per document -- title + metadata open, Summary / Questions /
+	// References|Passages / Source excerpts each COLLAPSED -- then cross
+	// questions and State of the literature; horizontal rules separate the
+	// blocks. References live WITH their paper, not at the page bottom.
+	const blocks: string[] = [];
 
-	// 1. Query metadata.
-	{
-		const num = ++sectionNumber;
-		addToc(`${num}.`, "metadata", labels.metadataTitle);
-		sections.push(`<section id="metadata">
-<h2>${num}. ${esc(labels.metadataTitle)}</h2>
+	blocks.push(`<section id="metadata">
+<h2>${esc(labels.metadataTitle)}</h2>
 <dl class="meta">
 <dt>${labels.generated}</dt><dd>${esc(report.generated)} (UTC)</dd>
 <dt>${labels.documents}</dt><dd>${esc(scopeValue)}</dd>
@@ -1226,102 +1224,45 @@ export function renderSynthReportHtml(report: SynthReport): string {
 </dl>
 ${technicalBlock}
 </section>`);
-	}
 
-	// One numbered section per document: metadata, N.1 summary, N.2 questions.
-	for (const paper of report.papers) {
-		const num = ++sectionNumber;
-		const paperTitle = paper.title || `${paper.base}.pdf`;
-		addToc(`${num}.`, `paper-${paper.base}`, paperTitle);
-		const identifier = paper.doi || (paper.arxiv_id ? `arXiv:${paper.arxiv_id}` : paper.verified ? paper.key : "");
-		const identifierRow = paper.verified
-			? `\n<dt>${labels.identifier}</dt><dd>${link(referenceHref(paper), identifier || "&mdash;")}</dd>`
-			: `\n<dt>${labels.identifier}</dt><dd>${esc(labels.unverified)}</dd>`;
-		const authorsRow = paper.authors.length ? `\n<dt>${labels.authors}</dt><dd>${esc(paper.authors.join("; "))}</dd>` : "";
-		const summaryUnit = report.units.find((unit) => unit.kind === "summary" && unit.paper_base === paper.base);
-		const questionUnits = report.units.filter((unit) => unit.kind === "detail-per-paper" && unit.paper_base === paper.base);
-		let sub = 0;
-		const blocks: string[] = [];
-		if (summaryUnit) {
-			sub++;
-			const subId = `paper-${paper.base}-summary`;
-			addToc(`${num}.${sub}`, subId, labels.summary, true);
-			blocks.push(`<h3 id="${esc(subId)}">${num}.${sub} ${labels.summary}</h3>\n${unitHtml(summaryUnit)}`);
-		}
-		if (questionUnits.length) {
-			sub++;
-			const subId = `paper-${paper.base}-questions`;
-			addToc(`${num}.${sub}`, subId, labels.questionsLabel, true);
-			blocks.push(`<h3 id="${esc(subId)}">${num}.${sub} ${labels.questionsLabel}</h3>\n${questionUnits
-				.map((unit) => `<h4>${esc(unit.question ?? "")}</h4>\n${unitHtml(unit)}`).join("\n")}`);
-		}
-		const content = blocks.length ? blocks.join("\n") : `<p class="meta">${esc(labels.noUnits)}</p>`;
-		sections.push(`<hr class="paper">
-<section class="paper" id="paper-${esc(paper.base)}">
-<h2>${num}. ${esc(paperTitle)}</h2>
-<dl class="meta">${authorsRow}
-<dt>${labels.year}</dt><dd>${esc(paper.year ?? "n.d.")}</dd>${identifierRow}
-<dt>${labels.localPdf}</dt><dd>${pdfAnchor(localPdfHref(paper.pdf_path), `${paper.base}.pdf`)}</dd>
-</dl>
-${content}
-</section>`);
-	}
-
-	// Cross-paper detail questions (mode B).
-	if (crossUnits.length) {
-		const num = ++sectionNumber;
-		addToc(`${num}.`, "cross-questions", labels.crossQuestions);
-		sections.push(`<h2 id="cross-questions">${num}. ${labels.crossQuestions}</h2>\n${crossUnits
-			.map((unit) => `<h3>${esc(unit.question ?? "")}</h3>\n${unitHtml(unit)}`).join("\n")}`);
-	}
-
-	// State of the literature (review synthesis).
-	if (reviewUnits.length) {
-		const num = ++sectionNumber;
-		addToc(`${num}.`, "review", labels.review);
-		sections.push(`<h2 id="review">${num}. ${labels.review}</h2>\n<div class="reviewnote">${esc(labels.reviewNote)}</div>\n${
-			reviewUnits.map((unit) => unitHtml(unit)).join("\n")}`);
-	}
-
-	// Sources: cited passages (single paper) or the reference table.
-	{
-		const num = ++sectionNumber;
-		if (singleMode) {
-			const paper = report.papers[0];
-			addToc(`${num}.`, "passages", labels.passages);
-			const items = passages.map((passage) => {
-				const href = localPdfHref(paper.pdf_path, passage.page, passage.snippet);
-				const excerpt = passage.text.length > 160 ? `${passage.text.slice(0, 160)}...` : passage.text;
-				return `<li id="site-${passage.n}">${pdfAnchor(href, `${labels.page} ${passage.page}`)} -- ${esc(excerpt)}</li>`;
-			}).join("\n");
-			sections.push(`<h2 id="passages">${num}. ${labels.passages}</h2>
-<p class="meta">${esc(labels.passagesNote)}</p>
-${items ? `<ol class="passages">\n${items}\n</ol>` : "<p>&mdash;</p>"}`);
-		} else {
-			addToc(`${num}.`, "references", labels.references);
-			const rows = report.references.map((reference) => {
-				const unverified = reference.key.startsWith("file:");
-				const id = reference.doi || (reference.arxiv_id ? `arXiv:${reference.arxiv_id}`
-					: unverified ? `${reference.key.slice(5)}.pdf (${labels.unverified.split(" -- ")[0]})` : reference.key);
-				const pdfCell = reference.pdf_path ? pdfAnchor(localPdfHref(reference.pdf_path), "PDF") : "&mdash;";
-				return `<tr id="ref-${reference.n}"><td>[${reference.n}]</td>
+	// Per-block reference table: only the entries the given units cite,
+	// keeping their GLOBAL [n] numbers. Anchor ids stay unique across the
+	// page (first occurrence wins -- marker fallback links land there).
+	const usedRefIds = new Set<number>();
+	const referencesBlock = (units: ReportUnit[]): string | null => {
+		const cited = new Set(units.flatMap((unit) => unit.sites.map((site) => site.ref)));
+		const refs = report.references.filter((reference) => cited.has(reference.n));
+		if (!refs.length) return null;
+		const rows = refs.map((reference) => {
+			const unverified = reference.key.startsWith("file:");
+			const id = reference.doi || (reference.arxiv_id ? `arXiv:${reference.arxiv_id}`
+				: unverified ? `${reference.key.slice(5)}.pdf (${labels.unverified.split(" -- ")[0]})` : reference.key);
+			const pdfCell = reference.pdf_path ? pdfAnchor(localPdfHref(reference.pdf_path), "PDF") : "&mdash;";
+			const anchor = usedRefIds.has(reference.n) ? "" : ` id="ref-${reference.n}"`;
+			usedRefIds.add(reference.n);
+			return `<tr${anchor}><td>[${reference.n}]</td>
 <td>${esc(reference.title || id)}<br><span class="authors">${esc(reference.authors.join("; "))}</span></td>
 <td>${esc(reference.year ?? "n.d.")}</td>
 <td>${link(referenceHref(reference), id)}</td>
 <td>${esc(reference.pages.join(", "))}</td>
 <td>${pdfCell}</td></tr>`;
-			}).join("\n");
-			sections.push(`<h2 id="references">${num}. ${labels.references}</h2>
+		}).join("\n");
+		return `<details class="block"><summary>${labels.references}</summary>
 <p class="meta">${esc(labels.passagesNote)}</p>
-${rows ? `<table>\n<thead><tr><th></th><th>${labels.references}</th><th>${labels.year}</th><th>${labels.identifier}</th><th>${labels.pages}</th><th>PDF</th></tr></thead>\n<tbody>\n${rows}\n</tbody>\n</table>` : "<p>&mdash;</p>"}`);
-		}
-	}
+<table>
+<thead><tr><th></th><th>${labels.references}</th><th>${labels.year}</th><th>${labels.identifier}</th><th>${labels.pages}</th><th>PDF</th></tr></thead>
+<tbody>
+${rows}
+</tbody>
+</table>
+</details>`;
+	};
 
-	// Evidence appendix: one collapsible block per unit.
-	{
-		const num = ++sectionNumber;
-		addToc(`${num}.`, "excerpts", labels.excerpts);
-		const excerptBlocks = report.units.map((unit) => {
+	// Per-block evidence trail (the excerpts each unit's model saw).
+	const excerptsBlock = (units: ReportUnit[]): string | null => {
+		const withChunks = units.filter((unit) => unit.chunks.length);
+		if (!withChunks.length) return null;
+		const inner = withChunks.map((unit) => {
 			const items = unit.chunks.map((chunk) => {
 				const path = pdfPathByKey.get(chunk.paper_key);
 				const anchor = path ? `\n<p class="meta">${pdfAnchor(localPdfHref(path, chunk.page, searchSnippet(chunk.text)), `${labels.page} ${chunk.page}`)}</p>` : "";
@@ -1330,13 +1271,111 @@ ${rows ? `<table>\n<thead><tr><th></th><th>${labels.references}</th><th>${labels
 			}).join("\n");
 			return `<details><summary>${esc(unitLabel(unit, labels))} (${unit.chunks.length})</summary>\n${items}\n</details>`;
 		}).join("\n");
-		sections.push(`<h2 id="excerpts">${num}. ${labels.excerpts}</h2>
+		return `<details class="block"><summary>${labels.excerpts}</summary>
 <p class="meta">${esc(labels.excerptsNote)}</p>
-${excerptBlocks || "<p>&mdash;</p>"}`);
+${inner}
+</details>`;
+	};
+
+	// One block per document.
+	for (const paper of report.papers) {
+		const paperTitle = paper.title || `${paper.base}.pdf`;
+		const identifier = paper.doi || (paper.arxiv_id ? `arXiv:${paper.arxiv_id}` : paper.verified ? paper.key : "");
+		const identifierRow = paper.verified
+			? `\n<dt>${labels.identifier}</dt><dd>${link(referenceHref(paper), identifier || "&mdash;")}</dd>`
+			: `\n<dt>${labels.identifier}</dt><dd>${esc(labels.unverified)}</dd>`;
+		const authorsRow = paper.authors.length ? `\n<dt>${labels.authors}</dt><dd>${esc(paper.authors.join("; "))}</dd>` : "";
+		const summaryUnit = report.units.find((unit) => unit.kind === "summary" && unit.paper_base === paper.base);
+		const questionUnits = report.units.filter((unit) => unit.kind === "detail-per-paper" && unit.paper_base === paper.base);
+		const paperUnits = [...(summaryUnit ? [summaryUnit] : []), ...questionUnits];
+		const parts: string[] = [];
+		if (summaryUnit) {
+			parts.push(`<details class="block"><summary>${labels.summary}</summary>\n${unitHtml(summaryUnit)}\n</details>`);
+		}
+		if (questionUnits.length) {
+			parts.push(`<details class="block"><summary>${labels.questionsLabel}</summary>\n${questionUnits
+				.map((unit) => `<h4>${esc(unit.question ?? "")}</h4>\n${unitHtml(unit)}`).join("\n")}\n</details>`);
+		}
+		if (singleMode) {
+			// Single paper: the numbered passages replace the reference table.
+			const items = passages.map((passage) => {
+				const href = localPdfHref(paper.pdf_path, passage.page, passage.snippet);
+				const excerpt = passage.text.length > 160 ? `${passage.text.slice(0, 160)}...` : passage.text;
+				return `<li id="site-${passage.n}">${pdfAnchor(href, `${labels.page} ${passage.page}`)} -- ${esc(excerpt)}</li>`;
+			}).join("\n");
+			if (items) {
+				parts.push(`<details class="block"><summary>${labels.passages}</summary>
+<p class="meta">${esc(labels.passagesNote)}</p>
+<ol class="passages">
+${items}
+</ol>
+</details>`);
+			}
+		} else {
+			const refs = referencesBlock(paperUnits);
+			if (refs) parts.push(refs);
+		}
+		const trail = excerptsBlock(paperUnits);
+		if (trail) parts.push(trail);
+		const content = parts.length ? parts.join("\n") : `<p class="meta">${esc(labels.noUnits)}</p>`;
+		blocks.push(`<section class="paper" id="paper-${esc(paper.base)}">
+<h2>${esc(paperTitle)}</h2>
+<dl class="meta">${authorsRow}
+<dt>${labels.year}</dt><dd>${esc(paper.year ?? "n.d.")}</dd>${identifierRow}
+<dt>${labels.localPdf}</dt><dd>${pdfAnchor(localPdfHref(paper.pdf_path), `${paper.base}.pdf`)}</dd>
+</dl>
+${content}
+</section>`);
+	}
+
+	// Cross-paper detail questions (mode B), with their own references.
+	if (crossUnits.length) {
+		const parts = crossUnits.map((unit) => `<h4>${esc(unit.question ?? "")}</h4>\n${unitHtml(unit)}`);
+		const refs = singleMode ? null : referencesBlock(crossUnits);
+		if (refs) parts.push(refs);
+		const trail = excerptsBlock(crossUnits);
+		if (trail) parts.push(trail);
+		blocks.push(`<section id="cross-questions">
+<h2>${labels.crossQuestions}</h2>
+${parts.join("\n")}
+</section>`);
+	}
+
+	// State of the literature (review synthesis), with its own references.
+	if (reviewUnits.length) {
+		const parts = reviewUnits.map((unit) => unitHtml(unit));
+		const refs = singleMode ? null : referencesBlock(reviewUnits);
+		if (refs) parts.push(refs);
+		const trail = excerptsBlock(reviewUnits);
+		if (trail) parts.push(trail);
+		blocks.push(`<section id="review">
+<h2>${labels.review}</h2>
+<div class="reviewnote">${esc(labels.reviewNote)}</div>
+${parts.join("\n")}
+</section>`);
 	}
 
 	const banner = report.grounded ? "" : `\n<div class="warnbanner">${esc(labels.ungrounded)}</div>`;
-	const toc = `<nav class="toc"><h2>${labels.toc}</h2><ul>\n${tocLines.join("\n")}\n</ul></nav>`;
+
+	// Anchor targets (reference rows, passage items) may live inside
+	// COLLAPSED details -- open every <details> ancestor when a fragment is
+	// navigated, so citation superscripts always land on visible content.
+	const anchorScript = `<script>
+(function () {
+	function openTarget() {
+		var id = location.hash.slice(1);
+		if (!id) return;
+		var el = document.getElementById(id);
+		if (!el) return;
+		for (var p = el; p; p = p.parentElement) {
+			if (p.tagName === "DETAILS") p.open = true;
+		}
+		el.scrollIntoView();
+	}
+	addEventListener("hashchange", openTarget);
+	openTarget();
+})();
+</script>`;
 
 	return `<!doctype html>
 <html lang="${esc(report.ui_language === "en" ? "en" : "de")}">
@@ -1348,11 +1387,12 @@ ${excerptBlocks || "<p>&mdash;</p>"}`);
 </head>
 <body>
 <h1>${esc(labels.pageTitle)}</h1>${banner}
-${toc}
-${sections.join("\n")}
+${blocks.join('\n<hr class="paper">\n')}
 <footer>${esc(labels.footer)}</footer>
+${anchorScript}
 </body>
 </html>
 `;
 }
+
 
