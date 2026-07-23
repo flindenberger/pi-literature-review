@@ -240,14 +240,16 @@ stamped with the session id) -- follow-up calls need only the question.
 A new pi session starts blank; `/resume` keeps the scope.
 
 **Chat mode.** One grounded answer per question, didactic tone, page-exact
-references (`[1] 2026 | 10.5194/... | Title (S. 4)`). Every chat call
-arriving through the AGENT passes a code-enforced QUESTION GATE first: a
-one-line dialog shows the question the agent wants to run (prefilled,
-editable, scope in the title; Enter starts, Esc cancels) -- field tests
-showed agents systematically rephrase the user's words, which measurably
-degrades retrieval, and no instruction stopped it. The confirmed wording
-is what the engine runs. When no scope is settled yet, the document
-checkboxes join the SAME dialog. The validated answer
+references (`[1] 2026 | 10.5194/... | Title (S. 4)`). EVERY interactive
+call -- chat or report -- opens the SAME full wizard (v27 user decision:
+one dialog, always): scope checkboxes (when unsettled), the questions tab
+prefilled with the agent-passed question (field tests showed agents
+systematically rephrase the user's words, which measurably degrades
+retrieval, and no instruction stopped it -- the confirmed wording is what
+the engine runs), then summary/mode/review/HTML tabs and the submit page.
+The submitted answers decide what runs: exactly ONE question with nothing
+else is a classic protocolled chat round; anything more is the composable
+report; nothing at all hands the conversation back to the agent. The validated answer
 travels verbatim in the tool result between explicit delimiters AND renders
 as a full transcript card (anti-paraphrase ground truth; capped-widget
 fallback without pi-tui). Every validated round is appended to a protocol
@@ -315,15 +317,15 @@ off); mode B and review synthesis run on the configured local generator
 Embeddings always stay on the configured local embedding server.
 
 - **Slash commands.** `/lit-search`, `/lit-fetch` and `/lit-synth` are
-  checked by pi BEFORE the agent. Bare `/lit-synth` runs ONE wizard:
-  documents, questions (typed inline, separated by semicolons), summary
-  format, detail mode (only with several documents and questions), review
-  and HTML as tabs of a single dialog, closed by a submit page that also
-  shows the expected model-call count. A pure chat wish (no questions, no
-  summary, no review) hands the conversation to the agent, which routes
-  every question through the grounded tool. `/lit-synth <question>`
-  answers once, agent-free. Long engine calls show an elapsed-seconds
-  ticker plus per-unit progress ("Einheit 3/9: ...").
+  checked by pi BEFORE the agent. Bare `/lit-synth` runs the same ONE
+  wizard (documents preselected with the sticky scope, questions typed
+  inline and separated by semicolons, summary/mode/review/HTML tabs, a
+  submit page showing the expected model-call count); the submitted
+  answers decide between chat round, report and agent handoff exactly as
+  on the tool path. `/lit-synth <question>` with a remembered scope
+  answers once, agent-free and dialog-free; without one it opens the
+  wizard with the question prefilled. Long engine calls show an
+  elapsed-seconds ticker plus per-unit progress ("Unit 3/9: ...").
 - **HTML-export gate.** "Make me an HTML of that" must produce the
   deterministic report, never an agent-written file (observed twice in the
   field). While a document scope is active in the session, any agent

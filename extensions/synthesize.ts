@@ -315,10 +315,6 @@ const SYNTH_TEXT: Record<DialogLang, {
 	htmlNo: string;
 	nothingNote: string;
 	unitNote: (n: number) => string;
-	gateTab: string;
-	gateTitleFor: (label: string) => string;
-	gateTitle: string;
-	gatePlaceholder: string;
 	unitWarn: (n: number) => string;
 	unitWarnYes: string;
 	unitWarnCancel: string;
@@ -349,10 +345,6 @@ const SYNTH_TEXT: Record<DialogLang, {
 		htmlNo: "Nein, nur Antwort im Chat",
 		nothingNote: "Nichts zu generieren -- das wird ein Chat.",
 		unitNote: (n) => `~${n} Modellaufruf(e), je etwa eine Minute lokal`,
-		gateTab: "Frage",
-		gateTitleFor: (label) => `Frage an ${label} -- prüfen/anpassen, Enter startet`,
-		gateTitle: "Deine Frage -- prüfen/anpassen, Enter startet",
-		gatePlaceholder: "leer lassen: die Frage erst im Chat besprechen",
 		unitWarn: (n) => `Dieser Report braucht ${n} Modellaufrufe (je etwa eine Minute lokal). Fortfahren?`,
 		unitWarnYes: "Ja, ausführen",
 		unitWarnCancel: "Abbrechen",
@@ -383,10 +375,6 @@ const SYNTH_TEXT: Record<DialogLang, {
 		htmlNo: "No, answer in the chat only",
 		nothingNote: "Nothing to generate -- this will be a chat.",
 		unitNote: (n) => `~${n} model call(s), about a minute each locally`,
-		gateTab: "Question",
-		gateTitleFor: (label) => `Question to ${label} -- review/edit, Enter starts`,
-		gateTitle: "Your question -- review/edit, Enter starts",
-		gatePlaceholder: "leave empty: discuss the question in chat first",
 		unitWarn: (n) => `This report needs ${n} model calls (about a minute each locally). Continue?`,
 		unitWarnYes: "Yes, run it",
 		unitWarnCancel: "Cancel",
@@ -408,23 +396,6 @@ function scopeItems(diagnostics: string[]): ScopeItems {
 		})),
 	];
 	return { items, papersDir: match.papersDir, unmatchedCount: match.unmatched.length };
-}
-
-/** The scope step alone (bare chat entry): checkbox with select-all. A
- * full selection means the LIBRARY scope (grows with new PDFs). */
-async function pickScope(
-	ctx: ExtensionContext,
-	diagnostics: string[],
-	preselected: string[] | undefined,
-	signal: AbortSignal | undefined,
-	lang: DialogLang = "de",
-): Promise<string[] | "library" | "empty" | null> {
-	const { items } = scopeItems(diagnostics);
-	if (!items.length) return "empty";
-	const answers = await runWizard(ctx, [scopeStep(items, preselected, lang)], signal, { lang });
-	if (answers === null) return null;
-	const picked = answers.papers as string[];
-	return picked.length === items.length ? "library" : picked;
 }
 
 function scopeStep(items: CheckboxItem[], preselected: string[] | undefined, lang: DialogLang = "de"): WizardStepDef {
@@ -630,72 +601,56 @@ function reportSubmitNote(
 	};
 }
 
-/** The report intake over a SETTLED scope (tool path): questions + report
- * menu in ONE wizard. Null on cancel. */
-async function reportWizard(
+/**
+ * THE one wizard (v27 user decision "immer der volle Dialog"): every
+ * interactive intake -- chat call, report call, bare /lit-synth -- opens
+ * the SAME full dialog. The scope step joins in when no scope is settled
+ * yet; agent parameters, the passed question and the session's chat
+ * questions only PREFILL. The submitted answers decide what runs (the
+ * callers map the outcome: nothing = chat handback, exactly one question
+ * with nothing else = a classic protocolled chat round, more = the
+ * composable report). Null on cancel, "empty" on an empty library.
+ */
+interface SynthIntake {
+	scope: string[] | "library";
+	questions: string[];
+	choices: ReportChoices;
+}
+
+async function synthWizard(
 	ctx: ExtensionContext,
-	scopeSize: number,
+	scope: string[] | "library" | null,
 	seedQuestions: string[] | undefined,
 	defaults: Partial<ReportChoices>,
 	lang: DialogLang,
-	signal: AbortSignal | undefined,
-): Promise<{ questions: string[]; choices: ReportChoices } | null> {
-	const scopeSizeOf = (): number => scopeSize;
-	const steps: WizardStepDef[] = [
-		questionsStep(seedQuestions?.join("; "), lang),
-		...reportSteps(scopeSizeOf, defaults, lang),
-	];
-	const answers = await runWizard(ctx, steps, signal, { submitNote: reportSubmitNote(scopeSizeOf, lang), lang });
-	if (answers === null) return null;
-	const choices = choicesOf(answers, defaults);
-	// The hidden review tab decides: one document never gets a review
-	// synthesis, even when an agent-passed default carried true.
-	if (scopeSize <= 1) choices.includeReview = false;
-	return { questions: questionsOf(answers), choices };
-}
-
-/**
- * The per-question gate (v27 field decision "festzurren"): every chat call
- * arriving THROUGH THE AGENT shows the question it wants to run -- the
- * user fixes agent rephrasing (the measured root cause of weaker answers)
- * or types their own, Enter starts, Esc cancels. When the scope is not
- * settled yet, the scope step joins the SAME dialog (one wizard, not a
- * chain). skipSubmit: one Enter, no review page. Returns the confirmed
- * question ("" = none: hand the conversation back), the scope actually
- * confirmed, or null on cancel.
- */
-async function questionGate(
-	ctx: ExtensionContext,
-	scope: string[] | "library" | null,
-	proposed: string,
-	lang: DialogLang,
 	diagnostics: string[],
 	signal: AbortSignal | undefined,
-): Promise<{ question: string; scope: string[] | "library" } | "empty" | null> {
-	const text = SYNTH_TEXT[lang];
+	preselected?: string[] | "library",
+): Promise<SynthIntake | "empty" | null> {
 	const steps: WizardStepDef[] = [];
 	let items: CheckboxItem[] = [];
 	if (!scope) {
 		({ items } = scopeItems(diagnostics));
 		if (!items.length) return "empty";
-		steps.push(scopeStep(items, undefined, lang));
+		const preselectedIds = preselected === "library" ? items.map((item) => item.id) : preselected;
+		steps.push(scopeStep(items, preselectedIds, lang));
 	}
-	const label = scope === "library" ? (lang === "de" ? "die ganze Bibliothek" : "the whole library")
-		: Array.isArray(scope) ? scope.map((base) => `${base}.pdf`).join(", ")
-		: null;
-	steps.push({
-		kind: "text",
-		id: "question",
-		tab: text.gateTab,
-		title: label ? clip(text.gateTitleFor(label)) : text.gateTitle,
-		placeholder: text.gatePlaceholder,
-		...(proposed ? { initial: proposed } : {}),
-	});
-	const answers = await runWizard(ctx, steps, signal, { skipSubmit: true, lang });
+	const staticSize = scope === null
+		? null
+		: scope === "library" ? chatPool(matchLibrary(outputRoot(), () => {})).length : scope.length;
+	const scopeSizeOf = (answers: WizardAnswers): number =>
+		staticSize ?? (Array.isArray(answers.papers) ? answers.papers.length : 0);
+	steps.push(questionsStep(seedQuestions?.join("; "), lang));
+	steps.push(...reportSteps(scopeSizeOf, defaults, lang));
+	const answers = await runWizard(ctx, steps, signal, { submitNote: reportSubmitNote(scopeSizeOf, lang), lang });
 	if (answers === null) return null;
 	const confirmedScope: string[] | "library" = scope
 		?? ((answers.papers as string[]).length === items.length ? "library" : answers.papers as string[]);
-	return { question: String(answers.question ?? "").trim(), scope: confirmedScope };
+	const choices = choicesOf(answers, defaults);
+	// The hidden review tab decides: one document never gets a review
+	// synthesis, even when an agent-passed default carried true.
+	if (scopeSizeOf(answers) <= 1) choices.includeReview = false;
+	return { scope: confirmedScope, questions: questionsOf(answers), choices };
 }
 
 /* ------------------------------------------------------------------ *
@@ -863,8 +818,9 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 			"TWO MODES. (1) CHAT: pass question -> one grounded answer. Pass the user's question VERBATIM, in " +
 			"their language and wording -- retrieval is measurably sensitive to phrasing; only substitute a " +
 			"pronoun's referent when the question alone would be ambiguous, never rephrase, expand or translate " +
-			"it. The tool shows the question to the user in its own dialog for confirmation before the run, so " +
-			"call the tool IMMEDIATELY instead of discussing the question in chat first. The digest carries the answer between " +
+			"it. EVERY interactive call (chat and report alike) opens the SAME wizard dialog where the user " +
+			"confirms scope, question wording and report options -- your parameters only prefill it. So call " +
+			"the tool IMMEDIATELY instead of discussing the question in chat first. The digest carries the answer between " +
 			"'--- answer ---' delimiters: output that text EXACTLY as written, unchanged, including the [n] " +
 			"markers -- never summarize, extend, translate or 'improve' it, and never re-type titles, authors or " +
 			"identifiers: copy reference lines EXACTLY. If it FAILED to ground, relay the warning verbatim. " +
@@ -945,9 +901,9 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 				|| params.save_html !== undefined;
 			const root = outputRoot();
 
-			// 1. Scope: params > sticky (unless pick). The DIALOGS follow per
-			// mode: chat runs the question gate (scope step included when the
-			// scope is still open), report runs the scope picker + wizard.
+			// 1. Scope: params > sticky (unless pick). Everything still open is
+			// settled in the ONE full wizard below (v27 user decision: the same
+			// dialog every time -- no slim gate, no scope-only picker).
 			let scope: string[] | "library" | undefined = params.library === true
 				? "library"
 				: params.papers?.length ? params.papers.map((name) => name.trim().replace(/\.pdf$/i, "")) : undefined;
@@ -960,48 +916,73 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 			}
 			if (signal?.aborted) return reply("The run was aborted before anything was generated.");
 
-			// 2. CHAT mode: the question gate (v27 "festzurren"), then one
-			// grounded round. The gate shows the question the agent passed --
-			// prefilled, editable -- because agents measurably rephrase the
-			// user's words; the confirmed text is what the engine runs.
-			if (!wantsReport) {
-				// Dialog language: explicit param > question text > the language
-				// OBSERVED in the user's recent chat input (opening moves carry
-				// no question) > German.
-				const lang = langFromName(params.language) ?? detectDialogLang([question], chatLangDefault());
-				let confirmedScope = scope;
-				if (ctx.hasUI) {
-					const gate = await questionGate(ctx, scope ?? null, question, lang, diagnostics, signal);
-					if (gate === null) {
-						return reply("The user cancelled the question dialog. Nothing was generated. Ask what they want instead; do not retry unchanged.");
-					}
-					if (gate === "empty") {
-						return reply("The library holds no PDFs at all -- run a literature search and fetch first (or start pi in the folder containing the PDFs).");
-					}
-					confirmedScope = gate.scope;
-					if (!scope) {
-						diagnostics.push(`scope picked in the dialog: ${confirmedScope === "library" ? "whole library" : confirmedScope.join(", ")}`);
-					}
-					// Remember immediately: the round may still end questionless.
-					writeCurrentScope(root, { papers: confirmedScope }, sessionId(ctx), undefined, (message) => diagnostics.push(message));
-					question = gate.question;
-				} else if (!confirmedScope) {
+			const summaryParam = normalizeSummary(params.summary, report);
+			const detailParam = normalizeDetailMode(params.detail_mode, report);
+			let questions = params.questions?.map((entry) => entry.trim()).filter(Boolean);
+			let choices: ReportChoices = {
+				summary: summaryParam ?? (wantsReport ? "bullets" : "none"),
+				detailMode: detailParam ?? "per-paper",
+				includeReview: params.include_review ?? (wantsReport && scope === "library"),
+				saveHtml: params.save_html ?? wantsReport,
+			};
+
+			// 2. Interactive: the ONE wizard for chat AND report calls -- they
+			// differ only in the prefills (chat: the passed question, nothing
+			// else; report: params + this session's chat questions as seed).
+			// The submitted answers decide what runs.
+			let lang: DialogLang = "de";
+			if (ctx.hasUI) {
+				const seed = wantsReport
+					? (questions?.length ? questions : scope ? sessionSeedQuestions(root, scope, sessionId(ctx)) : [])
+					: question ? [question] : [];
+				lang = langFromName(params.language)
+					?? detectDialogLang([question, ...(params.questions ?? []), ...seed], chatLangDefault());
+				const intake = await synthWizard(ctx, scope ?? null, seed, {
+					...choices,
+					summary: summaryParam ?? (wantsReport ? (seed.length ? "none" : "bullets") : "none"),
+				}, lang, diagnostics, signal);
+				if (intake === null) {
+					return reply("The user cancelled the dialog. Nothing was generated. Ask what they want instead; do not retry unchanged.");
+				}
+				if (intake === "empty") {
+					return reply("The library holds no PDFs at all -- run a literature search and fetch first (or start pi in the folder containing the PDFs).");
+				}
+				if (!scope) {
+					diagnostics.push(`scope picked in the dialog: ${intake.scope === "library" ? "whole library" : intake.scope.join(", ")}`);
+				}
+				scope = intake.scope;
+				// Remember immediately: the call may still end questionless.
+				writeCurrentScope(root, { papers: scope }, sessionId(ctx), undefined, (message) => diagnostics.push(message));
+				questions = intake.questions;
+				choices = intake.choices;
+			} else {
+				// Headless: parameters are authoritative, no dialogs.
+				if (!scope) {
 					const pool = chatPool(matchLibrary(root, (message) => diagnostics.push(message)));
 					const available = pool.map((entry) => `${entry.base}.pdf`).join(", ") || "(none)";
 					return reply(`No scope was given and no interactive picker is available. Pass papers or library: true; PDFs in the library: ${available}`);
 				}
-				if (!question) {
-					const label = confirmedScope === "library" ? "the whole library" : confirmedScope!.map((base) => `${base}.pdf`).join(", ");
-					return reply(
-						`The user selected ${label} for a grounded chat (already settled -- do not ask again) and `
-						+ "left the question dialog empty. Ask the user what they want to know about these documents, "
-						+ "then call this tool again with their question (the scope is remembered; the user confirms "
-						+ "the final wording in the tool's own dialog).",
-					);
-				}
+				if (!wantsReport) questions = question ? [question] : [];
+				questions = questions ?? [];
+			}
+
+			// 3. Outcome mapping (identical for chat and report calls).
+			// Nothing chosen -> the user wants to CHAT: hand the loop back.
+			if (!questions.length && choices.summary === "none" && !choices.includeReview) {
+				const label = scope === "library" ? "the whole library" : scope.map((base) => `${base}.pdf`).join(", ");
+				return reply(
+					`The user selected ${label} for a grounded chat (already settled -- do not ask again) and `
+					+ "chose no question, no summary and no review. Ask the user what they want to know about "
+					+ "these documents, then call this tool again with their question (the scope is remembered; "
+					+ "the user confirms everything in the tool's own dialog).",
+				);
+			}
+			// Exactly ONE question and nothing else: the classic chat round
+			// (protocolled, relayed verbatim, transcript card).
+			if (questions.length === 1 && choices.summary === "none" && !choices.includeReview && !choices.saveHtml) {
 				const outcome = await runRoundWithUi(pi, ctx, {
-					question,
-					papers: confirmedScope,
+					question: questions[0],
+					papers: scope,
 					model: params.model?.trim() || undefined,
 					topK: params.top_k,
 					language: params.language,
@@ -1018,76 +999,13 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 				}
 				return reply(renderChatDigest(outcome.answer));
 			}
-
-			// REPORT mode: settle a missing scope in the picker first.
-			// Dialog language: explicit param, else detected from the
-			// agent-passed questions (the seed refines it below).
-			let reportLang = langFromName(params.language)
-				?? detectDialogLang(params.questions ?? [], chatLangDefault());
-			if (!scope) {
-				if (!ctx.hasUI) {
-					const pool = chatPool(matchLibrary(root, (message) => diagnostics.push(message)));
-					const available = pool.map((entry) => `${entry.base}.pdf`).join(", ") || "(none)";
-					return reply(`No scope was given and no interactive picker is available. Pass papers or library: true; PDFs in the library: ${available}`);
-				}
-				const picked = await pickScope(ctx, diagnostics, undefined, signal, reportLang);
-				if (picked === null) {
-					return reply("The user cancelled the document selection. Nothing was generated. Ask which documents they want to discuss.");
-				}
-				if (picked === "empty") {
-					return reply("The library holds no PDFs at all -- run a literature search and fetch first (or start pi in the folder containing the PDFs).");
-				}
-				scope = picked;
-				diagnostics.push(`scope picked in the dialog: ${scope === "library" ? "whole library" : scope.join(", ")}`);
-				writeCurrentScope(root, { papers: scope }, sessionId(ctx), undefined, (message) => diagnostics.push(message));
-			}
-
-			// 3. REPORT mode: with a UI the wizard runs ALWAYS (v27 field
-			// decision) -- agent parameters and THIS session's chat questions
-			// only PREFILL it; the user confirms on the submit page. Headless
-			// runs stay parameter-authoritative.
+			// Anything more: the composable report.
 			const scopeSize = scope === "library"
 				? chatPool(matchLibrary(root, () => {})).length
 				: scope.length;
-			let questions = params.questions?.map((entry) => entry.trim()).filter(Boolean);
-			const summaryParam = normalizeSummary(params.summary, report);
-			const detailParam = normalizeDetailMode(params.detail_mode, report);
-			let choices: ReportChoices = {
-				summary: summaryParam ?? "bullets",
-				detailMode: detailParam ?? "per-paper",
-				includeReview: params.include_review ?? scope === "library",
-				saveHtml: params.save_html ?? true,
-			};
-			if (ctx.hasUI) {
-				// Question seed: agent-passed questions, else what was actually
-				// asked in this session's chat ("fasse das zusammen").
-				const seed = questions?.length ? questions : sessionSeedQuestions(root, scope, sessionId(ctx));
-				reportLang = langFromName(params.language)
-					?? detectDialogLang([...(params.questions ?? []), ...seed], chatLangDefault());
-				const intake = await reportWizard(ctx, scopeSize, seed, {
-					...choices,
-					summary: summaryParam ?? (seed.length ? "none" : "bullets"),
-				}, reportLang, signal);
-				if (intake === null) return reply("The user cancelled the report wizard. Nothing was generated. Ask what they want to change; do not retry unchanged.");
-				questions = intake.questions;
-				choices = intake.choices;
-			} else {
-				questions = questions ?? [];
-			}
-
-			// Nothing to report -> this is a chat after all (handoff to the agent).
-			if (!questions.length && choices.summary === "none" && !choices.includeReview) {
-				return reply(
-					"The user selected documents but chose no summary, no questions and no review -- they want to "
-					+ "CHAT. Ask what they would like to know; route every question through this tool (the scope "
-					+ "is remembered).",
-				);
-			}
-
-			// Honest cost warning: mode A multiplies papers x questions.
 			const unitCount = reportUnitCount(scopeSize, questions.length, choices);
 			if (ctx.hasUI && unitCount > UNIT_WARN_THRESHOLD) {
-				const warnText = SYNTH_TEXT[reportLang];
+				const warnText = SYNTH_TEXT[lang];
 				const go = await ctx.ui.select(
 					warnText.unitWarn(unitCount),
 					[warnText.unitWarnYes, warnText.unitWarnCancel],
@@ -1097,7 +1015,6 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 					return reply(`The user cancelled: the report would need ${unitCount} generation calls. Suggest fewer questions, mode B, or a smaller scope.`);
 				}
 			}
-
 			const outcome = await runReportWithUi(pi, ctx, {
 				papers: scope,
 				questions,
@@ -1107,11 +1024,9 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 				model: params.model?.trim() || undefined,
 				topK: params.top_k,
 				// The whole report speaks ONE language -- the chat's (v27 user
-				// decision; the per-question default produced mixed pages).
-				// An explicit language param still wins.
-				language: params.language ?? (reportLang === "en" ? "English" : "German"),
-				// Page chrome of the HTML follows the same language.
-				uiLanguage: reportLang,
+				// decision); an explicit language param still wins.
+				language: params.language ?? (lang === "en" ? "English" : "German"),
+				uiLanguage: lang,
 				reindex: params.reindex,
 			}, choices.saveHtml, report, diagnostics, signal);
 			if ("error" in outcome) {
@@ -1142,22 +1057,12 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 			const session = sessionId(ctx);
 			const sticky = readCurrentScope(root, session);
 
-			if (question) {
-				// Agent-free one-shot round: sticky scope, else the scope picker
-				// (dialog language follows the typed question).
-				let scope: string[] | "library" | null | "empty" = sticky ? sticky.papers : null;
-				if (!scope) {
-					scope = await pickScope(ctx, diagnostics, undefined, ctx.signal, detectDialogLang([question], chatLangDefault()));
-				}
-				if (scope === null) return; // cancelled
-				if (scope === "empty") {
-					ctx.ui.notify("No PDFs in the library -- run a search and fetch first, or start pi in the papers folder.", "warning");
-					return;
-				}
-				writeCurrentScope(root, { papers: scope }, session, undefined, (message) => diagnostics.push(message));
+			if (question && sticky) {
+				// /lit-synth <question> with a remembered scope: the
+				// deterministic agent-free quick path, NO dialog (documented).
 				const outcome = await runRoundWithUi(pi, ctx, {
 					question,
-					papers: scope,
+					papers: sticky.papers,
 					onWarn: progress,
 					signal: ctx.signal,
 				});
@@ -1165,33 +1070,27 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 				return;
 			}
 
-			// Bare invocation: EVERYTHING in ONE wizard (v27) -- the scope step
-			// always re-offers the picker (preselected with the sticky scope)
-			// so the user can switch documents without the agent.
-			const { items } = scopeItems(diagnostics);
-			if (!items.length) {
+			// Everything else: the ONE full wizard (v27) -- scope step
+			// preselected with the sticky scope, a typed question seeds the
+			// questions tab; the submitted answers decide what runs.
+			const wizardLang = question ? detectDialogLang([question], chatLangDefault()) : chatLangDefault();
+			const intake = await synthWizard(
+				ctx,
+				null,
+				question ? [question] : undefined,
+				question ? { summary: "none", saveHtml: false } : { summary: "bullets" },
+				wizardLang,
+				diagnostics,
+				ctx.signal,
+				sticky?.papers === "library" ? "library" : sticky?.papers,
+			);
+			if (intake === null) return; // cancelled
+			if (intake === "empty") {
 				ctx.ui.notify("No PDFs in the library -- run a search and fetch first, or start pi in the papers folder.", "warning");
 				return;
 			}
-			const preselected = Array.isArray(sticky?.papers) ? sticky.papers
-				: sticky?.papers === "library" ? items.map((item) => item.id)
-				: undefined;
-			const scopeSizeOf = (answers: WizardAnswers): number =>
-				Array.isArray(answers.papers) ? answers.papers.length : 0;
-			const wizardLang = chatLangDefault();
-			const steps: WizardStepDef[] = [
-				scopeStep(items, preselected, wizardLang),
-				questionsStep(undefined, wizardLang),
-				...reportSteps(scopeSizeOf, { summary: "bullets" }, wizardLang),
-			];
-			const answers = await runWizard(ctx, steps, ctx.signal, { submitNote: reportSubmitNote(scopeSizeOf, wizardLang), lang: wizardLang });
-			if (answers === null) return; // cancelled
-			const picked = answers.papers as string[];
-			const scope: string[] | "library" = picked.length === items.length ? "library" : picked;
+			const { scope, questions, choices } = intake;
 			writeCurrentScope(root, { papers: scope }, session, undefined, (message) => diagnostics.push(message));
-			const questions = questionsOf(answers);
-			const choices = choicesOf(answers, { summary: "bullets" });
-			const scopeSize = scope === "library" ? chatPool(matchLibrary(root, () => {})).length : scope.length;
 
 			if (!questions.length && choices.summary === "none" && !choices.includeReview) {
 				// Chat wish: hand the loop to the agent (v22 pattern).
@@ -1211,10 +1110,21 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 				return;
 			}
 
+			// Exactly one question with nothing else: the classic chat round.
+			if (questions.length === 1 && choices.summary === "none" && !choices.includeReview && !choices.saveHtml) {
+				const outcome = await runRoundWithUi(pi, ctx, {
+					question: questions[0],
+					papers: scope,
+					onWarn: progress,
+					signal: ctx.signal,
+				});
+				if ("error" in outcome) ctx.ui.notify(`chat failed: ${outcome.error}`, "error");
+				return;
+			}
+
+			const scopeSize = scope === "library" ? chatPool(matchLibrary(root, () => {})).length : scope.length;
 			const unitCount = reportUnitCount(scopeSize, questions.length, choices);
-			// The report chrome (and the warning) follow the language of the
-			// questions typed into the wizard, else the observed chat language.
-			const reportLang = detectDialogLang(questions, chatLangDefault());
+			const reportLang = detectDialogLang(questions, wizardLang);
 			if (unitCount > UNIT_WARN_THRESHOLD) {
 				const warnText = SYNTH_TEXT[reportLang];
 				const go = await ctx.ui.select(
