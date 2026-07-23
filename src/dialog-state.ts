@@ -269,29 +269,24 @@ export const DIALOG_TEXT: Record<DialogLang, {
 };
 
 /** German/English detection over free chat text -- deterministic stopword
- * scoring; umlauts/ß count as strong German EVIDENCE (weighted, not an
- * instant verdict -- field finding v27: "he dödel, i want to chat abot a
- * paper" is an English sentence with one German word in it). Empty or
- * tied input falls back (default: German, the project's home language).
- * Pure. */
+ * scoring, umlauts decide instantly; empty or tied input falls back
+ * (default: German, the project's home language). Pure. */
 export function detectDialogLang(texts: Array<string | undefined>, fallback: DialogLang = "de"): DialogLang {
 	const joined = texts.filter(Boolean).join(" ").toLowerCase();
 	if (!joined.trim()) return fallback;
+	if (/[äöüß]/.test(joined)) return "de";
 	const german = new Set([
 		"der", "die", "das", "und", "oder", "nicht", "ein", "eine", "ist", "sind", "wurde", "wurden",
 		"werden", "wie", "wo", "wer", "welche", "welcher", "welches", "mit", "von", "im", "am", "zum",
 		"zur", "bei", "aus", "auch", "bitte", "mir", "mal", "noch", "gibt", "es", "sie", "ich", "wir",
-		"dazu", "diese", "dieses", "kannst", "mich", "gerne", "gern", "habe", "hab", "denn",
+		"dazu", "diese", "dieses", "kannst", "mich", "gerne", "gern",
 	]);
 	const english = new Set([
 		"the", "and", "or", "not", "a", "an", "is", "are", "was", "were", "be", "how", "where", "what",
 		"who", "which", "for", "with", "of", "in", "on", "at", "about", "from", "do", "does", "did",
 		"they", "you", "we", "it", "this", "that", "use", "used", "please", "me", "can", "could", "tell",
-		"i", "to", "my", "your", "have", "has", "want", "would", "should",
 	]);
-	// Umlauts appear only in German; each occurrence is two points of
-	// evidence (they survive even when the tokenizer below splits the word).
-	let germanHits = 2 * (joined.match(/[äöüß]/g)?.length ?? 0);
+	let germanHits = 0;
 	let englishHits = 0;
 	for (const word of joined.split(/[^a-z]+/).filter(Boolean)) {
 		if (german.has(word)) germanHits++;
@@ -299,14 +294,6 @@ export function detectDialogLang(texts: Array<string | undefined>, fallback: Dia
 	}
 	if (germanHits === englishHits) return fallback;
 	return germanHits > englishHits ? "de" : "en";
-}
-
-/** Decisive language of ONE text: the detection result when it does NOT
- * depend on the fallback; null for neutral text ("ok"). Used to walk the
- * session's user messages newest-first until one carries a real signal. */
-export function decisiveDialogLang(text: string): DialogLang | null {
-	const asGerman = detectDialogLang([text], "de");
-	return asGerman === detectDialogLang([text], "en") ? asGerman : null;
 }
 
 /** Map an explicit language name (the tool's `language` param, e.g.

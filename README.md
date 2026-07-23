@@ -225,14 +225,12 @@ extracted from the PDF text and verified by an API lookup; whatever stays
 unverified is still usable -- cited honestly by filename and page.
 
 **Dialog language.** All code dialogs (question gate, wizard, warnings)
-follow the CHAT's language, read from the SESSION itself: the tool walks
-the current branch's user messages newest-first and takes the first
-DECISIVE German/English detection (umlauts are strong evidence, stopword
-scoring otherwise; neutral lines like "ok" are skipped); question texts
-are the fallback, German the final default. The agent's `language`
-parameter drives only the PROSE, never the dialogs (agents guess it).
-Other languages get the international default English. The report page
-chrome (`ui_language`) follows the same resolution.
+follow the CHAT's language: the explicit `language` parameter wins, else a
+deterministic German/English detection over the question texts, else the
+language OBSERVED in the user's recent plain chat input (a passive
+`pi.on("input")` listener -- opening moves carry no question text);
+German is the final default. The report page chrome (`ui_language`)
+follows the same resolution.
 
 **Scope.** Everything runs over a document SCOPE: one paper, a selection,
 or the whole library. The scope is picked in a Claude-Code-style wizard

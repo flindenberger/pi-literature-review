@@ -9,7 +9,6 @@ import {
 	allSelected,
 	type CheckboxState,
 	checkboxLines,
-	decisiveDialogLang,
 	detectDialogLang,
 	DIALOG_TEXT,
 	initCheckbox,
@@ -410,16 +409,6 @@ function drive(
 	assert.equal(detectDialogLang(["what about the calibration of the sensors?"]), "en");
 	assert.equal(detectDialogLang([""]), "de");
 	assert.equal(detectDialogLang([undefined], "en"), "en");
-	// Umlauts are strong evidence, not an instant verdict (field sentence
-	// v27: an English sentence with one German word stays English).
-	assert.equal(detectDialogLang(["he dödel, i want to chat abot a paper"]), "en");
-	assert.equal(detectDialogLang(["he ich würde gern über ein paper reden"]), "de");
-	// Decisive detection: real signal or null (the session walker skips
-	// neutral lines like "ok").
-	assert.equal(decisiveDialogLang("welche kameras wurden verwendet?"), "de");
-	assert.equal(decisiveDialogLang("i want to chat about a paper"), "en");
-	assert.equal(decisiveDialogLang("ok"), null);
-	assert.equal(decisiveDialogLang("quiero hablar de un paper"), null);
 	// Explicit language names win over detection (the caller checks first).
 	assert.equal(langFromName("German"), "de");
 	assert.equal(langFromName("deutsch"), "de");
