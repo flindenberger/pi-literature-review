@@ -949,16 +949,37 @@ const REPORT_LABELS = {
 	de: {
 		pageTitle: "Literaturbericht",
 		generated: "Erstellt",
-		scope: "Umfang",
 		scopeLibrary: "gesamte Bibliothek",
 		questionsLabel: "Fragen",
 		toc: "Inhalt",
-		method: "Methode & Transparenz",
-		generator: "Generator",
+		metadataTitle: "Abfrage-Metadaten",
+		documents: "Dokumente",
+		models: "Modelle (LLM)",
 		embeddings: "Embeddings",
-		retrieval: "Retrieval",
-		retrievalNote: "beste Textauszüge je Einheit (Kosinus-Ähnlichkeit), Zitat-Gate im Code",
-		integrity: "Integrität",
+		yes: "Ja",
+		no: "Nein",
+		asBullets: "als Bulletpoints",
+		asProse: "als Fließtext",
+		reviewRow: "Review-Synthese",
+		technical: "Technische Details (einfach erklärt)",
+		retrieval: "Textstellen-Suche",
+		retrievalPlain: "Jede Frage wird mit allen Textabschnitten der PDFs verglichen (Ähnlichkeitssuche); "
+			+ "nur die passendsten Auszüge bekommt das Sprachmodell zu sehen. Jede Quellenangabe setzt "
+			+ "festes Programm aus geprüften Daten ein -- nie das Sprachmodell.",
+		variantsLabel: "Zusätzliche Suchanfragen",
+		variantsPlain: "Umformulierungen, die nur für die SUCHE verwendet wurden (z. B. die englische "
+			+ "Übersetzung der Frage); auf die Zitate haben sie keinen Einfluss.",
+		lexicalLabel: "Wortsuche",
+		lexicalPlain: "Diese Wörter aus den Fragen wurden zusätzlich wortwörtlich im Text gesucht, damit "
+			+ "exakte Begriffe (etwa Modellnummern) nicht verloren gehen.",
+		lexicalAddedNote: (n: number) => `${n} Auszug/Auszüge über die Wortsuche ergänzt`,
+		integrity: "Qualitätsprüfung",
+		integrityPlain: "Automatische Prüfung der Antworten: Verweise auf nicht vorhandene Auszüge werden "
+			+ "entfernt, Sätze ohne Beleg-Marker gezählt und hier ausgewiesen.",
+		integrityInvalid: (n: number) => `${n} ungültige Zitatmarker entfernt`,
+		integrityUnmarked: (n: number) => `${n} Satz/Sätze ohne Zitatmarker`,
+		integrityRefSection: "vom Modell geschriebene Literaturverzeichnisse entfernt",
+		integrityTrimmed: (n: number) => `${n} Auszug/Auszüge aus Platzgründen weggelassen`,
 		summary: "Zusammenfassung",
 		crossQuestions: "Detailfragen (paperübergreifend)",
 		review: "Stand der Literatur",
@@ -987,16 +1008,37 @@ const REPORT_LABELS = {
 	en: {
 		pageTitle: "Literature report",
 		generated: "Generated",
-		scope: "Scope",
 		scopeLibrary: "whole library",
 		questionsLabel: "Questions",
 		toc: "Contents",
-		method: "Method & transparency",
-		generator: "Generator",
+		metadataTitle: "Query metadata",
+		documents: "Documents",
+		models: "Models (LLM)",
 		embeddings: "Embeddings",
-		retrieval: "Retrieval",
-		retrievalNote: "best excerpts per unit (cosine similarity), citation gate in code",
-		integrity: "Integrity",
+		yes: "Yes",
+		no: "No",
+		asBullets: "as bullet points",
+		asProse: "as prose",
+		reviewRow: "Review synthesis",
+		technical: "Technical details (in plain language)",
+		retrieval: "Passage search",
+		retrievalPlain: "Each question is compared against every text chunk of the PDFs (similarity "
+			+ "search); only the best-matching excerpts are shown to the language model. Every citation "
+			+ "is inserted by fixed code from verified records -- never by the model.",
+		variantsLabel: "Additional search queries",
+		variantsPlain: "Rephrasings used for the SEARCH only (e.g. an English translation of the "
+			+ "question); they never influence the citations.",
+		lexicalLabel: "Word search",
+		lexicalPlain: "These words from the questions were additionally matched verbatim in the text so "
+			+ "exact terms (e.g. model numbers) cannot get lost.",
+		lexicalAddedNote: (n: number) => `${n} excerpt(s) added via the word search`,
+		integrity: "Quality check",
+		integrityPlain: "Automatic check of the answers: references to non-existent excerpts are removed, "
+			+ "sentences without an evidence marker are counted and disclosed here.",
+		integrityInvalid: (n: number) => `${n} invalid citation marker(s) stripped`,
+		integrityUnmarked: (n: number) => `${n} sentence(s) without a citation marker`,
+		integrityRefSection: "model-written reference section(s) cut",
+		integrityTrimmed: (n: number) => `${n} excerpt(s) dropped by the context budget`,
 		summary: "Summary",
 		crossQuestions: "Detail questions (cross-paper)",
 		review: "State of the literature",
@@ -1043,7 +1085,10 @@ const REPORT_STYLE = `
 	.reviewnote { background: #eef3f8; border-left: 4px solid #4a6fa5; padding: 0.5rem 0.9rem;
 		font-size: 0.86rem; color: #2c3e50; margin: 0.6rem 0; }
 	ol.passages li { margin: 0.25rem 0; }
-	nav.toc ul { margin: 0.3rem 0 0.8rem 1.2rem; }
+	nav.toc ul { margin: 0.3rem 0 0.8rem 1.2rem; list-style: none; }
+	nav.toc li.sub { margin-left: 1.4rem; }
+	details.technical { margin: 0.6rem 0; }
+	details.technical > summary { cursor: pointer; color: #4a6fa5; font-size: 0.9rem; }
 `;
 
 /**
@@ -1105,131 +1150,185 @@ export function renderSynthReportHtml(report: SynthReport): string {
 		return `<div class="prose">\n${body}\n</div>`;
 	};
 
-	// Head metadata + method block (method directly under the head, field
-	// wish 2026-07-22).
+	// ---- Numbered sections following the v27 user template: Contents ->
+	// Query metadata -> one section per document (N.1 Summary, N.2
+	// Questions) -> cross questions -> state of the literature ->
+	// references/passages -> source excerpts. Technical transparency lives
+	// in a collapsed block with plain-language explanations (field wish:
+	// "Retrieval/Lexical layer/Integrity" meant nothing to a lay reader).
+	const crossUnits = report.units.filter((unit) => unit.kind === "detail-cross");
+	const reviewUnits = report.units.filter((unit) => unit.kind === "review");
+
 	const scopeValue = report.scope.library
 		? `${labels.scopeLibrary} (${report.papers.length} PDFs)`
 		: report.papers.map((paper) => `${paper.base}.pdf`).join(", ");
-	const questionRows = report.questions.length
-		? `\n<dt>${labels.questionsLabel}</dt>${report.questions.map((question) => `<dd>${esc(question)}</dd>`).join("")}`
-		: "";
 	const models = [...new Set(report.units.map((unit) => unit.model))];
 	const englishVariants = [...new Set(report.units.flatMap((unit) =>
 		unit.query_variants.filter((variant) => variant.kind === "english").map((variant) => variant.query)))];
 	const lexicalTerms = [...new Set(report.units.flatMap((unit) => unit.lexical_terms))];
 	const lexicalAdded = report.units.reduce((sum, unit) => sum + unit.lexical_added, 0);
-	const variantRow = englishVariants.length
-		? `\n<dt>Query variants</dt><dd>${esc(englishVariants.join("; "))} (LLM-shaped search queries; citations unaffected)</dd>`
-		: "";
-	const lexicalRow = lexicalTerms.length
-		? `\n<dt>Lexical layer</dt><dd>${esc(lexicalTerms.join(", "))}${lexicalAdded ? `; ${lexicalAdded} excerpt(s) guaranteed` : ""}</dd>`
-		: "";
-	const integrity: string[] = [];
 	const invalid = report.units.reduce((sum, unit) => sum + unit.invalid_markers.length, 0);
 	const unmarked = report.units.reduce((sum, unit) => sum + unit.unmarked_sentences, 0);
 	const trimmed = report.units.reduce((sum, unit) => sum + unit.trimmed_chunks, 0);
-	integrity.push(`${invalid} invalid citation marker(s) stripped`);
-	integrity.push(`${unmarked} sentence(s) without a citation marker`);
-	if (report.units.some((unit) => unit.stripped_reference_section)) {
-		integrity.push("model-written reference section(s) cut");
-	}
-	if (trimmed) integrity.push(`${trimmed} excerpt(s) dropped by the context budget`);
-	const methodBlock = `<h2>${labels.method}</h2>
+	const integrity: string[] = [labels.integrityInvalid(invalid), labels.integrityUnmarked(unmarked)];
+	if (report.units.some((unit) => unit.stripped_reference_section)) integrity.push(labels.integrityRefSection);
+	if (trimmed) integrity.push(labels.integrityTrimmed(trimmed));
+	const questionRows = report.questions.length
+		? `\n<dt>${labels.questionsLabel}</dt>${report.questions.map((question) => `<dd>${esc(question)}</dd>`).join("")}`
+		: "";
+	const summaryValue = report.summary
+		? `${labels.yes}, ${report.summary === "bullets" ? labels.asBullets : labels.asProse}`
+		: labels.no;
+	const reviewModel = reviewUnits[0]?.model;
+	const reviewValue = report.include_review
+		? `${labels.yes}${reviewModel ? ` (${esc(reviewModel)})` : ""}`
+		: labels.no;
+	const variantRow = englishVariants.length
+		? `\n<dt>${labels.variantsLabel}</dt><dd>${esc(englishVariants.join("; "))}<br><span class="authors">${esc(labels.variantsPlain)}</span></dd>`
+		: "";
+	const lexicalRow = lexicalTerms.length
+		? `\n<dt>${labels.lexicalLabel}</dt><dd>${esc(lexicalTerms.join(", "))}${lexicalAdded ? `; ${esc(labels.lexicalAddedNote(lexicalAdded))}` : ""}<br><span class="authors">${esc(labels.lexicalPlain)}</span></dd>`
+		: "";
+	const technicalBlock = `<details class="technical"><summary>${esc(labels.technical)}</summary>
 <dl class="meta">
-<dt>${labels.generator}</dt><dd>${esc(models.join(", "))} (${esc(report.backend)})</dd>
-<dt>${labels.embeddings}</dt><dd>${esc(report.embedding_model)}</dd>
-<dt>${labels.retrieval}</dt><dd>${esc(labels.retrievalNote)}</dd>${variantRow}${lexicalRow}
-<dt>${labels.integrity}</dt><dd>${esc(integrity.join("; "))}</dd>
-</dl>`;
+<dt>${labels.retrieval}</dt><dd>${esc(labels.retrievalPlain)}</dd>${variantRow}${lexicalRow}
+<dt>${labels.integrity}</dt><dd>${esc(integrity.join("; "))}<br><span class="authors">${esc(labels.integrityPlain)}</span></dd>
+</dl></details>`;
 
-	const banner = report.grounded ? "" : `\n<div class="warnbanner">${esc(labels.ungrounded)}</div>`;
+	let sectionNumber = 0;
+	const tocLines: string[] = [];
+	const sections: string[] = [];
+	const addToc = (num: string, id: string, title: string, sub = false): void => {
+		tocLines.push(`<li${sub ? ' class="sub"' : ""}><a href="#${esc(id)}">${esc(num)} ${esc(title)}</a></li>`);
+	};
 
-	// Paper sections: metadata, then the answers (summary + mode-A units).
-	const crossUnits = report.units.filter((unit) => unit.kind === "detail-cross");
-	const reviewUnits = report.units.filter((unit) => unit.kind === "review");
-	const paperSections = report.papers.map((paper) => {
+	// 1. Query metadata.
+	{
+		const num = ++sectionNumber;
+		addToc(`${num}.`, "metadata", labels.metadataTitle);
+		sections.push(`<section id="metadata">
+<h2>${num}. ${esc(labels.metadataTitle)}</h2>
+<dl class="meta">
+<dt>${labels.generated}</dt><dd>${esc(report.generated)} (UTC)</dd>
+<dt>${labels.documents}</dt><dd>${esc(scopeValue)}</dd>
+<dt>${labels.models}</dt><dd>${esc(models.join(", "))} (${esc(report.backend)})</dd>
+<dt>${labels.embeddings}</dt><dd>${esc(report.embedding_model)}</dd>${questionRows}
+<dt>${labels.summary}</dt><dd>${esc(summaryValue)}</dd>
+<dt>${labels.reviewRow}</dt><dd>${reviewValue}</dd>
+</dl>
+${technicalBlock}
+</section>`);
+	}
+
+	// One numbered section per document: metadata, N.1 summary, N.2 questions.
+	for (const paper of report.papers) {
+		const num = ++sectionNumber;
+		const paperTitle = paper.title || `${paper.base}.pdf`;
+		addToc(`${num}.`, `paper-${paper.base}`, paperTitle);
 		const identifier = paper.doi || (paper.arxiv_id ? `arXiv:${paper.arxiv_id}` : paper.verified ? paper.key : "");
 		const identifierRow = paper.verified
 			? `\n<dt>${labels.identifier}</dt><dd>${link(referenceHref(paper), identifier || "&mdash;")}</dd>`
 			: `\n<dt>${labels.identifier}</dt><dd>${esc(labels.unverified)}</dd>`;
 		const authorsRow = paper.authors.length ? `\n<dt>${labels.authors}</dt><dd>${esc(paper.authors.join("; "))}</dd>` : "";
-		const paperUnits = report.units.filter((unit) => unit.paper_base === paper.base);
-		const unitBlocks = paperUnits.map((unit) => {
-			const heading = unit.kind === "summary" ? labels.summary : esc(unit.question ?? "");
-			return `<h3>${heading}</h3>\n${unitHtml(unit)}`;
-		});
-		const content = unitBlocks.length ? unitBlocks.join("\n") : `<p class="meta">${esc(labels.noUnits)}</p>`;
-		return `<section class="paper" id="paper-${esc(paper.base)}">
-<h2>${esc(paper.title || `${paper.base}.pdf`)}</h2>
+		const summaryUnit = report.units.find((unit) => unit.kind === "summary" && unit.paper_base === paper.base);
+		const questionUnits = report.units.filter((unit) => unit.kind === "detail-per-paper" && unit.paper_base === paper.base);
+		let sub = 0;
+		const blocks: string[] = [];
+		if (summaryUnit) {
+			sub++;
+			const subId = `paper-${paper.base}-summary`;
+			addToc(`${num}.${sub}`, subId, labels.summary, true);
+			blocks.push(`<h3 id="${esc(subId)}">${num}.${sub} ${labels.summary}</h3>\n${unitHtml(summaryUnit)}`);
+		}
+		if (questionUnits.length) {
+			sub++;
+			const subId = `paper-${paper.base}-questions`;
+			addToc(`${num}.${sub}`, subId, labels.questionsLabel, true);
+			blocks.push(`<h3 id="${esc(subId)}">${num}.${sub} ${labels.questionsLabel}</h3>\n${questionUnits
+				.map((unit) => `<h4>${esc(unit.question ?? "")}</h4>\n${unitHtml(unit)}`).join("\n")}`);
+		}
+		const content = blocks.length ? blocks.join("\n") : `<p class="meta">${esc(labels.noUnits)}</p>`;
+		sections.push(`<hr class="paper">
+<section class="paper" id="paper-${esc(paper.base)}">
+<h2>${num}. ${esc(paperTitle)}</h2>
 <dl class="meta">${authorsRow}
 <dt>${labels.year}</dt><dd>${esc(paper.year ?? "n.d.")}</dd>${identifierRow}
 <dt>${labels.localPdf}</dt><dd>${pdfAnchor(localPdfHref(paper.pdf_path), `${paper.base}.pdf`)}</dd>
 </dl>
 ${content}
-</section>`;
-	}).join("\n<hr class=\"paper\">\n");
+</section>`);
+	}
 
-	const crossSection = crossUnits.length
-		? `\n<h2 id="cross-questions">${labels.crossQuestions}</h2>\n${crossUnits
-			.map((unit) => `<h3>${esc(unit.question ?? "")}</h3>\n${unitHtml(unit)}`).join("\n")}`
-		: "";
-	const reviewSection = reviewUnits.length
-		? `\n<h2 id="review">${labels.review}</h2>\n<div class="reviewnote">${esc(labels.reviewNote)}</div>\n${
-			reviewUnits.map((unit) => unitHtml(unit)).join("\n")}`
-		: "";
+	// Cross-paper detail questions (mode B).
+	if (crossUnits.length) {
+		const num = ++sectionNumber;
+		addToc(`${num}.`, "cross-questions", labels.crossQuestions);
+		sections.push(`<h2 id="cross-questions">${num}. ${labels.crossQuestions}</h2>\n${crossUnits
+			.map((unit) => `<h3>${esc(unit.question ?? "")}</h3>\n${unitHtml(unit)}`).join("\n")}`);
+	}
+
+	// State of the literature (review synthesis).
+	if (reviewUnits.length) {
+		const num = ++sectionNumber;
+		addToc(`${num}.`, "review", labels.review);
+		sections.push(`<h2 id="review">${num}. ${labels.review}</h2>\n<div class="reviewnote">${esc(labels.reviewNote)}</div>\n${
+			reviewUnits.map((unit) => unitHtml(unit)).join("\n")}`);
+	}
 
 	// Sources: cited passages (single paper) or the reference table.
-	let sourcesSection: string;
-	if (singleMode) {
-		const paper = report.papers[0];
-		const items = passages.map((passage) => {
-			const href = localPdfHref(paper.pdf_path, passage.page, passage.snippet);
-			const excerpt = passage.text.length > 160 ? `${passage.text.slice(0, 160)}...` : passage.text;
-			return `<li id="site-${passage.n}">${pdfAnchor(href, `${labels.page} ${passage.page}`)} -- ${esc(excerpt)}</li>`;
-		}).join("\n");
-		sourcesSection = `<h2>${labels.passages}</h2>
+	{
+		const num = ++sectionNumber;
+		if (singleMode) {
+			const paper = report.papers[0];
+			addToc(`${num}.`, "passages", labels.passages);
+			const items = passages.map((passage) => {
+				const href = localPdfHref(paper.pdf_path, passage.page, passage.snippet);
+				const excerpt = passage.text.length > 160 ? `${passage.text.slice(0, 160)}...` : passage.text;
+				return `<li id="site-${passage.n}">${pdfAnchor(href, `${labels.page} ${passage.page}`)} -- ${esc(excerpt)}</li>`;
+			}).join("\n");
+			sections.push(`<h2 id="passages">${num}. ${labels.passages}</h2>
 <p class="meta">${esc(labels.passagesNote)}</p>
-${items ? `<ol class="passages">\n${items}\n</ol>` : "<p>&mdash;</p>"}`;
-	} else {
-		const rows = report.references.map((reference) => {
-			const unverified = reference.key.startsWith("file:");
-			const id = reference.doi || (reference.arxiv_id ? `arXiv:${reference.arxiv_id}`
-				: unverified ? `${reference.key.slice(5)}.pdf (${labels.unverified.split(" -- ")[0]})` : reference.key);
-			const pdfCell = reference.pdf_path ? pdfAnchor(localPdfHref(reference.pdf_path), "PDF") : "&mdash;";
-			return `<tr id="ref-${reference.n}"><td>[${reference.n}]</td>
+${items ? `<ol class="passages">\n${items}\n</ol>` : "<p>&mdash;</p>"}`);
+		} else {
+			addToc(`${num}.`, "references", labels.references);
+			const rows = report.references.map((reference) => {
+				const unverified = reference.key.startsWith("file:");
+				const id = reference.doi || (reference.arxiv_id ? `arXiv:${reference.arxiv_id}`
+					: unverified ? `${reference.key.slice(5)}.pdf (${labels.unverified.split(" -- ")[0]})` : reference.key);
+				const pdfCell = reference.pdf_path ? pdfAnchor(localPdfHref(reference.pdf_path), "PDF") : "&mdash;";
+				return `<tr id="ref-${reference.n}"><td>[${reference.n}]</td>
 <td>${esc(reference.title || id)}<br><span class="authors">${esc(reference.authors.join("; "))}</span></td>
 <td>${esc(reference.year ?? "n.d.")}</td>
 <td>${link(referenceHref(reference), id)}</td>
 <td>${esc(reference.pages.join(", "))}</td>
 <td>${pdfCell}</td></tr>`;
-		}).join("\n");
-		sourcesSection = `<h2 id="references">${labels.references}</h2>
+			}).join("\n");
+			sections.push(`<h2 id="references">${num}. ${labels.references}</h2>
 <p class="meta">${esc(labels.passagesNote)}</p>
-${rows ? `<table>\n<thead><tr><th></th><th>${labels.references}</th><th>${labels.year}</th><th>${labels.identifier}</th><th>${labels.pages}</th><th>PDF</th></tr></thead>\n<tbody>\n${rows}\n</tbody>\n</table>` : "<p>&mdash;</p>"}`;
+${rows ? `<table>\n<thead><tr><th></th><th>${labels.references}</th><th>${labels.year}</th><th>${labels.identifier}</th><th>${labels.pages}</th><th>PDF</th></tr></thead>\n<tbody>\n${rows}\n</tbody>\n</table>` : "<p>&mdash;</p>"}`);
+		}
 	}
-
-	// Table of contents when there is more than one destination.
-	const tocEntries: Array<{ href: string; label: string }> = [];
-	if (report.papers.length > 1 || crossUnits.length || reviewUnits.length) {
-		for (const paper of report.papers) tocEntries.push({ href: `#paper-${paper.base}`, label: paper.title || `${paper.base}.pdf` });
-		if (crossUnits.length) tocEntries.push({ href: "#cross-questions", label: labels.crossQuestions });
-		if (reviewUnits.length) tocEntries.push({ href: "#review", label: labels.review });
-	}
-	const toc = tocEntries.length
-		? `\n<nav class="toc"><h2>${labels.toc}</h2><ul>\n${tocEntries
-			.map((entry) => `<li><a href="${esc(entry.href)}">${esc(entry.label)}</a></li>`).join("\n")}\n</ul></nav>`
-		: "";
 
 	// Evidence appendix: one collapsible block per unit.
-	const excerptBlocks = report.units.map((unit) => {
-		const items = unit.chunks.map((chunk) => {
-			const path = pdfPathByKey.get(chunk.paper_key);
-			const anchor = path ? `\n<p class="meta">${pdfAnchor(localPdfHref(path, chunk.page, searchSnippet(chunk.text)), `${labels.page} ${chunk.page}`)}</p>` : "";
-			return `<details><summary>[${chunk.id}] ${labels.page} ${chunk.page}, similarity ${chunk.score.toFixed(3)}${chunk.lexical ? ", exact term match" : ""}</summary>
+	{
+		const num = ++sectionNumber;
+		addToc(`${num}.`, "excerpts", labels.excerpts);
+		const excerptBlocks = report.units.map((unit) => {
+			const items = unit.chunks.map((chunk) => {
+				const path = pdfPathByKey.get(chunk.paper_key);
+				const anchor = path ? `\n<p class="meta">${pdfAnchor(localPdfHref(path, chunk.page, searchSnippet(chunk.text)), `${labels.page} ${chunk.page}`)}</p>` : "";
+				return `<details><summary>[${chunk.id}] ${labels.page} ${chunk.page}, similarity ${chunk.score.toFixed(3)}${chunk.lexical ? ", exact term match" : ""}</summary>
 <p class="excerpt">${esc(chunk.text)}</p>${anchor}</details>`;
+			}).join("\n");
+			return `<details><summary>${esc(unitLabel(unit, labels))} (${unit.chunks.length})</summary>\n${items}\n</details>`;
 		}).join("\n");
-		return `<details><summary>${esc(unitLabel(unit, labels))} (${unit.chunks.length})</summary>\n${items}\n</details>`;
-	}).join("\n");
+		sections.push(`<h2 id="excerpts">${num}. ${labels.excerpts}</h2>
+<p class="meta">${esc(labels.excerptsNote)}</p>
+${excerptBlocks || "<p>&mdash;</p>"}`);
+	}
+
+	const banner = report.grounded ? "" : `\n<div class="warnbanner">${esc(labels.ungrounded)}</div>`;
+	const toc = `<nav class="toc"><h2>${labels.toc}</h2><ul>\n${tocLines.join("\n")}\n</ul></nav>`;
 
 	return `<!doctype html>
 <html lang="${esc(report.ui_language === "en" ? "en" : "de")}">
@@ -1240,19 +1339,12 @@ ${rows ? `<table>\n<thead><tr><th></th><th>${labels.references}</th><th>${labels
 <style>${STYLE}${REVIEW_STYLE}${REPORT_STYLE}</style>
 </head>
 <body>
-<h1>${esc(labels.pageTitle)}</h1>
-<dl class="meta">
-<dt>${labels.generated}</dt><dd>${esc(report.generated)} (UTC)</dd>
-<dt>${labels.scope}</dt><dd>${esc(scopeValue)}</dd>${questionRows}
-</dl>
-${methodBlock}${banner}${toc}
-${paperSections}${crossSection}${reviewSection}
-${sourcesSection}
-<h2>${labels.excerpts}</h2>
-<p class="meta">${esc(labels.excerptsNote)}</p>
-${excerptBlocks || "<p>&mdash;</p>"}
+<h1>${esc(labels.pageTitle)}</h1>${banner}
+${toc}
+${sections.join("\n")}
 <footer>${esc(labels.footer)}</footer>
 </body>
 </html>
 `;
 }
+

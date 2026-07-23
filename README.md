@@ -279,14 +279,19 @@ export. Building blocks:
   library scope; the wizard offers it only with several documents (over one
   paper it would just be a weaker summary).
 
-The report page (German chrome by default, `uiLanguage` switches) shows
-answers inside per-paper sections, method & transparency right under the
-head metadata, and clickable citation superscripts that open the source
-PDF at the cited page (Firefox also highlights the passage; Chromium opens
-the page). Single-paper reports number the cited PASSAGES (a numbered
-Belegstellen list with page links) instead of a one-row reference table;
-multi-paper reports keep scholarly paper-level numbering plus a reference
-table, table of contents and per-paper sections.
+The report page follows the CHAT's language in chrome AND prose (one
+language for the whole report; an explicit `language` parameter wins) and
+is structured as numbered sections (v27 template): Contents, Query
+metadata, one section per document (N.1 Summary, N.2 Questions), optional
+cross-paper questions, State of the literature, References/Cited
+passages, Source excerpts. Technical transparency (passage search, query
+variants, word search, quality check) sits in a COLLAPSED block explained
+in plain language -- lay readers should not need to know what "retrieval"
+means. Citation superscripts open the source PDF at the cited page
+(Firefox also highlights the passage; Chromium opens the page).
+Single-paper reports number the cited PASSAGES (a numbered list with page
+links) instead of a one-row reference table; multi-paper reports keep
+scholarly paper-level numbering plus a reference table.
 
 **Retrieval** (all modes): the original question PLUS a disclosed English
 translation variant (one small generate() call; the LLM shapes queries,

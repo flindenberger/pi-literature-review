@@ -611,7 +611,12 @@ const baseReport: SynthReport = {
 	// Bullets became a real list; German chrome.
 	assert.ok(html.includes("<ul>"));
 	assert.ok(html.includes("<li>Ziel: Wasserstand"));
-	assert.ok(html.includes("<h2>Methode &amp; Transparenz</h2>") || html.includes("<h2>Methode & Transparenz</h2>"));
+	// v27 template: numbered sections, metadata first, technical details
+	// collapsed and explained in plain language.
+	assert.ok(html.includes("<h2>1. Abfrage-Metadaten</h2>"));
+	assert.ok(html.includes("Technische Details (einfach erklärt)"));
+	assert.ok(html.includes("Textstellen-Suche"));
+	assert.ok(html.includes("Qualitätsprüfung"));
 	assert.ok(html.includes("Belegstellen"));
 	assert.ok(html.includes("Textauszüge"));
 	assert.ok(!html.includes("<h2 id=\"references\">")); // no reference table in single mode
@@ -625,10 +630,17 @@ const baseReport: SynthReport = {
 	assert.ok(html.includes('<li id="site-1">'));
 	assert.ok(html.includes('<li id="site-2">'));
 	assert.ok(!html.includes('<li id="site-3">'));
-	// Method sits BEFORE the paper section (field wish: right under the head).
-	assert.ok(html.indexOf("Methode") < html.indexOf('id="paper-a"'));
-	// No TOC for a single paper without cross sections.
-	assert.ok(!html.includes('class="toc"'));
+	// Metadata sits BEFORE the paper section; the TOC exists ALWAYS (v27
+	// template) with numbered entries and sub-entries.
+	assert.ok(html.indexOf("Abfrage-Metadaten") < html.indexOf('id="paper-a"'));
+	assert.ok(html.includes('class="toc"'));
+	assert.ok(html.includes('<a href="#paper-a">2. Paper One</a>'));
+	assert.ok(html.includes('<a href="#paper-a-summary">2.1 Zusammenfassung</a>'));
+	assert.ok(html.includes('<a href="#paper-a-questions">2.2 Fragen</a>'));
+	assert.ok(html.includes("2.1 Zusammenfassung</h3>"));
+	// Summary/review choices are stated in plain rows.
+	assert.ok(html.includes("Ja, als Bulletpoints"));
+	assert.ok(html.includes("<dt>Review-Synthese</dt><dd>Nein</dd>"));
 }
 
 {
@@ -661,7 +673,7 @@ const baseReport: SynthReport = {
 	assert.ok(html.includes("Detailfragen (paperübergreifend)"));
 	assert.ok(html.includes("Stand der Literatur"));
 	assert.ok(html.includes('class="reviewnote"'));
-	assert.ok(html.includes('<h2 id="references">Referenzen</h2>'));
+	assert.ok(/<h2 id="references">\d+\. Referenzen<\/h2>/.test(html));
 	assert.ok(html.includes('id="ref-1"') && html.includes('id="ref-2"'));
 	// Multi mode keeps the marker's own (paper-level) numbers as labels.
 	assert.ok(html.includes('rel="noopener">1</a>'));
@@ -677,7 +689,8 @@ const baseReport: SynthReport = {
 		units: [reportUnit({ grounded: false })],
 		grounded: false,
 	});
-	assert.ok(html.includes("Method &amp; transparency") || html.includes("Method & transparency"));
+	assert.ok(html.includes("Query metadata"));
+	assert.ok(html.includes("Technical details (in plain language)"));
 	assert.ok(html.includes("Cited passages"));
 	assert.ok(html.includes("UNGROUNDED DRAFT"));
 	assert.ok(html.includes('<html lang="en">'));

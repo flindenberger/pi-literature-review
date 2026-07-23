@@ -1105,8 +1105,11 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 				includeReview: choices.includeReview,
 				model: params.model?.trim() || undefined,
 				topK: params.top_k,
-				language: params.language,
-				// Page chrome of the HTML follows the dialog language.
+				// The whole report speaks ONE language -- the chat's (v27 user
+				// decision; the per-question default produced mixed pages).
+				// An explicit language param still wins.
+				language: params.language ?? (reportLang === "en" ? "English" : "German"),
+				// Page chrome of the HTML follows the same language.
 				uiLanguage: reportLang,
 				reindex: params.reindex,
 			}, choices.saveHtml, report, diagnostics, signal);
@@ -1227,6 +1230,8 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 				summary: choices.summary,
 				detailMode: choices.detailMode,
 				includeReview: choices.includeReview,
+				// ONE language for the whole report, following the chat.
+				language: reportLang === "en" ? "English" : "German",
 				uiLanguage: reportLang,
 			}, choices.saveHtml, progress, diagnostics, ctx.signal);
 			if ("error" in outcome) {
