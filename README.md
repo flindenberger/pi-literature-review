@@ -249,7 +249,13 @@ No chat memory in the generator: each call is stateless; the pi
 conversation carries the thread.
 
 **Report mode** (`report: true`, or the wizard) builds the composable
-report from three building blocks, written to `reports/`. The finished
+report from three building blocks, written to `reports/`. With a UI the
+report intake ALWAYS runs in the wizard: agent-passed parameters and the
+questions already asked in this session's chat merely prefill it ("fasse
+das zusammen" opens the wizard with the chat's questions, editable), and
+enum-like parameters (`summary`, `detail_mode`) are free strings
+normalized in code -- a malformed agent value can no longer dead-end in
+schema validation. The finished
 report also renders as a full transcript card (answers + reference lines
 + HTML path) -- the durable answer in the chat, with or without the HTML
 export. Building blocks:

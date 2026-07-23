@@ -17,6 +17,7 @@ import {
 	runReport,
 	runRound,
 	runChatReport,
+	scopeProtocolId,
 	selectPaper,
 	SUMMARY_FACETS,
 	summarySystemPrompt,
@@ -719,6 +720,25 @@ function makeRound(question: string, session: string | null = null): Round {
 	// The rubric prompt is pinned: bullets vs prose differ only in style.
 	assert.ok(summarySystemPrompt("bullets", "German").includes("Untersuchungsort"));
 	assert.ok(summarySystemPrompt("prose", "German").includes("Write in German"));
+}
+
+{
+	// scopeProtocolId mirrors what runRound records (v27: the adapter uses
+	// it to look up the session's questions as the report-wizard seed).
+	const pool = [
+		{ file: "/p/a.pdf", base: "a", key: "10.1/a", entry: { title: "A", pdf_url: "", doi: "10.1/a", arxiv_id: "", authors: [], year: null } },
+		{ file: "/p/b.pdf", base: "b", key: "file:b", entry: { title: "", pdf_url: "", doi: "", arxiv_id: "", authors: [], year: null } },
+	];
+	assert.deepEqual(scopeProtocolId("library", pool), { base: "library", key: "scope:library" });
+	assert.deepEqual(scopeProtocolId(["a"], pool), { base: "a", key: "10.1/a" });
+	assert.equal(scopeProtocolId(["ghost"], pool), null);
+	// Multi scope: sorted members, independent of the pool.
+	assert.deepEqual(scopeProtocolId(["b", "a"], pool), { base: "scope_a+b", key: "scope:a+b" });
+	// Overlong member lists collapse to the deterministic short form.
+	const many = Array.from({ length: 12 }, (_, i) => `paper_number_${String(i).padStart(2, "0")}`);
+	const long = scopeProtocolId(many, pool);
+	assert.equal(long?.base, "scope_paper_number_00_and_11_more");
+	assert.ok(long?.key.startsWith("scope:paper_number_00+"));
 }
 
 console.log("round/report engine tests passed");

@@ -724,6 +724,31 @@ function availablePapers(matched: LibraryPaper[]): string {
 	return matched.map((paper) => `${paper.base}.pdf`).join(", ") || "(none)";
 }
 
+/**
+ * Protocol identity (file base + record key) of a scope, matching what
+ * runRound records: a single paper uses the paper's own identity, several
+ * papers the sorted-member scope identity, the library its fixed marker.
+ * Pure; null when a named single paper is not in the pool. Exported so
+ * the adapter can look up THIS session's asked questions for a scope
+ * (the v27 report-wizard seed) without duplicating the naming rules.
+ */
+export function scopeProtocolId(
+	scope: string[] | "library",
+	pool: LibraryPaper[],
+): { base: string; key: string } | null {
+	if (scope === "library") return { base: "library", key: "scope:library" };
+	if (scope.length === 1) {
+		const paper = pool.find((entry) => entry.base === scope[0]);
+		return paper ? { base: paper.base, key: paper.key } : null;
+	}
+	const bases = [...scope].sort();
+	const joined = bases.join("+");
+	return {
+		base: joined.length <= 60 ? `scope_${joined}` : `scope_${bases[0]}_and_${bases.length - 1}_more`,
+		key: `scope:${joined}`,
+	};
+}
+
 /** Resolve the wanted PDF filename (with or without .pdf, case-insensitive
  * as a fallback) to exactly one matched library paper. The error message
  * lists what IS available -- it is relayed verbatim by the CLI and the
@@ -1038,19 +1063,14 @@ export async function runRound(options: ChatOptions, deps?: ChatDeps): Promise<C
 	// different files.
 	const citedIds = new Set(references.flatMap((reference) => reference.chunk_ids));
 	const identity: PaperIdentity = multi || libraryScope
-		? (() => {
-			const bases = scopePapers.map((scoped) => scoped.base).sort();
-			const joined = bases.join("+");
-			return {
-				base: libraryScope ? "library" : joined.length <= 60 ? `scope_${joined}` : `scope_${bases[0]}_and_${bases.length - 1}_more`,
-				key: `scope:${libraryScope ? "library" : joined}`,
-				title: libraryScope ? "Whole library" : `${scopePapers.length} documents`,
-				authors: [],
-				year: null,
-				doi: "",
-				arxiv_id: "",
-			};
-		})()
+		? {
+			...scopeProtocolId(libraryScope ? "library" : scopePapers.map((scoped) => scoped.base), scopePapers)!,
+			title: libraryScope ? "Whole library" : `${scopePapers.length} documents`,
+			authors: [],
+			year: null,
+			doi: "",
+			arxiv_id: "",
+		}
 		: chatPaper;
 	const chatRound: Round = {
 		asked: generated,

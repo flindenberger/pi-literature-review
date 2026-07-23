@@ -29,7 +29,7 @@ import { matchLibrary } from "../src/corpus.ts";
 import { renderChatDigest, renderReportDigest } from "../src/digest.ts";
 import { createBackend, type LlmBackend } from "../src/llm.ts";
 import { outputRoot, writeRunOutputs } from "../src/output.ts";
-import { readCurrentScope, writeCurrentScope } from "../src/protocol.ts";
+import { loadRounds, readCurrentScope, realProtocolDeps, writeCurrentScope } from "../src/protocol.ts";
 import { renderSynthReportHtml } from "../src/render.ts";
 import {
 	type ChatAnswer,
@@ -42,6 +42,7 @@ import {
 	type ReportOptions,
 	runReport,
 	runRound,
+	scopeProtocolId,
 	type SynthReport,
 } from "../src/synthesize.ts";
 import { runWizard } from "./dialogs.ts";
@@ -393,6 +394,60 @@ function reportSteps(
 	];
 }
 
+/**
+ * Liberal normalization of agent-passed report tokens (v27 field failure:
+ * the agent sent summary '"bullets"' -- WITH literal quotes -- and pi's
+ * schema validation rejected the call in an endless retry loop before our
+ * code ever ran). The schema now accepts any string; THIS code maps it,
+ * and anything unrecognized counts as "not given" (settled in the wizard)
+ * instead of a hard validation dead end.
+ */
+function normalizeToken(value: string | undefined): string | undefined {
+	if (value === undefined) return undefined;
+	const cleaned = value.trim().replace(/^["'„“‚‘\s]+|["'“”‘’\s]+$/g, "").toLowerCase();
+	return cleaned || undefined;
+}
+
+function normalizeSummary(value: string | undefined, onWarn: (message: string) => void): ReportChoices["summary"] | undefined {
+	const token = normalizeToken(value);
+	if (token === undefined) return undefined;
+	if (["bullets", "bulletpoints", "bullet", "stichpunkte", "liste"].includes(token)) return "bullets";
+	if (["prose", "prosa", "fliesstext", "fließtext", "text"].includes(token)) return "prose";
+	if (["none", "no", "nein", "keine", "false", "off"].includes(token)) return "none";
+	onWarn(`unrecognized summary value ${JSON.stringify(value)} -- treating it as not given (the dialog settles it)`);
+	return undefined;
+}
+
+function normalizeDetailMode(value: string | undefined, onWarn: (message: string) => void): ReportChoices["detailMode"] | undefined {
+	const token = normalizeToken(value)?.replace(/[\s_]+/g, "-");
+	if (token === undefined) return undefined;
+	if (["per-paper", "perpaper", "paper", "a", "mode-a", "modus-a"].includes(token)) return "per-paper";
+	if (["cross-paper", "crosspaper", "cross", "b", "mode-b", "modus-b", "merged"].includes(token)) return "cross-paper";
+	onWarn(`unrecognized detail_mode value ${JSON.stringify(value)} -- treating it as not given (the dialog settles it)`);
+	return undefined;
+}
+
+/** THIS session's asked questions for the scope, read from the protocol
+ * on disk (deduplicated, order of first asking) -- the report wizard's
+ * question seed ("fasse das zusammen" shows the chat's questions,
+ * editable). Best-effort: any problem just means an empty seed. */
+function sessionSeedQuestions(root: string, scope: string[] | "library", session: string | undefined): string[] {
+	if (!session) return [];
+	try {
+		const pool = chatPool(matchLibrary(root, () => {}));
+		const id = scopeProtocolId(scope, pool);
+		if (!id) return [];
+		const { rounds } = loadRounds(root, id.base, id.key, session, realProtocolDeps(), () => {});
+		const questions: string[] = [];
+		for (const round of rounds) {
+			if (!questions.includes(round.question)) questions.push(round.question);
+		}
+		return questions;
+	} catch {
+		return [];
+	}
+}
+
 /** ReportChoices from a confirmed wizard result; steps that were disabled
  * at submit time fall back to the defaults (they are irrelevant then). */
 function choicesOf(result: WizardResult, defaults: Partial<ReportChoices>): ReportChoices {
@@ -670,9 +725,11 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 			"(2) REPORT: set report: true (or pass questions/summary/include_review) for the composable HTML " +
 			"report -- per-paper structured summaries, detail questions, optional review synthesis. Report mode is " +
 			"ALSO the only way to save/export/print anything from this chat ('mach mir eine html', 'save this'): " +
-			"NEVER write an HTML or any other file about these papers yourself. Missing report choices are " +
-			"settled in the tool's own wizard dialog; with complete parameters a compact consent dialog runs " +
-			"instead. If the user cancelled a dialog, ask what they want to change; do not retry unchanged. " +
+			"NEVER write an HTML or any other file about these papers yourself. The report intake ALWAYS runs " +
+			"in the tool's own wizard dialog: any parameters you pass and the questions already asked in this " +
+			"session's chat merely PREFILL it, the user confirms. So for 'fasse das zusammen' just call " +
+			"report: true without inventing questions. If the user cancelled a dialog, ask what they want to " +
+			"change; do not retry unchanged. " +
 			"The answers are written by a separate LOCAL generator in excerpts-only calls (not by you); fixed code " +
 			"validates every citation marker and builds references from HTTP-verified records. Loose PDFs are " +
 			"adopted automatically when their DOI/arXiv ID can be extracted and verified; unverified PDFs are " +
@@ -700,15 +757,11 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 			questions: Type.Optional(Type.Array(Type.String(), {
 				description: "Report mode: the detail questions, one string each, in the user's words.",
 			})),
-			summary: Type.Optional(Type.Union([
-				Type.Literal("bullets"), Type.Literal("prose"), Type.Literal("none"),
-			], {
-				description: "Report mode: structured per-paper summary as bullet points, prose, or none.",
+			summary: Type.Optional(Type.String({
+				description: "Report mode: structured per-paper summary -- \"bullets\", \"prose\" or \"none\" (free string; the tool normalizes and lets the user confirm in its dialog).",
 			})),
-			detail_mode: Type.Optional(Type.Union([
-				Type.Literal("per-paper"), Type.Literal("cross-paper"),
-			], {
-				description: "Report mode: answer detail questions per paper (mode A, covers every document) or merged across papers (mode B, one call per question).",
+			detail_mode: Type.Optional(Type.String({
+				description: "Report mode: \"per-paper\" (mode A, covers every document) or \"cross-paper\" (mode B, one call per question). Free string; normalized by the tool.",
 			})),
 			include_review: Type.Optional(Type.Boolean({
 				description: "Report mode: append a review synthesis (state of the literature) over the scope.",
@@ -835,46 +888,31 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 				writeCurrentScope(root, { papers: scope }, sessionId(ctx), undefined, (message) => diagnostics.push(message));
 			}
 
-			// 3. REPORT mode: settle the menu (params > wizard), then run.
+			// 3. REPORT mode: with a UI the wizard runs ALWAYS (v27 field
+			// decision) -- agent parameters and THIS session's chat questions
+			// only PREFILL it; the user confirms on the submit page. Headless
+			// runs stay parameter-authoritative.
 			const scopeSize = scope === "library"
 				? chatPool(matchLibrary(root, () => {})).length
 				: scope.length;
 			let questions = params.questions?.map((entry) => entry.trim()).filter(Boolean);
+			const summaryParam = normalizeSummary(params.summary, report);
+			const detailParam = normalizeDetailMode(params.detail_mode, report);
 			let choices: ReportChoices = {
-				summary: params.summary ?? "bullets",
-				detailMode: params.detail_mode ?? "per-paper",
+				summary: summaryParam ?? "bullets",
+				detailMode: detailParam ?? "per-paper",
 				includeReview: params.include_review ?? scope === "library",
 				saveHtml: params.save_html ?? true,
 			};
-			const fullySpecified = params.questions !== undefined && params.summary !== undefined && params.save_html !== undefined;
-			if (ctx.hasUI && fullySpecified) {
-				// Compact consent instead of the wizard.
-				const summaryLabel = choices.summary === "none" ? "keine" : choices.summary;
-				const menu = `Zusammenfassung: ${summaryLabel} | Fragen: ${questions!.length} (${choices.detailMode}) | `
-					+ `Review: ${choices.includeReview ? "ja" : "nein"} | HTML: ${choices.saveHtml ? "ja" : "nein"}`;
-				const consent = await ctx.ui.select(
-					`Report über ${scope === "library" ? "die ganze Bibliothek" : `${scopeSize} Dokument(e)`} -- ${menu}`,
-					["Run as proposed", "Anpassen (Wizard)", "Abbrechen"],
-					{ signal },
-				);
-				if (consent === undefined || consent === "Abbrechen") {
-					return reply("The user cancelled the report consent dialog. Nothing was generated. Ask what they want to change.");
-				}
-				if (consent === "Anpassen (Wizard)") {
-					// The ONE wizard (questions + report menu), seeded with the
-					// proposed values.
-					const intake = await reportWizard(ctx, scopeSize, questions, choices, signal);
-					if (intake === null) return reply("The user cancelled the report wizard. Nothing was generated.");
-					questions = intake.questions;
-					choices = intake.choices;
-				}
-			} else if (ctx.hasUI && !fullySpecified) {
-				// Missing choices: the ONE wizard settles questions AND menu.
-				const intake = await reportWizard(ctx, scopeSize, questions, {
+			if (ctx.hasUI) {
+				// Question seed: agent-passed questions, else what was actually
+				// asked in this session's chat ("fasse das zusammen").
+				const seed = questions?.length ? questions : sessionSeedQuestions(root, scope, sessionId(ctx));
+				const intake = await reportWizard(ctx, scopeSize, seed, {
 					...choices,
-					summary: params.summary ?? (questions?.length ? "none" : "bullets"),
+					summary: summaryParam ?? (seed.length ? "none" : "bullets"),
 				}, signal);
-				if (intake === null) return reply("The user cancelled the report wizard. Nothing was generated.");
+				if (intake === null) return reply("The user cancelled the report wizard. Nothing was generated. Ask what they want to change; do not retry unchanged.");
 				questions = intake.questions;
 				choices = intake.choices;
 			} else {
