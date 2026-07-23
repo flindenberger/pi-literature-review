@@ -59,6 +59,14 @@ function makeIndex(paper: PaperIndex["paper"], chunks: Array<{ page: number; tex
 	assert.deepEqual(salientTerms('ist "Q1645" das modell q1645?'), ["Q1645"]);
 	// Single characters never qualify.
 	assert.deepEqual(salientTerms("hat A das gemessen?"), []);
+	// v27 stoplist: generic reading-situation nouns and mid-sentence German
+	// interrogatives carry no signal (German capitalizes EVERY noun -- the
+	// field failure: "Paper" grabbed a guaranteed excerpt slot). Domain
+	// terms in the same question survive.
+	assert.deepEqual(salientTerms("Welche Kamera wurde im Paper verwendet?"), ["Kamera"]);
+	assert.deepEqual(salientTerms("Steht dazu etwas im Dokument, Welche Studie meint der Autor?"), []);
+	// A QUOTED stopword is explicit user intent and bypasses the list.
+	assert.deepEqual(salientTerms('wo kommt das wort "Paper" im text vor?'), ["Paper"]);
 }
 
 /* ---------------- lexicalTermPattern ---------------- */

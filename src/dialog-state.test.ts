@@ -122,6 +122,13 @@ const items = [
 	assert.deepEqual(parseQuestionLines("   \n\n"), []);
 	// A lone bullet line carries no question.
 	assert.deepEqual(parseQuestionLines("- "), []);
+	// v27: SEMICOLON separates too (the terminal-input separator); mixing
+	// with newlines stays legal for the CLI habit.
+	assert.deepEqual(
+		parseQuestionLines("Welche Kamera?; Wo installiert? ;\nSeit wann?"),
+		["Welche Kamera?", "Wo installiert?", "Seit wann?"],
+	);
+	assert.deepEqual(parseQuestionLines(" ; ;; "), []);
 }
 
 /* ---------------- wizard: rpiv semantics over several steps ---------------- */
@@ -142,7 +149,10 @@ const wizardSteps: WizardStepDef[] = [
 	},
 ];
 
-function drive(state: WizardState, events: string[]): { state: WizardState; done?: string } {
+function drive(
+	state: WizardState,
+	events: Array<string | { kind: "input"; chars: string }>,
+): { state: WizardState; done?: string } {
 	let done: string | undefined;
 	for (const event of events) {
 		const step = reduceWizard(state, event as never);
@@ -256,6 +266,101 @@ function drive(state: WizardState, events: string[]): { state: WizardState; done
 	assert.ok(view.hint.includes("Enter wählt"));
 	({ state } = drive(state, ["confirm", "left"]));
 	assert.ok(wizardView(state).rows[1].text.includes("Bulletpoints ✔")); // now explicitly chosen
+}
+
+/* ---------------- wizard: text step (v27) ---------------- */
+{
+	const steps: WizardStepDef[] = [
+		{
+			kind: "text", id: "questions", tab: "Fragen", title: "Welche Frage(n)?",
+			placeholder: "leer = chatten",
+		},
+		wizardSteps[2], // the save choice
+	];
+	// Typing appends; control chars are stripped; pasted newlines become
+	// semicolons; backspace deletes.
+	let { state } = drive(initWizard(steps), [
+		{ kind: "input", chars: "Welche Kamera?" },
+		{ kind: "input", chars: "\nWo installiert??" },
+		"backspace",
+	]);
+	assert.equal(state.texts[0], "Welche Kamera?;Wo installiert?");
+	let view = wizardView(state);
+	assert.ok(view.rows[0].text.startsWith("❯ Welche Kamera?;Wo installiert?"));
+	assert.ok(view.rows[1].text.includes("2 Frage(n) erkannt"));
+	assert.ok(view.hint.includes("Semikolon"));
+	// Enter commits the text and advances; the summary carries the questions.
+	({ state } = drive(state, ["confirm", "confirm", "confirm"])); // text -> save "yes" -> submit? no: save confirm advances to submit; last confirm = Absenden
+	const finished = drive(state, []);
+	assert.deepEqual(wizardResult(finished.state), {
+		questions: "Welche Kamera?;Wo installiert?",
+		save: "yes",
+	});
+	// An EMPTY text is a valid answer (= no questions): finish succeeds.
+	const empty = drive(initWizard(steps), ["confirm", "confirm", "confirm"]);
+	assert.equal(empty.done, "confirmed");
+	assert.equal(wizardResult(empty.state).questions, "");
+	// The placeholder shows while empty; the summary says "(keine)".
+	view = wizardView(initWizard(steps));
+	assert.ok(view.rows[1].text.includes("leer = chatten"));
+	assert.ok(wizardView({ ...empty.state, tab: 2 }).rows[0].text.includes("Fragen: (keine)"));
+	// Typed input outside a text step is ignored.
+	const noText = drive(initWizard(wizardSteps), [{ kind: "input", chars: "x" }, "backspace"]);
+	assert.equal(noText.state.texts[0], "");
+	assert.deepEqual([...noText.state.selected[0]], ["c"]);
+}
+
+/* ---------------- wizard: enabledIf skips steps (v27) ---------------- */
+{
+	const steps: WizardStepDef[] = [
+		{
+			kind: "text", id: "questions", tab: "Fragen", title: "Welche Frage(n)?",
+		},
+		{
+			kind: "choice", id: "detail", tab: "Fragen-Modus", title: "Modus?",
+			options: [{ value: "per-paper", label: "A" }, { value: "cross-paper", label: "B" }],
+			initial: "per-paper",
+			enabledIf: (answers) => parseQuestionLines(String(answers.questions ?? "")).length > 0,
+		},
+		{
+			kind: "choice", id: "save", tab: "HTML", title: "Als HTML speichern?",
+			options: [{ value: "yes", label: "Ja" }, { value: "no", label: "Nein" }],
+		},
+	];
+	// Without questions the detail tab is skipped in BOTH directions, leaves
+	// the tab bar, never blocks the finish and is absent from the result.
+	let { state } = drive(initWizard(steps), ["confirm"]); // empty text -> next enabled = save
+	assert.equal(state.tab, 2);
+	// (a text step is always answered -- empty is valid -- hence its mark)
+	assert.deepEqual(wizardView(state).tabs.map((tab) => tab.label.trim()), ["Fragen ✔", "HTML", "Bestätigen"]);
+	({ state } = drive(state, ["left"]));
+	assert.equal(state.tab, 0); // back skips the disabled step too
+	const finished = drive(state, ["confirm", "confirm", "confirm"]); // save "yes" -> submit -> Absenden
+	assert.equal(finished.done, "confirmed");
+	assert.deepEqual(wizardResult(finished.state), { questions: "", save: "yes" });
+	// WITH a question the step exists again and gates the finish.
+	let withQ = drive(initWizard(steps), [{ kind: "input", chars: "Welche Kamera?" }, "confirm"]);
+	assert.equal(withQ.state.tab, 1);
+	withQ = drive(withQ.state, ["right", "confirm", "confirm"]); // skip detail, answer save, Absenden
+	assert.equal(withQ.done, undefined);
+	assert.equal(withQ.state.tab, 1); // the finish guard jumped to the open detail step
+	withQ = drive(withQ.state, ["confirm", "confirm", "confirm"]); // answer detail -> save answered? save already yes -> submit -> Absenden
+	assert.equal(withQ.done, "confirmed");
+	assert.equal(wizardResult(withQ.state).detail, "per-paper");
+}
+
+/* ---------------- wizard: submit note (v27) ---------------- */
+{
+	const note = (answers: Record<string, unknown>): string | null =>
+		typeof answers.summary === "string" ? `~${answers.summary === "none" ? 0 : 3} Modellaufruf(e)` : null;
+	const state = initWizard(wizardSteps, note as never);
+	// Unanswered summary -> no note line yet.
+	assert.ok(!wizardView({ ...state, tab: 3 }).rows.some((row) => row.text.includes("Modellaufruf")));
+	const answered = drive(state, ["up", "confirm", "confirm", "confirm"]); // commit docs, summary bullets, save yes -> submit
+	assert.equal(answered.state.tab, 3);
+	assert.ok(wizardView(answered.state).rows.some((row) => row.text.includes("~3 Modellaufruf(e)")));
+	// The note counts one extra row in the constant footprint.
+	assert.equal(maxWizardRows(state), 7);
 }
 
 console.log("dialog-state tests passed");

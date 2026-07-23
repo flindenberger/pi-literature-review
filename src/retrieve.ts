@@ -187,11 +187,33 @@ export async function buildQueryVariants(
  * ------------------------------------------------------------------ */
 
 /**
+ * Generic words of the READING SITUATION that are never salient terms
+ * (v27 field fix): German capitalizes every noun, so the "capitalized
+ * mid-sentence" heuristic below -- built for English, where that means
+ * names and models -- fired on words like "Paper" and "Frage" and wasted
+ * guaranteed excerpt slots on noise. Small and documented on purpose:
+ * domain terms stay untouched; the LEXICAL_TERM_MAX_HITS rule remains the
+ * second net. Quoted phrases BYPASS this list (explicit user intent).
+ */
+export const SALIENT_STOPWORDS: ReadonlySet<string> = new Set([
+	// German interrogatives (mid-sentence, e.g. after a comma).
+	"welche", "welcher", "welches", "was", "wer", "wie", "wo", "wann", "warum", "wieso", "weshalb",
+	// German meta-words about paper and conversation.
+	"paper", "papers", "dokument", "dokumente", "frage", "fragen", "antwort", "antworten",
+	"studie", "studien", "artikel", "text", "texte", "kapitel", "abschnitt", "seite", "seiten",
+	"autor", "autoren", "autorin", "autorinnen", "zusammenfassung", "bericht", "quelle", "quellen",
+	// English counterparts (rarely capitalized mid-sentence, cheap safety).
+	"question", "questions", "answer", "answers", "study", "studies", "article", "articles",
+	"author", "authors", "chapter", "section", "page", "pages", "summary", "document", "documents",
+]);
+
+/**
  * Salient terms of a question -- the parts embedding geometry is most
  * likely to lose: quoted phrases, model-number tokens (letters AND digits,
- * e.g. Q1645, S-2, bge-m3) and capitalized words outside sentence starts.
- * Pure text analysis of the USER's words; translations never contribute
- * terms. Deduplicated case-insensitively, original spelling kept.
+ * e.g. Q1645, S-2, bge-m3) and capitalized words outside sentence starts
+ * (minus SALIENT_STOPWORDS). Pure text analysis of the USER's words;
+ * translations never contribute terms. Deduplicated case-insensitively,
+ * original spelling kept.
  */
 export function salientTerms(question: string): string[] {
 	const terms: string[] = [];
@@ -218,7 +240,12 @@ export function salientTerms(question: string): string[] {
 			add(token); // model-number token, salient wherever it stands
 			continue;
 		}
-		if (token.length >= 2 && /^\p{Lu}/u.test(token) && !isSentenceStart(question, match.index)) {
+		if (
+			token.length >= 2
+			&& /^\p{Lu}/u.test(token)
+			&& !isSentenceStart(question, match.index)
+			&& !SALIENT_STOPWORDS.has(token.toLowerCase())
+		) {
 			add(token);
 		}
 	}

@@ -18,7 +18,13 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { llmConfig } from "../src/config.ts";
-import { type CheckboxItem, type WizardStepDef } from "../src/dialog-state.ts";
+import {
+	type CheckboxItem,
+	parseQuestionLines,
+	type WizardAnswers,
+	type WizardResult,
+	type WizardStepDef,
+} from "../src/dialog-state.ts";
 import { matchLibrary } from "../src/corpus.ts";
 import { renderChatDigest, renderReportDigest } from "../src/digest.ts";
 import { createBackend, type LlmBackend } from "../src/llm.ts";
@@ -32,11 +38,13 @@ import {
 	DEFAULT_TOP_K,
 	MAX_TOP_K,
 	OUTPUT_RESERVE_TOKENS,
+	type ReferenceEntry,
 	type ReportOptions,
 	runReport,
 	runRound,
+	type SynthReport,
 } from "../src/synthesize.ts";
-import { questionList, runWizard } from "./dialogs.ts";
+import { runWizard } from "./dialogs.ts";
 
 const SYNTH_WIDGET = "pi-literature-review-synth";
 const ANSWER_ENTRY = "pi-literature-chat-answer";
@@ -74,17 +82,20 @@ function wrapText(text: string, width = MAX_LINE): string[] {
 
 const WIDGET_MAX_LINES = 15;
 
+/** The one deterministic reference-line format shared by widget, cards and
+ * digests -- built exclusively from verified record fields. */
+function referenceLine(reference: ReferenceEntry): string {
+	const id = reference.doi || (reference.arxiv_id ? `arXiv:${reference.arxiv_id}` : reference.key);
+	return `[${reference.n}] ${reference.year ?? "n.d."} | ${id} | ${reference.title} (S. ${reference.pages.join(", ")})`;
+}
+
 function answerWidgetLines(answer: ChatAnswer, scopeLabel: string): string[] {
-	const referenceLines = answer.references.map((reference) => {
-		const id = reference.doi || (reference.arxiv_id ? `arXiv:${reference.arxiv_id}` : reference.key);
-		return clip(`[${reference.n}] ${reference.year ?? "n.d."} | ${id} | ${reference.title} (S. ${reference.pages.join(", ")})`);
-	});
 	const lines = [
 		answer.grounded
 			? `Validated answer (code-checked) -- ${scopeLabel}`
 			: `UNGROUNDED DRAFT (not usable as an answer) -- ${scopeLabel}`,
 		...wrapText(answer.prose),
-		...referenceLines,
+		...answer.references.map((reference) => clip(referenceLine(reference))),
 	];
 	return lines.length > WIDGET_MAX_LINES
 		? [...lines.slice(0, WIDGET_MAX_LINES - 1), "... (the full validated answer is in the session protocol)"]
@@ -92,11 +103,27 @@ function answerWidgetLines(answer: ChatAnswer, scopeLabel: string): string[] {
 }
 
 function formatAnswerText(answer: ChatAnswer): string {
-	const refs = answer.references.map((reference) => {
-		const id = reference.doi || (reference.arxiv_id ? `arXiv:${reference.arxiv_id}` : reference.key);
-		return `[${reference.n}] ${reference.year ?? "n.d."} | ${id} | ${reference.title} (S. ${reference.pages.join(", ")})`;
-	});
+	const refs = answer.references.map(referenceLine);
 	return `${answer.prose}${refs.length ? `\n\n${refs.join("\n")}` : ""}`;
+}
+
+/** Report body for the transcript card: unit headings + validated prose,
+ * then the GLOBAL reference lines and the HTML path when one was written.
+ * The card is the durable answer in the chat (v27 field fix: the report
+ * lived only in a truncated, transient widget). */
+function formatReportText(report: SynthReport, htmlPath: string | null): string {
+	const parts = report.units.map((unit) => {
+		const heading = unit.kind === "summary" ? `Zusammenfassung ${unit.paper_base}.pdf`
+			: unit.kind === "review" ? "Review-Synthese"
+			: unit.paper_base ? `${unit.question} -- ${unit.paper_base}.pdf`
+			: unit.question ?? "";
+		return `${heading}\n\n${unit.prose}`;
+	});
+	return [
+		parts.join("\n\n----\n\n"),
+		report.references.map(referenceLine).join("\n"),
+		htmlPath ? `HTML-Report: ${htmlPath}` : "",
+	].filter(Boolean).join("\n\n");
 }
 
 /** Scope label for widgets/cards: "x.pdf" or "3 Dokumente" or "Bibliothek". */
@@ -119,6 +146,38 @@ function showAnswer(pi: ExtensionAPI, ctx: ExtensionContext, answer: ChatAnswer)
 	} else if (ctx.hasUI) {
 		ctx.ui.setWidget(SYNTH_WIDGET, answerWidgetLines(answer, label));
 	}
+}
+
+/** Show the finished report as a transcript entry too (v27: the durable
+ * answer in the chat, HTML export or not), else the capped widget. Returns
+ * true when the fallback WIDGET carries the report (caller must not clear
+ * it). */
+function showReport(pi: ExtensionAPI, ctx: ExtensionContext, report: SynthReport, htmlPath: string | null): boolean {
+	const label = report.scope.library
+		? `Bibliothek (${report.scope.papers.length} PDFs)`
+		: report.scope.papers.length === 1
+			? `${report.scope.papers[0]}.pdf`
+			: `${report.scope.papers.length} Dokumente`;
+	const text = formatReportText(report, htmlPath);
+	if (answerEntryReady) {
+		pi.appendEntry(ANSWER_ENTRY, {
+			paper: label,
+			grounded: report.grounded,
+			heading: report.grounded
+				? `Report -- ${label} (code-validated)`
+				: `Report -- ${label} (UNGROUNDED DRAFT)`,
+			text,
+		});
+		return false;
+	}
+	if (ctx.hasUI) {
+		const lines = wrapText(text);
+		ctx.ui.setWidget(SYNTH_WIDGET, lines.length > WIDGET_MAX_LINES
+			? [...lines.slice(0, WIDGET_MAX_LINES - 1), "... (voller Report im HTML- bzw. JSON-Sidecar)"]
+			: lines);
+		return true;
+	}
+	return false;
 }
 
 /** Sign of life during a long, non-streaming engine call (pi's native
@@ -260,18 +319,37 @@ interface ReportChoices {
 	saveHtml: boolean;
 }
 
-/** The report-menu wizard (after the questions editor): summary format,
- * detail mode (only with >= 2 papers and >= 1 question), review synthesis
- * (recommended on the library scope, weakness note otherwise), HTML. */
-async function pickReportChoices(
-	ctx: ExtensionContext,
-	scopeSize: number,
-	libraryScope: boolean,
-	questionCount: number,
+/** Questions of the live wizard answers (semicolon-separated text step). */
+function questionsOf(answers: WizardAnswers | WizardResult): string[] {
+	const value = answers.questions;
+	return parseQuestionLines(typeof value === "string" ? value : "");
+}
+
+/** The questions intake as a wizard tab (v27: joined the ONE wizard;
+ * semicolon separates -- "one per line" made no sense in the terminal). */
+function questionsStep(initial?: string): WizardStepDef {
+	return {
+		kind: "text",
+		id: "questions",
+		tab: "Fragen",
+		title: "Welche Frage(n) interessieren dich? (mit Semikolon trennen; leer lassen zum Chatten oder für nur Zusammenfassung)",
+		placeholder: "leer = chatten oder nur Zusammenfassung",
+		...(initial ? { initial } : {}),
+	};
+}
+
+/**
+ * The report-menu steps of the ONE wizard: summary format, detail mode
+ * (appears only with >= 2 documents AND >= 1 question), review synthesis,
+ * HTML (appears only when anything would be generated). scopeSizeOf reads
+ * the LIVE answers, so the same steps work with the scope step in the same
+ * wizard (bare /lit-synth) and with a scope settled beforehand (tool path).
+ */
+function reportSteps(
+	scopeSizeOf: (answers: WizardAnswers) => number,
 	defaults: Partial<ReportChoices>,
-	signal: AbortSignal | undefined,
-): Promise<ReportChoices | null> {
-	const steps: WizardStepDef[] = [
+): WizardStepDef[] {
+	return [
 		{
 			kind: "choice", id: "summary", tab: "Zusammenfassung",
 			title: "Strukturierte Zusammenfassung je Dokument?",
@@ -282,46 +360,97 @@ async function pickReportChoices(
 			],
 			initial: defaults.summary ?? "bullets",
 		},
-		...(scopeSize > 1 && questionCount > 0
-			? [{
-				kind: "choice", id: "detail", tab: "Fragen-Modus",
-				title: "Detailfragen: pro Dokument einzeln oder übergreifend?",
-				options: [
-					{ value: "per-paper", label: "Pro Dokument einzeln (Modus A -- deckt jedes Dokument ab, mehr Modellaufrufe)" },
-					{ value: "cross-paper", label: "Übergreifend zusammengeführt (Modus B -- ein Aufruf je Frage)" },
-				],
-				initial: defaults.detailMode ?? "per-paper",
-			} satisfies WizardStepDef]
-			: []),
+		{
+			kind: "choice", id: "detail", tab: "Fragen-Modus",
+			title: "Detailfragen: pro Dokument einzeln oder übergreifend?",
+			options: [
+				{ value: "per-paper", label: "Pro Dokument einzeln (Modus A -- deckt jedes Dokument ab, mehr Modellaufrufe)" },
+				{ value: "cross-paper", label: "Übergreifend zusammengeführt (Modus B -- ein Aufruf je Frage)" },
+			],
+			initial: defaults.detailMode ?? "per-paper",
+			enabledIf: (answers) => scopeSizeOf(answers) > 1 && questionsOf(answers).length > 0,
+		},
 		{
 			kind: "choice", id: "review", tab: "Review",
-			title: libraryScope
-				? "Review-Synthese (Stand der Literatur) anhängen?"
-				: "Review-Synthese anhängen? (Bei kleiner Auswahl oft schwach.)",
+			title: "Review-Synthese (Stand der Literatur) anhängen? (Empfohlen bei ganzer Bibliothek; bei kleiner Auswahl oft schwach.)",
 			options: [
 				{ value: "yes", label: "Ja" },
 				{ value: "no", label: "Nein" },
 			],
-			initial: defaults.includeReview ?? libraryScope ? "yes" : "no",
+			initial: defaults.includeReview ? "yes" : "no",
 		},
 		{
 			kind: "choice", id: "html", tab: "HTML",
 			title: "Als HTML speichern?",
 			options: [
 				{ value: "yes", label: "Ja, HTML-Bericht schreiben" },
-				{ value: "no", label: "Nein, nur Kurzfassung im Chat" },
+				{ value: "no", label: "Nein, nur Antwort im Chat" },
 			],
 			initial: defaults.saveHtml === false ? "no" : "yes",
+			enabledIf: (answers) =>
+				questionsOf(answers).length > 0 || answers.summary !== "none" || answers.review === "yes",
 		},
 	];
-	const answers = await runWizard(ctx, steps, signal);
-	if (answers === null) return null;
+}
+
+/** ReportChoices from a confirmed wizard result; steps that were disabled
+ * at submit time fall back to the defaults (they are irrelevant then). */
+function choicesOf(result: WizardResult, defaults: Partial<ReportChoices>): ReportChoices {
 	return {
-		summary: answers.summary as ReportChoices["summary"],
-		detailMode: (answers.detail as ReportChoices["detailMode"] | undefined) ?? defaults.detailMode ?? "per-paper",
-		includeReview: answers.review === "yes",
-		saveHtml: answers.html === "yes",
+		summary: (result.summary as ReportChoices["summary"] | undefined) ?? defaults.summary ?? "bullets",
+		detailMode: (result.detail as ReportChoices["detailMode"] | undefined) ?? defaults.detailMode ?? "per-paper",
+		includeReview: result.review !== undefined ? result.review === "yes" : defaults.includeReview ?? false,
+		saveHtml: result.html !== undefined ? result.html === "yes" : defaults.saveHtml ?? true,
 	};
+}
+
+/** Honest cost arithmetic: mode A multiplies papers x questions. */
+function reportUnitCount(
+	scopeSize: number,
+	questionCount: number,
+	choices: Pick<ReportChoices, "summary" | "detailMode" | "includeReview">,
+): number {
+	return (choices.summary !== "none" ? scopeSize : 0)
+		+ (questionCount ? (choices.detailMode === "per-paper" ? scopeSize * questionCount : questionCount) : 0)
+		+ (choices.includeReview ? 1 : 0);
+}
+
+/** The computed line on the wizard's submit page: expected model calls, or
+ * the honest "this will be a chat" when nothing would be generated. */
+function reportSubmitNote(scopeSizeOf: (answers: WizardAnswers) => number): (answers: WizardAnswers) => string | null {
+	return (answers) => {
+		const scopeSize = scopeSizeOf(answers);
+		if (!scopeSize || typeof answers.summary !== "string" || typeof answers.review !== "string") return null;
+		const questionCount = questionsOf(answers).length;
+		if (!questionCount && answers.summary === "none" && answers.review === "no") {
+			return "Nichts zu generieren -- das wird ein Chat.";
+		}
+		const units = reportUnitCount(scopeSize, questionCount, {
+			summary: answers.summary as ReportChoices["summary"],
+			detailMode: (answers.detail as ReportChoices["detailMode"] | null) ?? "per-paper",
+			includeReview: answers.review === "yes",
+		});
+		return `~${units} Modellaufruf(e), je etwa eine Minute lokal`;
+	};
+}
+
+/** The report intake over a SETTLED scope (tool path): questions + report
+ * menu in ONE wizard. Null on cancel. */
+async function reportWizard(
+	ctx: ExtensionContext,
+	scopeSize: number,
+	seedQuestions: string[] | undefined,
+	defaults: Partial<ReportChoices>,
+	signal: AbortSignal | undefined,
+): Promise<{ questions: string[]; choices: ReportChoices } | null> {
+	const scopeSizeOf = (): number => scopeSize;
+	const steps: WizardStepDef[] = [
+		questionsStep(seedQuestions?.join("; ")),
+		...reportSteps(scopeSizeOf, defaults),
+	];
+	const answers = await runWizard(ctx, steps, signal, reportSubmitNote(scopeSizeOf));
+	if (answers === null) return null;
+	return { questions: questionsOf(answers), choices: choicesOf(answers, defaults) };
 }
 
 /* ------------------------------------------------------------------ *
@@ -409,8 +538,10 @@ async function runRoundWithUi(
 	}
 }
 
-/** The composable report with ticker; returns the digest text. */
+/** The composable report with ticker + transcript card; returns the
+ * digest text. */
 async function runReportWithUi(
+	pi: ExtensionAPI,
 	ctx: ExtensionContext,
 	options: Omit<ReportOptions, "onWarn" | "onProgress" | "session" | "explainModel" | "reviewModel"> & { model?: string },
 	saveHtml: boolean,
@@ -420,6 +551,7 @@ async function runReportWithUi(
 ): Promise<{ digest: string } | { error: string }> {
 	const wiring = wireEngine(ctx, options.model);
 	let stopTicker = () => {};
+	let keepWidget = false;
 	const progressLines: string[] = [];
 	const baseLines = [
 		"Composable report from the selected documents",
@@ -452,12 +584,14 @@ async function runReportWithUi(
 				diagnostics.push(`writing the output files failed: ${error instanceof Error ? error.message : error}`);
 			}
 		}
+		// The durable answer in the chat -- with or without an HTML export.
+		if (ctx.hasUI) keepWidget = showReport(pi, ctx, result, htmlPath);
 		return { digest: renderReportDigest(result, htmlPath, !saveHtml) };
 	} catch (error) {
 		return { error: error instanceof Error ? error.message : String(error) };
 	} finally {
 		stopTicker();
-		if (ctx.hasUI) ctx.ui.setWidget(SYNTH_WIDGET, undefined);
+		if (ctx.hasUI && !keepWidget) ctx.ui.setWidget(SYNTH_WIDGET, undefined);
 	}
 }
 
@@ -481,7 +615,10 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 			"picks the documents -- never ask in chat which paper is meant. The tool REMEMBERS the session's scope: " +
 			"follow-up calls only need the question (self-contained -- the generator has no chat memory); set " +
 			"pick: true when the user wants to switch documents. " +
-			"TWO MODES. (1) CHAT: pass question -> one grounded answer; the digest carries it between " +
+			"TWO MODES. (1) CHAT: pass question -> one grounded answer. Pass the user's question VERBATIM, in " +
+			"their language and wording -- retrieval is measurably sensitive to phrasing; only substitute a " +
+			"pronoun's referent when the question alone would be ambiguous, never rephrase, expand or translate " +
+			"it. The digest carries the answer between " +
 			"'--- answer ---' delimiters: output that text EXACTLY as written, unchanged, including the [n] " +
 			"markers -- never summarize, extend, translate or 'improve' it, and never re-type titles, authors or " +
 			"identifiers: copy reference lines EXACTLY. If it FAILED to ground, relay the warning verbatim. " +
@@ -501,7 +638,7 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 			"answer from memory, relay validated answers verbatim.",
 		parameters: Type.Object({
 			question: Type.Optional(Type.String({
-				description: "The user's question for ONE grounded chat answer, self-contained (resolve pronouns yourself). Omit on an opening move without a concrete question -- the user then picks the scope and you ask for their question.",
+				description: "The user's question for ONE grounded chat answer, VERBATIM in their wording and language (retrieval is sensitive to phrasing; only substitute a pronoun's referent when needed, never rephrase or translate). Omit on an opening move without a concrete question -- the user then picks the scope and you ask for their question.",
 			})),
 			papers: Type.Optional(Type.Array(Type.String(), {
 				description: "Document scope: PDF filenames from the library. Omit to use the session's remembered scope (or let the user pick in the dialog).",
@@ -638,7 +775,7 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 			};
 			const fullySpecified = params.questions !== undefined && params.summary !== undefined && params.save_html !== undefined;
 			if (ctx.hasUI && fullySpecified) {
-				// Compact consent instead of the four wizard steps.
+				// Compact consent instead of the wizard.
 				const summaryLabel = choices.summary === "none" ? "keine" : choices.summary;
 				const menu = `Zusammenfassung: ${summaryLabel} | Fragen: ${questions!.length} (${choices.detailMode}) | `
 					+ `Review: ${choices.includeReview ? "ja" : "nein"} | HTML: ${choices.saveHtml ? "ja" : "nein"}`;
@@ -651,25 +788,22 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 					return reply("The user cancelled the report consent dialog. Nothing was generated. Ask what they want to change.");
 				}
 				if (consent === "Anpassen (Wizard)") {
-					const editedQuestions = await questionList(ctx, "Welche Frage(n) interessieren dich? (eine pro Zeile)", questions!.join("\n"), signal);
-					if (editedQuestions === null) return reply("The user cancelled the report wizard. Nothing was generated.");
-					questions = editedQuestions;
-					const picked = await pickReportChoices(ctx, scopeSize, scope === "library", questions.length, choices, signal);
-					if (picked === null) return reply("The user cancelled the report wizard. Nothing was generated.");
-					choices = picked;
+					// The ONE wizard (questions + report menu), seeded with the
+					// proposed values.
+					const intake = await reportWizard(ctx, scopeSize, questions, choices, signal);
+					if (intake === null) return reply("The user cancelled the report wizard. Nothing was generated.");
+					questions = intake.questions;
+					choices = intake.choices;
 				}
 			} else if (ctx.hasUI && !fullySpecified) {
-				if (questions === undefined) {
-					const asked = await questionList(ctx, "Welche Frage(n) interessieren dich? (eine pro Zeile; leer lassen für nur Zusammenfassung)", "", signal);
-					if (asked === null) return reply("The user cancelled the question intake. Nothing was generated.");
-					questions = asked;
-				}
-				const picked = await pickReportChoices(ctx, scopeSize, scope === "library", questions.length, {
+				// Missing choices: the ONE wizard settles questions AND menu.
+				const intake = await reportWizard(ctx, scopeSize, questions, {
 					...choices,
-					summary: params.summary ?? (questions.length ? "none" : "bullets"),
+					summary: params.summary ?? (questions?.length ? "none" : "bullets"),
 				}, signal);
-				if (picked === null) return reply("The user cancelled the report wizard. Nothing was generated.");
-				choices = picked;
+				if (intake === null) return reply("The user cancelled the report wizard. Nothing was generated.");
+				questions = intake.questions;
+				choices = intake.choices;
 			} else {
 				questions = questions ?? [];
 			}
@@ -684,9 +818,7 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 			}
 
 			// Honest cost warning: mode A multiplies papers x questions.
-			const unitCount = (choices.summary !== "none" ? scopeSize : 0)
-				+ (questions.length ? (choices.detailMode === "per-paper" ? scopeSize * questions.length : questions.length) : 0)
-				+ (choices.includeReview ? 1 : 0);
+			const unitCount = reportUnitCount(scopeSize, questions.length, choices);
 			if (ctx.hasUI && unitCount > UNIT_WARN_THRESHOLD) {
 				const go = await ctx.ui.select(
 					`Dieser Report braucht ${unitCount} Modellaufrufe (je etwa eine Minute lokal). Fortfahren?`,
@@ -698,7 +830,7 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 				}
 			}
 
-			const outcome = await runReportWithUi(ctx, {
+			const outcome = await runReportWithUi(pi, ctx, {
 				papers: scope,
 				questions,
 				summary: choices.summary,
@@ -720,9 +852,10 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 		},
 	});
 
-	// /lit-synth -- ONE command for the whole stage. Bare: wizard (scope ->
-	// questions -> report menu); a pure chat wish hands the loop to the agent
-	// (v22 doctrine). With arguments: ONE agent-free grounded round.
+	// /lit-synth -- ONE command for the whole stage. Bare: ONE wizard
+	// (documents -> questions -> report menu -> submit, v27); a pure chat
+	// wish hands the loop to the agent (v22 doctrine). With arguments: ONE
+	// agent-free grounded round.
 	pi.registerCommand("lit-synth", {
 		description:
 			"Chat about and report on local PDFs with verified citations. Bare /lit-synth runs the wizard "
@@ -734,23 +867,20 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 			const progress = (message: string) => ctx.ui.notify(message, "info");
 			const root = outputRoot();
 			const session = sessionId(ctx);
-
-			// Scope: sticky, else wizard (bare invocation ALWAYS re-offers the
-			// picker so the user can switch without the agent).
 			const sticky = readCurrentScope(root, session);
-			let scope: string[] | "library" | null | "empty" = question && sticky ? sticky.papers : null;
-			if (!scope) {
-				scope = await pickScope(ctx, diagnostics, Array.isArray(sticky?.papers) ? sticky.papers : undefined, ctx.signal);
-			}
-			if (scope === null) return; // cancelled
-			if (scope === "empty") {
-				ctx.ui.notify("No PDFs in the library -- run a search and fetch first, or start pi in the papers folder.", "warning");
-				return;
-			}
-			writeCurrentScope(root, { papers: scope }, session, undefined, (message) => diagnostics.push(message));
 
 			if (question) {
-				// Agent-free one-shot round.
+				// Agent-free one-shot round: sticky scope, else the scope picker.
+				let scope: string[] | "library" | null | "empty" = sticky ? sticky.papers : null;
+				if (!scope) {
+					scope = await pickScope(ctx, diagnostics, undefined, ctx.signal);
+				}
+				if (scope === null) return; // cancelled
+				if (scope === "empty") {
+					ctx.ui.notify("No PDFs in the library -- run a search and fetch first, or start pi in the papers folder.", "warning");
+					return;
+				}
+				writeCurrentScope(root, { papers: scope }, session, undefined, (message) => diagnostics.push(message));
 				const outcome = await runRoundWithUi(pi, ctx, {
 					question,
 					papers: scope,
@@ -761,14 +891,32 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 				return;
 			}
 
-			// Bare invocation: questions -> report menu -> report or handoff.
-			const questions = await questionList(ctx, "Welche Frage(n) interessieren dich? (eine pro Zeile; leer lassen zum Chatten oder für nur Zusammenfassung)", "", ctx.signal);
-			if (questions === null) return;
+			// Bare invocation: EVERYTHING in ONE wizard (v27) -- the scope step
+			// always re-offers the picker (preselected with the sticky scope)
+			// so the user can switch documents without the agent.
+			const { items } = scopeItems(diagnostics);
+			if (!items.length) {
+				ctx.ui.notify("No PDFs in the library -- run a search and fetch first, or start pi in the papers folder.", "warning");
+				return;
+			}
+			const preselected = Array.isArray(sticky?.papers) ? sticky.papers
+				: sticky?.papers === "library" ? items.map((item) => item.id)
+				: undefined;
+			const scopeSizeOf = (answers: WizardAnswers): number =>
+				Array.isArray(answers.papers) ? answers.papers.length : 0;
+			const steps: WizardStepDef[] = [
+				scopeStep(items, preselected),
+				questionsStep(),
+				...reportSteps(scopeSizeOf, { summary: "bullets" }),
+			];
+			const answers = await runWizard(ctx, steps, ctx.signal, reportSubmitNote(scopeSizeOf));
+			if (answers === null) return; // cancelled
+			const picked = answers.papers as string[];
+			const scope: string[] | "library" = picked.length === items.length ? "library" : picked;
+			writeCurrentScope(root, { papers: scope }, session, undefined, (message) => diagnostics.push(message));
+			const questions = questionsOf(answers);
+			const choices = choicesOf(answers, { summary: "bullets" });
 			const scopeSize = scope === "library" ? chatPool(matchLibrary(root, () => {})).length : scope.length;
-			const choices = await pickReportChoices(ctx, scopeSize, scope === "library", questions.length, {
-				summary: questions.length ? "none" : "bullets",
-			}, ctx.signal);
-			if (choices === null) return;
 
 			if (!questions.length && choices.summary === "none" && !choices.includeReview) {
 				// Chat wish: hand the loop to the agent (v22 pattern).
@@ -788,9 +936,7 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 				return;
 			}
 
-			const unitCount = (choices.summary !== "none" ? scopeSize : 0)
-				+ (questions.length ? (choices.detailMode === "per-paper" ? scopeSize * questions.length : questions.length) : 0)
-				+ (choices.includeReview ? 1 : 0);
+			const unitCount = reportUnitCount(scopeSize, questions.length, choices);
 			if (unitCount > UNIT_WARN_THRESHOLD) {
 				const go = await ctx.ui.select(
 					`Dieser Report braucht ${unitCount} Modellaufrufe (je etwa eine Minute lokal). Fortfahren?`,
@@ -800,7 +946,7 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 				if (go !== "Ja, ausführen") return;
 			}
 
-			const outcome = await runReportWithUi(ctx, {
+			const outcome = await runReportWithUi(pi, ctx, {
 				papers: scope,
 				questions,
 				summary: choices.summary,
@@ -809,12 +955,9 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 			}, choices.saveHtml, progress, diagnostics, ctx.signal);
 			if ("error" in outcome) {
 				ctx.ui.notify(`report failed: ${outcome.error}`, "error");
-				return;
 			}
-			const digestLines = outcome.digest.split("\n");
-			ctx.ui.setWidget(SYNTH_WIDGET, digestLines.length > 16
-				? [...digestLines.slice(0, 15), `... (${digestLines.length - 15} more lines -- full report in the HTML)`]
-				: digestLines);
+			// The report itself is a transcript card (showReport); no widget
+			// digest on top of it.
 		},
 	});
 
@@ -854,11 +997,11 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 	try {
 		const { Box, Text } = await import("@earendil-works/pi-tui");
 		pi.registerEntryRenderer(ANSWER_ENTRY, (entry, _state, theme) => {
-			const data = entry.data as { paper: string; text: string; grounded: boolean };
+			const data = entry.data as { paper: string; text: string; grounded: boolean; heading?: string };
 			const box = new Box(1, 1, (text: string) => theme.bg("customMessageBg", text));
-			const heading = data.grounded
+			const heading = data.heading ?? (data.grounded
 				? `Paper chat -- ${data.paper} (code-validated)`
-				: `Paper chat -- ${data.paper} (UNGROUNDED DRAFT)`;
+				: `Paper chat -- ${data.paper} (UNGROUNDED DRAFT)`);
 			box.addChild(new Text(theme.bold(heading)));
 			for (const line of data.text.split("\n")) box.addChild(new Text(line));
 			return box;

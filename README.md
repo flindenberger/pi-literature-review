@@ -242,7 +242,10 @@ No chat memory in the generator: each call is stateless; the pi
 conversation carries the thread.
 
 **Report mode** (`report: true`, or the wizard) builds the composable
-report from three building blocks, written to `reports/`:
+report from three building blocks, written to `reports/`. The finished
+report also renders as a full transcript card (answers + reference lines
++ HTML path) -- the durable answer in the chat, with or without the HTML
+export. Building blocks:
 
 - structured per-paper summaries along a fixed rubric (Forschungsziel,
   Methodik, Untersuchungsort, Ergebnisse, Diskussion, Zukunftsausblick;
@@ -267,8 +270,13 @@ table, table of contents and per-paper sections.
 translation variant (one small generate() call; the LLM shapes queries,
 never citations), one embed call across all variants with a deduplicated
 union, and a deterministic lexical layer (salient terms of the user's
-words, whole-word matched) with guaranteed excerpt slots. The digest and
-the HTML meta show the variants and lexical terms used.
+words, whole-word matched) with guaranteed excerpt slots. Generic words of
+the reading situation ("Paper", "Frage", mid-sentence German
+interrogatives) are stop-listed -- German capitalizes every noun, so the
+capitalization heuristic alone over-fired on German questions; quoting a
+word overrides the list. The digest and the HTML meta show the variants
+and lexical terms used. Retrieval is measurably sensitive to phrasing,
+so the agent is instructed to pass the user's question VERBATIM.
 
 **Generator models.** In pi, chat answers and summaries run on the model
 currently selected in pi (separate excerpts-only calls; hidden reasoning
@@ -277,9 +285,12 @@ off); mode B and review synthesis run on the configured local generator
 Embeddings always stay on the configured local embedding server.
 
 - **Slash commands.** `/lit-search`, `/lit-fetch` and `/lit-synth` are
-  checked by pi BEFORE the agent. Bare `/lit-synth` runs the wizard
-  (documents -> questions -> report menu); a pure chat wish (no questions,
-  no summary, no review) hands the conversation to the agent, which routes
+  checked by pi BEFORE the agent. Bare `/lit-synth` runs ONE wizard:
+  documents, questions (typed inline, separated by semicolons), summary
+  format, detail mode (only with several documents and questions), review
+  and HTML as tabs of a single dialog, closed by a submit page that also
+  shows the expected model-call count. A pure chat wish (no questions, no
+  summary, no review) hands the conversation to the agent, which routes
   every question through the grounded tool. `/lit-synth <question>`
   answers once, agent-free. Long engine calls show an elapsed-seconds
   ticker plus per-unit progress ("Einheit 3/9: ...").

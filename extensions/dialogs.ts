@@ -33,6 +33,7 @@ import {
 	SUBMIT_ROW,
 	SUBMIT_TITLE,
 	UNANSWERED_MARK,
+	type WizardAnswers,
 	type WizardEvent,
 	type WizardResult,
 	type WizardStepDef,
@@ -172,32 +173,40 @@ async function checkboxSelectLoop(
  * dialogs jumped around, had no way back, and Enter committed the
  * multi-select). TUI: one bottom-anchored overlay with a tab bar,
  * Tab/arrow navigation between steps, and a CONSTANT footprint (padded to
- * the tallest step, so the box never jumps). Fallback: one select per
- * step with an explicit back row. Null on cancel -- callers abort before
- * any LLM call.
+ * the tallest step, so the box never jumps). Text steps (v27) type inline;
+ * steps with enabledIf appear only while their condition holds. Fallback:
+ * one select (or editor) per step with an explicit back row. Null on
+ * cancel -- callers abort before any LLM call. submitNote: optional pure
+ * function rendering one computed line on the submit page (e.g. the
+ * expected model-call count).
  */
 export async function runWizard(
 	ctx: ExtensionContext,
 	steps: WizardStepDef[],
 	signal?: AbortSignal,
+	submitNote?: (answers: WizardAnswers) => string | null,
 ): Promise<WizardResult | null> {
 	if (!ctx.hasUI) throw new Error("runWizard needs a UI -- headless callers must pass parameters");
 	if (ctx.mode === "tui") {
 		try {
-			const result = await wizardOverlay(ctx, steps);
+			const result = await wizardOverlay(ctx, steps, submitNote);
 			if (result !== undefined) return result;
 		} catch {
 			// pi-tui unavailable or the overlay failed -- fall through.
 		}
 	}
-	return wizardSelectLoop(ctx, steps, signal);
+	return wizardSelectLoop(ctx, steps, signal, submitNote);
 }
 
-async function wizardOverlay(ctx: ExtensionContext, steps: WizardStepDef[]): Promise<WizardResult | null | undefined> {
+async function wizardOverlay(
+	ctx: ExtensionContext,
+	steps: WizardStepDef[],
+	submitNote?: (answers: WizardAnswers) => string | null,
+): Promise<WizardResult | null | undefined> {
 	const { Key, matchesKey } = await import("@earendil-works/pi-tui");
 	return await ctx.ui.custom<WizardResult | null>(
 		(tui, theme, _keybindings, done) => {
-			let state = initWizard(steps);
+			let state = initWizard(steps, submitNote);
 			const bodyRows = maxWizardRows(state);
 			const paint = (color: string, text: string): string => {
 				try {
@@ -226,13 +235,19 @@ async function wizardOverlay(ctx: ExtensionContext, steps: WizardStepDef[]): Pro
 				},
 				invalidate(): void {},
 				handleInput(data: string): void {
-					const event: WizardEvent | null = matchesKey(data, Key.up) ? "up"
-						: matchesKey(data, Key.down) ? "down"
+					// On a text step, unmatched printable input TYPES (space
+					// included); everywhere else space toggles and other
+					// unmatched input is ignored.
+					const onText = state.tab < state.steps.length && state.steps[state.tab].kind === "text";
+					const event: WizardEvent | null = matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c")) ? "cancel"
+						: matchesKey(data, Key.enter) ? "confirm"
 						: matchesKey(data, Key.left) || matchesKey(data, Key.shift("tab")) ? "left"
 						: matchesKey(data, Key.right) || matchesKey(data, Key.tab) ? "right"
+						: matchesKey(data, Key.up) ? "up"
+						: matchesKey(data, Key.down) ? "down"
+						: onText && (data === "\x7f" || data === "\b" || data === "\x08") ? "backspace"
+						: onText && !data.startsWith("\x1b") ? { kind: "input", chars: data }
 						: data === " " ? "toggle"
-						: matchesKey(data, Key.enter) ? "confirm"
-						: matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c")) ? "cancel"
 						: null;
 					if (!event) return;
 					const step = reduceWizard(state, event);
@@ -250,37 +265,69 @@ async function wizardOverlay(ctx: ExtensionContext, steps: WizardStepDef[]): Pro
 	);
 }
 
-/** Mandatory non-TUI path: one select per step, with an explicit back row
- * (answers are kept across steps, mirroring the overlay's tab navigation). */
+/** Mandatory non-TUI path: one select (or editor, for text steps) per
+ * step, with an explicit back row (answers are kept across steps,
+ * mirroring the overlay's tab navigation). Steps whose enabledIf fails
+ * over the current answers are skipped in the direction of travel. */
 async function wizardSelectLoop(
 	ctx: ExtensionContext,
 	steps: WizardStepDef[],
 	signal?: AbortSignal,
+	submitNote?: (answers: WizardAnswers) => string | null,
 ): Promise<WizardResult | null> {
 	const backRow = "← Zurück";
 	const answers: WizardResult = {};
-	for (let index = 0; index >= 0;) {
-		if (index === steps.length) {
-			// The review page (rpiv submit tab): summary + explicit submit.
-			const summary = steps.map((step) => {
+	const liveAnswers = (): WizardAnswers => {
+		const live: WizardAnswers = {};
+		for (const step of steps) {
+			const value = answers[step.id];
+			live[step.id] = step.kind === "checkbox" ? (Array.isArray(value) ? value : [])
+				: step.kind === "text" ? (typeof value === "string" ? value : "")
+				: typeof value === "string" ? value : null;
+		}
+		return live;
+	};
+	const enabled = (i: number): boolean => steps[i].enabledIf?.(liveAnswers()) ?? true;
+	let index = 0;
+	let direction: 1 | -1 = 1;
+	for (;;) {
+		while (index >= 0 && index < steps.length && !enabled(index)) index += direction;
+		if (index < 0) {
+			index = 0;
+			direction = 1;
+			continue;
+		}
+		if (index >= steps.length) {
+			// The review page (rpiv submit tab): summary + note + explicit submit.
+			const summary = steps.filter((_, i) => enabled(i)).map((step) => {
 				const value = answers[step.id];
 				if (step.kind === "checkbox") {
 					const ids = Array.isArray(value) ? value : [];
 					const labels = step.items.filter((item) => ids.includes(item.id)).map((item) => item.label);
 					return `${step.tab}: ${labels.length ? labels.join(", ") : UNANSWERED_MARK}`;
 				}
+				if (step.kind === "text") {
+					const questions = parseQuestionLines(typeof value === "string" ? value : "");
+					return `${step.tab}: ${questions.length ? questions.join(" · ") : "(keine)"}`;
+				}
 				const option = step.options.find((entry) => entry.value === value);
 				return `${step.tab}: ${option ? option.label : UNANSWERED_MARK}`;
 			});
+			const note = submitNote?.(liveAnswers()) ?? null;
 			const picked = await ctx.ui.select(
-				`${SUBMIT_TITLE} -- ${summary.join(" | ")}`,
+				`${SUBMIT_TITLE} -- ${summary.join(" | ")}${note ? ` -- ${note}` : ""}`,
 				[SUBMIT_ROW, backRow, SUBMIT_CANCEL_ROW],
 				{ signal },
 			);
 			if (picked === undefined || picked === SUBMIT_CANCEL_ROW) return null;
 			if (picked === backRow) {
-				index--;
+				index = steps.length - 1;
+				direction = -1;
 				continue;
+			}
+			// Drop answers of steps that ended up disabled (overlay parity).
+			for (const [i, step] of steps.entries()) {
+				if (!enabled(i)) delete answers[step.id];
 			}
 			return answers;
 		}
@@ -299,10 +346,21 @@ async function wizardSelectLoop(
 			if (picked === null) return null;
 			if (picked === "back") {
 				index--;
+				direction = -1;
 				continue;
 			}
 			answers[step.id] = picked;
 			index++;
+			direction = 1;
+			continue;
+		}
+		if (step.kind === "text") {
+			const current = typeof answers[step.id] === "string" ? (answers[step.id] as string) : step.initial ?? "";
+			const text = await ctx.ui.editor(stepTitle, current, { signal });
+			if (text === undefined) return null; // editor cancel = wizard cancel
+			answers[step.id] = text;
+			index++;
+			direction = 1;
 			continue;
 		}
 		const current = typeof answers[step.id] === "string" ? (answers[step.id] as string) : step.initial;
@@ -312,14 +370,15 @@ async function wizardSelectLoop(
 		if (picked === undefined) return null;
 		if (picked === backRow) {
 			index--;
+			direction = -1;
 			continue;
 		}
 		const option = step.options[rows.indexOf(picked)];
 		if (!option) continue;
 		answers[step.id] = option.value;
 		index++;
+		direction = 1;
 	}
-	return answers;
 }
 
 export interface ChoiceOption<T extends string> {
@@ -356,16 +415,3 @@ export async function confirmDialog(
 	return picked === null ? null : picked === "yes";
 }
 
-/** Question intake: an editor pre-seeded one-question-per-line; empty list
- * when the user submits nothing, null on cancel. */
-export async function questionList(
-	ctx: ExtensionContext,
-	title: string,
-	seed = "",
-	signal?: AbortSignal,
-): Promise<string[] | null> {
-	if (!ctx.hasUI) throw new Error("questionList needs a UI -- headless callers must pass parameters");
-	const text = await ctx.ui.editor(title, seed, { signal });
-	if (text === undefined) return null;
-	return parseQuestionLines(text);
-}
