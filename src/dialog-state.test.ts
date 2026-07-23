@@ -9,8 +9,11 @@ import {
 	allSelected,
 	type CheckboxState,
 	checkboxLines,
+	detectDialogLang,
+	DIALOG_TEXT,
 	initCheckbox,
 	initWizard,
+	langFromName,
 	maxWizardRows,
 	parseQuestionLines,
 	reduceCheckbox,
@@ -394,6 +397,34 @@ function drive(
 	const through = drive(guarded.state, ["confirm", "up", "confirm", "confirm"]); // select-all, Weiter, Enter on question
 	assert.equal(through.done, "confirmed");
 	assert.deepEqual(wizardResult(through.state).papers, ["a", "b", "c"]);
+}
+
+/* ---------------- wizard: dialog language (v27) ---------------- */
+{
+	// Detection: umlauts decide instantly; otherwise stopword scoring;
+	// empty or tied input falls back (default German).
+	assert.equal(detectDialogLang(["welche kameras wurden verwendet?"]), "de");
+	assert.equal(detectDialogLang(["which cameras did they use?"]), "en");
+	assert.equal(detectDialogLang(["über die Kalibrierung"]), "de");
+	assert.equal(detectDialogLang(["what about the calibration of the sensors?"]), "en");
+	assert.equal(detectDialogLang([""]), "de");
+	assert.equal(detectDialogLang([undefined], "en"), "en");
+	// Explicit language names win over detection (the caller checks first).
+	assert.equal(langFromName("German"), "de");
+	assert.equal(langFromName("deutsch"), "de");
+	assert.equal(langFromName("English"), "en");
+	assert.equal(langFromName("French"), "en"); // dialog set has de/en only
+	assert.equal(langFromName(undefined), undefined);
+	// English wizard chrome: submit tab, hints and marks switch.
+	const en = initWizard(wizardSteps, { lang: "en" });
+	assert.equal(wizardView(en).hint, DIALOG_TEXT.en.hintCheckbox);
+	assert.ok(wizardView(en).tabs.at(-1)?.label === "Confirm");
+	const enSubmit = wizardView({ ...en, tab: 3 });
+	assert.equal(enSubmit.title, "Ready to submit?");
+	assert.ok(enSubmit.rows.some((row) => row.text.includes("(open)")));
+	assert.ok(enSubmit.rows.at(-2)?.text.includes("Submit"));
+	// Default stays German (existing tests above pin the wording).
+	assert.equal(initWizard(wizardSteps).lang, "de");
 }
 
 console.log("dialog-state tests passed");

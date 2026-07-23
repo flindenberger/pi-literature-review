@@ -20,6 +20,9 @@ import { Type } from "typebox";
 import { llmConfig } from "../src/config.ts";
 import {
 	type CheckboxItem,
+	detectDialogLang,
+	type DialogLang,
+	langFromName,
 	parseQuestionLines,
 	type WizardAnswers,
 	type WizardResult,
@@ -267,6 +270,114 @@ interface ScopeItems {
 	unmatchedCount: number;
 }
 
+/** Adapter-owned dialog strings per language (v27 user decision: the
+ * dialogs follow the CHAT's language -- resolved from the explicit
+ * language param, else detected from the question texts; German is the
+ * default and the bare-command language). */
+const SYNTH_TEXT: Record<DialogLang, {
+	scopeTitle: string;
+	scopeTab: string;
+	selectAll: string;
+	next: string;
+	questionsTab: string;
+	questionsTitle: string;
+	questionsPlaceholder: string;
+	summaryTab: string;
+	summaryTitle: string;
+	optionNo: string;
+	optionYes: string;
+	summaryBullets: string;
+	summaryProse: string;
+	detailTab: string;
+	detailTitle: string;
+	detailPerPaper: string;
+	detailCross: string;
+	reviewTab: string;
+	reviewTitle: string;
+	htmlTab: string;
+	htmlTitle: string;
+	htmlYes: string;
+	htmlNo: string;
+	nothingNote: string;
+	unitNote: (n: number) => string;
+	gateTab: string;
+	gateTitleFor: (label: string) => string;
+	gateTitle: string;
+	gatePlaceholder: string;
+	unitWarn: (n: number) => string;
+	unitWarnYes: string;
+	unitWarnCancel: string;
+}> = {
+	de: {
+		scopeTitle: "Über welche Dokumente möchtest du sprechen?",
+		scopeTab: "Dokumente",
+		selectAll: "Alle auswählen (ganze Bibliothek)",
+		next: "Weiter",
+		questionsTab: "Fragen",
+		questionsTitle: "Welche Frage(n) interessieren dich? (mit Semikolon trennen; leer lassen zum Chatten oder für nur Zusammenfassung)",
+		questionsPlaceholder: "leer = chatten oder nur Zusammenfassung",
+		summaryTab: "Zusammenfassung",
+		summaryTitle: "Strukturierte Zusammenfassung je Dokument?",
+		optionNo: "Nein",
+		optionYes: "Ja",
+		summaryBullets: "Ja, als Bulletpoints",
+		summaryProse: "Ja, als Fließtext",
+		detailTab: "Fragen-Modus",
+		detailTitle: "Detailfragen: pro Dokument einzeln oder übergreifend?",
+		detailPerPaper: "Pro Dokument einzeln (Modus A -- deckt jedes Dokument ab, mehr Modellaufrufe)",
+		detailCross: "Übergreifend zusammengeführt (Modus B -- ein Aufruf je Frage)",
+		reviewTab: "Review",
+		reviewTitle: "Review-Synthese (Stand der Literatur) anhängen? (Empfohlen bei ganzer Bibliothek; bei kleiner Auswahl oft schwach.)",
+		htmlTab: "HTML",
+		htmlTitle: "Als HTML speichern?",
+		htmlYes: "Ja, HTML-Bericht schreiben",
+		htmlNo: "Nein, nur Antwort im Chat",
+		nothingNote: "Nichts zu generieren -- das wird ein Chat.",
+		unitNote: (n) => `~${n} Modellaufruf(e), je etwa eine Minute lokal`,
+		gateTab: "Frage",
+		gateTitleFor: (label) => `Frage an ${label} -- prüfen/anpassen, Enter startet`,
+		gateTitle: "Deine Frage -- prüfen/anpassen, Enter startet",
+		gatePlaceholder: "leer lassen: die Frage erst im Chat besprechen",
+		unitWarn: (n) => `Dieser Report braucht ${n} Modellaufrufe (je etwa eine Minute lokal). Fortfahren?`,
+		unitWarnYes: "Ja, ausführen",
+		unitWarnCancel: "Abbrechen",
+	},
+	en: {
+		scopeTitle: "Which documents do you want to talk about?",
+		scopeTab: "Documents",
+		selectAll: "Select all (whole library)",
+		next: "Next",
+		questionsTab: "Questions",
+		questionsTitle: "Which question(s) interest you? (separate with semicolons; leave empty to chat or for a summary only)",
+		questionsPlaceholder: "empty = chat or summary only",
+		summaryTab: "Summary",
+		summaryTitle: "Structured summary per document?",
+		optionNo: "No",
+		optionYes: "Yes",
+		summaryBullets: "Yes, as bullet points",
+		summaryProse: "Yes, as prose",
+		detailTab: "Question mode",
+		detailTitle: "Detail questions: per document or merged across documents?",
+		detailPerPaper: "Per document (mode A -- covers every document, more model calls)",
+		detailCross: "Merged across documents (mode B -- one call per question)",
+		reviewTab: "Review",
+		reviewTitle: "Append a review synthesis (state of the literature)? (Recommended on the whole library; often weak on a small selection.)",
+		htmlTab: "HTML",
+		htmlTitle: "Save as HTML?",
+		htmlYes: "Yes, write the HTML report",
+		htmlNo: "No, answer in the chat only",
+		nothingNote: "Nothing to generate -- this will be a chat.",
+		unitNote: (n) => `~${n} model call(s), about a minute each locally`,
+		gateTab: "Question",
+		gateTitleFor: (label) => `Question to ${label} -- review/edit, Enter starts`,
+		gateTitle: "Your question -- review/edit, Enter starts",
+		gatePlaceholder: "leave empty: discuss the question in chat first",
+		unitWarn: (n) => `This report needs ${n} model calls (about a minute each locally). Continue?`,
+		unitWarnYes: "Yes, run it",
+		unitWarnCancel: "Cancel",
+	},
+};
+
 /** Checkbox items for the scope step: EVERY PDF in the folder, verified
  * papers with year+title, the rest honestly as filename-only. */
 function scopeItems(diagnostics: string[]): ScopeItems {
@@ -291,24 +402,26 @@ async function pickScope(
 	diagnostics: string[],
 	preselected: string[] | undefined,
 	signal: AbortSignal | undefined,
+	lang: DialogLang = "de",
 ): Promise<string[] | "library" | "empty" | null> {
 	const { items } = scopeItems(diagnostics);
 	if (!items.length) return "empty";
-	const answers = await runWizard(ctx, [scopeStep(items, preselected)], signal);
+	const answers = await runWizard(ctx, [scopeStep(items, preselected, lang)], signal, { lang });
 	if (answers === null) return null;
 	const picked = answers.papers as string[];
 	return picked.length === items.length ? "library" : picked;
 }
 
-function scopeStep(items: CheckboxItem[], preselected?: string[]): WizardStepDef {
+function scopeStep(items: CheckboxItem[], preselected: string[] | undefined, lang: DialogLang = "de"): WizardStepDef {
+	const text = SYNTH_TEXT[lang];
 	return {
 		kind: "checkbox",
 		id: "papers",
-		tab: "Dokumente",
-		title: "Über welche Dokumente möchtest du sprechen?",
+		tab: text.scopeTab,
+		title: text.scopeTitle,
 		items,
-		selectAllLabel: "Alle auswählen (ganze Bibliothek)",
-		nextLabel: "Weiter",
+		selectAllLabel: text.selectAll,
+		nextLabel: text.next,
 		preselected,
 	};
 }
@@ -328,13 +441,14 @@ function questionsOf(answers: WizardAnswers | WizardResult): string[] {
 
 /** The questions intake as a wizard tab (v27: joined the ONE wizard;
  * semicolon separates -- "one per line" made no sense in the terminal). */
-function questionsStep(initial?: string): WizardStepDef {
+function questionsStep(initial: string | undefined, lang: DialogLang = "de"): WizardStepDef {
+	const text = SYNTH_TEXT[lang];
 	return {
 		kind: "text",
 		id: "questions",
-		tab: "Fragen",
-		title: "Welche Frage(n) interessieren dich? (mit Semikolon trennen; leer lassen zum Chatten oder für nur Zusammenfassung)",
-		placeholder: "leer = chatten oder nur Zusammenfassung",
+		tab: text.questionsTab,
+		title: text.questionsTitle,
+		placeholder: text.questionsPlaceholder,
 		...(initial ? { initial } : {}),
 	};
 }
@@ -349,34 +463,36 @@ function questionsStep(initial?: string): WizardStepDef {
 function reportSteps(
 	scopeSizeOf: (answers: WizardAnswers) => number,
 	defaults: Partial<ReportChoices>,
+	lang: DialogLang = "de",
 ): WizardStepDef[] {
+	const text = SYNTH_TEXT[lang];
 	return [
 		{
-			kind: "choice", id: "summary", tab: "Zusammenfassung",
-			title: "Strukturierte Zusammenfassung je Dokument?",
+			kind: "choice", id: "summary", tab: text.summaryTab,
+			title: text.summaryTitle,
 			options: [
-				{ value: "none", label: "Nein" },
-				{ value: "bullets", label: "Ja, als Bulletpoints" },
-				{ value: "prose", label: "Ja, als Fließtext" },
+				{ value: "none", label: text.optionNo },
+				{ value: "bullets", label: text.summaryBullets },
+				{ value: "prose", label: text.summaryProse },
 			],
 			initial: defaults.summary ?? "bullets",
 		},
 		{
-			kind: "choice", id: "detail", tab: "Fragen-Modus",
-			title: "Detailfragen: pro Dokument einzeln oder übergreifend?",
+			kind: "choice", id: "detail", tab: text.detailTab,
+			title: text.detailTitle,
 			options: [
-				{ value: "per-paper", label: "Pro Dokument einzeln (Modus A -- deckt jedes Dokument ab, mehr Modellaufrufe)" },
-				{ value: "cross-paper", label: "Übergreifend zusammengeführt (Modus B -- ein Aufruf je Frage)" },
+				{ value: "per-paper", label: text.detailPerPaper },
+				{ value: "cross-paper", label: text.detailCross },
 			],
 			initial: defaults.detailMode ?? "per-paper",
 			enabledIf: (answers) => scopeSizeOf(answers) > 1 && questionsOf(answers).length > 0,
 		},
 		{
-			kind: "choice", id: "review", tab: "Review",
-			title: "Review-Synthese (Stand der Literatur) anhängen? (Empfohlen bei ganzer Bibliothek; bei kleiner Auswahl oft schwach.)",
+			kind: "choice", id: "review", tab: text.reviewTab,
+			title: text.reviewTitle,
 			options: [
-				{ value: "yes", label: "Ja" },
-				{ value: "no", label: "Nein" },
+				{ value: "yes", label: text.optionYes },
+				{ value: "no", label: text.optionNo },
 			],
 			initial: defaults.includeReview ? "yes" : "no",
 			// A "state of the literature" over ONE paper is just a weaker
@@ -384,11 +500,11 @@ function reportSteps(
 			enabledIf: (answers) => scopeSizeOf(answers) > 1,
 		},
 		{
-			kind: "choice", id: "html", tab: "HTML",
-			title: "Als HTML speichern?",
+			kind: "choice", id: "html", tab: text.htmlTab,
+			title: text.htmlTitle,
 			options: [
-				{ value: "yes", label: "Ja, HTML-Bericht schreiben" },
-				{ value: "no", label: "Nein, nur Antwort im Chat" },
+				{ value: "yes", label: text.htmlYes },
+				{ value: "no", label: text.htmlNo },
 			],
 			initial: defaults.saveHtml === false ? "no" : "yes",
 			enabledIf: (answers) =>
@@ -475,7 +591,11 @@ function reportUnitCount(
 
 /** The computed line on the wizard's submit page: expected model calls, or
  * the honest "this will be a chat" when nothing would be generated. */
-function reportSubmitNote(scopeSizeOf: (answers: WizardAnswers) => number): (answers: WizardAnswers) => string | null {
+function reportSubmitNote(
+	scopeSizeOf: (answers: WizardAnswers) => number,
+	lang: DialogLang = "de",
+): (answers: WizardAnswers) => string | null {
+	const text = SYNTH_TEXT[lang];
 	return (answers) => {
 		const scopeSize = scopeSizeOf(answers);
 		// The review tab only exists with several documents; with one, it
@@ -484,14 +604,14 @@ function reportSubmitNote(scopeSizeOf: (answers: WizardAnswers) => number): (ans
 		if (!scopeSize || typeof answers.summary !== "string" || typeof review !== "string") return null;
 		const questionCount = questionsOf(answers).length;
 		if (!questionCount && answers.summary === "none" && review === "no") {
-			return "Nichts zu generieren -- das wird ein Chat.";
+			return text.nothingNote;
 		}
 		const units = reportUnitCount(scopeSize, questionCount, {
 			summary: answers.summary as ReportChoices["summary"],
 			detailMode: (answers.detail as ReportChoices["detailMode"] | null) ?? "per-paper",
 			includeReview: review === "yes",
 		});
-		return `~${units} Modellaufruf(e), je etwa eine Minute lokal`;
+		return text.unitNote(units);
 	};
 }
 
@@ -502,14 +622,15 @@ async function reportWizard(
 	scopeSize: number,
 	seedQuestions: string[] | undefined,
 	defaults: Partial<ReportChoices>,
+	lang: DialogLang,
 	signal: AbortSignal | undefined,
 ): Promise<{ questions: string[]; choices: ReportChoices } | null> {
 	const scopeSizeOf = (): number => scopeSize;
 	const steps: WizardStepDef[] = [
-		questionsStep(seedQuestions?.join("; ")),
-		...reportSteps(scopeSizeOf, defaults),
+		questionsStep(seedQuestions?.join("; "), lang),
+		...reportSteps(scopeSizeOf, defaults, lang),
 	];
-	const answers = await runWizard(ctx, steps, signal, { submitNote: reportSubmitNote(scopeSizeOf) });
+	const answers = await runWizard(ctx, steps, signal, { submitNote: reportSubmitNote(scopeSizeOf, lang), lang });
 	if (answers === null) return null;
 	const choices = choicesOf(answers, defaults);
 	// The hidden review tab decides: one document never gets a review
@@ -532,30 +653,30 @@ async function questionGate(
 	ctx: ExtensionContext,
 	scope: string[] | "library" | null,
 	proposed: string,
+	lang: DialogLang,
 	diagnostics: string[],
 	signal: AbortSignal | undefined,
 ): Promise<{ question: string; scope: string[] | "library" } | "empty" | null> {
+	const text = SYNTH_TEXT[lang];
 	const steps: WizardStepDef[] = [];
 	let items: CheckboxItem[] = [];
 	if (!scope) {
 		({ items } = scopeItems(diagnostics));
 		if (!items.length) return "empty";
-		steps.push(scopeStep(items));
+		steps.push(scopeStep(items, undefined, lang));
 	}
-	const label = scope === "library" ? "die ganze Bibliothek"
+	const label = scope === "library" ? (lang === "de" ? "die ganze Bibliothek" : "the whole library")
 		: Array.isArray(scope) ? scope.map((base) => `${base}.pdf`).join(", ")
 		: null;
 	steps.push({
 		kind: "text",
 		id: "question",
-		tab: "Frage",
-		title: label
-			? clip(`Frage an ${label} -- prüfen/anpassen, Enter startet`)
-			: "Deine Frage -- prüfen/anpassen, Enter startet",
-		placeholder: "leer lassen: die Frage erst im Chat besprechen",
+		tab: text.gateTab,
+		title: label ? clip(text.gateTitleFor(label)) : text.gateTitle,
+		placeholder: text.gatePlaceholder,
 		...(proposed ? { initial: proposed } : {}),
 	});
-	const answers = await runWizard(ctx, steps, signal, { skipSubmit: true });
+	const answers = await runWizard(ctx, steps, signal, { skipSubmit: true, lang });
 	if (answers === null) return null;
 	const confirmedScope: string[] | "library" = scope
 		?? ((answers.papers as string[]).length === items.length ? "library" : answers.papers as string[]);
@@ -829,9 +950,11 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 			// prefilled, editable -- because agents measurably rephrase the
 			// user's words; the confirmed text is what the engine runs.
 			if (!wantsReport) {
+				// Dialog language: explicit param, else detected from the question.
+				const lang = langFromName(params.language) ?? detectDialogLang([question]);
 				let confirmedScope = scope;
 				if (ctx.hasUI) {
-					const gate = await questionGate(ctx, scope ?? null, question, diagnostics, signal);
+					const gate = await questionGate(ctx, scope ?? null, question, lang, diagnostics, signal);
 					if (gate === null) {
 						return reply("The user cancelled the question dialog. Nothing was generated. Ask what they want instead; do not retry unchanged.");
 					}
@@ -880,13 +1003,16 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 			}
 
 			// REPORT mode: settle a missing scope in the picker first.
+			// Dialog language: explicit param, else detected from the
+			// agent-passed questions (the seed refines it below).
+			let reportLang = langFromName(params.language) ?? detectDialogLang(params.questions ?? []);
 			if (!scope) {
 				if (!ctx.hasUI) {
 					const pool = chatPool(matchLibrary(root, (message) => diagnostics.push(message)));
 					const available = pool.map((entry) => `${entry.base}.pdf`).join(", ") || "(none)";
 					return reply(`No scope was given and no interactive picker is available. Pass papers or library: true; PDFs in the library: ${available}`);
 				}
-				const picked = await pickScope(ctx, diagnostics, undefined, signal);
+				const picked = await pickScope(ctx, diagnostics, undefined, signal, reportLang);
 				if (picked === null) {
 					return reply("The user cancelled the document selection. Nothing was generated. Ask which documents they want to discuss.");
 				}
@@ -918,10 +1044,11 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 				// Question seed: agent-passed questions, else what was actually
 				// asked in this session's chat ("fasse das zusammen").
 				const seed = questions?.length ? questions : sessionSeedQuestions(root, scope, sessionId(ctx));
+				reportLang = langFromName(params.language) ?? detectDialogLang([...(params.questions ?? []), ...seed]);
 				const intake = await reportWizard(ctx, scopeSize, seed, {
 					...choices,
 					summary: summaryParam ?? (seed.length ? "none" : "bullets"),
-				}, signal);
+				}, reportLang, signal);
 				if (intake === null) return reply("The user cancelled the report wizard. Nothing was generated. Ask what they want to change; do not retry unchanged.");
 				questions = intake.questions;
 				choices = intake.choices;
@@ -941,12 +1068,13 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 			// Honest cost warning: mode A multiplies papers x questions.
 			const unitCount = reportUnitCount(scopeSize, questions.length, choices);
 			if (ctx.hasUI && unitCount > UNIT_WARN_THRESHOLD) {
+				const warnText = SYNTH_TEXT[reportLang];
 				const go = await ctx.ui.select(
-					`Dieser Report braucht ${unitCount} Modellaufrufe (je etwa eine Minute lokal). Fortfahren?`,
-					["Ja, ausführen", "Abbrechen"],
+					warnText.unitWarn(unitCount),
+					[warnText.unitWarnYes, warnText.unitWarnCancel],
 					{ signal },
 				);
-				if (go !== "Ja, ausführen") {
+				if (go !== warnText.unitWarnYes) {
 					return reply(`The user cancelled: the report would need ${unitCount} generation calls. Suggest fewer questions, mode B, or a smaller scope.`);
 				}
 			}
@@ -960,6 +1088,8 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 				model: params.model?.trim() || undefined,
 				topK: params.top_k,
 				language: params.language,
+				// Page chrome of the HTML follows the dialog language.
+				uiLanguage: reportLang,
 				reindex: params.reindex,
 			}, choices.saveHtml, report, diagnostics, signal);
 			if ("error" in outcome) {
@@ -991,10 +1121,11 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 			const sticky = readCurrentScope(root, session);
 
 			if (question) {
-				// Agent-free one-shot round: sticky scope, else the scope picker.
+				// Agent-free one-shot round: sticky scope, else the scope picker
+				// (dialog language follows the typed question).
 				let scope: string[] | "library" | null | "empty" = sticky ? sticky.papers : null;
 				if (!scope) {
-					scope = await pickScope(ctx, diagnostics, undefined, ctx.signal);
+					scope = await pickScope(ctx, diagnostics, undefined, ctx.signal, detectDialogLang([question]));
 				}
 				if (scope === null) return; // cancelled
 				if (scope === "empty") {
@@ -1026,11 +1157,11 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 			const scopeSizeOf = (answers: WizardAnswers): number =>
 				Array.isArray(answers.papers) ? answers.papers.length : 0;
 			const steps: WizardStepDef[] = [
-				scopeStep(items, preselected),
-				questionsStep(),
-				...reportSteps(scopeSizeOf, { summary: "bullets" }),
+				scopeStep(items, preselected, "de"),
+				questionsStep(undefined, "de"),
+				...reportSteps(scopeSizeOf, { summary: "bullets" }, "de"),
 			];
-			const answers = await runWizard(ctx, steps, ctx.signal, { submitNote: reportSubmitNote(scopeSizeOf) });
+			const answers = await runWizard(ctx, steps, ctx.signal, { submitNote: reportSubmitNote(scopeSizeOf, "de"), lang: "de" });
 			if (answers === null) return; // cancelled
 			const picked = answers.papers as string[];
 			const scope: string[] | "library" = picked.length === items.length ? "library" : picked;
@@ -1058,13 +1189,17 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 			}
 
 			const unitCount = reportUnitCount(scopeSize, questions.length, choices);
+			// The report chrome (and the warning) follow the language of the
+			// questions typed into the wizard.
+			const reportLang = detectDialogLang(questions);
 			if (unitCount > UNIT_WARN_THRESHOLD) {
+				const warnText = SYNTH_TEXT[reportLang];
 				const go = await ctx.ui.select(
-					`Dieser Report braucht ${unitCount} Modellaufrufe (je etwa eine Minute lokal). Fortfahren?`,
-					["Ja, ausführen", "Abbrechen"],
+					warnText.unitWarn(unitCount),
+					[warnText.unitWarnYes, warnText.unitWarnCancel],
 					{ signal: ctx.signal },
 				);
-				if (go !== "Ja, ausführen") return;
+				if (go !== warnText.unitWarnYes) return;
 			}
 
 			const outcome = await runReportWithUi(pi, ctx, {
@@ -1073,6 +1208,7 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 				summary: choices.summary,
 				detailMode: choices.detailMode,
 				includeReview: choices.includeReview,
+				uiLanguage: reportLang,
 			}, choices.saveHtml, progress, diagnostics, ctx.signal);
 			if ("error" in outcome) {
 				ctx.ui.notify(`report failed: ${outcome.error}`, "error");

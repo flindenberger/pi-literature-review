@@ -206,20 +206,114 @@ export interface WizardState {
 	 * page). For lightweight gates like the per-question confirm (v27) --
 	 * the finish guard still jumps to incomplete steps first. */
 	skipSubmit?: boolean;
+	/** Dialog language of the pure-layer strings; default "de". */
+	lang: DialogLang;
 }
 
 export interface WizardOptions {
 	submitNote?: (answers: WizardAnswers) => string | null;
 	skipSubmit?: boolean;
+	/** Dialog language; default "de" (v27: follow the chat's language). */
+	lang?: DialogLang;
 }
 
-/** Labels of the synthetic submit tab -- exported so the fallback loop and
- * tests speak the same words. */
-export const SUBMIT_TAB_LABEL = "Bestätigen";
-export const SUBMIT_TITLE = "Bereit zum Absenden?";
-export const SUBMIT_ROW = "Absenden";
-export const SUBMIT_CANCEL_ROW = "Abbrechen";
-export const UNANSWERED_MARK = "(offen)";
+/**
+ * Dialog language (v27 user decision: the dialogs follow the CHAT's
+ * language instead of always speaking German). Two languages by design --
+ * German default, English for English chats; any other named language
+ * gets the international default.
+ */
+export type DialogLang = "de" | "en";
+
+/** Every string the pure dialog layer renders, per language; the adapters
+ * source their own few strings from the same principle. */
+export const DIALOG_TEXT: Record<DialogLang, {
+	submitTab: string;
+	submitTitle: string;
+	submitRow: string;
+	submitCancelRow: string;
+	unanswered: string;
+	noQuestions: string;
+	questionsDetected: (n: number) => string;
+	hintSubmit: string;
+	hintCheckbox: string;
+	hintText: string;
+	hintChoice: string;
+}> = {
+	de: {
+		submitTab: "Bestätigen",
+		submitTitle: "Bereit zum Absenden?",
+		submitRow: "Absenden",
+		submitCancelRow: "Abbrechen",
+		unanswered: "(offen)",
+		noQuestions: "(keine)",
+		questionsDetected: (n) => `${n} Frage(n) erkannt`,
+		hintSubmit: "Enter bestätigt · ←/→ Schritt · Esc abbrechen",
+		hintCheckbox: "Space/Enter auswählen · Enter auf der Weiter-Zeile bestätigt · ←/→ Schritt · Esc abbrechen",
+		hintText: "Tippen · Semikolon trennt Fragen · Enter übernimmt · ←/→ Schritt · Esc abbrechen",
+		hintChoice: "Enter wählt und geht weiter · ←/→ Schritt · Esc abbrechen",
+	},
+	en: {
+		submitTab: "Confirm",
+		submitTitle: "Ready to submit?",
+		submitRow: "Submit",
+		submitCancelRow: "Cancel",
+		unanswered: "(open)",
+		noQuestions: "(none)",
+		questionsDetected: (n) => `${n} question(s) recognized`,
+		hintSubmit: "Enter confirms · ←/→ step · Esc cancels",
+		hintCheckbox: "Space/Enter selects · Enter on the Next row confirms · ←/→ step · Esc cancels",
+		hintText: "Type · semicolons separate questions · Enter confirms · ←/→ step · Esc cancels",
+		hintChoice: "Enter picks and advances · ←/→ step · Esc cancels",
+	},
+};
+
+/** German/English detection over free chat text -- deterministic stopword
+ * scoring, umlauts decide instantly; empty or tied input falls back
+ * (default: German, the project's home language). Pure. */
+export function detectDialogLang(texts: Array<string | undefined>, fallback: DialogLang = "de"): DialogLang {
+	const joined = texts.filter(Boolean).join(" ").toLowerCase();
+	if (!joined.trim()) return fallback;
+	if (/[äöüß]/.test(joined)) return "de";
+	const german = new Set([
+		"der", "die", "das", "und", "oder", "nicht", "ein", "eine", "ist", "sind", "wurde", "wurden",
+		"werden", "wie", "wo", "wer", "welche", "welcher", "welches", "mit", "von", "im", "am", "zum",
+		"zur", "bei", "aus", "auch", "bitte", "mir", "mal", "noch", "gibt", "es", "sie", "ich", "wir",
+		"dazu", "diese", "dieses", "kannst", "mich", "gerne", "gern",
+	]);
+	const english = new Set([
+		"the", "and", "or", "not", "a", "an", "is", "are", "was", "were", "be", "how", "where", "what",
+		"who", "which", "for", "with", "of", "in", "on", "at", "about", "from", "do", "does", "did",
+		"they", "you", "we", "it", "this", "that", "use", "used", "please", "me", "can", "could", "tell",
+	]);
+	let germanHits = 0;
+	let englishHits = 0;
+	for (const word of joined.split(/[^a-z]+/).filter(Boolean)) {
+		if (german.has(word)) germanHits++;
+		if (english.has(word)) englishHits++;
+	}
+	if (germanHits === englishHits) return fallback;
+	return germanHits > englishHits ? "de" : "en";
+}
+
+/** Map an explicit language name (the tool's `language` param, e.g.
+ * "German", "english", "de") to a dialog language; undefined when nothing
+ * was named. Unknown named languages get the international default. */
+export function langFromName(value: string | undefined): DialogLang | undefined {
+	const token = value?.trim().toLowerCase();
+	if (!token) return undefined;
+	if (["de", "deutsch", "german"].includes(token)) return "de";
+	return "en";
+}
+
+/** Labels of the synthetic submit tab -- the GERMAN defaults, kept as
+ * named constants for existing callers/tests; language-aware code reads
+ * DIALOG_TEXT instead. */
+export const SUBMIT_TAB_LABEL = DIALOG_TEXT.de.submitTab;
+export const SUBMIT_TITLE = DIALOG_TEXT.de.submitTitle;
+export const SUBMIT_ROW = DIALOG_TEXT.de.submitRow;
+export const SUBMIT_CANCEL_ROW = DIALOG_TEXT.de.submitCancelRow;
+export const UNANSWERED_MARK = DIALOG_TEXT.de.unanswered;
 
 export type WizardEvent =
 	| "up" | "down" | "left" | "right" | "toggle" | "confirm" | "cancel"
@@ -254,6 +348,7 @@ export function initWizard(steps: WizardStepDef[], options?: WizardOptions): Wiz
 		texts: steps.map((step) => (step.kind === "text" ? step.initial ?? "" : "")),
 		...(options?.submitNote ? { submitNote: options.submitNote } : {}),
 		...(options?.skipSubmit ? { skipSubmit: true } : {}),
+		lang: options?.lang ?? "de",
 	};
 }
 
@@ -470,22 +565,23 @@ export interface WizardView {
 /** One summary line per ENABLED step for the submit page -- also used by
  * the fallback loop. */
 export function wizardSummaryLines(state: WizardState): string[] {
+	const text = DIALOG_TEXT[state.lang];
 	const lines: string[] = [];
 	state.steps.forEach((step, i) => {
 		if (!stepEnabled(state, i)) return;
 		if (step.kind === "checkbox") {
 			const chosen = step.items.filter((item) => state.selected[i].has(item.id));
 			const all = chosen.length === step.items.length && step.items.length > 0;
-			const value = chosen.length === 0 ? UNANSWERED_MARK
+			const value = chosen.length === 0 ? text.unanswered
 				: all ? `${step.selectAllLabel} (${chosen.length})`
 				: chosen.map((item) => item.label).join(", ");
 			lines.push(`${step.tab}: ${value}`);
 		} else if (step.kind === "text") {
 			const questions = parseQuestionLines(state.texts[i]);
-			lines.push(`${step.tab}: ${questions.length ? questions.join(" · ") : "(keine)"}`);
+			lines.push(`${step.tab}: ${questions.length ? questions.join(" · ") : text.noQuestions}`);
 		} else {
 			const chosen = step.options.find((option) => option.value === state.chosen[i]);
-			lines.push(`${step.tab}: ${chosen ? chosen.label : UNANSWERED_MARK}`);
+			lines.push(`${step.tab}: ${chosen ? chosen.label : text.unanswered}`);
 		}
 	});
 	return lines;
@@ -497,6 +593,7 @@ export function wizardView(state: WizardState): WizardView {
 	// Answered steps carry a check mark in the tab bar (field wish
 	// 2026-07-22); disabled steps leave the bar; the submit tab itself
 	// never carries a mark.
+	const text = DIALOG_TEXT[state.lang];
 	const tabs = [
 		...state.steps
 			.map((other, i) => ({ step: other, i }))
@@ -505,7 +602,7 @@ export function wizardView(state: WizardState): WizardView {
 				label: `${other.tab}${stepInvalid(state, i) ? "" : " ✔"}`,
 				active: i === state.tab,
 			})),
-		{ label: SUBMIT_TAB_LABEL, active: state.tab === state.steps.length },
+		{ label: text.submitTab, active: state.tab === state.steps.length },
 	];
 	if (state.tab === state.steps.length) {
 		const cursor = state.cursors[state.tab];
@@ -514,14 +611,14 @@ export function wizardView(state: WizardState): WizardView {
 			...wizardSummaryLines(state).map((line) => ({ text: `     ${line}`, active: false })),
 			...(note ? [{ text: `     ${note}`, active: false }] : []),
 			{ text: "", active: false },
-			{ text: `${cursor === 0 ? "❯ " : "  "}   ${SUBMIT_ROW}`, active: cursor === 0 },
-			{ text: `${cursor === 1 ? "❯ " : "  "}   ${SUBMIT_CANCEL_ROW}`, active: cursor === 1 },
+			{ text: `${cursor === 0 ? "❯ " : "  "}   ${text.submitRow}`, active: cursor === 0 },
+			{ text: `${cursor === 1 ? "❯ " : "  "}   ${text.submitCancelRow}`, active: cursor === 1 },
 		];
 		return {
 			tabs,
-			title: SUBMIT_TITLE,
+			title: text.submitTitle,
 			rows,
-			hint: "Enter bestätigt · ←/→ Schritt · Esc abbrechen",
+			hint: text.hintSubmit,
 		};
 	}
 	const step = state.steps[state.tab];
@@ -542,7 +639,7 @@ export function wizardView(state: WizardState): WizardView {
 		rows.push({ text: `❯ ${value}_`, active: true });
 		rows.push({
 			text: value
-				? `     ${questions.length} Frage(n) erkannt`
+				? `     ${text.questionsDetected(questions.length)}`
 				: `     ${step.placeholder ?? ""}`,
 			active: false,
 		});
@@ -558,11 +655,9 @@ export function wizardView(state: WizardState): WizardView {
 		tabs,
 		title: step.title,
 		rows,
-		hint: step.kind === "checkbox"
-			? "Space/Enter auswählen · Enter auf der Weiter-Zeile bestätigt · ←/→ Schritt · Esc abbrechen"
-			: step.kind === "text"
-			? "Tippen · Semikolon trennt Fragen · Enter übernimmt · ←/→ Schritt · Esc abbrechen"
-			: "Enter wählt und geht weiter · ←/→ Schritt · Esc abbrechen",
+		hint: step.kind === "checkbox" ? text.hintCheckbox
+			: step.kind === "text" ? text.hintText
+			: text.hintChoice,
 	};
 }
 

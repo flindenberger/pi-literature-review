@@ -22,6 +22,8 @@ import {
 	type CheckboxEvent,
 	type CheckboxItem,
 	checkboxLines,
+	DIALOG_TEXT,
+	type DialogLang,
 	initCheckbox,
 	initWizard,
 	maxWizardRows,
@@ -29,10 +31,6 @@ import {
 	reduceCheckbox,
 	reduceWizard,
 	selection,
-	SUBMIT_CANCEL_ROW,
-	SUBMIT_ROW,
-	SUBMIT_TITLE,
-	UNANSWERED_MARK,
 	type WizardAnswers,
 	type WizardEvent,
 	type WizardOptions,
@@ -41,6 +39,31 @@ import {
 	wizardResult,
 	wizardView,
 } from "../src/dialog-state.ts";
+
+/** The few adapter-owned strings, per dialog language (v27: dialogs
+ * follow the chat's language; German stays the default). */
+const ADAPTER_TEXT: Record<DialogLang, {
+	checkboxHint: string;
+	doneRow: string;
+	backRow: string;
+	nothingSelected: string;
+	firstOf: (shown: number, total: number) => string;
+}> = {
+	de: {
+		checkboxHint: "Space auswählen · Enter übernehmen · Esc abbrechen · ↑/↓ navigieren",
+		doneRow: "Fertig -- Auswahl übernehmen",
+		backRow: "← Zurück",
+		nothingSelected: "Nichts ausgewählt -- mindestens einen Eintrag wählen oder mit Esc abbrechen.",
+		firstOf: (shown, total) => `(erste ${shown} von ${total})`,
+	},
+	en: {
+		checkboxHint: "Space selects · Enter confirms · Esc cancels · ↑/↓ navigate",
+		doneRow: "Done -- apply selection",
+		backRow: "← Back",
+		nothingSelected: "Nothing selected -- pick at least one entry or cancel with Esc.",
+		firstOf: (shown, total) => `(first ${shown} of ${total})`,
+	},
+};
 
 /** Fallback list cap -- the select loop reuses today's picker convention. */
 export const FALLBACK_MAX_ITEMS = 25;
@@ -52,6 +75,8 @@ export interface CheckboxListOptions {
 	selectAllLabel: string;
 	/** Ids to preselect (e.g. the session's sticky scope). */
 	preselected?: string[];
+	/** Dialog language; default "de". */
+	lang?: DialogLang;
 	signal?: AbortSignal;
 }
 
@@ -97,7 +122,7 @@ async function checkboxOverlay(ctx: ExtensionContext, options: CheckboxListOptio
 					for (const row of checkboxLines(state, options.selectAllLabel)) {
 						lines.push(row.active ? paint("accent", clip(row.text)) : clip(row.text));
 					}
-					lines.push(paint("dim", clip("Space auswählen · Enter übernehmen · Esc abbrechen · ↑/↓ navigieren")));
+					lines.push(paint("dim", clip(ADAPTER_TEXT[options.lang ?? "de"].checkboxHint)));
 					return lines;
 				},
 				invalidate(): void {},
@@ -130,8 +155,9 @@ async function checkboxSelectLoop(
 	const shown = options.items.slice(0, FALLBACK_MAX_ITEMS);
 	const known = new Set(shown.map((item) => item.id));
 	const selected = new Set((options.preselected ?? []).filter((id) => known.has(id)));
-	const doneRow = "Fertig -- Auswahl übernehmen";
-	const backRow = "← Zurück";
+	const adapterText = ADAPTER_TEXT[options.lang ?? "de"];
+	const doneRow = adapterText.doneRow;
+	const backRow = adapterText.backRow;
 	for (;;) {
 		const all = shown.length > 0 && shown.every((item) => selected.has(item.id));
 		const rows = [
@@ -141,7 +167,7 @@ async function checkboxSelectLoop(
 			...(options.backRow ? [backRow] : []),
 		];
 		const title = options.items.length > shown.length
-			? `${options.title} (erste ${shown.length} von ${options.items.length})`
+			? `${options.title} ${adapterText.firstOf(shown.length, options.items.length)}`
 			: options.title;
 		const picked = await ctx.ui.select(title, rows, { signal: options.signal });
 		if (picked === undefined) return null;
@@ -154,7 +180,7 @@ async function checkboxSelectLoop(
 		}
 		if (picked === doneRow) {
 			if (!selected.size) {
-				ctx.ui.notify("Nichts ausgewählt -- mindestens einen Eintrag wählen oder mit Esc abbrechen.", "warning");
+				ctx.ui.notify(adapterText.nothingSelected, "warning");
 				continue;
 			}
 			return shown.filter((item) => selected.has(item.id)).map((item) => item.id);
@@ -277,7 +303,10 @@ async function wizardSelectLoop(
 	signal?: AbortSignal,
 	options?: WizardOptions,
 ): Promise<WizardResult | null> {
-	const backRow = "← Zurück";
+	const lang = options?.lang ?? "de";
+	const text = DIALOG_TEXT[lang];
+	const adapterText = ADAPTER_TEXT[lang];
+	const backRow = adapterText.backRow;
 	const answers: WizardResult = {};
 	const liveAnswers = (): WizardAnswers => {
 		const live: WizardAnswers = {};
@@ -314,22 +343,22 @@ async function wizardSelectLoop(
 				if (step.kind === "checkbox") {
 					const ids = Array.isArray(value) ? value : [];
 					const labels = step.items.filter((item) => ids.includes(item.id)).map((item) => item.label);
-					return `${step.tab}: ${labels.length ? labels.join(", ") : UNANSWERED_MARK}`;
+					return `${step.tab}: ${labels.length ? labels.join(", ") : text.unanswered}`;
 				}
 				if (step.kind === "text") {
 					const questions = parseQuestionLines(typeof value === "string" ? value : "");
-					return `${step.tab}: ${questions.length ? questions.join(" · ") : "(keine)"}`;
+					return `${step.tab}: ${questions.length ? questions.join(" · ") : text.noQuestions}`;
 				}
 				const option = step.options.find((entry) => entry.value === value);
-				return `${step.tab}: ${option ? option.label : UNANSWERED_MARK}`;
+				return `${step.tab}: ${option ? option.label : text.unanswered}`;
 			});
 			const note = options?.submitNote?.(liveAnswers()) ?? null;
 			const picked = await ctx.ui.select(
-				`${SUBMIT_TITLE} -- ${summary.join(" | ")}${note ? ` -- ${note}` : ""}`,
-				[SUBMIT_ROW, backRow, SUBMIT_CANCEL_ROW],
+				`${text.submitTitle} -- ${summary.join(" | ")}${note ? ` -- ${note}` : ""}`,
+				[text.submitRow, backRow, text.submitCancelRow],
 				{ signal },
 			);
-			if (picked === undefined || picked === SUBMIT_CANCEL_ROW) return null;
+			if (picked === undefined || picked === text.submitCancelRow) return null;
 			if (picked === backRow) {
 				index = steps.length - 1;
 				direction = -1;
@@ -350,6 +379,7 @@ async function wizardSelectLoop(
 				items: step.items,
 				selectAllLabel: step.selectAllLabel,
 				preselected,
+				lang,
 				signal,
 				backRow: index > 0,
 			});
