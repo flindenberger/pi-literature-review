@@ -130,9 +130,10 @@ function formatAnswerText(answer: ChatAnswer): string {
  * The card is the durable answer in the chat (v27 field fix: the report
  * lived only in a truncated, transient widget). */
 function formatReportText(report: SynthReport, htmlPath: string | null): string {
+	const german = report.ui_language !== "en";
 	const parts = report.units.map((unit) => {
-		const heading = unit.kind === "summary" ? `Zusammenfassung ${unit.paper_base}.pdf`
-			: unit.kind === "review" ? "Review-Synthese"
+		const heading = unit.kind === "summary" ? `${german ? "Zusammenfassung" : "Summary"} ${unit.paper_base}.pdf`
+			: unit.kind === "review" ? (german ? "Review-Synthese" : "Review synthesis")
 			: unit.paper_base ? `${unit.question} -- ${unit.paper_base}.pdf`
 			: unit.question ?? "";
 		return `${heading}\n\n${unit.prose}`;
@@ -191,7 +192,7 @@ function showReport(pi: ExtensionAPI, ctx: ExtensionContext, report: SynthReport
 	if (ctx.hasUI) {
 		const lines = wrapText(text);
 		ctx.ui.setWidget(SYNTH_WIDGET, lines.length > WIDGET_MAX_LINES
-			? [...lines.slice(0, WIDGET_MAX_LINES - 1), "... (voller Report im HTML- bzw. JSON-Sidecar)"]
+			? [...lines.slice(0, WIDGET_MAX_LINES - 1), "... (full report in the HTML / JSON sidecar)"]
 			: lines);
 		return true;
 	}
@@ -722,7 +723,7 @@ function wireEngine(ctx: ExtensionContext, paramModel: string | undefined): Engi
 		return {
 			deps: { backend: piModelBackend(ctx, local, [cfg.generateModel]) },
 			explainModel: piName,
-			generatorLine: `Generator: ${piName} (pi) + ${cfg.generateModel} für Review-Genres; embeddings: ${cfg.embedModel}`,
+			generatorLine: `Generator: ${piName} (pi) + ${cfg.generateModel} for review genres; embeddings: ${cfg.embedModel}`,
 		};
 	}
 	return { deps: undefined, explainModel: undefined, generatorLine: `Generator: (config default) (${cfg.api} at ${cfg.baseUrl})` };

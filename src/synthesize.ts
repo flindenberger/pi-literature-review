@@ -1444,7 +1444,8 @@ export interface ReportOptions {
 	reindex?: boolean;
 	root?: string;
 	onWarn?: (message: string) => void;
-	/** Per-unit progress ("Einheit 3/9: ..."); defaults to onWarn. */
+	/** Per-unit progress ("Unit 3/9: ..."; English like every status
+	 * message, v27 user decision). Defaults to onWarn. */
 	onProgress?: (message: string) => void;
 	signal?: AbortSignal;
 }
@@ -1589,22 +1590,22 @@ export async function runReport(options: ReportOptions, deps?: ChatDeps): Promis
 	const planned: PlannedUnit[] = [];
 	if (summaryFormat) {
 		for (const paper of indexedPapers) {
-			planned.push({ kind: "summary", paper, label: `Zusammenfassung ${paper.base}.pdf` });
+			planned.push({ kind: "summary", paper, label: `Summary ${paper.base}.pdf` });
 		}
 	}
 	if (questions.length && detailMode === "per-paper") {
 		for (const paper of indexedPapers) {
 			for (const question of questions) {
-				planned.push({ kind: "detail-per-paper", paper, question, label: `Frage an ${paper.base}.pdf: ${question}` });
+				planned.push({ kind: "detail-per-paper", paper, question, label: `Question to ${paper.base}.pdf: ${question}` });
 			}
 		}
 	} else if (questions.length) {
 		for (const question of questions) {
-			planned.push({ kind: "detail-cross", question, label: `Frage an alle: ${question}` });
+			planned.push({ kind: "detail-cross", question, label: `Question to all documents: ${question}` });
 		}
 	}
 	if (includeReview) {
-		planned.push({ kind: "review", question: options.reviewQuestion?.trim() || DEFAULT_REVIEW_QUESTION, label: "Review-Synthese" });
+		planned.push({ kind: "review", question: options.reviewQuestion?.trim() || DEFAULT_REVIEW_QUESTION, label: "Review synthesis" });
 	}
 
 	// 4. One retrieval + generation + citation gate per unit.
@@ -1612,7 +1613,7 @@ export async function runReport(options: ReportOptions, deps?: ChatDeps): Promis
 	const budget = NUM_CTX - OUTPUT_RESERVE_TOKENS;
 	for (const [unitIndex, plan] of planned.entries()) {
 		if (options.signal?.aborted) throw new Error("report aborted by the user");
-		onProgress(`Einheit ${unitIndex + 1}/${planned.length}: ${plan.label}`);
+		onProgress(`Unit ${unitIndex + 1}/${planned.length}: ${plan.label}`);
 		const unitIndexes = plan.paper ? [indexByKey.get(plan.paper.key)!] : indexes;
 		const model = plan.kind === "summary" || plan.kind === "detail-per-paper" ? explainModel : reviewModel;
 		const translate = deps?.translate !== undefined ? deps.translate : translateViaBackend(backend, model);

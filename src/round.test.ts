@@ -671,8 +671,8 @@ function makeRound(question: string, session: string | null = null): Round {
 	assert.equal(report.grounded, true);
 	// Ticker: one progress line per unit, numbered.
 	assert.equal(progress.length, 7);
-	assert.ok(progress[0].startsWith("Einheit 1/7: Zusammenfassung"));
-	assert.ok(progress[6].includes("Review-Synthese"));
+	assert.ok(progress[0].startsWith("Unit 1/7: Summary"));
+	assert.ok(progress[6].includes("Review synthesis"));
 	// Scope + sticky: the library scope was remembered for the session.
 	assert.deepEqual(report.scope, { papers: ["a", "b"], library: true });
 	assert.deepEqual(JSON.parse(files.get("/chats/current-scope.json")!), { papers: "library", session: "s1" });
