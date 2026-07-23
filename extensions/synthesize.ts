@@ -448,9 +448,53 @@ async function reportWizard(
 		questionsStep(seedQuestions?.join("; ")),
 		...reportSteps(scopeSizeOf, defaults),
 	];
-	const answers = await runWizard(ctx, steps, signal, reportSubmitNote(scopeSizeOf));
+	const answers = await runWizard(ctx, steps, signal, { submitNote: reportSubmitNote(scopeSizeOf) });
 	if (answers === null) return null;
 	return { questions: questionsOf(answers), choices: choicesOf(answers, defaults) };
+}
+
+/**
+ * The per-question gate (v27 field decision "festzurren"): every chat call
+ * arriving THROUGH THE AGENT shows the question it wants to run -- the
+ * user fixes agent rephrasing (the measured root cause of weaker answers)
+ * or types their own, Enter starts, Esc cancels. When the scope is not
+ * settled yet, the scope step joins the SAME dialog (one wizard, not a
+ * chain). skipSubmit: one Enter, no review page. Returns the confirmed
+ * question ("" = none: hand the conversation back), the scope actually
+ * confirmed, or null on cancel.
+ */
+async function questionGate(
+	ctx: ExtensionContext,
+	scope: string[] | "library" | null,
+	proposed: string,
+	diagnostics: string[],
+	signal: AbortSignal | undefined,
+): Promise<{ question: string; scope: string[] | "library" } | "empty" | null> {
+	const steps: WizardStepDef[] = [];
+	let items: CheckboxItem[] = [];
+	if (!scope) {
+		({ items } = scopeItems(diagnostics));
+		if (!items.length) return "empty";
+		steps.push(scopeStep(items));
+	}
+	const label = scope === "library" ? "die ganze Bibliothek"
+		: Array.isArray(scope) ? scope.map((base) => `${base}.pdf`).join(", ")
+		: null;
+	steps.push({
+		kind: "text",
+		id: "question",
+		tab: "Frage",
+		title: label
+			? clip(`Frage an ${label} -- prüfen/anpassen, Enter startet`)
+			: "Deine Frage -- prüfen/anpassen, Enter startet",
+		placeholder: "leer lassen: die Frage erst im Chat besprechen",
+		...(proposed ? { initial: proposed } : {}),
+	});
+	const answers = await runWizard(ctx, steps, signal, { skipSubmit: true });
+	if (answers === null) return null;
+	const confirmedScope: string[] | "library" = scope
+		?? ((answers.papers as string[]).length === items.length ? "library" : answers.papers as string[]);
+	return { question: String(answers.question ?? "").trim(), scope: confirmedScope };
 }
 
 /* ------------------------------------------------------------------ *
@@ -618,7 +662,8 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 			"TWO MODES. (1) CHAT: pass question -> one grounded answer. Pass the user's question VERBATIM, in " +
 			"their language and wording -- retrieval is measurably sensitive to phrasing; only substitute a " +
 			"pronoun's referent when the question alone would be ambiguous, never rephrase, expand or translate " +
-			"it. The digest carries the answer between " +
+			"it. The tool shows the question to the user in its own dialog for confirmation before the run, so " +
+			"call the tool IMMEDIATELY instead of discussing the question in chat first. The digest carries the answer between " +
 			"'--- answer ---' delimiters: output that text EXACTLY as written, unchanged, including the [n] " +
 			"markers -- never summarize, extend, translate or 'improve' it, and never re-type titles, authors or " +
 			"identifiers: copy reference lines EXACTLY. If it FAILED to ground, relay the warning verbatim. " +
@@ -693,7 +738,7 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 				onUpdate?.({ content: [{ type: "text", text: message }] });
 			};
 			const reply = (text: string) => ({ content: [{ type: "text" as const, text }], details: { diagnostics } });
-			const question = params.question?.trim() ?? "";
+			let question = params.question?.trim() ?? "";
 			const wantsReport = params.report === true
 				|| params.questions !== undefined
 				|| params.summary !== undefined
@@ -701,7 +746,9 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 				|| params.save_html !== undefined;
 			const root = outputRoot();
 
-			// 1. Scope: params > sticky (unless pick) > wizard.
+			// 1. Scope: params > sticky (unless pick). The DIALOGS follow per
+			// mode: chat runs the question gate (scope step included when the
+			// scope is still open), report runs the scope picker + wizard.
 			let scope: string[] | "library" | undefined = params.library === true
 				? "library"
 				: params.papers?.length ? params.papers.map((name) => name.trim().replace(/\.pdf$/i, "")) : undefined;
@@ -712,39 +759,46 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 					report(`using the session's scope: ${scope === "library" ? "whole library" : scope.join(", ")} (pick: true switches)`);
 				}
 			}
-			if (!scope) {
-				if (!ctx.hasUI) {
+			if (signal?.aborted) return reply("The run was aborted before anything was generated.");
+
+			// 2. CHAT mode: the question gate (v27 "festzurren"), then one
+			// grounded round. The gate shows the question the agent passed --
+			// prefilled, editable -- because agents measurably rephrase the
+			// user's words; the confirmed text is what the engine runs.
+			if (!wantsReport) {
+				let confirmedScope = scope;
+				if (ctx.hasUI) {
+					const gate = await questionGate(ctx, scope ?? null, question, diagnostics, signal);
+					if (gate === null) {
+						return reply("The user cancelled the question dialog. Nothing was generated. Ask what they want instead; do not retry unchanged.");
+					}
+					if (gate === "empty") {
+						return reply("The library holds no PDFs at all -- run a literature search and fetch first (or start pi in the folder containing the PDFs).");
+					}
+					confirmedScope = gate.scope;
+					if (!scope) {
+						diagnostics.push(`scope picked in the dialog: ${confirmedScope === "library" ? "whole library" : confirmedScope.join(", ")}`);
+					}
+					// Remember immediately: the round may still end questionless.
+					writeCurrentScope(root, { papers: confirmedScope }, sessionId(ctx), undefined, (message) => diagnostics.push(message));
+					question = gate.question;
+				} else if (!confirmedScope) {
 					const pool = chatPool(matchLibrary(root, (message) => diagnostics.push(message)));
 					const available = pool.map((entry) => `${entry.base}.pdf`).join(", ") || "(none)";
 					return reply(`No scope was given and no interactive picker is available. Pass papers or library: true; PDFs in the library: ${available}`);
 				}
-				const picked = await pickScope(ctx, diagnostics, undefined, signal);
-				if (picked === null) {
-					return reply("The user cancelled the document selection. Nothing was generated. Ask which documents they want to discuss.");
-				}
-				if (picked === "empty") {
-					return reply("The library holds no PDFs at all -- run a literature search and fetch first (or start pi in the folder containing the PDFs).");
-				}
-				scope = picked;
-				diagnostics.push(`scope picked in the dialog: ${scope === "library" ? "whole library" : scope.join(", ")}`);
-				// Remember immediately: the opening move may end before any run.
-				writeCurrentScope(root, { papers: scope }, sessionId(ctx), undefined, (message) => diagnostics.push(message));
-			}
-			if (signal?.aborted) return reply("The run was aborted before anything was generated.");
-
-			// 2. CHAT mode: one grounded round.
-			if (!wantsReport) {
 				if (!question) {
-					const label = scope === "library" ? "the whole library" : scope.map((base) => `${base}.pdf`).join(", ");
+					const label = confirmedScope === "library" ? "the whole library" : confirmedScope!.map((base) => `${base}.pdf`).join(", ");
 					return reply(
-						`The user selected ${label} for a grounded chat (already settled -- do not ask again). `
-						+ "Ask the user what they want to know about these documents, then call this tool again "
-						+ "with their question (the scope is remembered).",
+						`The user selected ${label} for a grounded chat (already settled -- do not ask again) and `
+						+ "left the question dialog empty. Ask the user what they want to know about these documents, "
+						+ "then call this tool again with their question (the scope is remembered; the user confirms "
+						+ "the final wording in the tool's own dialog).",
 					);
 				}
 				const outcome = await runRoundWithUi(pi, ctx, {
 					question,
-					papers: scope,
+					papers: confirmedScope,
 					model: params.model?.trim() || undefined,
 					topK: params.top_k,
 					language: params.language,
@@ -760,6 +814,25 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 					);
 				}
 				return reply(renderChatDigest(outcome.answer));
+			}
+
+			// REPORT mode: settle a missing scope in the picker first.
+			if (!scope) {
+				if (!ctx.hasUI) {
+					const pool = chatPool(matchLibrary(root, (message) => diagnostics.push(message)));
+					const available = pool.map((entry) => `${entry.base}.pdf`).join(", ") || "(none)";
+					return reply(`No scope was given and no interactive picker is available. Pass papers or library: true; PDFs in the library: ${available}`);
+				}
+				const picked = await pickScope(ctx, diagnostics, undefined, signal);
+				if (picked === null) {
+					return reply("The user cancelled the document selection. Nothing was generated. Ask which documents they want to discuss.");
+				}
+				if (picked === "empty") {
+					return reply("The library holds no PDFs at all -- run a literature search and fetch first (or start pi in the folder containing the PDFs).");
+				}
+				scope = picked;
+				diagnostics.push(`scope picked in the dialog: ${scope === "library" ? "whole library" : scope.join(", ")}`);
+				writeCurrentScope(root, { papers: scope }, sessionId(ctx), undefined, (message) => diagnostics.push(message));
 			}
 
 			// 3. REPORT mode: settle the menu (params > wizard), then run.
@@ -909,7 +982,7 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 				questionsStep(),
 				...reportSteps(scopeSizeOf, { summary: "bullets" }),
 			];
-			const answers = await runWizard(ctx, steps, ctx.signal, reportSubmitNote(scopeSizeOf));
+			const answers = await runWizard(ctx, steps, ctx.signal, { submitNote: reportSubmitNote(scopeSizeOf) });
 			if (answers === null) return; // cancelled
 			const picked = answers.papers as string[];
 			const scope: string[] | "library" = picked.length === items.length ? "library" : picked;

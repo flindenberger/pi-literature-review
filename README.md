@@ -232,7 +232,14 @@ stamped with the session id) -- follow-up calls need only the question.
 A new pi session starts blank; `/resume` keeps the scope.
 
 **Chat mode.** One grounded answer per question, didactic tone, page-exact
-references (`[1] 2026 | 10.5194/... | Title (S. 4)`). The validated answer
+references (`[1] 2026 | 10.5194/... | Title (S. 4)`). Every chat call
+arriving through the AGENT passes a code-enforced QUESTION GATE first: a
+one-line dialog shows the question the agent wants to run (prefilled,
+editable, scope in the title; Enter starts, Esc cancels) -- field tests
+showed agents systematically rephrase the user's words, which measurably
+degrades retrieval, and no instruction stopped it. The confirmed wording
+is what the engine runs. When no scope is settled yet, the document
+checkboxes join the SAME dialog. The validated answer
 travels verbatim in the tool result between explicit delimiters AND renders
 as a full transcript card (anti-paraphrase ground truth; capped-widget
 fallback without pi-tui). Every validated round is appended to a protocol

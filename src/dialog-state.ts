@@ -202,6 +202,15 @@ export interface WizardState {
 	/** Optional computed line on the submit page (e.g. "~6 Modellaufrufe");
 	 * pure function of the answers, injected by the caller. */
 	submitNote?: (answers: WizardAnswers) => string | null;
+	/** True: advancing past the last step finishes DIRECTLY (no submit
+	 * page). For lightweight gates like the per-question confirm (v27) --
+	 * the finish guard still jumps to incomplete steps first. */
+	skipSubmit?: boolean;
+}
+
+export interface WizardOptions {
+	submitNote?: (answers: WizardAnswers) => string | null;
+	skipSubmit?: boolean;
 }
 
 /** Labels of the synthetic submit tab -- exported so the fallback loop and
@@ -227,10 +236,7 @@ export interface WizardStep {
 /** Answers by step id: checkbox steps map to id arrays, choices to values. */
 export type WizardResult = Record<string, string[] | string>;
 
-export function initWizard(
-	steps: WizardStepDef[],
-	submitNote?: (answers: WizardAnswers) => string | null,
-): WizardState {
+export function initWizard(steps: WizardStepDef[], options?: WizardOptions): WizardState {
 	if (!steps.length) throw new Error("wizard needs at least one step");
 	return {
 		steps,
@@ -246,7 +252,8 @@ export function initWizard(
 		// initial is a cursor recommendation, never a pre-answer.
 		chosen: steps.map(() => null),
 		texts: steps.map((step) => (step.kind === "text" ? step.initial ?? "" : "")),
-		...(submitNote ? { submitNote } : {}),
+		...(options?.submitNote ? { submitNote: options.submitNote } : {}),
+		...(options?.skipSubmit ? { skipSubmit: true } : {}),
 	};
 }
 
@@ -313,12 +320,14 @@ function movedTab(state: WizardState, dir: 1 | -1): number {
 
 /** Advance from the current step; the last enabled step leads to the
  * SUBMIT tab (never straight to done -- the user reviews first, field
- * wish 2026-07-22). */
+ * wish 2026-07-22) -- unless skipSubmit is set (lightweight gates),
+ * where it finishes directly through the same completeness guard. */
 function advance(state: WizardState): WizardStep {
 	let tab = state.tab;
 	do {
 		tab++;
 	} while (tab < state.steps.length && !stepEnabled(state, tab));
+	if (tab === state.steps.length && state.skipSubmit) return finish(state);
 	return { state: { ...state, tab } };
 }
 

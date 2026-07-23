@@ -35,6 +35,7 @@ import {
 	UNANSWERED_MARK,
 	type WizardAnswers,
 	type WizardEvent,
+	type WizardOptions,
 	type WizardResult,
 	type WizardStepDef,
 	wizardResult,
@@ -176,37 +177,38 @@ async function checkboxSelectLoop(
  * the tallest step, so the box never jumps). Text steps (v27) type inline;
  * steps with enabledIf appear only while their condition holds. Fallback:
  * one select (or editor) per step with an explicit back row. Null on
- * cancel -- callers abort before any LLM call. submitNote: optional pure
- * function rendering one computed line on the submit page (e.g. the
- * expected model-call count).
+ * cancel -- callers abort before any LLM call. Options: submitNote
+ * renders one computed line on the submit page (e.g. the expected
+ * model-call count); skipSubmit finishes directly after the last step
+ * (lightweight gates like the per-question confirm).
  */
 export async function runWizard(
 	ctx: ExtensionContext,
 	steps: WizardStepDef[],
 	signal?: AbortSignal,
-	submitNote?: (answers: WizardAnswers) => string | null,
+	options?: WizardOptions,
 ): Promise<WizardResult | null> {
 	if (!ctx.hasUI) throw new Error("runWizard needs a UI -- headless callers must pass parameters");
 	if (ctx.mode === "tui") {
 		try {
-			const result = await wizardOverlay(ctx, steps, submitNote);
+			const result = await wizardOverlay(ctx, steps, options);
 			if (result !== undefined) return result;
 		} catch {
 			// pi-tui unavailable or the overlay failed -- fall through.
 		}
 	}
-	return wizardSelectLoop(ctx, steps, signal, submitNote);
+	return wizardSelectLoop(ctx, steps, signal, options);
 }
 
 async function wizardOverlay(
 	ctx: ExtensionContext,
 	steps: WizardStepDef[],
-	submitNote?: (answers: WizardAnswers) => string | null,
+	options?: WizardOptions,
 ): Promise<WizardResult | null | undefined> {
 	const { Key, matchesKey } = await import("@earendil-works/pi-tui");
 	return await ctx.ui.custom<WizardResult | null>(
 		(tui, theme, _keybindings, done) => {
-			let state = initWizard(steps, submitNote);
+			let state = initWizard(steps, options);
 			const bodyRows = maxWizardRows(state);
 			const paint = (color: string, text: string): string => {
 				try {
@@ -273,7 +275,7 @@ async function wizardSelectLoop(
 	ctx: ExtensionContext,
 	steps: WizardStepDef[],
 	signal?: AbortSignal,
-	submitNote?: (answers: WizardAnswers) => string | null,
+	options?: WizardOptions,
 ): Promise<WizardResult | null> {
 	const backRow = "← Zurück";
 	const answers: WizardResult = {};
@@ -298,6 +300,14 @@ async function wizardSelectLoop(
 			continue;
 		}
 		if (index >= steps.length) {
+			if (options?.skipSubmit) {
+				// Lightweight gate: every enabled step was just answered in
+				// order -- finish without the summary page.
+				for (const [i, step] of steps.entries()) {
+					if (!enabled(i)) delete answers[step.id];
+				}
+				return answers;
+			}
 			// The review page (rpiv submit tab): summary + note + explicit submit.
 			const summary = steps.filter((_, i) => enabled(i)).map((step) => {
 				const value = answers[step.id];
@@ -313,7 +323,7 @@ async function wizardSelectLoop(
 				const option = step.options.find((entry) => entry.value === value);
 				return `${step.tab}: ${option ? option.label : UNANSWERED_MARK}`;
 			});
-			const note = submitNote?.(liveAnswers()) ?? null;
+			const note = options?.submitNote?.(liveAnswers()) ?? null;
 			const picked = await ctx.ui.select(
 				`${SUBMIT_TITLE} -- ${summary.join(" | ")}${note ? ` -- ${note}` : ""}`,
 				[SUBMIT_ROW, backRow, SUBMIT_CANCEL_ROW],

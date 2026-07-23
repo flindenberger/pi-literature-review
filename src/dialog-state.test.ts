@@ -353,7 +353,7 @@ function drive(
 {
 	const note = (answers: Record<string, unknown>): string | null =>
 		typeof answers.summary === "string" ? `~${answers.summary === "none" ? 0 : 3} Modellaufruf(e)` : null;
-	const state = initWizard(wizardSteps, note as never);
+	const state = initWizard(wizardSteps, { submitNote: note as never });
 	// Unanswered summary -> no note line yet.
 	assert.ok(!wizardView({ ...state, tab: 3 }).rows.some((row) => row.text.includes("Modellaufruf")));
 	const answered = drive(state, ["up", "confirm", "confirm", "confirm"]); // commit docs, summary bullets, save yes -> submit
@@ -361,6 +361,39 @@ function drive(
 	assert.ok(wizardView(answered.state).rows.some((row) => row.text.includes("~3 Modellaufruf(e)")));
 	// The note counts one extra row in the constant footprint.
 	assert.equal(maxWizardRows(state), 7);
+}
+
+/* ---------------- wizard: skipSubmit gates (v27) ---------------- */
+{
+	// A one-step question gate: Enter finishes DIRECTLY, no review page.
+	const gate: WizardStepDef[] = [{
+		kind: "text", id: "question", tab: "Frage", title: "Frage prüfen",
+		initial: "welche kameras wurden verwendet?",
+	}];
+	const confirmed = drive(initWizard(gate, { skipSubmit: true }), ["confirm"]);
+	assert.equal(confirmed.done, "confirmed");
+	assert.equal(wizardResult(confirmed.state).question, "welche kameras wurden verwendet?");
+	// Editing before Enter: backspace + typing land in the result.
+	const edited = drive(initWizard(gate, { skipSubmit: true }), [
+		...Array.from({ length: "welche kameras wurden verwendet?".length }, () => "backspace"),
+		{ kind: "input", chars: "welche kamera nutzen sie?" },
+		"confirm",
+	]);
+	assert.equal(wizardResult(edited.state).question, "welche kamera nutzen sie?");
+	// Esc still cancels; an empty gate still confirms (empty = valid).
+	assert.equal(drive(initWizard(gate, { skipSubmit: true }), ["cancel"]).done, "cancelled");
+	// skipSubmit still guards required steps: an empty checkbox jumps back
+	// instead of finishing.
+	const scoped: WizardStepDef[] = [
+		{ kind: "checkbox", id: "papers", tab: "Dokumente", title: "Welche?", items, selectAllLabel: "Alle", nextLabel: "Weiter" },
+		gate[0],
+	];
+	const guarded = drive(initWizard(scoped, { skipSubmit: true }), ["right", "confirm"]); // skip to question, Enter
+	assert.equal(guarded.done, undefined);
+	assert.equal(guarded.state.tab, 0); // jumped to the empty scope step
+	const through = drive(guarded.state, ["confirm", "up", "confirm", "confirm"]); // select-all, Weiter, Enter on question
+	assert.equal(through.done, "confirmed");
+	assert.deepEqual(wizardResult(through.state).papers, ["a", "b", "c"]);
 }
 
 console.log("dialog-state tests passed");
