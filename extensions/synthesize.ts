@@ -379,6 +379,9 @@ function reportSteps(
 				{ value: "no", label: "Nein" },
 			],
 			initial: defaults.includeReview ? "yes" : "no",
+			// A "state of the literature" over ONE paper is just a weaker
+			// summary (v27 user decision) -- the tab needs several documents.
+			enabledIf: (answers) => scopeSizeOf(answers) > 1,
 		},
 		{
 			kind: "choice", id: "html", tab: "HTML",
@@ -475,15 +478,18 @@ function reportUnitCount(
 function reportSubmitNote(scopeSizeOf: (answers: WizardAnswers) => number): (answers: WizardAnswers) => string | null {
 	return (answers) => {
 		const scopeSize = scopeSizeOf(answers);
-		if (!scopeSize || typeof answers.summary !== "string" || typeof answers.review !== "string") return null;
+		// The review tab only exists with several documents; with one, it
+		// silently counts as "no".
+		const review = scopeSize > 1 ? answers.review : "no";
+		if (!scopeSize || typeof answers.summary !== "string" || typeof review !== "string") return null;
 		const questionCount = questionsOf(answers).length;
-		if (!questionCount && answers.summary === "none" && answers.review === "no") {
+		if (!questionCount && answers.summary === "none" && review === "no") {
 			return "Nichts zu generieren -- das wird ein Chat.";
 		}
 		const units = reportUnitCount(scopeSize, questionCount, {
 			summary: answers.summary as ReportChoices["summary"],
 			detailMode: (answers.detail as ReportChoices["detailMode"] | null) ?? "per-paper",
-			includeReview: answers.review === "yes",
+			includeReview: review === "yes",
 		});
 		return `~${units} Modellaufruf(e), je etwa eine Minute lokal`;
 	};
@@ -505,7 +511,11 @@ async function reportWizard(
 	];
 	const answers = await runWizard(ctx, steps, signal, { submitNote: reportSubmitNote(scopeSizeOf) });
 	if (answers === null) return null;
-	return { questions: questionsOf(answers), choices: choicesOf(answers, defaults) };
+	const choices = choicesOf(answers, defaults);
+	// The hidden review tab decides: one document never gets a review
+	// synthesis, even when an agent-passed default carried true.
+	if (scopeSize <= 1) choices.includeReview = false;
+	return { questions: questionsOf(answers), choices };
 }
 
 /**

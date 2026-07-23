@@ -268,7 +268,8 @@ export. Building blocks:
   costs papers x questions generation calls; the wizard warns above 15) or
   mode B (one merged answer per question across the scope);
 - an optional review synthesis ("Stand der Literatur"), recommended on the
-  library scope.
+  library scope; the wizard offers it only with several documents (over one
+  paper it would just be a weaker summary).
 
 The report page (German chrome by default, `uiLanguage` switches) shows
 answers inside per-paper sections, method & transparency right under the
