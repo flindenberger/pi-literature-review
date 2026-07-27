@@ -22,7 +22,8 @@ import {
 	SUMMARY_FACETS,
 	summarySystemPrompt,
 } from "./synthesize.ts";
-import type { CorpusDeps, LibraryMatch, PaperIndex } from "./corpus.ts";
+import { type CorpusDeps, INDEX_SCHEMA, type LibraryMatch, type PaperIndex } from "./corpus.ts";
+import { CHUNK_SIGNATURE } from "./extract.ts";
 import type { GenerateOptions } from "./llm.ts";
 import { querySlug } from "./output.ts";
 import { type Protocol, PROTOCOL_SCHEMA, type ProtocolDeps, type Round } from "./protocol.ts";
@@ -40,14 +41,14 @@ const paperB: PaperIndex["paper"] = {
 };
 
 const indexA: PaperIndex = {
-	schema: 1, sha256: "hash-a", embedding_model: "fake-embed", paper: paperA,
+	schema: INDEX_SCHEMA, chunking: CHUNK_SIGNATURE, sha256: "hash-a", embedding_model: "fake-embed", paper: paperA,
 	chunks: [
 		{ id: 0, page: 2, text: "Sandbars were mapped with Sentinel-2 imagery.", embedding: [1, 0] },
 		{ id: 1, page: 5, text: "Alternate bars appear along the Vistula reach.", embedding: [0.9, 0.1] },
 	],
 };
 const indexB: PaperIndex = {
-	schema: 1, sha256: "hash-b", embedding_model: "fake-embed", paper: paperB,
+	schema: INDEX_SCHEMA, chunking: CHUNK_SIGNATURE, sha256: "hash-b", embedding_model: "fake-embed", paper: paperB,
 	chunks: [
 		// Deliberately the best global match for the test question vector:
 		// if retrieval were corpus-wide, THIS chunk would win.
@@ -56,7 +57,7 @@ const indexB: PaperIndex = {
 };
 // A PDF without a verified record, indexed under its filename identity.
 const indexC: PaperIndex = {
-	schema: 1, sha256: "hash-c", embedding_model: "fake-embed",
+	schema: INDEX_SCHEMA, chunking: CHUNK_SIGNATURE, sha256: "hash-c", embedding_model: "fake-embed",
 	paper: { key: "file:c", title: "", authors: [], year: null, doi: "", arxiv_id: "" },
 	chunks: [{ id: 0, page: 3, text: "Filename-only content about cameras.", embedding: [1, 0] }],
 };

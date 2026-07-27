@@ -40,7 +40,7 @@ interface RenderRecord {
 
 import type { ChatReport } from "./synthesize.ts";
 import type { CitationSite } from "./protocol.ts";
-import { type ReportUnit, searchSnippet, type SynthesisResult, type SynthReport } from "./synthesize.ts";
+import { highlightPhrase, type ReportUnit, type SynthesisResult, type SynthReport } from "./synthesize.ts";
 
 // Moved to synthesize.ts in v25 E2b (the snippet is citation provenance);
 // re-exported here for existing importers.
@@ -836,7 +836,7 @@ ${referenceRows}
 		: "<h2>References</h2>\n<p>None -- no valid citations survived the gate.</p>";
 
 	const excerptItems = report.chunks.map((chunk) => {
-		const href = localPdfHref(paper.pdf_path, chunk.page, searchSnippet(chunk.text));
+		const href = localPdfHref(paper.pdf_path, chunk.page, highlightPhrase(chunk));
 		return `<details><summary>[${chunk.id}] page ${chunk.page}, similarity ${chunk.score.toFixed(3)}${chunk.lexical ? ", exact term match" : ""}</summary>
 <p class="excerpt">${esc(chunk.text)}</p>
 <p class="meta">${pdfAnchor(href, `Open the PDF at page ${chunk.page}`)} (Firefox also highlights the passage)</p>
@@ -972,7 +972,9 @@ const REPORT_LABELS = {
 		technical: "Technische Details (einfach erklärt)",
 		retrieval: "Textstellen-Suche",
 		retrievalPlain: "Jede Frage wird mit allen Textabschnitten der PDFs verglichen (Ähnlichkeitssuche); "
-			+ "nur die passendsten Auszüge bekommt das Sprachmodell zu sehen. Jede Quellenangabe setzt "
+			+ "nur die passendsten Auszüge bekommt das Sprachmodell zu sehen. Das Literaturverzeichnis "
+			+ "eines Papers wird dabei ausgelassen -- es enthält Titel anderer Arbeiten, keine Antworten "
+			+ "auf Fragen zu diesem Paper. Jede Quellenangabe setzt "
 			+ "festes Programm aus geprüften Daten ein -- nie das Sprachmodell.",
 		variantsLabel: "Zusätzliche Suchanfragen",
 		variantsPlain: "Umformulierungen, die nur für die SUCHE verwendet wurden (z. B. die englische "
@@ -1031,7 +1033,9 @@ const REPORT_LABELS = {
 		technical: "Technical details (in plain language)",
 		retrieval: "Passage search",
 		retrievalPlain: "Each question is compared against every text chunk of the PDFs (similarity "
-			+ "search); only the best-matching excerpts are shown to the language model. Every citation "
+			+ "search); only the best-matching excerpts are shown to the language model. A paper's "
+			+ "reference list is left out of that search -- it holds titles of other work, not answers "
+			+ "about this paper. Every citation "
 			+ "is inserted by fixed code from verified records -- never by the model.",
 		variantsLabel: "Additional search queries",
 		variantsPlain: "Rephrasings used for the SEARCH only (e.g. an English translation of the "
@@ -1265,7 +1269,7 @@ ${rows}
 		const inner = withChunks.map((unit) => {
 			const items = unit.chunks.map((chunk) => {
 				const path = pdfPathByKey.get(chunk.paper_key);
-				const anchor = path ? `\n<p class="meta">${pdfAnchor(localPdfHref(path, chunk.page, searchSnippet(chunk.text)), `${labels.page} ${chunk.page}`)}</p>` : "";
+				const anchor = path ? `\n<p class="meta">${pdfAnchor(localPdfHref(path, chunk.page, highlightPhrase(chunk)), `${labels.page} ${chunk.page}`)}</p>` : "";
 				return `<details><summary>[${chunk.id}] ${labels.page} ${chunk.page}, similarity ${chunk.score.toFixed(3)}${chunk.lexical ? ", exact term match" : ""}</summary>
 <p class="excerpt">${esc(chunk.text)}</p>${anchor}</details>`;
 			}).join("\n");

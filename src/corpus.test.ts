@@ -17,6 +17,7 @@ import {
 	type PaperIndex,
 	resolvePapersDir,
 } from "./corpus.ts";
+import { CHUNK_SIGNATURE } from "./extract.ts";
 import type { SidecarEntry } from "./fetch.ts";
 
 const vistula: SidecarEntry = {
@@ -147,6 +148,7 @@ function makeDeps(overrides: Partial<CorpusDeps> = {}): {
 	const index = indexes[0];
 	assert.equal(index.schema, INDEX_SCHEMA);
 	assert.equal(index.embedding_model, "emb-model");
+	assert.equal(index.chunking, CHUNK_SIGNATURE);
 	assert.equal(index.paper.key, "doi:10.1/x");
 	assert.equal(index.paper.title, "P");
 	assert.ok(index.chunks.length >= 1);
@@ -174,6 +176,20 @@ function makeDeps(overrides: Partial<CorpusDeps> = {}): {
 
 	await ensureIndexed([paper], "/index", "other-model", deps, { force: true });
 	assert.deepEqual(calls, { extract: 4, embed: 4 }); // forced reindex
+}
+
+// Chunking change -> rebuild: pieces cut by different rules must never be
+// ranked against each other inside one retrieval.
+{
+	const { deps, calls, saved } = makeDeps();
+	await ensureIndexed([paper], "/index", "emb-model", deps);
+	assert.deepEqual(calls, { extract: 1, embed: 1 });
+
+	const stale = saved.get("/index/p.json")!;
+	saved.set("/index/p.json", { ...stale, chunking: "1600/400/200" });
+	await ensureIndexed([paper], "/index", "emb-model", deps);
+	assert.deepEqual(calls, { extract: 2, embed: 2 });
+	assert.equal(saved.get("/index/p.json")!.chunking, CHUNK_SIGNATURE);
 }
 
 // Honest failures: scanned PDF and a throwing extractor are reported and

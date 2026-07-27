@@ -31,6 +31,7 @@ import {
 	matchLibrary,
 	realCorpusDeps,
 } from "./corpus.ts";
+import { phraseOf } from "./extract.ts";
 import { createBackend, type GenerateOptions, type LlmBackend } from "./llm.ts";
 import { outputRoot } from "./output.ts";
 import {
@@ -215,13 +216,18 @@ export interface ReferenceEntry {
 }
 
 /**
- * Deterministic search phrase for the PDF #search fragment: the first run
- * of at least 3 CONSECUTIVE words containing only letters/digits (capped
- * at 5). Phrase search matches the text layer verbatim, so a single comma
- * inside the snippet -- or a word we trimmed punctuation from -- would
- * kill the match (live finding 2026-07-16); shorter also means fewer
- * line-break crossings. Null when no such run exists or it is too short
- * to be distinctive -- the #page anchor alone is then the honest offer.
+ * FALLBACK search phrase for the PDF #search fragment: the first run of at
+ * least 3 CONSECUTIVE words containing only letters/digits (capped at 5).
+ * Deliberately timid, because it is a guess: phrase search matches the
+ * text layer verbatim, so a single comma inside the snippet -- or a word
+ * we trimmed punctuation from -- would kill the match (live finding
+ * 2026-07-16).
+ *
+ * Since 2026-07-27 this is only the fallback. Chunks indexed by the
+ * current code carry phrase_words, a length MEASURED against the raw text
+ * layer, and highlightPhrase() prefers it: for the median chunk that
+ * highlights the whole excerpt instead of five words. This guess still
+ * serves chunks from legacy indexes and hand-built fixtures.
  * (Moved here from render.ts in E2b: the snippet is citation provenance,
  * persisted in CitationSite, not a rendering detail.)
  */
@@ -240,6 +246,16 @@ export function searchSnippet(text: string): string | null {
 	}
 	const snippet = run.join(" ");
 	return run.length >= 3 && snippet.length >= 15 ? snippet : null;
+}
+
+/**
+ * The phrase a PDF link may highlight for one excerpt: the span VERIFIED
+ * against the raw text layer when the chunk was indexed, else the timid
+ * searchSnippet guess. One place, so every link -- citation superscript
+ * and evidence trail alike -- highlights the same text.
+ */
+export function highlightPhrase(chunk: { text: string; phrase_words?: number }): string | null {
+	return phraseOf(chunk.text, chunk.phrase_words) ?? searchSnippet(chunk.text);
 }
 
 /**
@@ -316,7 +332,7 @@ export function buildCitations(
 			chunk_id: chunk.id,
 			paper_key: chunk.paper.key,
 			page: chunk.page,
-			snippet: searchSnippet(chunk.text),
+			snippet: highlightPhrase(chunk),
 		});
 		lastChunkId = chunk.id;
 	}
@@ -425,7 +441,7 @@ export interface SynthesisResult {
 	 * in the prose; drives the clickable PDF superscripts). */
 	sites: CitationSite[];
 	/** Retrieval trail: every excerpt that was in the prompt. */
-	chunks: Array<{ id: number; paper_key: string; title: string; page: number; score: number; text: string; lexical?: boolean }>;
+	chunks: Array<{ id: number; paper_key: string; title: string; page: number; score: number; text: string; lexical?: boolean; phrase_words?: number }>;
 	/** Queries of the ONE embed call (original + disclosed English variant). */
 	query_variants: QueryVariant[];
 	/** Salient terms the lexical layer exact-matched over the chunk texts. */
@@ -591,6 +607,7 @@ export async function runSynthesize(
 			score: Number(chunk.score.toFixed(4)),
 			text: chunk.text,
 			...(chunk.lexical ? { lexical: true } : {}),
+			...(chunk.phrase_words ? { phrase_words: chunk.phrase_words } : {}),
 		})),
 		query_variants: retrieval.variants,
 		lexical_terms: retrieval.lexical_terms,
@@ -891,7 +908,7 @@ export interface ChatAnswer {
 	 * in the prose; drives the clickable PDF superscripts). */
 	sites: CitationSite[];
 	/** Retrieval trail: every excerpt that was in the prompt. */
-	chunks: Array<{ id: number; page: number; score: number; text: string; lexical?: boolean }>;
+	chunks: Array<{ id: number; page: number; score: number; text: string; lexical?: boolean; phrase_words?: number }>;
 	/** Queries of the ONE embed call (original + disclosed English variant). */
 	query_variants: QueryVariant[];
 	/** Salient terms the lexical layer exact-matched over the chunk texts. */
@@ -1053,6 +1070,7 @@ export async function runRound(options: ChatOptions, deps?: ChatDeps): Promise<C
 		text: chunk.text,
 		...(multi ? { paper_key: chunk.paper.key } : {}),
 		...(chunk.lexical ? { lexical: true } : {}),
+		...(chunk.phrase_words ? { phrase_words: chunk.phrase_words } : {}),
 	}));
 
 	// 6. Persist the validated round. A write failure must never lose the
@@ -1175,7 +1193,7 @@ export interface ChatReport {
 	/** Per-marker chunk provenance in document order (one entry per marker
 	 * in the prose; drives the clickable PDF superscripts). */
 	sites: CitationSite[];
-	chunks: Array<{ id: number; page: number; score: number; text: string; lexical?: boolean }>;
+	chunks: Array<{ id: number; page: number; score: number; text: string; lexical?: boolean; phrase_words?: number }>;
 	/** Queries of the ONE embed call (originals + disclosed English variants). */
 	query_variants: QueryVariant[];
 	/** Salient terms the lexical layer exact-matched over the chunk texts. */
@@ -1325,6 +1343,7 @@ export async function runChatReport(options: ChatReportOptions, deps?: ChatDeps)
 			score: Number(chunk.score.toFixed(4)),
 			text: chunk.text,
 			...(chunk.lexical ? { lexical: true } : {}),
+			...(chunk.phrase_words ? { phrase_words: chunk.phrase_words } : {}),
 		})),
 		query_variants: retrieval.variants,
 		lexical_terms: retrieval.lexical_terms,
@@ -1476,7 +1495,7 @@ export interface ReportUnit {
 	 * assembleReport before the report is returned. */
 	references: ReferenceEntry[];
 	sites: CitationSite[];
-	chunks: Array<{ id: number; paper_key: string; page: number; score: number; text: string; lexical?: boolean }>;
+	chunks: Array<{ id: number; paper_key: string; page: number; score: number; text: string; lexical?: boolean; phrase_words?: number }>;
 	query_variants: QueryVariant[];
 	lexical_terms: string[];
 	lexical_added: number;
@@ -1694,6 +1713,7 @@ export async function runReport(options: ReportOptions, deps?: ChatDeps): Promis
 				score: Number(chunk.score.toFixed(4)),
 				text: chunk.text,
 				...(chunk.lexical ? { lexical: true } : {}),
+				...(chunk.phrase_words ? { phrase_words: chunk.phrase_words } : {}),
 			})),
 			query_variants: retrieval.variants,
 			lexical_terms: retrieval.lexical_terms,

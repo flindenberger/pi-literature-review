@@ -20,8 +20,18 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-import { chunkPages, cleanPageText, extractPdfPages, isExtractionUsable } from "./extract.ts";
+import {
+	type BibliographyCut,
+	chunkPages,
+	CHUNK_SIGNATURE,
+	cleanPageText,
+	extractPdfPages,
+	isExtractionUsable,
+	stripBibliography,
+	verifiedPhraseWords,
+} from "./extract.ts";
 import { identifierSlug, loadSidecarIndex, paperFilename, parseIdentifier, type SidecarEntry } from "./fetch.ts";
+import { viewerPageTexts } from "./pdfjs-find.ts";
 import { identityKey } from "./pipeline.ts";
 
 export interface LibraryPaper {
@@ -157,22 +167,32 @@ export function matchLibrary(root: string, onWarn: (message: string) => void): L
 }
 
 /* ------------------------------------------------------------------ *
- * Embedding index -- one JSON per paper, hash+model invalidation      *
+ * Embedding index -- one JSON per paper, hash+model+chunking          *
+ * invalidation                                                        *
  * ------------------------------------------------------------------ */
 
-export const INDEX_SCHEMA = 1;
+/** 2 (2026-07-27): indexes carry the chunking signature. Schema 1 files
+ * predate the 1000/300/150 cut and are silently re-indexed -- an index is
+ * derived data, the PDF stays the ground truth. */
+export const INDEX_SCHEMA = 2;
 
 export interface IndexedChunk {
 	id: number;
 	page: number;
 	text: string;
 	embedding: number[];
+	/** Leading words of `text` VERIFIED at index time against the viewer's
+	 * own rendering of the page, and therefore highlightable in the PDF
+	 * (see verifiedPhraseWords); 0 = no highlight, page link only. */
+	phrase_words: number;
 }
 
 export interface PaperIndex {
 	schema: number;
 	sha256: string;
 	embedding_model: string;
+	/** CHUNK_SIGNATURE the chunks were cut with; part of cache validity. */
+	chunking: string;
 	paper: {
 		key: string;
 		title: string;
@@ -194,6 +214,11 @@ export interface CorpusDeps {
 	sha256(bytes: Uint8Array): string;
 	/** Raw per-page text (extractPdfPages); cleanup happens here. */
 	extract(bytes: Uint8Array): Promise<string[]>;
+	/** Per-page text as the PDF VIEWER searches it (viewerPageTexts), used
+	 * to verify the highlight phrase of every chunk. Optional: without it
+	 * chunks carry no verified phrase and links fall back to the timid
+	 * clean-word snippet -- offline tests inject nothing here. */
+	viewerPages?(bytes: Uint8Array): Promise<string[]>;
 	embed(texts: string[], signal?: AbortSignal): Promise<number[][]>;
 	loadIndex(file: string): PaperIndex | null;
 	saveIndex(file: string, index: PaperIndex): void;
@@ -206,6 +231,7 @@ export function realCorpusDeps(embed: CorpusDeps["embed"]): CorpusDeps {
 		readPdf: (path) => readFileSync(path),
 		sha256: (bytes) => createHash("sha256").update(bytes).digest("hex"),
 		extract: extractPdfPages,
+		viewerPages: viewerPageTexts,
 		embed,
 		loadIndex: (file) => {
 			try {
@@ -260,7 +286,8 @@ export async function ensureIndexed(
 			// gives it a verified identity, or its citations would keep the
 			// stale unverified label.
 			if (cached && cached.schema === INDEX_SCHEMA && cached.sha256 === hash
-				&& cached.embedding_model === embeddingModel && cached.paper.key === paper.key) {
+				&& cached.embedding_model === embeddingModel && cached.paper.key === paper.key
+				&& cached.chunking === CHUNK_SIGNATURE) {
 				indexes.push(cached);
 				progress(`index ${i + 1}/${papers.length}: ${paper.base} (cached)`);
 				continue;
@@ -268,8 +295,15 @@ export async function ensureIndexed(
 		}
 		progress(`index ${i + 1}/${papers.length}: ${paper.base} (extracting)`);
 		let pages: string[];
+		let bibliography: BibliographyCut = { pages: [], removed: 0, page: null };
 		try {
-			pages = (await deps.extract(bytes)).map(cleanPageText);
+			// The reference list is removed BEFORE cleanup and chunking: its
+			// entries are titles of other work, they answer nothing about this
+			// paper, and they cost a fifth of the index (user decision
+			// 2026-07-27). Page positions are preserved, so page numbers and
+			// the highlight verification below stay exact.
+			bibliography = stripBibliography(await deps.extract(bytes));
+			pages = bibliography.pages.map(cleanPageText);
 		} catch (error) {
 			failures.push({
 				file: `${paper.base}.pdf`,
@@ -282,12 +316,29 @@ export async function ensureIndexed(
 			continue;
 		}
 		const chunks = chunkPages(pages);
+		if (bibliography.page) {
+			progress(`index ${i + 1}/${papers.length}: ${paper.base} `
+				+ `(reference list from page ${bibliography.page} excluded from the search)`);
+		}
+		// A second read of the SAME bytes, this time as the PDF viewer sees
+		// them: the highlight phrase of each chunk is verified against that
+		// text. A failure here costs highlights, never the index itself.
+		let viewerPages: string[] = [];
+		if (deps.viewerPages) {
+			try {
+				viewerPages = await deps.viewerPages(bytes);
+			} catch (error) {
+				progress(`index ${i + 1}/${papers.length}: ${paper.base} (no PDF highlights: `
+					+ `${error instanceof Error ? error.message : error})`);
+			}
+		}
 		progress(`index ${i + 1}/${papers.length}: ${paper.base} (embedding ${chunks.length} chunks)`);
 		const vectors = await deps.embed(chunks.map((chunk) => chunk.text), options.signal);
 		const index: PaperIndex = {
 			schema: INDEX_SCHEMA,
 			sha256: hash,
 			embedding_model: embeddingModel,
+			chunking: CHUNK_SIGNATURE,
 			paper: {
 				key: paper.key,
 				title: paper.entry.title,
@@ -296,7 +347,13 @@ export async function ensureIndexed(
 				doi: paper.entry.doi,
 				arxiv_id: paper.entry.arxiv_id,
 			},
-			chunks: chunks.map((chunk, id) => ({ id, page: chunk.page, text: chunk.text, embedding: vectors[id] })),
+			chunks: chunks.map((chunk, id) => ({
+				id,
+				page: chunk.page,
+				text: chunk.text,
+				embedding: vectors[id],
+				phrase_words: verifiedPhraseWords(chunk.text, viewerPages[chunk.page - 1] ?? ""),
+			})),
 		};
 		deps.saveIndex(indexFile, index);
 		indexes.push(index);

@@ -7,7 +7,8 @@
  */
 
 import assert from "node:assert/strict";
-import type { CorpusDeps, LibraryMatch, PaperIndex } from "./corpus.ts";
+import { type CorpusDeps, INDEX_SCHEMA, type LibraryMatch, type PaperIndex } from "./corpus.ts";
+import { CHUNK_SIGNATURE } from "./extract.ts";
 import type { GenerateOptions } from "./llm.ts";
 import {
 	buildPrompt,
@@ -42,14 +43,14 @@ const paperB: PaperIndex["paper"] = {
 };
 
 const indexA: PaperIndex = {
-	schema: 1, sha256: "hash-a", embedding_model: "fake-embed", paper: paperA,
+	schema: INDEX_SCHEMA, chunking: CHUNK_SIGNATURE, sha256: "hash-a", embedding_model: "fake-embed", paper: paperA,
 	chunks: [
 		{ id: 0, page: 2, text: "Sandbars were mapped with Sentinel-2 imagery.", embedding: [1, 0] },
 		{ id: 1, page: 5, text: "Alternate bars appear along the Vistula reach.", embedding: [0.9, 0.1] },
 	],
 };
 const indexB: PaperIndex = {
-	schema: 1, sha256: "hash-b", embedding_model: "fake-embed", paper: paperB,
+	schema: INDEX_SCHEMA, chunking: CHUNK_SIGNATURE, sha256: "hash-b", embedding_model: "fake-embed", paper: paperB,
 	chunks: [
 		{ id: 0, page: 1, text: "Rio Negro water surfaces contracted during the drought.", embedding: [0, 1] },
 	],
@@ -165,6 +166,21 @@ const indexB: PaperIndex = {
 	assert.equal(sites[0].paper_key, paperA.key);
 	assert.equal(sites[0].snippet, "The adaptive threshold separates water"); // clean-word run for the PDF highlight
 	assert.equal(sites[2].snippet, null); // too short for a distinctive phrase
+}
+{
+	// A chunk carrying a VERIFIED phrase length highlights that whole span
+	// instead of the timid clean-word guess (2026-07-27). The guess remains
+	// for chunks without the field -- see the case above.
+	const text = "The adaptive threshold separates water, sediment and vegetation reliably.";
+	const chunks: RetrievedChunk[] = [
+		{ id: 1, paper: paperA, page: 2, score: 0.9, text, phrase_words: 9 },
+		{ id: 2, paper: paperA, page: 3, score: 0.8, text, phrase_words: 0 },
+	];
+	const { sites } = buildCitations("Full span [1]. Nothing verified [2].", chunks);
+	assert.equal(sites[0].snippet, "The adaptive threshold separates water, sediment and vegetation reliably.");
+	// phrase_words 0 = the raw text layer did not match; fall back to the
+	// guess, which stops at the comma -- exactly the timidity being replaced.
+	assert.equal(sites[1].snippet, "The adaptive threshold separates");
 }
 {
 	// No markers, no sites; unknown markers pass through untouched.

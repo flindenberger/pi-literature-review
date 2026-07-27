@@ -11,12 +11,35 @@
  * never silently included as empty context.
  */
 
-/** Retrieval chunk target: ~350-400 tokens of academic prose. */
-export const CHUNK_TARGET_CHARS = 1600;
+import { viewerFindsPhrase } from "./pdfjs-find.ts";
+
+/**
+ * Retrieval chunk target: ~250 tokens of academic prose.
+ *
+ * MEASURED, not guessed (experiments/chunk-eval.ts, 2026-07-27, 8
+ * human-verified passages over 3 papers, bge-m3): against the previous
+ * 1600/400/200 not one case ranked worse and four ranked better (median
+ * rank 2 -> 1, worst 4 -> 3), while the text ONE citation marker covers
+ * fell from ~1550 to ~900 characters -- the point of the change, since a
+ * superscript should send the reader to a paragraph, not half a page.
+ *
+ * Do not shrink this further without a mechanism for context-poor pieces:
+ * at 600 the same measurement collapsed on a results table (rank 3 ->
+ * 159). A small piece cut out of a table is number soup; what made it
+ * findable at 1600 was the page header that happened to share the chunk.
+ */
+export const CHUNK_TARGET_CHARS = 1000;
 /** Trailing fragments below this merge into the previous chunk. */
-export const CHUNK_MIN_CHARS = 400;
-/** Carried over from the previous chunk so no claim is cut mid-thought. */
-export const CHUNK_OVERLAP_CHARS = 200;
+export const CHUNK_MIN_CHARS = 300;
+/** Carried over from the previous chunk so no claim is cut mid-thought.
+ * Held at ~15 % of the target: more is duplicated text in the prompt. */
+export const CHUNK_OVERLAP_CHARS = 150;
+
+/** Identity of everything that shapes the chunks, stored in every index.
+ * Any change here MUST invalidate cached indexes -- otherwise pieces made
+ * by old and new rules are ranked against each other in the same
+ * retrieval. "nobib" marks the bibliography removal (stripBibliography). */
+export const CHUNK_SIGNATURE = `${CHUNK_TARGET_CHARS}/${CHUNK_MIN_CHARS}/${CHUNK_OVERLAP_CHARS}+nobib`;
 
 /** Extraction gate: below these, the PDF has no usable text layer. */
 const MIN_TOTAL_LETTERS = 200;
@@ -53,6 +76,109 @@ export function cleanPageText(raw: string): string {
 		.replace(/(\p{L})-\n\s*([\p{L}\p{N}])/gu, "$1-$2")
 		.replace(/\s+/g, " ")
 		.trim();
+}
+
+/* ------------------------------------------------------------------ *
+ * Bibliography removal                                                 *
+ * ------------------------------------------------------------------ */
+
+/** Section headings that open a reference list, as a line of their own
+ * (optionally numbered, optionally with a colon). */
+const BIBLIOGRAPHY_HEADING =
+	/^\s*(?:\d+(?:\.\d+)*\.?\s+)?(?:references?(?:\s+list)?|bibliography|literature\s+cited|works\s+cited|literatur(?:verzeichnis)?|quellen(?:verzeichnis)?|referencias|bibliograf[ií]a|r[ée]f[ée]rences)\s*:?\s*$/i;
+
+/** Headings that end a reference list: real content follows again. Kept
+ * deliberately narrow -- only sections that carry substance. Front matter
+ * that sometimes trails the list (acknowledgements, author contributions,
+ * funding) is NOT here: resuming there would un-cut everything behind it,
+ * including reference lists that follow. */
+const AFTER_BIBLIOGRAPHY_HEADING =
+	/^\s*(?:\d+(?:\.\d+)*\.?\s+)?(?:appendi(?:x|ces)|annex|anhang|supplement(?:ary|al)?(?:\s+(?:material|information))?|supporting\s+information|ap[ée]ndice)\b/i;
+
+/** A heading in the first part of a document is a table-of-contents entry
+ * or a forward reference, not the list itself. */
+const BIBLIOGRAPHY_MIN_POSITION = 0.4;
+/** Cutting more than this is a sign the detection went wrong; then nothing
+ * is cut and the honest cost is a few reference chunks in the index. */
+const BIBLIOGRAPHY_MAX_SHARE = 0.6;
+
+export interface BibliographyCut {
+	/** Pages with the reference list blanked out; the ARRAY LENGTH and all
+	 * page positions are preserved, so page numbers stay exact. */
+	pages: string[];
+	/** Characters removed (0 when nothing was detected or the guard hit). */
+	removed: number;
+	/** 1-based page the reference list starts on; null when none was found. */
+	page: number | null;
+}
+
+/**
+ * Blank out the reference list of a paper. Its entries are titles of OTHER
+ * work: they answer no question about THIS paper, they occupy a fifth of
+ * the index, and they occasionally win an excerpt slot with a title that
+ * happens to match the question (user observation 2026-07-27).
+ *
+ * Deterministic and conservative:
+ *   - the heading must stand on a LINE OF ITS OWN and sit in the last 60 %
+ *     of the text, so a table-of-contents entry or "see the references"
+ *     inside a sentence never triggers it;
+ *   - everything from there is dropped UNTIL an appendix-like heading, if
+ *     one follows -- appendices carry content and often sit behind the
+ *     reference list;
+ *   - if the cut would swallow more than BIBLIOGRAPHY_MAX_SHARE of the
+ *     text, nothing is cut at all;
+ *   - no heading found (many preprints) means no cut.
+ *
+ * Runs on RAW pages, before cleanPageText collapses the line structure.
+ * Pure.
+ */
+export function stripBibliography(rawPages: string[]): BibliographyCut {
+	const total = rawPages.reduce((sum, page) => sum + page.length, 0);
+	if (!total) return { pages: rawPages, removed: 0, page: null };
+
+	let seen = 0;
+	let start: { page: number; line: number } | null = null;
+	for (const [pageIndex, page] of rawPages.entries()) {
+		const lines = page.split("\n");
+		for (const [lineIndex, line] of lines.entries()) {
+			if (!start && BIBLIOGRAPHY_HEADING.test(line) && seen / total >= BIBLIOGRAPHY_MIN_POSITION) {
+				start = { page: pageIndex, line: lineIndex };
+			}
+			seen += line.length + 1;
+		}
+		if (start) break;
+	}
+	if (!start) return { pages: rawPages, removed: 0, page: null };
+
+	// Where content resumes (appendix and friends), if it does.
+	let end: { page: number; line: number } | null = null;
+	for (let pageIndex = start.page; pageIndex < rawPages.length && !end; pageIndex++) {
+		const lines = rawPages[pageIndex].split("\n");
+		for (const [lineIndex, line] of lines.entries()) {
+			if (pageIndex === start.page && lineIndex <= start.line) continue;
+			if (AFTER_BIBLIOGRAPHY_HEADING.test(line.trim()) && line.trim().length <= 60) {
+				end = { page: pageIndex, line: lineIndex };
+				break;
+			}
+		}
+	}
+
+	const kept = rawPages.map((page, pageIndex) => {
+		if (pageIndex < start.page) return page;
+		if (end && pageIndex > end.page) return page;
+		const lines = page.split("\n");
+		return lines.filter((_, lineIndex) => {
+			const afterStart = pageIndex > start.page || lineIndex >= start.line;
+			const beforeEnd = !end || pageIndex < end.page || lineIndex < end.line;
+			return !(afterStart && beforeEnd);
+		}).join("\n");
+	});
+
+	const removed = total - kept.reduce((sum, page) => sum + page.length, 0);
+	if (removed / total > BIBLIOGRAPHY_MAX_SHARE) {
+		return { pages: rawPages, removed: 0, page: null }; // detection looks wrong
+	}
+	return { pages: kept, removed, page: start.page + 1 };
 }
 
 /** True when the pages carry a real text layer (see gate constants). */
@@ -124,4 +250,64 @@ export function chunkPages(pages: string[], options: ChunkOptions = {}): PageChu
 		flush();
 	}
 	return chunks;
+}
+
+/* ------------------------------------------------------------------ *
+ * Verified highlight phrase                                           *
+ * ------------------------------------------------------------------ */
+
+/** Shorter runs carry no signal and would light up half the page. */
+export const PHRASE_MIN_WORDS = 3;
+/** Upper bound; a chunk of CHUNK_TARGET_CHARS holds roughly this many
+ * words, so in practice the whole excerpt is offered for highlighting. */
+export const PHRASE_MAX_WORDS = 200;
+
+/**
+ * How many LEADING words of a chunk the PDF viewer can actually highlight.
+ *
+ * Our chunk text is cleaned (hyphenated line breaks joined, page furniture
+ * dropped) while the viewer searches its OWN rendering of the text layer,
+ * and where the two diverge a search phrase silently finds nothing. The
+ * length is therefore not guessed but MEASURED here, once per chunk at
+ * index time: the longest leading run that viewerFindsPhrase() confirms,
+ * found by binary search over the word count. `viewerPage` must come from
+ * viewerPageTexts() -- an approximation of it is not good enough, see the
+ * ligature case documented in pdfjs-find.ts. Pure.
+ *
+ * Measured 2026-07-27 on the test corpus: most excerpts are highlightable
+ * in full; the rest are cut short where our cleanup removed something the
+ * viewer still sees, and a small remainder gets no highlight at all --
+ * there the reader still lands on the right page, which is the honest
+ * offer.
+ *
+ * Returns 0 when nothing usable matches.
+ */
+export function verifiedPhraseWords(
+	chunkText: string,
+	viewerPage: string,
+	maxWords: number = PHRASE_MAX_WORDS,
+): number {
+	const words = chunkText.split(/\s+/).filter(Boolean);
+	const cap = Math.min(words.length, maxWords);
+	if (cap < PHRASE_MIN_WORDS || !viewerPage) return 0;
+	const finds = (count: number): boolean =>
+		viewerFindsPhrase(words.slice(0, count).join(" "), viewerPage);
+	if (!finds(PHRASE_MIN_WORDS)) return 0;
+	// Invariant: PHRASE_MIN_WORDS matches, cap + 1 does not.
+	let low = PHRASE_MIN_WORDS;
+	let high = cap;
+	while (low < high) {
+		const middle = Math.ceil((low + high) / 2);
+		if (finds(middle)) low = middle;
+		else high = middle - 1;
+	}
+	return low;
+}
+
+/** The verified phrase itself, rebuilt from the same word split that
+ * measured it. Null when the chunk carries no usable run. */
+export function phraseOf(chunkText: string, phraseWords: number | undefined): string | null {
+	if (!phraseWords || phraseWords < PHRASE_MIN_WORDS) return null;
+	const words = chunkText.split(/\s+/).filter(Boolean).slice(0, phraseWords);
+	return words.length >= PHRASE_MIN_WORDS ? words.join(" ") : null;
 }

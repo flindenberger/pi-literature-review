@@ -44,6 +44,10 @@ export interface RetrievedChunk {
 	lexical?: boolean;
 	/** The salient terms that matched (set together with lexical). */
 	terms?: string[];
+	/** Leading words of `text` verified against the raw PDF text layer at
+	 * index time -- the span a PDF link may highlight. Absent on chunks
+	 * from legacy indexes and hand-built test fixtures. */
+	phrase_words?: number;
 }
 
 export function cosine(a: number[], b: number[]): number {
@@ -71,6 +75,7 @@ export function topKChunks(queryVector: number[], indexes: PaperIndex[], k: numb
 				page: chunk.page,
 				score: cosine(queryVector, chunk.embedding),
 				text: chunk.text,
+				phrase_words: chunk.phrase_words,
 			});
 		}
 	}
@@ -291,6 +296,8 @@ export interface LexicalHit {
 	/** Chunk embedding, kept so retrieve() can report an honest similarity
 	 * score for lexical-only additions. */
 	embedding: number[];
+	/** Verified highlight length, carried through like on any other chunk. */
+	phrase_words?: number;
 }
 
 /**
@@ -321,7 +328,14 @@ export function lexicalMatches(terms: string[], indexes: PaperIndex[]): LexicalH
 				.filter(({ pattern }) => pattern.test(chunk.text))
 				.map(({ term }) => term);
 			if (matched.length) {
-				hits.push({ paper: index.paper, page: chunk.page, text: chunk.text, terms: matched, embedding: chunk.embedding });
+				hits.push({
+					paper: index.paper,
+					page: chunk.page,
+					text: chunk.text,
+					terms: matched,
+					embedding: chunk.embedding,
+					phrase_words: chunk.phrase_words,
+				});
 			}
 		}
 	}
@@ -438,6 +452,7 @@ export async function retrieve(options: RetrieveOptions): Promise<RetrievalResul
 			score: Math.max(...vectors.map((vector) => cosine(vector, hit.embedding))),
 			lexical: true as const,
 			terms: hit.terms,
+			phrase_words: hit.phrase_words,
 		}));
 	const chunks = [...kept, ...additions].map((chunk, i) => ({ ...chunk, id: i + 1 }));
 	if (additions.length) {

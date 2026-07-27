@@ -219,7 +219,17 @@ number; fixed code validates every marker, strips fabricated ones
 search records. A result without a single valid citation is flagged
 `grounded: false` and rendered with an unmissable warning. PDFs are
 indexed once (extraction, chunking, embeddings under `index/`, invalidated
-by content hash and embedding model); scanned PDFs are excluded and named.
+by content hash, embedding model and chunking signature); scanned PDFs are
+excluded and named. A paper's REFERENCE LIST is cut before chunking: its
+entries are titles of other work, they answer nothing about this paper,
+and they cost a fifth of the index -- in one measured case four of the
+eight excerpts handed to the model were bibliography. Detection is
+conservative (heading on a line of its own, in the back half of the text,
+appendices behind the list survive, an implausibly large cut is skipped)
+and disclosed in the report's technical details. Chunks target ~1000 characters: measured against the
+previous 1600 on human-verified passages, no case retrieved worse, four
+retrieved better, and the text one citation marker covers dropped by some
+40 % (`experiments/chunk-eval.ts` reproduces the measurement).
 Loose PDFs are adopted automatically when their own DOI/arXiv ID can be
 extracted from the PDF text and verified by an API lookup; whatever stays
 unverified is still usable -- cited honestly by filename and page.
@@ -292,9 +302,19 @@ collapsed table listing only that paper's cited entries, global numbers
 kept), not at the page bottom. Technical transparency (passage search,
 query variants, word search, quality check) sits in a collapsed block
 explained in plain language. Citation superscripts open the source PDF at
-the cited page (Firefox also highlights the passage; Chromium opens the
-page); a tiny inline script opens collapsed blocks when an in-page anchor
-is navigated. Single-paper reports number the cited PASSAGES instead of a
+the cited page and highlight the WHOLE cited passage, not a five-word
+snippet: at index time the code measures per chunk how many leading words
+the viewer can actually find and stores that length, so a phrase is only
+offered when it demonstrably matches (Firefox highlights it; Chromium
+opens the page and ignores the search). "Actually" is meant literally --
+`src/pdfjs-find.ts` reproduces pdf.js's own text normalization and query
+handling, read out of the installed browser, because approximating it
+silently loses highlights (a ligature in front of a hyphenated line break
+defeats the viewer's word repair, which our extraction cannot see). Where
+the two genuinely diverge the phrase is cut short, and where even the
+first words diverge no phrase is offered at all -- the page link stays.
+On the test corpus 90-99 % of excerpts highlight in full. A tiny inline
+script opens collapsed blocks when an in-page anchor is navigated. Single-paper reports number the cited PASSAGES instead of a
 one-row reference table; multi-paper reports keep scholarly paper-level
 numbering.
 
@@ -394,7 +414,8 @@ node src/digest.test.ts      # agent-facing digest (counts, reference lines, cap
 node src/intake.test.ts      # intake helpers (group syntax, AND/OR display, year ranges)
 node src/fetch.test.ts       # fetch engine (identifiers, resolver chain, naming, report)
 node src/config.test.ts      # config paths (XDG/APPDATA), email plausibility, LLM/chat model slots
-node src/extract.test.ts     # PDF text cleanup, usability gate, chunking
+node src/extract.test.ts     # PDF text cleanup, usability gate, chunking, highlight span
+node src/pdfjs-find.test.ts  # replica of the PDF viewer's find (highlight verification)
 node src/corpus.test.ts      # library matching and the embedding index cache
 node src/llm.test.ts         # backend clients (Ollama / OpenAI-compatible)
 node src/adopt.test.ts       # adoption of loose PDFs (identifier from PDF text)
