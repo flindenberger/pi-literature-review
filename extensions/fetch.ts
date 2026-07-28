@@ -34,19 +34,23 @@ const FETCH_WIDGET = "pi-literature-review-fetch";
 /** The bare-command identifier intake (v29.1: every bare command opens its
  * dialog directly; the agent handoff is gone). */
 const FETCH_TEXT: Record<DialogLang, {
+	/** Line above the tab bar: which dialog this is (v30.12). */
+	header: string;
 	idTab: string;
 	idTitle: string;
 	idPlaceholder: string;
 	noIds: string;
 }> = {
 	de: {
-		idTab: "Papiere",
-		idTitle: "Welche Papiere herunterladen? DOIs / arXiv-IDs, durch Leerzeichen oder Komma getrennt -- "
+		header: "/lit-fetch -- Paper/Artikel herunterladen (Esc bricht ab)",
+		idTab: "Artikel",
+		idTitle: "Welche Paper/Artikel herunterladen? DOIs / arXiv-IDs, durch Leerzeichen oder Komma getrennt -- "
 			+ "oder die Zeile \"Download these papers: ...\" von der Suchseite einfügen.",
 		idPlaceholder: "z. B. 10.3390/rs13081505 arXiv:2401.16393",
 		noIds: "Keine Identifier angegeben -- nichts wurde heruntergeladen.",
 	},
 	en: {
+		header: "/lit-fetch -- download papers (Esc cancels)",
 		idTab: "Papers",
 		idTitle: "Which papers to download? DOIs / arXiv IDs separated by spaces or commas -- "
 			+ "or paste the \"Download these papers: ...\" line from the search page.",
@@ -79,8 +83,10 @@ async function identifiersDialog(
 		tab: text.idTab,
 		title: text.idTitle,
 		placeholder: text.idPlaceholder,
+		// v30: identifiers are no questions -- no "N question(s)" counter.
+		plain: true,
 	}];
-	const result = await runWizard(ctx, steps, signal, { lang, skipSubmit: true });
+	const result = await runWizard(ctx, steps, signal, { lang, header: text.header, skipSubmit: true });
 	if (result === null) return null;
 	return splitIdentifiers(typeof result.identifiers === "string" ? result.identifiers : "");
 }

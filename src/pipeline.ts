@@ -121,14 +121,40 @@ export interface ResultFilters {
 	/** Keep records with at least this many citations. Records with an
 	 * UNKNOWN count (cites: null, e.g. arXiv) pass -- visible as null. */
 	minCites?: number;
+	/** Keep records whose journal 2-yr citedness (OpenAlex, an open JIF
+	 * analog attached by enrichment) is at least this. Records WITHOUT a
+	 * score (preprints, unmatched venues) pass -- absence of the score is
+	 * not evidence against the paper (v30 user decision: filters are
+	 * strictly opt-in and never silently lose the unknown). */
+	minJournalScore?: number;
 	/** Keep records published in [yearFrom, yearTo]. A record with unknown
 	 * year cannot prove it is in range and is dropped, with a reason. */
 	yearFrom?: number;
 	yearTo?: number;
 	/** Keep records whose venue contains one of these strings
 	 * (case-insensitive). Venue-less records (e.g. arXiv preprints) do not
-	 * match a venue request and are dropped, with a reason. */
+	 * match a venue request and are dropped, with a reason -- UNLESS
+	 * venuesOther is set (see below). */
 	venues?: string[];
+	/** v30.11: also keep records that belong to NO journal on the picker's
+	 * list -- the "Other journals/sources" row. Venue-less records (arXiv,
+	 * preprints) count as "other" and pass. Without venuesListed the row
+	 * cannot know what "other" excludes, so nothing is filtered at all. */
+	venuesOther?: boolean;
+	/** The journal names the picker LISTED (its top-N facet head). Only
+	 * read together with venuesOther: a record whose venue matches none of
+	 * these is "other". */
+	venuesListed?: string[];
+	/** Keep records where at least one AUTHOR NAME contains one of these
+	 * strings (case-insensitive; v30.9). Author names are API metadata;
+	 * records without any matching author are dropped, with a reason --
+	 * UNLESS authorsOther is set (see below). */
+	authors?: string[];
+	/** v30.11: also keep records by authors who are NOT on the picker's
+	 * list -- the "Other authors" row. Same shape as venuesOther. */
+	authorsOther?: boolean;
+	/** The author names the picker LISTED (its top-N facet head). */
+	authorsListed?: string[];
 	/** Keep only records with a direct PDF link. */
 	requirePdf?: boolean;
 	/** Keep only records whose identifier resolved (verified: true). */
@@ -139,14 +165,23 @@ interface FilterableRecord {
 	cites: number | null;
 	year: string | null;
 	venue: string;
+	authors: string[];
 	pdf_url: string;
 	verified: boolean;
+	journal_2yr_citedness?: number;
 }
 
 /** Reason a record fails the filters, or null if it passes. Fixed strings. */
 function filterReason(record: FilterableRecord, filters: ResultFilters): string | null {
 	if (filters.minCites !== undefined && record.cites !== null && record.cites < filters.minCites) {
 		return `filtered: ${record.cites} citation(s) < requested minimum ${filters.minCites}`;
+	}
+	if (
+		filters.minJournalScore !== undefined
+		&& typeof record.journal_2yr_citedness === "number"
+		&& record.journal_2yr_citedness < filters.minJournalScore
+	) {
+		return `filtered: journal score ${record.journal_2yr_citedness} < requested minimum ${filters.minJournalScore}`;
 	}
 	const year = record.year !== null && /^\d{4}$/.test(record.year) ? Number(record.year) : null;
 	if ((filters.yearFrom !== undefined || filters.yearTo !== undefined) && year === null) {
@@ -158,13 +193,40 @@ function filterReason(record: FilterableRecord, filters: ResultFilters): string 
 	if (filters.yearTo !== undefined && year !== null && year > filters.yearTo) {
 		return `filtered: published ${year}, after requested ${filters.yearTo}`;
 	}
-	if (filters.venues?.length) {
-		if (!record.venue) {
-			return "filtered: no venue in the metadata (e.g. preprint), cannot match requested venues";
+	const wantedVenues = (filters.venues ?? []).map((name) => name.trim().toLowerCase()).filter(Boolean);
+	const listedVenues = (filters.venuesListed ?? []).map((name) => name.trim().toLowerCase()).filter(Boolean);
+	// "Other journals/sources" without a list of what IS listed excludes
+	// nothing -- the venue filter is then off, honestly (v30.11).
+	const otherWanted = !!filters.venuesOther && listedVenues.length > 0;
+	if (wantedVenues.length || otherWanted) {
+		const venue = record.venue.trim().toLowerCase();
+		const matchesWanted = !!venue && wantedVenues.some((wanted) => venue.includes(wanted));
+		// A record whose venue is on the picker's list but was not selected
+		// is not "other"; a venue-less record (preprint) always is.
+		const isListed = !!venue && listedVenues.some((listed) => venue.includes(listed));
+		if (!matchesWanted && !(otherWanted && !isListed)) {
+			if (!record.venue) {
+				return "filtered: no venue in the metadata (e.g. preprint), cannot match requested venues";
+			}
+			return otherWanted
+				? `filtered: venue "${record.venue}" is a listed journal that was not selected`
+				: `filtered: venue "${record.venue}" matches none of the requested venues`;
 		}
-		const venue = record.venue.toLowerCase();
-		if (!filters.venues.some((wanted) => venue.includes(wanted.trim().toLowerCase()))) {
-			return `filtered: venue "${record.venue}" matches none of the requested venues`;
+	}
+	const wantedAuthors = (filters.authors ?? []).map((name) => name.trim().toLowerCase()).filter(Boolean);
+	const listedAuthors = (filters.authorsListed ?? []).map((name) => name.trim().toLowerCase()).filter(Boolean);
+	// Same rule as the journals above (v30.11): "other authors" without a
+	// list of who IS listed excludes nobody.
+	const otherAuthorsWanted = !!filters.authorsOther && listedAuthors.length > 0;
+	if (wantedAuthors.length || otherAuthorsWanted) {
+		const names = record.authors.map((author) => author.toLowerCase());
+		const matchesWanted = names.some((author) => wantedAuthors.some((name) => author.includes(name)));
+		// "Other" means: none of this record's authors is on the listed head.
+		const hasListed = names.some((author) => listedAuthors.some((name) => author.includes(name)));
+		if (!matchesWanted && !(otherAuthorsWanted && !hasListed)) {
+			return otherAuthorsWanted
+				? "filtered: only listed authors that were not selected"
+				: `filtered: no author matches ${(filters.authors ?? []).join(", ")}`;
 		}
 	}
 	if (filters.requirePdf && !record.pdf_url) {
@@ -257,16 +319,22 @@ export function termMatches(text: string, term: string): boolean {
 
 /**
  * Deterministic on_target/adjacent split -- fixed matching code, never an
- * LLM. Everything not matching every term group is adjacent. A small
- * on_target set is correct; the list is never padded.
+ * LLM. By default every term group must match; minGroups relaxes that to
+ * "at least this many groups" (v30.3: the wide "any two concepts"
+ * variant -- (a AND b) OR (a AND c) OR (b AND c) expressed without a DNF
+ * rule format). A small on_target set is correct; never padded.
  */
 export function group(
 	record: { title: string; abstract: string },
 	termGroups: TermGroups,
+	minGroups?: number,
 ): "on_target" | "adjacent" {
 	const text = `${record.title} ${record.abstract}`.toLowerCase();
-	const hit = termGroups.every((groupTerms) => groupTerms.some((term) => termMatches(text, term)));
-	return hit ? "on_target" : "adjacent";
+	const required = Math.min(minGroups ?? termGroups.length, termGroups.length);
+	const matched = termGroups
+		.filter((groupTerms) => groupTerms.some((term) => termMatches(text, term)))
+		.length;
+	return matched >= required && required > 0 ? "on_target" : "adjacent";
 }
 
 /**
@@ -277,9 +345,10 @@ export function group(
 export function groupAll<T extends { title: string; abstract: string }>(
 	records: T[],
 	termGroups: TermGroups,
+	minGroups?: number,
 ): Array<T & { group?: "on_target" | "adjacent" }> {
 	if (!termGroups.length) return records;
-	const grouped = records.map((record) => ({ ...record, group: group(record, termGroups) }));
+	const grouped = records.map((record) => ({ ...record, group: group(record, termGroups, minGroups) }));
 	return [
 		...grouped.filter((r) => r.group === "on_target"),
 		...grouped.filter((r) => r.group === "adjacent"),

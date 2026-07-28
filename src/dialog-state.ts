@@ -131,7 +131,23 @@ export function checkboxLines(state: CheckboxState, selectAllLabel: string): Che
 
 export interface WizardChoiceOption {
 	value: string;
-	label: string;
+	/** Main row text. A function receives the live answers (v30.5: the
+	 * grouping variants show the derived EXPRESSION as the main row, the
+	 * variant name as the dim line below). */
+	label: string | ((answers: WizardAnswers) => string);
+	/** Explanation line under the label (v30.2, the rpiv look), dim by
+	 * default. A function receives the live answers -- the grouping
+	 * variants show the expression derived from the CURRENT query text. */
+	description?: string | ((answers: WizardAnswers) => string);
+	/** v30.4: render the description in normal (white) text instead of dim
+	 * -- for lines carrying substance (the grouping expressions), not mere
+	 * explanation. */
+	descriptionPlain?: boolean;
+	/** Free-entry option (v30): the row carries an inline text input right
+	 * after the label; Enter answers the step with the TYPED text instead
+	 * of `value` (empty input does not answer). Replaces the v29 pattern of
+	 * a separate greyed-out tab for the custom count. */
+	freeText?: boolean;
 }
 
 /**
@@ -153,6 +169,14 @@ export type WizardStepDef =
 		/** Label of the explicit commit row ("Weiter"/"Fertig"). */
 		nextLabel: string;
 		preselected?: string[];
+		/** v30.7: an EMPTY selection is a valid answer (the journal filter:
+		 * nothing picked = no filter) -- the step never blocks the finish
+		 * and the review shows "(none)" instead of "(open)". */
+		optional?: boolean;
+		/** v30.7: dim line shown while items is EMPTY (lazily loaded lists:
+		 * "fetching...", "no journals found", ...); replaced together with
+		 * the items via the setItems event. */
+		emptyNote?: string;
 		/** Step applies only while this holds over the current answers (v27:
 		 * the detail-mode tab applies only with >= 2 documents AND >= 1
 		 * question). v29: a disabled step STAYS in the tab bar greyed out
@@ -170,6 +194,10 @@ export type WizardStepDef =
 		tab: string;
 		title: string;
 		options: WizardChoiceOption[];
+		/** v30.2: prefill for the freeText option, computed live from the
+		 * other answers while the user has not typed there (the custom
+		 * grouping expression follows the query). A typed edit owns it. */
+		customSeed?: (answers: WizardAnswers) => string;
 		/** RECOMMENDED option: the cursor starts here, but the step counts
 		 * as answered only after an explicit Enter (field decision
 		 * 2026-07-22: a recommendation must never silently be an answer). */
@@ -194,6 +222,28 @@ export type WizardStepDef =
 		/** Shown dim under the input while it is empty. */
 		placeholder?: string;
 		initial?: string;
+		/** v30: while the user has not edited THIS step, its text is computed
+		 * live from the other steps' answers (the search wizard derives the
+		 * grouping from the query). A provided initial or any keystroke here
+		 * makes the user's text permanent -- including clearing it. */
+		derive?: (answers: WizardAnswers) => string;
+		/** v30: plain single-line value (query, years, grouping) -- no
+		 * question splitting/counting in the info line and summaries. */
+		plain?: boolean;
+		enabledIf?: (answers: WizardAnswers) => boolean;
+		disabledNote?: string;
+	}
+	| {
+		/** v30: several labeled single-line fields in ONE tab (the search
+		 * wizard's optional filters). Up/Down moves between fields, typing
+		 * edits the focused one, Enter advances field-wise then leaves the
+		 * step. Every field is optional; empty = not set. Field ids join the
+		 * wizard result directly, so they must be unique across steps. */
+		kind: "form";
+		id: string;
+		tab: string;
+		title: string;
+		fields: Array<{ id: string; label: string; initial?: string }>;
 		enabledIf?: (answers: WizardAnswers) => boolean;
 		disabledNote?: string;
 	};
@@ -209,8 +259,15 @@ export interface WizardState {
 	selected: Array<Set<string>>;
 	/** Per-step choice answers (null on non-choice steps and while unanswered). */
 	chosen: Array<string | null>;
-	/** Per-step text values ("" on non-text steps). */
+	/** Per-step text values ("" on non-text steps; on a choice step with a
+	 * freeText option this holds that option's typed value). */
 	texts: string[];
+	/** Per-step form field values (empty arrays on non-form steps). */
+	formTexts: string[][];
+	/** Steps whose inline text the user owns (v30): true once edited there
+	 * or seeded via initial -- derive()/customSeed() stop applying then.
+	 * Applies to text steps and to choice steps with a freeText option. */
+	dirty: boolean[];
 	/** Optional computed line on the submit page (e.g. "~6 Modellaufrufe");
 	 * pure function of the answers, injected by the caller. */
 	submitNote?: (answers: WizardAnswers) => string | null;
@@ -218,11 +275,16 @@ export interface WizardState {
 	 * page). For lightweight gates like the per-question confirm (v27) --
 	 * the finish guard still jumps to incomplete steps first. */
 	skipSubmit?: boolean;
-	/** Dialog language of the pure-layer strings; default "de". */
+	/** Dialog language of the pure-layer strings; default "en" (v30). */
 	lang: DialogLang;
 }
 
 export interface WizardOptions {
+	/** One line above the tab bar naming the dialog you are in (v30.12
+	 * field wish: "wäre nett irgendwo zu lesen, dass ich jetzt in
+	 * lit-search bin"). Adapter-rendered; the RPC fallback prefixes its
+	 * step titles with it. */
+	header?: string;
 	submitNote?: (answers: WizardAnswers) => string | null;
 	skipSubmit?: boolean;
 	/** "submit": open ON the review page (v29.1 proposal-confirm intakes --
@@ -230,8 +292,30 @@ export interface WizardOptions {
 	 * Pair with initialIsAnswer on choice steps, else the finish guard
 	 * jumps to the unanswered step. */
 	startTab?: "submit";
-	/** Dialog language; default "de" (v27: follow the chat's language). */
+	/** Dialog language; default "en" (v27: follow the chat's language;
+	 * v30 user decision: with no chat observed, the default is English). */
 	lang?: DialogLang;
+	/** Adapter hook (v30.7): lazily load checkbox steps' items when the user
+	 * reaches their tab. The PURE layer ignores this field entirely;
+	 * extensions/dialogs.ts fetches and dispatches setItems. v30.11: a LIST
+	 * -- the search wizard lazily loads journals AND authors. */
+	itemLoaders?: WizardItemLoader[];
+}
+
+export interface WizardItemLoader {
+	/** Step id of the lazily loaded checkbox step. */
+	step: string;
+	/** Cache key over the live answers (e.g. the query text); a changed
+	 * key re-fetches on the next visit; empty key = nothing to load. */
+	key: (answers: WizardAnswers) => string;
+	load: (answers: WizardAnswers) => Promise<CheckboxItem[]>;
+	/** v30.8: ids to precheck in the loaded list while the selection is
+	 * still empty (e.g. items matching an agent venues proposal). */
+	preselect?: (items: CheckboxItem[]) => string[];
+	loadingNote: string;
+	idleNote: string;
+	emptyNote: string;
+	failedNote: (message: string) => string;
 }
 
 /**
@@ -251,40 +335,51 @@ export const DIALOG_TEXT: Record<DialogLang, {
 	submitCancelRow: string;
 	unanswered: string;
 	noQuestions: string;
+	/** Yellow warning on the review page listing still-open steps (v30.2,
+	 * the rpiv look -- shown up front instead of only jumping on Enter). */
+	answerRemaining: (tabs: string[]) => string;
 	questionsDetected: (n: number) => string;
 	hintSubmit: string;
 	hintCheckbox: string;
 	hintText: string;
+	hintPlainText: string;
+	hintForm: string;
 	hintChoice: string;
 	disabledDefault: string;
 	hintDisabled: string;
 }> = {
 	de: {
 		submitTab: "Bestätigen",
-		submitTitle: "Bereit zum Absenden?",
+		submitTitle: "Antworten prüfen",
 		submitRow: "Absenden",
 		submitCancelRow: "Abbrechen",
 		unanswered: "(offen)",
 		noQuestions: "(keine)",
+		answerRemaining: (tabs) => `⚠ Vor dem Absenden noch beantworten: ${tabs.join(", ")}`,
 		questionsDetected: (n) => `${n} Frage(n) erkannt`,
 		hintSubmit: "Enter bestätigt · ←/→ Schritt · Esc abbrechen",
 		hintCheckbox: "Space/Enter auswählen · Enter auf der Weiter-Zeile bestätigt · ←/→ Schritt · Esc abbrechen",
 		hintText: "Tippen · Semikolon trennt Fragen · Enter übernimmt · ←/→ Schritt · Esc abbrechen",
+		hintPlainText: "Tippen · Enter übernimmt · ←/→ Schritt · Esc abbrechen",
+		hintForm: "Tippen · ↑/↓ Feld · Enter übernimmt · ←/→ Schritt · Esc abbrechen",
 		hintChoice: "Enter wählt und geht weiter · ←/→ Schritt · Esc abbrechen",
 		disabledDefault: "Dieser Schritt ist bei den aktuellen Antworten nicht relevant.",
 		hintDisabled: "Enter geht weiter · ←/→ Schritt · Esc abbrechen",
 	},
 	en: {
 		submitTab: "Confirm",
-		submitTitle: "Ready to submit?",
+		submitTitle: "Review your answers",
 		submitRow: "Submit",
 		submitCancelRow: "Cancel",
 		unanswered: "(open)",
 		noQuestions: "(none)",
+		answerRemaining: (tabs) => `⚠ Answer remaining questions before submitting: ${tabs.join(", ")}`,
 		questionsDetected: (n) => `${n} question(s) recognized`,
 		hintSubmit: "Enter confirms · ←/→ step · Esc cancels",
 		hintCheckbox: "Space/Enter selects · Enter on the Next row confirms · ←/→ step · Esc cancels",
 		hintText: "Type · semicolons separate questions · Enter confirms · ←/→ step · Esc cancels",
+		hintPlainText: "Type · Enter confirms · ←/→ step · Esc cancels",
+		hintForm: "Type · ↑/↓ field · Enter confirms · ←/→ step · Esc cancels",
 		hintChoice: "Enter picks and advances · ←/→ step · Esc cancels",
 		disabledDefault: "This step does not apply with the current answers.",
 		hintDisabled: "Enter advances · ←/→ step · Esc cancels",
@@ -293,8 +388,9 @@ export const DIALOG_TEXT: Record<DialogLang, {
 
 /** German/English detection over free chat text -- deterministic stopword
  * scoring, umlauts decide instantly; empty or tied input falls back
- * (default: German, the project's home language). Pure. */
-export function detectDialogLang(texts: Array<string | undefined>, fallback: DialogLang = "de"): DialogLang {
+ * (default: English, the international default -- v30 user decision;
+ * German chats flip everything to German via the observer). Pure. */
+export function detectDialogLang(texts: Array<string | undefined>, fallback: DialogLang = "en"): DialogLang {
 	const joined = texts.filter(Boolean).join(" ").toLowerCase();
 	if (!joined.trim()) return fallback;
 	if (/[äöüß]/.test(joined)) return "de";
@@ -343,7 +439,13 @@ export type WizardEvent =
 	/** Backspace in a text step (ignored elsewhere). */
 	| "backspace"
 	/** Typed/pasted characters for a text step (ignored elsewhere). */
-	| { kind: "input"; chars: string };
+	| { kind: "input"; chars: string }
+	/** v30.7: replace a checkbox step's items at runtime (lazily loaded
+	 * lists -- the adapter fetches, the reducer stays pure). Selections
+	 * not in the new items are pruned; the cursor is clamped. preselect
+	 * (v30.8) seeds the selection ONLY while it is empty (an agent venues
+	 * proposal becomes visible check marks, never overriding the user). */
+	| { kind: "setItems"; step: string; items: CheckboxItem[]; emptyNote?: string; preselect?: string[] };
 
 export interface WizardStep {
 	state: WizardState;
@@ -353,14 +455,20 @@ export interface WizardStep {
 /** Answers by step id: checkbox steps map to id arrays, choices to values. */
 export type WizardResult = Record<string, string[] | string>;
 
+/** A choice initial that matches no option is a CUSTOM value: it lands in
+ * the freeText option's input (v30, agent path with a non-preset count). */
+function choiceCursor(step: WizardStepDef & { kind: "choice" }): number {
+	const match = step.options.findIndex((option) => option.value === step.initial);
+	if (match >= 0 || step.initial === undefined) return Math.max(0, match);
+	return Math.max(0, step.options.findIndex((option) => option.freeText));
+}
+
 export function initWizard(steps: WizardStepDef[], options?: WizardOptions): WizardState {
 	if (!steps.length) throw new Error("wizard needs at least one step");
 	return {
 		steps,
 		tab: options?.startTab === "submit" ? steps.length : 0,
-		cursors: [...steps.map((step) => step.kind === "choice"
-			? Math.max(0, step.options.findIndex((option) => option.value === step.initial))
-			: 0), 0],
+		cursors: [...steps.map((step) => step.kind === "choice" ? choiceCursor(step) : 0), 0],
 		selected: steps.map((step) => {
 			if (step.kind !== "checkbox") return new Set<string>();
 			const known = new Set(step.items.map((item) => item.id));
@@ -370,23 +478,37 @@ export function initWizard(steps: WizardStepDef[], options?: WizardOptions): Wiz
 		// the step opts out via initialIsAnswer (proposal-confirm intakes).
 		chosen: steps.map((step) =>
 			(step.kind === "choice" && step.initialIsAnswer && step.initial !== undefined ? step.initial : null)),
-		texts: steps.map((step) => (step.kind === "text" ? step.initial ?? "" : "")),
+		texts: steps.map((step) => (step.kind === "text" ? step.initial ?? ""
+			: step.kind === "choice" && step.initial !== undefined
+				&& !step.options.some((option) => option.value === step.initial) ? step.initial
+			: "")),
+		formTexts: steps.map((step) =>
+			(step.kind === "form" ? step.fields.map((field) => field.initial ?? "") : [])),
+		dirty: steps.map((step) => (step.kind === "text" && step.initial !== undefined)
+			// A non-preset choice initial seeds the freeText row as the
+			// user's own value (agent proposal) -- customSeed must not
+			// overwrite it.
+			|| (step.kind === "choice" && step.initial !== undefined
+				&& !step.options.some((option) => option.value === step.initial))),
 		...(options?.submitNote ? { submitNote: options.submitNote } : {}),
 		...(options?.skipSubmit ? { skipSubmit: true } : {}),
-		lang: options?.lang ?? "de",
+		lang: options?.lang ?? "en",
 	};
 }
 
 function rowCount(step: WizardStepDef): number {
 	return step.kind === "checkbox" ? step.items.length + 2
 		: step.kind === "text" ? 2 // input line + count/placeholder line
-		: step.options.length;
+		: step.kind === "form" ? step.fields.length
+		// A description adds a dim explanation row under its option (v30.2).
+		: step.options.length + step.options.filter((option) => option.description !== undefined).length;
 }
 
-/** Rendered body rows of the submit tab: one summary line per step, an
- * optional note line, a blank separator, then the two actionable rows. */
+/** Rendered body rows of the submit tab (v30.2 rpiv layout): two lines per
+ * step ("● Tab" + "→ value"), an optional note line, a reserved warning
+ * slot, a blank separator, then the two actionable rows. */
 function submitRowCount(state: WizardState): number {
-	return state.steps.length + 3 + (state.submitNote ? 1 : 0);
+	return state.steps.length * 2 + (state.submitNote ? 1 : 0) + 4;
 }
 
 /** Worst-case row count across all tabs (submit tab included) -- the
@@ -400,14 +522,64 @@ function wrap(value: number, total: number): number {
 	return ((value % total) + total) % total;
 }
 
-/** The current answers as enabledIf and the submit note see them. */
-export function wizardAnswers(state: WizardState): WizardAnswers {
+/** Raw answers with texts AS STORED -- what derive() reads, so derive
+ * steps can never recurse into each other's derived values. Form fields
+ * join under their own ids. */
+function rawAnswers(state: WizardState): WizardAnswers {
 	const answers: WizardAnswers = {};
 	state.steps.forEach((step, i) => {
-		answers[step.id] = step.kind === "checkbox"
-			? step.items.filter((item) => state.selected[i].has(item.id)).map((item) => item.id)
-			: step.kind === "text" ? state.texts[i]
-			: state.chosen[i];
+		if (step.kind === "checkbox") {
+			answers[step.id] = step.items.filter((item) => state.selected[i].has(item.id)).map((item) => item.id);
+		} else if (step.kind === "text") {
+			answers[step.id] = state.texts[i];
+		} else if (step.kind === "form") {
+			step.fields.forEach((field, f) => {
+				answers[field.id] = state.formTexts[i][f] ?? "";
+			});
+		} else {
+			answers[step.id] = state.chosen[i];
+		}
+	});
+	return answers;
+}
+
+/** The text a text step SHOWS and submits (WYSIWYG): the user's own text,
+ * or the live derived value while the step is untouched (v30). */
+export function effectiveText(state: WizardState, index: number): string {
+	const step = state.steps[index];
+	if (step.kind !== "text") return "";
+	if (step.derive && !state.dirty[index]) return step.derive(rawAnswers(state));
+	return state.texts[index];
+}
+
+/** The freeText option's inline value on a choice step (v30.2): the user's
+ * own input, or the live customSeed while the row is untouched. */
+export function effectiveChoiceText(state: WizardState, index: number): string {
+	const step = state.steps[index];
+	if (step.kind !== "choice") return "";
+	if (step.customSeed && !state.dirty[index]) return step.customSeed(rawAnswers(state));
+	return state.texts[index];
+}
+
+/** Resolve an option's description against the live answers. */
+function optionDescription(
+	option: WizardChoiceOption,
+	answers: WizardAnswers,
+): string | undefined {
+	if (option.description === undefined) return undefined;
+	return typeof option.description === "function" ? option.description(answers) : option.description;
+}
+
+/** Resolve an option's main-row label against the live answers. */
+function optionLabel(option: WizardChoiceOption, answers: WizardAnswers): string {
+	return typeof option.label === "function" ? option.label(answers) : option.label;
+}
+
+/** The current answers as enabledIf and the submit note see them. */
+export function wizardAnswers(state: WizardState): WizardAnswers {
+	const answers = rawAnswers(state);
+	state.steps.forEach((step, i) => {
+		if (step.kind === "text") answers[step.id] = effectiveText(state, i);
 	});
 	return answers;
 }
@@ -421,9 +593,21 @@ export function stepEnabled(state: WizardState, index: number): boolean {
 function stepInvalid(state: WizardState, index: number): boolean {
 	const step = state.steps[index];
 	if (!stepEnabled(state, index)) return false; // disabled steps never block
-	return step.kind === "checkbox" ? state.selected[index].size === 0
+	return step.kind === "checkbox" ? state.selected[index].size === 0 && !step.optional
 		: step.kind === "text" ? false // empty text is a valid answer
+		: step.kind === "form" ? false // every field is optional
 		: state.chosen[index] === null;
+}
+
+/** Whether the tab bar marks the step with a check (v30 field wish: a mark
+ * means "this carries a value that will run", NOT "this would not block" --
+ * before, every text tab was checked from the start). */
+export function stepAnswered(state: WizardState, index: number): boolean {
+	const step = state.steps[index];
+	return step.kind === "checkbox" ? state.selected[index].size > 0
+		: step.kind === "text" ? effectiveText(state, index).trim() !== ""
+		: step.kind === "form" ? state.formTexts[index].some((value) => value.trim() !== "")
+		: state.chosen[index] !== null;
 }
 
 /** Next tab in the given direction. v29: disabled steps stay VISITABLE
@@ -467,21 +651,68 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 		...state,
 		cursors: state.cursors.map((value, i) => (i === state.tab ? next : value)),
 	});
-	const onText = state.tab < state.steps.length
-		&& state.steps[state.tab].kind === "text"
-		&& stepEnabled(state, state.tab);
+	const current = state.tab < state.steps.length && stepEnabled(state, state.tab)
+		? state.steps[state.tab]
+		: undefined;
+	const onText = current?.kind === "text";
+	const onForm = current?.kind === "form";
+	// Choice step with the cursor on a free-entry option (v30): typing edits
+	// that option's inline value, stored in texts[tab].
+	const onFreeText = current?.kind === "choice" && current.options[cursor]?.freeText === true;
+	// Editing a derive step (or a seeded freeText row) takes ownership: from
+	// the first keystroke on (backspace included) the user's text wins over
+	// the derived/seeded value.
 	const withText = (value: string): WizardState => ({
 		...state,
 		texts: state.texts.map((prev, i) => (i === state.tab ? value : prev)),
+		dirty: state.dirty.map((prev, i) => (i === state.tab ? true : prev)),
 	});
-	// Typed characters and backspace only ever edit a text step.
+	const withFormText = (value: string): WizardState => ({
+		...state,
+		formTexts: state.formTexts.map((fields, i) =>
+			(i === state.tab ? fields.map((prev, f) => (f === cursor ? value : prev)) : fields)),
+	});
+	const editedValue = onText ? effectiveText(state, state.tab)
+		: onForm ? state.formTexts[state.tab][cursor] ?? ""
+		: onFreeText ? effectiveChoiceText(state, state.tab)
+		: null;
+	// Runtime item replacement (v30.7, lazily loaded checkbox lists):
+	// independent of the current tab; pruned selection, clamped cursor.
+	if (typeof event === "object" && event.kind === "setItems") {
+		const index = state.steps.findIndex((other) => other.id === event.step && other.kind === "checkbox");
+		if (index < 0) return { state };
+		const known = new Set(event.items.map((item) => item.id));
+		const steps = state.steps.map((other, i) => (i === index && other.kind === "checkbox"
+			? {
+				...other,
+				items: event.items,
+				...(event.emptyNote !== undefined ? { emptyNote: event.emptyNote } : {}),
+			}
+			: other));
+		return {
+			state: {
+				...state,
+				steps,
+				selected: state.selected.map((set, i) => (i === index
+					? new Set([...(set.size ? [...set] : event.preselect ?? [])].filter((id) => known.has(id)))
+					: set)),
+				cursors: state.cursors.map((value, i) =>
+					(i === index ? Math.min(value, Math.max(0, rowCount(steps[index]) - 1)) : value)),
+			},
+		};
+	}
+	// Typed characters and backspace only ever edit an input context.
 	if (typeof event === "object") {
-		if (!onText) return { state };
+		if (editedValue === null) return { state };
 		const chars = sanitizeInput(event.chars);
-		return chars ? { state: withText(state.texts[state.tab] + chars) } : { state };
+		if (!chars) return { state };
+		const value = editedValue + chars;
+		return { state: onForm ? withFormText(value) : withText(value) };
 	}
 	if (event === "backspace") {
-		return onText ? { state: withText(state.texts[state.tab].slice(0, -1)) } : { state };
+		if (editedValue === null) return { state };
+		const value = editedValue.slice(0, -1);
+		return { state: onForm ? withFormText(value) : withText(value) };
 	}
 	// The synthetic submit tab: two actionable rows, Enter decides.
 	if (state.tab === state.steps.length) {
@@ -548,17 +779,34 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 			return { state: toggled() };
 		case "confirm": {
 			if (step.kind === "checkbox") {
+				// An empty OPTIONAL list advances from any row (v30.7: the
+				// lazily loaded journal list must never stall Enter-through).
+				if (step.items.length === 0 && step.optional) return advance(state);
 				// Enter toggles like Space on real rows; only the explicit
 				// next-row commits (rpiv rule -- the E2c field complaint).
+				// An OPTIONAL step commits empty (empty = "no filter").
 				if (cursor < rows - 1) return { state: toggled() };
-				if (state.selected[state.tab].size === 0) return { state }; // nothing selected, nothing to commit
+				if (state.selected[state.tab].size === 0 && !step.optional) return { state };
 				return advance(state);
 			}
 			if (step.kind === "text") {
 				return advance(state); // empty text is a valid answer
 			}
-			const value = step.options[cursor]?.value;
-			if (value === undefined) return { state };
+			if (step.kind === "form") {
+				// Enter on a FILLED field walks to the next one; Enter on an
+				// empty field (or the last) leaves the step -- so the
+				// Enter-through flow passes an untouched filter tab with ONE
+				// stroke (every field is optional, empty means "filter off").
+				const filled = (state.formTexts[state.tab][cursor] ?? "").trim() !== "";
+				if (filled && cursor < rows - 1) return { state: withCursor(cursor + 1) };
+				return advance(state);
+			}
+			const option = step.options[cursor];
+			if (option === undefined) return { state };
+			// A free-entry option answers with its TYPED (or seeded) value;
+			// empty input answers nothing (pick a preset or type a value).
+			const value = option.freeText ? effectiveChoiceText(state, state.tab).trim() : option.value;
+			if (!value) return { state };
 			return advance({
 				...state,
 				chosen: state.chosen.map((prev, i) => (i === state.tab ? value : prev)),
@@ -576,7 +824,11 @@ export function wizardResult(state: WizardState): WizardResult {
 		if (step.kind === "checkbox") {
 			result[step.id] = step.items.filter((item) => state.selected[i].has(item.id)).map((item) => item.id);
 		} else if (step.kind === "text") {
-			result[step.id] = state.texts[i];
+			result[step.id] = effectiveText(state, i);
+		} else if (step.kind === "form") {
+			step.fields.forEach((field, f) => {
+				result[field.id] = state.formTexts[i][f] ?? "";
+			});
 		} else {
 			// The finish guard means chosen is set on confirmed wizards; the
 			// fallbacks only serve direct wizardResult calls in tests.
@@ -589,6 +841,10 @@ export function wizardResult(state: WizardState): WizardResult {
 export interface WizardViewRow {
 	text: string;
 	active: boolean;
+	/** Dim supporting line (option descriptions, review labels). */
+	dim?: boolean;
+	/** Warning line (the review page's open-steps notice). */
+	warn?: boolean;
 }
 
 export interface WizardView {
@@ -601,27 +857,52 @@ export interface WizardView {
 	hint: string;
 }
 
+/** The review-page value of one step, as a single line. */
+function stepValueLabel(state: WizardState, i: number): string {
+	const text = DIALOG_TEXT[state.lang];
+	const step = state.steps[i];
+	if (step.kind === "checkbox") {
+		const chosen = step.items.filter((item) => state.selected[i].has(item.id));
+		const all = chosen.length === step.items.length && step.items.length > 0;
+		// Optional steps (v30.7): empty is a decision, not an open question.
+		return chosen.length === 0 ? (step.optional ? text.noQuestions : text.unanswered)
+			: all ? `${step.selectAllLabel} (${chosen.length})`
+			: chosen.map((item) => item.label).join(", ");
+	}
+	if (step.kind === "text") {
+		const value = effectiveText(state, i);
+		if (step.plain) return value.trim() ? value.trim() : text.noQuestions;
+		const questions = parseQuestionLines(value);
+		return questions.length ? questions.join(" · ") : text.noQuestions;
+	}
+	if (step.kind === "form") {
+		const set = step.fields
+			.map((field, f) => ({ field, value: (state.formTexts[i][f] ?? "").trim() }))
+			.filter((entry) => entry.value !== "")
+			.map((entry) => `${entry.field.label} ${entry.value}`);
+		return set.length ? set.join(" · ") : text.noQuestions;
+	}
+	const chosen = step.options.find((option) => option.value === state.chosen[i]);
+	if (chosen && !chosen.freeText) {
+		// Label and description together carry the full picture (v30.2;
+		// v30.5: for the grouping variants the label IS the expression and
+		// the description names the variant).
+		const answers = wizardAnswers(state);
+		const label = optionLabel(chosen, answers);
+		const description = optionDescription(chosen, answers);
+		return description ? `${label} -- ${description}` : label;
+	}
+	// A free-entry answer matches no option: show the typed value.
+	return state.chosen[i] ?? text.unanswered;
+}
+
 /** One summary line per ENABLED step for the submit page -- also used by
  * the fallback loop. */
 export function wizardSummaryLines(state: WizardState): string[] {
-	const text = DIALOG_TEXT[state.lang];
 	const lines: string[] = [];
 	state.steps.forEach((step, i) => {
 		if (!stepEnabled(state, i)) return;
-		if (step.kind === "checkbox") {
-			const chosen = step.items.filter((item) => state.selected[i].has(item.id));
-			const all = chosen.length === step.items.length && step.items.length > 0;
-			const value = chosen.length === 0 ? text.unanswered
-				: all ? `${step.selectAllLabel} (${chosen.length})`
-				: chosen.map((item) => item.label).join(", ");
-			lines.push(`${step.tab}: ${value}`);
-		} else if (step.kind === "text") {
-			const questions = parseQuestionLines(state.texts[i]);
-			lines.push(`${step.tab}: ${questions.length ? questions.join(" · ") : text.noQuestions}`);
-		} else {
-			const chosen = step.options.find((option) => option.value === state.chosen[i]);
-			lines.push(`${step.tab}: ${chosen ? chosen.label : text.unanswered}`);
-		}
+		lines.push(`${step.tab}: ${stepValueLabel(state, i)}`);
 	});
 	return lines;
 }
@@ -629,32 +910,44 @@ export function wizardSummaryLines(state: WizardState): string[] {
 /** Pure presentation of the current tab; the adapter only adds colors,
  * borders and the constant-height padding. */
 export function wizardView(state: WizardState): WizardView {
-	// Answered steps carry a check mark in the tab bar (field wish
-	// 2026-07-22); disabled steps STAY in the bar greyed out (v29: a tab's
-	// visibility must never change while navigating); the submit tab itself
-	// never carries a mark.
+	// Tab bar in the rpiv look (v30.2): steps carry a filled square once
+	// they HOLD A VALUE (v30: the old mark meant "would not block", so
+	// every text tab was checked from the start -- field complaint), an
+	// empty square while open; the review tab carries a check. Disabled
+	// steps STAY in the bar greyed out (v29: a tab's visibility must never
+	// change while navigating).
 	const text = DIALOG_TEXT[state.lang];
 	const tabs = [
 		...state.steps.map((other, i) => {
 			const enabled = stepEnabled(state, i);
 			return {
-				label: `${other.tab}${enabled && !stepInvalid(state, i) ? " ✔" : ""}`,
+				label: `${enabled && stepAnswered(state, i) ? "■" : "□"} ${other.tab}`,
 				active: i === state.tab,
 				...(enabled ? {} : { disabled: true }),
 			};
 		}),
-		{ label: text.submitTab, active: state.tab === state.steps.length },
+		{ label: `✓ ${text.submitTab}`, active: state.tab === state.steps.length },
 	];
 	if (state.tab === state.steps.length) {
 		const cursor = state.cursors[state.tab];
 		const note = state.submitNote ? state.submitNote(wizardAnswers(state)) : null;
-		const rows: WizardViewRow[] = [
-			...wizardSummaryLines(state).map((line) => ({ text: `     ${line}`, active: false })),
-			...(note ? [{ text: `     ${note}`, active: false }] : []),
-			{ text: "", active: false },
-			{ text: `${cursor === 0 ? "❯ " : "  "}   ${text.submitRow}`, active: cursor === 0 },
-			{ text: `${cursor === 1 ? "❯ " : "  "}   ${text.submitCancelRow}`, active: cursor === 1 },
-		];
+		// The rpiv review layout: "● Tab" + "→ value" per step, the note,
+		// then a WARNING listing still-open steps up front (the jump on
+		// Enter stays, but the user sees WHY before pressing it).
+		const rows: WizardViewRow[] = [];
+		state.steps.forEach((step, i) => {
+			if (!stepEnabled(state, i)) return;
+			rows.push({ text: `  ● ${step.tab}`, active: false, dim: true });
+			rows.push({ text: `    → ${stepValueLabel(state, i)}`, active: false });
+		});
+		if (note) rows.push({ text: `  ${note}`, active: false, dim: true });
+		const open = state.steps.filter((_, i) => stepInvalid(state, i)).map((step) => step.tab);
+		rows.push(open.length
+			? { text: text.answerRemaining(open), active: false, warn: true }
+			: { text: "", active: false });
+		rows.push({ text: "", active: false });
+		rows.push({ text: `${cursor === 0 ? "❯ " : "  "}1. ${text.submitRow}`, active: cursor === 0 });
+		rows.push({ text: `${cursor === 1 ? "❯ " : "  "}2. ${text.submitCancelRow}`, active: cursor === 1 });
 		return {
 			tabs,
 			title: text.submitTitle,
@@ -675,30 +968,68 @@ export function wizardView(state: WizardState): WizardView {
 	const cursor = state.cursors[state.tab];
 	const rows: WizardViewRow[] = [];
 	if (step.kind === "checkbox") {
-		const checkboxState: CheckboxState = {
-			items: step.items,
-			cursor,
-			selected: state.selected[state.tab],
-		};
-		rows.push(...checkboxLines(checkboxState, step.selectAllLabel));
-		const nextActive = cursor === step.items.length + 1;
-		rows.push({ text: `${nextActive ? "❯ " : "  "}   ${step.nextLabel}`, active: nextActive });
+		if (step.items.length === 0) {
+			// Lazily loaded list before/without items (v30.7): the note says
+			// why it is empty; the next-row keeps Enter-through working.
+			rows.push({ text: `     ${step.emptyNote ?? ""}`, active: false, dim: true });
+			const nextActive = cursor === 1;
+			rows.push({ text: `${nextActive ? "❯ " : "  "}   ${step.nextLabel}`, active: nextActive });
+		} else {
+			const checkboxState: CheckboxState = {
+				items: step.items,
+				cursor,
+				selected: state.selected[state.tab],
+			};
+			rows.push(...checkboxLines(checkboxState, step.selectAllLabel));
+			const nextActive = cursor === step.items.length + 1;
+			rows.push({ text: `${nextActive ? "❯ " : "  "}   ${step.nextLabel}`, active: nextActive });
+		}
 	} else if (step.kind === "text") {
-		const value = state.texts[state.tab];
-		const questions = parseQuestionLines(value);
+		const value = effectiveText(state, state.tab);
 		rows.push({ text: `❯ ${value}_`, active: true });
+		// Plain inputs (query, years, grouping) get no question counter --
+		// only the placeholder while empty (v30); the info line renders dim
+		// (v30.3 user wish: the example query in grey).
 		rows.push({
-			text: value
-				? `     ${text.questionsDetected(questions.length)}`
-				: `     ${step.placeholder ?? ""}`,
+			text: !value ? `     ${step.placeholder ?? ""}`
+				: step.plain ? ""
+				: `     ${text.questionsDetected(parseQuestionLines(value).length)}`,
 			active: false,
+			dim: true,
+		});
+	} else if (step.kind === "form") {
+		step.fields.forEach((field, i) => {
+			const active = cursor === i;
+			const value = state.formTexts[state.tab][i] ?? "";
+			rows.push({
+				text: `${active ? "❯ " : "  "}${field.label}: ${value}${active ? "_" : ""}`,
+				active,
+			});
 		});
 	} else {
 		const width = String(step.options.length).length;
+		const answers = wizardAnswers(state);
 		step.options.forEach((option, i) => {
 			const active = cursor === i;
-			const chosen = state.chosen[state.tab] === option.value ? " ✔" : "";
-			rows.push({ text: `${active ? "❯ " : "  "}${String(i + 1).padStart(width)}. ${option.label}${chosen}`, active });
+			const label = optionLabel(option, answers);
+			// A free-entry option renders its inline input (typed or seeded)
+			// after the label; it is "chosen" when the answer equals it.
+			const inline = option.freeText ? effectiveChoiceText(state, state.tab) : "";
+			const value = option.freeText ? ` ${inline}${active ? "_" : ""}` : "";
+			const chosenValue = option.freeText ? inline.trim() : option.value;
+			const chosen = state.chosen[state.tab] !== null && state.chosen[state.tab] === chosenValue ? " ✔" : "";
+			rows.push({ text: `${active ? "❯ " : "  "}${String(i + 1).padStart(width)}. ${label}${value}${chosen}`, active });
+			// The rpiv look: an explanation line under the label (v30.2) --
+			// dim, unless the option marks it as substance (v30.4: the
+			// grouping expressions render white).
+			const description = optionDescription(option, answers);
+			if (description !== undefined) {
+				rows.push({
+					text: `${" ".repeat(width + 4)}${description}`,
+					active: false,
+					...(option.descriptionPlain ? {} : { dim: true }),
+				});
+			}
 		});
 	}
 	return {
@@ -706,7 +1037,8 @@ export function wizardView(state: WizardState): WizardView {
 		title: step.title,
 		rows,
 		hint: step.kind === "checkbox" ? text.hintCheckbox
-			: step.kind === "text" ? text.hintText
+			: step.kind === "text" ? (step.plain ? text.hintPlainText : text.hintText)
+			: step.kind === "form" ? text.hintForm
 			: text.hintChoice,
 	};
 }

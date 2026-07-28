@@ -46,6 +46,9 @@ export interface SearchOptions {
 	sources?: string[];
 	/** Grouping rules (term groups); see pipeline.ts. Optional. */
 	groupTerms?: unknown;
+	/** on_target needs only this many groups to match (default: all) --
+	 * the wide "any two concepts" variant (v30.3). */
+	groupRequire?: number;
 	/** Metadata filters (min citations, year range, venues, ...). Optional. */
 	filters?: ResultFilters;
 	/** Sort results descending by "cites" or "year" (unknown values last). */
@@ -85,6 +88,11 @@ export async function runSearch(options: SearchOptions) {
 
 	const records: SourceRecord[] = [];
 	const sourcesUsed: string[] = [];
+	// A failed source must stay visible AFTER the run (v30.1 field finding:
+	// the warn() line is transient status chrome -- an arXiv timeout left no
+	// trace in digest, HTML or payload, so the user could not tell a failed
+	// source from one that honestly found nothing).
+	const sourceFailures: Array<{ source: string; error: string }> = [];
 	for (const source of sources) {
 		const search = SEARCHERS[source];
 		if (!search) {
@@ -101,7 +109,9 @@ export async function runSearch(options: SearchOptions) {
 				records.push(...(multiQuery ? found.map((r) => ({ ...r, found_by: [query] })) : found));
 				succeeded = true;
 			} catch (error) {
-				warn(`${label} failed: ${error instanceof Error ? error.message : error}`);
+				const message = error instanceof Error ? error.message : String(error);
+				warn(`${label} failed: ${message}`);
+				sourceFailures.push({ source: multiQuery ? `${source} (Q${index + 1})` : source, error: message });
 			}
 		}
 		if (succeeded) sourcesUsed.push(source);
@@ -139,7 +149,10 @@ export async function runSearch(options: SearchOptions) {
 	}
 
 	const sorted = options.sort ? sortRecords(filterResult.kept, options.sort) : filterResult.kept;
-	const grouped = groupAll(sorted, termGroups);
+	const groupRequire = options.groupRequire !== undefined && termGroups.length
+		? Math.max(1, Math.min(Math.trunc(options.groupRequire), termGroups.length))
+		: undefined;
+	const grouped = groupAll(sorted, termGroups, groupRequire);
 	if (termGroups.length) {
 		const onTarget = grouped.filter((r) => r.group === "on_target").length;
 		warn(`grouped: ${onTarget} on_target, ${grouped.length - onTarget} adjacent`);
@@ -159,11 +172,13 @@ export async function runSearch(options: SearchOptions) {
 		query_variants: multiQuery ? queries.slice(1) : null,
 		generated: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
 		sources_used: sourcesUsed,
+		source_failures: sourceFailures.length ? sourceFailures : null,
 		// Transparency (design/2026-07-14_v18): the boolean expression actually
 		// sent to arXiv per query, so every reader can verify what was asked.
 		// CrossRef/OpenAlex receive the query text unchanged.
 		arxiv_queries: sourcesUsed.includes("arxiv") ? queries.map(buildSearchQuery) : null,
 		grouping: termGroups.length ? termGroups : null,
+		grouping_require: groupRequire !== undefined && groupRequire < termGroups.length ? groupRequire : null,
 		filters: filtersActive ? filters : null,
 		sort: options.sort ?? null,
 		results: grouped,

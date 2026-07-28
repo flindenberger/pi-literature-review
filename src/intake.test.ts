@@ -5,6 +5,8 @@
 
 import assert from "node:assert/strict";
 import {
+	deriveCoreGroupsFromQuery,
+	deriveGroupsFromQuery,
 	formatGroupExpression,
 	parseGroupSpec,
 	parseGroupTerms,
@@ -101,6 +103,62 @@ import {
 	assert.equal(parsePerSource("ten", 50), null);
 	assert.equal(parsePerSource("12.5", 50), null);
 	assert.equal(parsePerSource("-5", 50), null);
+}
+
+// deriveGroupsFromQuery (v30): one AND group per content word; standalone
+// single chars bind to the neighbouring word (v18 arXiv rule); function
+// words drop out; the user's own boolean syntax derives nothing.
+{
+	assert.deepEqual(
+		deriveGroupsFromQuery("sandbar detection rivers Sentinel-2"),
+		[["sandbar"], ["detection"], ["rivers"], ["sentinel-2"]],
+	);
+	// "Sentinel 2": the standalone digit binds to the word before it.
+	assert.deepEqual(
+		deriveGroupsFromQuery("Sentinel 2 sandbar detection"),
+		[["sentinel 2"], ["sandbar"], ["detection"]],
+	);
+	// Function words (both languages) never form groups.
+	assert.deepEqual(
+		deriveGroupsFromQuery("detection of sandbars in rivers"),
+		[["detection"], ["sandbars"], ["rivers"]],
+	);
+	assert.deepEqual(
+		deriveGroupsFromQuery("Erkennung von Sandbänken in Flüssen"),
+		[["erkennung"], ["sandbänken"], ["flüssen"]],
+	);
+	// The user's own operators or quotes: no second-guessing, no derivation.
+	assert.deepEqual(deriveGroupsFromQuery("(river OR fluvial) AND sandbar"), []);
+	assert.deepEqual(deriveGroupsFromQuery('"river sandbar" detection'), []);
+	assert.deepEqual(deriveGroupsFromQuery(""), []);
+	assert.deepEqual(deriveGroupsFromQuery("   "), []);
+	// The derived groups round-trip through the dialog's expression form.
+	assert.equal(
+		formatGroupExpression(deriveGroupsFromQuery("Sentinel 2 sandbar detection")),
+		"(sentinel 2) AND (sandbar) AND (detection)",
+	);
+	assert.deepEqual(
+		parseGroupSpec(formatGroupExpression(deriveGroupsFromQuery("Sentinel 2 sandbar detection"))),
+		[["sentinel 2"], ["sandbar"], ["detection"]],
+	);
+}
+
+// deriveCoreGroupsFromQuery (v30.2): the broader variant drops generic
+// task/method words; domain concepts and bound phrases stay.
+{
+	assert.deepEqual(
+		deriveCoreGroupsFromQuery("Water Mask Extraction Using Sentinel 2"),
+		[["water"], ["mask"], ["sentinel 2"]],
+	);
+	assert.deepEqual(
+		deriveCoreGroupsFromQuery("Erkennung von Sandbänken in Flüssen"),
+		[["sandbänken"], ["flüssen"]],
+	);
+	// Nothing but task words: no core to anchor on -> empty (caller treats
+	// it as "no grouping").
+	assert.deepEqual(deriveCoreGroupsFromQuery("detection and classification methods"), []);
+	// User syntax still derives nothing.
+	assert.deepEqual(deriveCoreGroupsFromQuery("(a OR b) AND c"), []);
 }
 
 console.log("intake.test.ts: all assertions passed");

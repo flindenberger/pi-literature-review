@@ -14,6 +14,7 @@ import { contactMailto, userAgent, warn as defaultWarn } from "./types.ts";
 
 const BASE_URL = "https://api.openalex.org/works";
 const SOURCES_URL = "https://api.openalex.org/sources";
+const AUTHORS_URL = "https://api.openalex.org/authors";
 const TIMEOUT_MS = 30_000;
 /** OpenAlex allows up to ~100 OR-joined values per filter; stay well under. */
 const BATCH_SIZE = 50;
@@ -140,7 +141,84 @@ function chunk<T>(items: T[], size: number): T[][] {
 	return chunks;
 }
 
+/** What OpenAlex publishes about an author (v30.11: the wizard's author
+ * list shows it next to the hit count). All plain API metadata. */
+export interface AuthorMetrics {
+	/** Total citations of everything this author published. */
+	cites: number | undefined;
+	works: number | undefined;
+	hIndex: number | undefined;
+}
+
+/**
+ * Fetch citation counts / works / h-index for a set of OpenAlex author ids,
+ * in batches -- the author-list analog of fetchJournalScores (v30.11).
+ * Failures leave authors unscored, loudly; only finite API numbers land in
+ * the map. Nothing here is derived, guessed or model-generated.
+ */
+export async function fetchAuthorMetrics(
+	authorIds: string[],
+	warn: (message: string) => void = defaultWarn,
+): Promise<Map<string, AuthorMetrics>> {
+	const byAuthorId = new Map<string, AuthorMetrics>();
+	for (const batch of chunk([...new Set(authorIds.filter(Boolean))], BATCH_SIZE)) {
+		try {
+			const data = await fetchJson(`${AUTHORS_URL}${apiQuery({
+				filter: `ids.openalex:${batch.join("|")}`,
+				select: "id,cited_by_count,works_count,summary_stats",
+				"per-page": String(BATCH_SIZE),
+			})}`);
+			for (const author of (data.results ?? []) as Array<Record<string, any>>) {
+				const id = typeof author.id === "string" ? author.id.replace("https://openalex.org/", "").trim() : "";
+				if (!id) continue;
+				const number = (value: unknown): number | undefined =>
+					typeof value === "number" && Number.isFinite(value) ? value : undefined;
+				byAuthorId.set(id, {
+					cites: number(author.cited_by_count),
+					works: number(author.works_count),
+					hIndex: number(author?.summary_stats?.h_index),
+				});
+			}
+		} catch (error) {
+			warn(`author metrics batch lookup failed: ${error instanceof Error ? error.message : error}; affected authors ship without metrics`);
+		}
+	}
+	return byAuthorId;
+}
+
 /** Stamp each record with its journal's score. Pure; nothing overwritten. */
+/**
+ * Fetch the OpenAlex 2-yr mean citedness for a set of journal ids, in
+ * batches (extracted from addJournalScores in v30.8 -- the wizard's
+ * journal list shows the score too). Failures leave journals unscored,
+ * loudly; the map only ever contains finite numbers from the API.
+ */
+export async function fetchJournalScores(
+	venueIds: string[],
+	warn: (message: string) => void = defaultWarn,
+): Promise<Map<string, number>> {
+	const scoreByVenueId = new Map<string, number>();
+	for (const batch of chunk([...new Set(venueIds.filter(Boolean))], BATCH_SIZE)) {
+		try {
+			const data = await fetchJson(`${SOURCES_URL}${apiQuery({
+				filter: `ids.openalex:${batch.join("|")}`,
+				select: "id,summary_stats",
+				"per-page": String(BATCH_SIZE),
+			})}`);
+			for (const source of (data.results ?? []) as Array<Record<string, any>>) {
+				const id = typeof source.id === "string" ? source.id.replace("https://openalex.org/", "").trim() : "";
+				const score = source?.summary_stats?.["2yr_mean_citedness"];
+				if (id && typeof score === "number" && Number.isFinite(score)) {
+					scoreByVenueId.set(id, score);
+				}
+			}
+		} catch (error) {
+			warn(`journal-score batch lookup failed: ${error instanceof Error ? error.message : error}; affected journals ship without a score`);
+		}
+	}
+	return scoreByVenueId;
+}
+
 export function applyJournalScores<T extends EnrichableRecord>(
 	records: T[],
 	scoreByVenueId: Map<string, number>,
@@ -194,25 +272,7 @@ export async function addJournalScores<T extends EnrichableRecord>(
 
 	// Fetch every distinct journal's summary stats, in batches.
 	const venueIds = [...new Set(withIds.map((r) => r.venue_id).filter((id): id is string => !!id))];
-	const scoreByVenueId = new Map<string, number>();
-	for (const batch of chunk(venueIds, BATCH_SIZE)) {
-		try {
-			const data = await fetchJson(`${SOURCES_URL}${apiQuery({
-				filter: `ids.openalex:${batch.join("|")}`,
-				select: "id,summary_stats",
-				"per-page": String(BATCH_SIZE),
-			})}`);
-			for (const source of (data.results ?? []) as Array<Record<string, any>>) {
-				const id = typeof source.id === "string" ? source.id.replace("https://openalex.org/", "").trim() : "";
-				const score = source?.summary_stats?.["2yr_mean_citedness"];
-				if (id && typeof score === "number" && Number.isFinite(score)) {
-					scoreByVenueId.set(id, score);
-				}
-			}
-		} catch (error) {
-			warn(`journal-score batch lookup failed: ${error instanceof Error ? error.message : error}; affected journals ship without a score`);
-		}
-	}
+	const scoreByVenueId = await fetchJournalScores(venueIds, warn);
 	const scored = applyJournalScores(withIds, scoreByVenueId);
 	const count = scored.filter((r) => typeof r.journal_2yr_citedness === "number").length;
 	if (venueIds.length) {

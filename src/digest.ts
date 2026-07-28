@@ -52,7 +52,13 @@ export function renderDigest(payload: RenderPayload, htmlPath: string | null): s
 	} else {
 		lines.push(`Query: ${payload.query}`);
 	}
-	lines.push(`Sources: ${payload.sources_used.join(", ")}`);
+	lines.push(`Sources: ${payload.sources_used.join(", ") || "none"}`);
+	// A failed source is a fact about this run, not transient chrome
+	// (v30.1): the agent and the user must both see that results may be
+	// incomplete and which source to blame.
+	for (const failure of payload.source_failures ?? []) {
+		lines.push(`SOURCE FAILED: ${failure.source} -- ${failure.error} (results may be incomplete)`);
+	}
 	if (htmlPath) {
 		lines.push("Full sortable table (abstracts, links, dropped list):");
 		lines.push(`  ${htmlPath}`);

@@ -117,6 +117,39 @@ const html = renderHtml(payload);
 	assert.ok(html.includes("2 (1 on_target, 1 adjacent); 1/2 identifiers verified; 1 dropped"));
 }
 
+// v30.11: a run with the picker's "other journals/sources" row states what
+// it EXCLUDES (the unselected listed journals), not the whole listed head
+{
+	const withOther = renderHtml({
+		...payload,
+		filters: {
+			venues: ["Remote Sensing"], venuesOther: true,
+			venuesListed: ["Remote Sensing", "Water", "Sensors"],
+		},
+	});
+	assert.ok(withOther.includes("journals excluded: Water, Sensors (all other journals kept)"));
+	assert.ok(!withOther.includes("venuesListed"));
+	// Everything selected is honestly "no filter left".
+	const allPicked = renderHtml({
+		...payload,
+		filters: {
+			venues: ["Remote Sensing", "Water"], venuesOther: true,
+			venuesListed: ["Remote Sensing", "Water"],
+		},
+	});
+	assert.ok(allPicked.includes("journals: all kept"));
+	// The author picker reports the same way (v30.11).
+	const withAuthors = renderHtml({
+		...payload,
+		filters: {
+			authors: ["Claudia Kuenzer"], authorsOther: true,
+			authorsListed: ["Claudia Kuenzer", "Xiao Xiang Zhu"],
+		},
+	});
+	assert.ok(withAuthors.includes("authors excluded: Xiao Xiang Zhu (all other authors kept)"));
+	assert.ok(!withAuthors.includes("authorsListed"));
+}
+
 // table: expected column order, sortable markup, on_target highlighting
 {
 	assert.ok(html.includes("</th><th>#</th><th>Article</th><th>Authors</th><th>Year</th><th>Journal</th><th>Journal score&sup1;</th><th>Citations</th><th>DOI</th><th>Data source</th><th>Label</th>"));
@@ -719,6 +752,26 @@ const baseReport: SynthReport = {
 	assert.ok(html.includes("<strong>1. Satellite Imagery</strong>"));
 	assert.ok(html.includes("<li><strong>SPOT4:</strong> high resolution"));
 	assert.ok(!html.includes("**"));
+}
+
+// The wide grouping variant shows its "at least N of" form (v30.3).
+{
+	const wide = renderHtml({ ...payload, grouping: [["water"], ["mask"], ["sentinel 2"]], grouping_require: 2 });
+	assert.ok(wide.includes("at least 2 of: water | mask | sentinel 2"));
+	// Without grouping_require the classic AND expression stays.
+	assert.ok(html.includes("(river OR fluvial) AND (sandbar)"));
+}
+
+// Source failures get their own meta row (v30.1); no row when none failed.
+{
+	assert.ok(!html.includes("Failed sources"));
+	const failed = renderHtml({
+		...payload,
+		sources_used: ["crossref", "openalex"],
+		source_failures: [{ source: "arxiv", error: "timeout <60s>" }],
+	});
+	assert.ok(failed.includes("<dt>Failed sources</dt>"));
+	assert.ok(failed.includes("arxiv: timeout &lt;60s&gt; (results may be incomplete)"));
 }
 
 console.log("render.test.ts: all assertions passed");

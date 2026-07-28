@@ -57,6 +57,7 @@ function payload(overrides: Partial<RenderPayload>): RenderPayload {
 	assert.ok(digest.startsWith("Discovery complete: 2 records (2 verified; 1 on_target, 1 adjacent), 0 dropped."));
 	assert.ok(digest.includes("Query: sandbar detection rivers Sentinel-1 Sentinel-2"));
 	assert.ok(digest.includes("Sources: arxiv, crossref, openalex"));
+	assert.ok(!digest.includes("SOURCE FAILED")); // nothing failed here
 	assert.ok(digest.includes("  /data/queries/2026-07-10_q.html"));
 	// the JSON sidecar is agent infrastructure; its path stays out of the digest
 	assert.ok(!digest.includes(".json"));
@@ -337,6 +338,30 @@ const chatReport: ChatReport = {
 	const digest = renderChatReportDigest({ ...chatReport, grounded: false, references: [] }, "/x.html");
 	assert.ok(digest.startsWith("Paper chat report FAILED to ground"));
 	assert.ok(digest.includes("must NOT be presented as a summary"));
+}
+
+// Source failures stay visible in the digest (v30.1: an arXiv timeout was
+// invisible after the run -- the user could not tell a failed source from
+// one that honestly found nothing).
+{
+	const digest = renderDigest(
+		payload({
+			sources_used: ["crossref", "openalex"],
+			source_failures: [{ source: "arxiv", error: "The operation was aborted due to timeout" }],
+			results: [record({})],
+		}),
+		"/data/queries/x.html",
+	);
+	assert.ok(digest.includes("Sources: crossref, openalex"));
+	assert.ok(digest.includes(
+		"SOURCE FAILED: arxiv -- The operation was aborted due to timeout (results may be incomplete)",
+	));
+	// Every source failed: the sources line stays honest instead of empty.
+	const allFailed = renderDigest(
+		payload({ sources_used: [], source_failures: [{ source: "arxiv", error: "boom" }] }),
+		"/data/queries/x.html",
+	);
+	assert.ok(allFailed.includes("Sources: none"));
 }
 
 console.log("digest.test.ts: all assertions passed");

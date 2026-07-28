@@ -171,15 +171,16 @@ function drive(
 	assert.equal(state.tab, 0);
 	assert.equal(state.cursors[1], 1); // choice cursor starts on the initial option
 	assert.deepEqual([...state.selected[0]], ["c"]); // sticky preselection
-	// Stable footprint: the submit page (3 summary lines + blank + 2 rows)
-	// is the tallest tab here.
-	assert.equal(maxWizardRows(state), 6);
+	// Stable footprint: the submit page (3 steps x 2 review lines + warning
+	// slot + blank + 2 action rows, v30.2 rpiv layout) is the tallest tab.
+	assert.equal(maxWizardRows(state), 10);
 }
 
 {
 	// Enter on a checkbox ROW toggles (the E2c field complaint: it must NOT
-	// commit); only the next-row commits and advances.
-	let { state } = drive(initWizard(wizardSteps), ["down", "confirm"]);
+	// commit); only the next-row commits and advances. (lang "de": this
+	// block pins the German wording; the default is English since v30.)
+	let { state } = drive(initWizard(wizardSteps, { lang: "de" }), ["down", "confirm"]);
 	assert.deepEqual([...state.selected[0]].sort(), ["a", "c"]);
 	assert.equal(state.tab, 0); // still on the checkbox step
 	// Down to the next-row (select-all, 3 items, next = row 4) and commit.
@@ -193,11 +194,14 @@ function drive(
 	const reviewed = drive(picked.state, ["confirm"]);
 	assert.equal(reviewed.done, undefined);
 	assert.equal(reviewed.state.tab, 3);
-	// Enter on Absenden finishes; the summary shows every answer.
+	// Enter on Absenden finishes; the review shows every answer as a
+	// "● Tab" + "→ value" pair (v30.2 rpiv layout), no warning line.
 	const view = wizardView(reviewed.state);
-	assert.ok(view.rows.some((row) => row.text.includes("Zusammenfassung: Fließtext")));
-	assert.ok(view.rows.some((row) => row.text.includes("HTML: Ja")));
-	assert.ok(view.rows.at(-2)?.active && view.rows.at(-2)?.text.includes("Absenden"));
+	assert.ok(view.rows.some((row) => row.text.includes("● Zusammenfassung") && row.dim));
+	assert.ok(view.rows.some((row) => row.text.includes("→ Fließtext")));
+	assert.ok(view.rows.some((row) => row.text.includes("→ Ja")));
+	assert.ok(!view.rows.some((row) => row.warn));
+	assert.ok(view.rows.at(-2)?.active && view.rows.at(-2)?.text.includes("1. Absenden"));
 	const finished = drive(reviewed.state, ["confirm"]);
 	assert.equal(finished.done, "confirmed");
 	assert.deepEqual(wizardResult(finished.state), {
@@ -237,27 +241,31 @@ function drive(
 	assert.equal(wizardResult(state).save, "no");
 	// Now WITHOUT preselection: the empty checkbox blocks the submit.
 	const bare = wizardSteps.map((step) => (step.kind === "checkbox" ? { ...step, preselected: [] } : step));
-	({ state, done } = drive(initWizard(bare), ["right", "right", "right", "confirm"]));
+	({ state, done } = drive(initWizard(bare, { lang: "de" }), ["right", "right", "right", "confirm"]));
 	assert.equal(done, undefined);
 	assert.equal(state.tab, 0); // jumped from the submit page to the incomplete step
-	assert.ok(wizardView({ ...state, tab: 3 }).rows[0].text.includes("(offen)")); // the summary is honest about it
+	const review = wizardView({ ...state, tab: 3 });
+	assert.ok(review.rows.some((row) => row.text.includes("(offen)"))); // the review is honest about it
+	// ...and warns UP FRONT which steps are still open (v30.2 rpiv look).
+	assert.ok(review.rows.some((row) => row.warn && row.text.includes("⚠") && row.text.includes("Dokumente")));
 	// Esc cancels from anywhere.
 	assert.equal(reduceWizard(initWizard(wizardSteps), "cancel").done, "cancelled");
 	// Enter on the next-row with an EMPTY selection commits nothing.
-	const stuck = drive(initWizard(bare), ["up", "confirm"]); // cursor wraps to the next-row
+	const stuck = drive(initWizard(bare, { lang: "de" }), ["up", "confirm"]); // cursor wraps to the next-row
 	assert.equal(stuck.done, undefined);
 	assert.equal(stuck.state.tab, 0);
 }
 
 {
 	// View: tab bar, active row marker, chosen mark, per-kind hint.
-	let { state } = drive(initWizard(wizardSteps), ["down"]);
+	let { state } = drive(initWizard(wizardSteps, { lang: "de" }), ["down"]);
 	let view = wizardView(state);
-	// Answered tabs carry a check mark: papers is preselected (a REAL prior
-	// answer -- the sticky scope); the summary's initial is only a cursor
-	// recommendation and stays open, like the save step.
+	// Answered tabs carry a FILLED square, open ones an empty square, the
+	// review tab a check (v30.2 rpiv look): papers is preselected (a REAL
+	// prior answer -- the sticky scope); the summary's initial is only a
+	// cursor recommendation and stays open, like the save step.
 	assert.deepEqual(view.tabs.map((tab) => [tab.label, tab.active]), [
-		["Dokumente ✔", true], ["Zusammenfassung", false], ["HTML", false], ["Bestätigen", false],
+		["■ Dokumente", true], ["□ Zusammenfassung", false], ["□ HTML", false], ["✓ Bestätigen", false],
 	]);
 	assert.equal(view.rows.length, 5);
 	assert.ok(view.rows[1].active && view.rows[1].text.startsWith("❯ 1. "));
@@ -283,7 +291,7 @@ function drive(
 	];
 	// Typing appends; control chars are stripped; pasted newlines become
 	// semicolons; backspace deletes.
-	let { state } = drive(initWizard(steps), [
+	let { state } = drive(initWizard(steps, { lang: "de" }), [
 		{ kind: "input", chars: "Welche Kamera?" },
 		{ kind: "input", chars: "\nWo installiert??" },
 		"backspace",
@@ -301,13 +309,15 @@ function drive(
 		save: "yes",
 	});
 	// An EMPTY text is a valid answer (= no questions): finish succeeds.
-	const empty = drive(initWizard(steps), ["confirm", "confirm", "confirm"]);
+	const empty = drive(initWizard(steps, { lang: "de" }), ["confirm", "confirm", "confirm"]);
 	assert.equal(empty.done, "confirmed");
 	assert.equal(wizardResult(empty.state).questions, "");
 	// The placeholder shows while empty; the summary says "(keine)".
-	view = wizardView(initWizard(steps));
+	view = wizardView(initWizard(steps, { lang: "de" }));
 	assert.ok(view.rows[1].text.includes("leer = chatten"));
-	assert.ok(wizardView({ ...empty.state, tab: 2 }).rows[0].text.includes("Fragen: (keine)"));
+	const emptyReview = wizardView({ ...empty.state, tab: 2 }).rows;
+	assert.ok(emptyReview.some((row) => row.text.includes("● Fragen")));
+	assert.ok(emptyReview.some((row) => row.text.includes("→ (keine)")));
 	// Typed input outside a text step is ignored.
 	const noText = drive(initWizard(wizardSteps), [{ kind: "input", chars: "x" }, "backspace"]);
 	assert.equal(noText.state.texts[0], "");
@@ -335,14 +345,15 @@ function drive(
 	// greyed out (v29: visibility never changes while navigating), never
 	// blocks the finish and is absent from the result; the Enter-through
 	// flow still skips it.
-	let { state } = drive(initWizard(steps), ["confirm"]); // empty text -> next enabled = save
+	let { state } = drive(initWizard(steps, { lang: "de" }), ["confirm"]); // empty text -> next enabled = save
 	assert.equal(state.tab, 2);
-	// (a text step is always answered -- empty is valid -- hence its mark)
+	// (v30: a filled square means "carries a value" -- the empty text step
+	// is valid but stays an empty square)
 	assert.deepEqual(wizardView(state).tabs.map((tab) => [tab.label.trim(), tab.disabled ?? false]), [
-		["Fragen ✔", false],
-		["Fragen-Modus", true],
-		["HTML", false],
-		["Bestätigen", false],
+		["□ Fragen", false],
+		["□ Fragen-Modus", true],
+		["□ HTML", false],
+		["✓ Bestätigen", false],
 	]);
 	// Back VISITS the disabled step: it shows a reason line, nothing else.
 	({ state } = drive(state, ["left"]));
@@ -361,7 +372,7 @@ function drive(
 	assert.equal(finished.done, "confirmed");
 	assert.deepEqual(wizardResult(finished.state), { questions: "", save: "yes" });
 	// WITH a question the step exists again and gates the finish.
-	let withQ = drive(initWizard(steps), [{ kind: "input", chars: "Welche Kamera?" }, "confirm"]);
+	let withQ = drive(initWizard(steps, { lang: "de" }), [{ kind: "input", chars: "Welche Kamera?" }, "confirm"]);
 	assert.equal(withQ.state.tab, 1);
 	withQ = drive(withQ.state, ["right", "confirm", "confirm"]); // skip detail, answer save, Absenden
 	assert.equal(withQ.done, undefined);
@@ -370,7 +381,7 @@ function drive(
 	assert.equal(withQ.done, "confirmed");
 	assert.equal(wizardResult(withQ.state).detail, "per-paper");
 	// A step-specific disabledNote wins over the generic reason (v29).
-	const noted = initWizard([steps[0], { ...steps[1], disabledNote: "Braucht eine Frage." }, steps[2]]);
+	const noted = initWizard([steps[0], { ...steps[1], disabledNote: "Braucht eine Frage." }, steps[2]], { lang: "de" });
 	assert.ok(wizardView({ ...noted, tab: 1 }).rows[0].text.includes("Braucht eine Frage."));
 }
 
@@ -429,8 +440,9 @@ function drive(
 	const answered = drive(state, ["up", "confirm", "confirm", "confirm"]); // commit docs, summary bullets, save yes -> submit
 	assert.equal(answered.state.tab, 3);
 	assert.ok(wizardView(answered.state).rows.some((row) => row.text.includes("~3 Modellaufruf(e)")));
-	// The note counts one extra row in the constant footprint.
-	assert.equal(maxWizardRows(state), 7);
+	// The note counts one extra row in the constant footprint (v30.2
+	// layout: 3 steps x 2 + note + warning slot + blank + 2 actions).
+	assert.equal(maxWizardRows(state), 11);
 }
 
 /* ---------------- wizard: skipSubmit gates (v27) ---------------- */
@@ -469,12 +481,14 @@ function drive(
 /* ---------------- wizard: dialog language (v27) ---------------- */
 {
 	// Detection: umlauts decide instantly; otherwise stopword scoring;
-	// empty or tied input falls back (default German).
+	// empty or tied input falls back (default ENGLISH since v30; German
+	// callers pass their own fallback).
 	assert.equal(detectDialogLang(["welche kameras wurden verwendet?"]), "de");
 	assert.equal(detectDialogLang(["which cameras did they use?"]), "en");
 	assert.equal(detectDialogLang(["über die Kalibrierung"]), "de");
 	assert.equal(detectDialogLang(["what about the calibration of the sensors?"]), "en");
-	assert.equal(detectDialogLang([""]), "de");
+	assert.equal(detectDialogLang([""]), "en");
+	assert.equal(detectDialogLang([""], "de"), "de");
 	assert.equal(detectDialogLang([undefined], "en"), "en");
 	// Explicit language names win over detection (the caller checks first).
 	assert.equal(langFromName("German"), "de");
@@ -485,13 +499,235 @@ function drive(
 	// English wizard chrome: submit tab, hints and marks switch.
 	const en = initWizard(wizardSteps, { lang: "en" });
 	assert.equal(wizardView(en).hint, DIALOG_TEXT.en.hintCheckbox);
-	assert.ok(wizardView(en).tabs.at(-1)?.label === "Confirm");
+	assert.ok(wizardView(en).tabs.at(-1)?.label === "✓ Confirm");
 	const enSubmit = wizardView({ ...en, tab: 3 });
-	assert.equal(enSubmit.title, "Ready to submit?");
+	assert.equal(enSubmit.title, "Review your answers");
 	assert.ok(enSubmit.rows.some((row) => row.text.includes("(open)")));
+	assert.ok(enSubmit.rows.some((row) => row.warn && row.text.startsWith("⚠ Answer remaining")));
 	assert.ok(enSubmit.rows.at(-2)?.text.includes("Submit"));
-	// Default stays German (existing tests above pin the wording).
-	assert.equal(initWizard(wizardSteps).lang, "de");
+	// The default is ENGLISH (v30 user decision: no chat observed means
+	// English dialogs); the German blocks above pass lang "de" explicitly.
+	assert.equal(initWizard(wizardSteps).lang, "en");
+}
+
+/* -------- wizard: derived text, free-entry choice, form step (v30) -------- */
+{
+	// derive: the grouping follows the query LIVE until the user edits the
+	// grouping themselves; then their text wins, even cleared.
+	const steps: WizardStepDef[] = [
+		{ kind: "text", id: "query", tab: "Query", title: "Query?", plain: true },
+		{
+			kind: "text", id: "groups", tab: "Grouping", title: "Groups?", plain: true,
+			derive: (answers) => String(answers.query ?? "").split(" ").filter(Boolean).map((word) => `(${word})`).join(" AND "),
+		},
+	];
+	let { state } = drive(initWizard(steps), [{ kind: "input", chars: "sandbar rivers" }]);
+	assert.equal(wizardView({ ...state, tab: 1 }).rows[0].text, "❯ (sandbar) AND (rivers)_");
+	assert.equal(wizardResult(state).groups, "(sandbar) AND (rivers)");
+	// More typing on the query updates the derived grouping.
+	({ state } = drive(state, [{ kind: "input", chars: " sentinel" }]));
+	assert.equal(wizardResult(state).groups, "(sandbar) AND (rivers) AND (sentinel)");
+	// The summary (plain) shows the derived value verbatim.
+	assert.ok(wizardSummaryLines(state).some((line) => line === "Grouping: (sandbar) AND (rivers) AND (sentinel)"));
+	// Editing the grouping takes ownership...
+	({ state } = drive(state, ["right", "backspace"]));
+	assert.equal(wizardResult(state).groups, "(sandbar) AND (rivers) AND (sentinel");
+	({ state } = drive(state, [{ kind: "input", chars: " OR s-2)" }]));
+	// ...and later query edits no longer touch it.
+	({ state } = drive(state, ["left", { kind: "input", chars: " xyz" }]));
+	assert.equal(wizardResult(state).groups, "(sandbar) AND (rivers) AND (sentinel OR s-2)");
+	// Clearing an owned grouping stays cleared (= ungrouped), not re-derived.
+	const cleared = drive(initWizard(steps), [
+		{ kind: "input", chars: "a b" }, "right", "backspace", "backspace", "backspace",
+		"backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace", "backspace",
+	]);
+	assert.equal(wizardResult(cleared.state).groups, "");
+	// A provided initial counts as ownership from the start (agent proposal).
+	const proposed = initWizard([steps[0], { ...steps[1], initial: "(x)" }]);
+	assert.equal(wizardResult(drive(proposed, [{ kind: "input", chars: "q" }]).state).groups, "(x)");
+	// plain text steps: no question counter, placeholder only while empty.
+	const plainView = wizardView(drive(initWizard(steps), [{ kind: "input", chars: "a; b" }]).state);
+	assert.ok(!plainView.rows[1].text.includes("recognized"));
+}
+
+{
+	// Free-entry choice option: presets answer with their value, the custom
+	// row answers with its TYPED text; empty custom input answers nothing.
+	const steps: WizardStepDef[] = [{
+		kind: "choice", id: "count", tab: "Count", title: "How many?",
+		options: [
+			{ value: "5", label: "5 (default)" },
+			{ value: "50", label: "50 (maximum)" },
+			{ value: "custom", label: "Custom count:", freeText: true },
+		],
+	}];
+	// Preset: unchanged behavior.
+	const preset = drive(initWizard(steps), ["confirm", "confirm"]);
+	assert.equal(preset.done, "confirmed");
+	assert.equal(wizardResult(preset.state).count, "5");
+	// Custom: cursor onto the row, type, Enter answers with the text.
+	const custom = drive(initWizard(steps), ["down", "down", { kind: "input", chars: "23" }, "confirm", "confirm"]);
+	assert.equal(custom.done, "confirmed");
+	assert.equal(wizardResult(custom.state).count, "23");
+	// The row renders label + inline input; the summary shows the raw value.
+	const typing = drive(initWizard(steps), ["down", "down", { kind: "input", chars: "23" }]).state;
+	assert.ok(wizardView(typing).rows[2].text.includes("Custom count: 23_"));
+	assert.ok(wizardSummaryLines(custom.state).some((line) => line === "Count: 23"));
+	// Empty custom input does not answer -- the finish guard keeps holding.
+	const refused = drive(initWizard(steps), ["down", "down", "confirm"]);
+	assert.equal(refused.done, undefined);
+	assert.equal(refused.state.chosen[0], null);
+	// An initial matching NO preset seeds the custom row (agent proposal 23).
+	const seeded = initWizard([{ ...steps[0], initial: "23", initialIsAnswer: true }], { startTab: "submit" });
+	assert.equal(seeded.texts[0], "23");
+	assert.equal(seeded.cursors[0], 2); // cursor on the custom row
+	const confirmed = drive(seeded, ["confirm"]);
+	assert.equal(confirmed.done, "confirmed");
+	assert.equal(wizardResult(confirmed.state).count, "23");
+}
+
+/* -------- wizard: option descriptions + seeded custom row (v30.2) -------- */
+{
+	// The grouping-variants pattern: descriptions render as dim lines under
+	// each option and follow the LIVE answers; the freeText row is seeded
+	// from the other answers until the user types there.
+	const steps: WizardStepDef[] = [
+		{ kind: "text", id: "query", tab: "Query", title: "Query?", plain: true },
+		{
+			kind: "choice", id: "groups", tab: "Grouping", title: "Label how?",
+			options: [
+				{ value: "strict", label: "All concepts", description: (a) => `strict(${a.query})` },
+				{ value: "none", label: "No grouping", description: "results stay unlabeled" },
+				{ value: "custom", label: "Custom:", freeText: true },
+			],
+			customSeed: (a) => `seed(${a.query})`,
+		},
+	];
+	let { state } = drive(initWizard(steps), [{ kind: "input", chars: "water mask" }, "right"]);
+	const view = wizardView(state);
+	// Option row + dim description row, dynamic against the live query.
+	assert.equal(view.rows[0].text, "❯ 1. All concepts");
+	assert.equal(view.rows[1].text, "     strict(water mask)");
+	assert.ok(view.rows[1].dim === true);
+	assert.equal(view.rows[3].text, "     results stay unlabeled");
+	// descriptionPlain renders the line white (v30.4: substance, not
+	// explanation).
+	const plain = initWizard([{
+		kind: "choice", id: "g", tab: "G", title: "?",
+		options: [{ value: "a", label: "A", description: "expr", descriptionPlain: true }],
+	}]);
+	assert.ok(!wizardView(plain).rows[1].dim);
+	assert.equal(wizardView(plain).rows[1].text, "     expr");
+	// v30.5: labels can be LIVE too -- the grouping variants put the derived
+	// expression on the main row and the variant name in the dim line; the
+	// review shows both.
+	const swapped = drive(initWizard([
+		{ kind: "text", id: "query", tab: "Q", title: "?", plain: true },
+		{
+			kind: "choice", id: "g", tab: "G", title: "?",
+			options: [{ value: "strict", label: (a) => `expr(${a.query})`, description: "Full match (strict)" }],
+		},
+	]), [{ kind: "input", chars: "water" }, "right"]);
+	const swappedView = wizardView(swapped.state);
+	assert.equal(swappedView.rows[0].text, "❯ 1. expr(water)");
+	assert.ok(swappedView.rows[1].dim && swappedView.rows[1].text.includes("Full match (strict)"));
+	const swappedDone = drive(swapped.state, ["confirm", "confirm"]);
+	assert.ok(wizardSummaryLines(swappedDone.state).some((line) => line === "G: expr(water) -- Full match (strict)"));
+	// The seeded custom row shows the live seed...
+	assert.equal(view.rows[4].text, "  3. Custom: seed(water mask)");
+	// ...and Enter on it answers with the SEED when untouched.
+	const seeded = drive(state, ["down", "down", "confirm", "confirm"]);
+	assert.equal(seeded.done, "confirmed");
+	assert.equal(wizardResult(seeded.state).groups, "seed(water mask)");
+	// Typing on the row takes ownership; later query edits stop updating it.
+	({ state } = drive(state, ["down", "down", "backspace", { kind: "input", chars: ")x" }]));
+	assert.ok(wizardView(state).rows[4].text.includes("Custom: seed(water mask)x_"));
+	({ state } = drive(state, ["left", { kind: "input", chars: "s" }]));
+	assert.ok(wizardView({ ...state, tab: 1 }).rows[4].text.includes("seed(water mask)x"));
+	// A preset answer's review line carries its description (the substance).
+	const strict = drive(initWizard(steps), [{ kind: "input", chars: "a" }, "confirm", "confirm"]);
+	assert.ok(wizardSummaryLines(strict.state).some((line) => line === "Grouping: All concepts -- strict(a)"));
+}
+
+/* -------- wizard: optional checkbox + lazily loaded items (v30.7) -------- */
+{
+	// The journal-list pattern: an optional checkbox step starts EMPTY with
+	// a dim note; empty selection is a valid answer (no filter) and never
+	// blocks or stalls the Enter-through flow.
+	const steps: WizardStepDef[] = [
+		{ kind: "text", id: "query", tab: "Query", title: "?", plain: true },
+		{
+			kind: "checkbox", id: "journals", tab: "Journals", title: "?",
+			items: [], selectAllLabel: "Select all", nextLabel: "Next",
+			optional: true, emptyNote: "(fetching journal list ...)",
+		},
+	];
+	let { state } = drive(initWizard(steps), [{ kind: "input", chars: "water" }, "confirm"]);
+	assert.equal(state.tab, 1);
+	// Empty list: the note shows dim, Enter advances from ANY row.
+	let view = wizardView(state);
+	assert.ok(view.rows[0].dim && view.rows[0].text.includes("(fetching journal list ...)"));
+	const through = drive(state, ["confirm", "confirm"]); // -> submit -> finish
+	assert.equal(through.done, "confirmed");
+	assert.deepEqual(wizardResult(through.state).journals, []);
+	// No warning for the empty OPTIONAL step; the review says "(none)".
+	assert.ok(!wizardView(drive(state, ["confirm"]).state).rows.some((row) => row.warn));
+	assert.ok(wizardSummaryLines(drive(state, ["confirm"]).state).some((line) => line === "Journals: (none)"));
+	// setItems loads the fetched list: items appear, selection works.
+	({ state } = drive(state, [
+		{ kind: "setItems", step: "journals", items: [
+			{ id: "Remote Sensing", label: "Remote Sensing (1739)" },
+			{ id: "Water", label: "Water (91)" },
+		], emptyNote: "" },
+	] as never));
+	view = wizardView(state);
+	assert.ok(view.rows.some((row) => row.text.includes("Remote Sensing (1739)")));
+	const picked = drive(state, ["down", "toggle", "down", "down", "confirm", "confirm"]); // select first item, Next, submit
+	assert.equal(picked.done, "confirmed");
+	assert.deepEqual(wizardResult(picked.state).journals, ["Remote Sensing"]);
+	// Re-loading with OTHER items prunes a stale selection.
+	const pruned = drive(drive(state, ["down", "toggle"]).state, [
+		{ kind: "setItems", step: "journals", items: [{ id: "Water", label: "Water (91)" }] },
+	] as never);
+	assert.deepEqual(wizardResult(pruned.state).journals, []);
+	// setItems for an unknown step id is a no-op.
+	assert.equal(drive(state, [{ kind: "setItems", step: "ghost", items: [] }] as never).state.steps[1].kind, "checkbox");
+}
+
+{
+	// Form step: several optional fields in one tab; Enter walks the fields
+	// and leaves on the last; field ids join the result directly.
+	const steps: WizardStepDef[] = [{
+		kind: "form", id: "filters", tab: "Filters", title: "Optional filters",
+		fields: [
+			{ id: "min_cites", label: "Min. citations" },
+			{ id: "min_score", label: "Min. journal score" },
+			{ id: "venues", label: "Journals" },
+		],
+	}];
+	// All empty: ONE Enter passes the whole tab (Enter on an empty field
+	// leaves the step), filters stay off, no tab mark, summary honest.
+	const empty = drive(initWizard(steps), ["confirm", "confirm"]);
+	assert.equal(empty.done, "confirmed");
+	assert.deepEqual(wizardResult(empty.state), { min_cites: "", min_score: "", venues: "" });
+	assert.ok(wizardView(initWizard(steps)).tabs[0].label.startsWith("□"));
+	assert.ok(wizardSummaryLines(empty.state).some((line) => line === "Filters: (none)"));
+	// Typing edits the focused field; up/down move; the tab gains its mark.
+	let { state } = drive(initWizard(steps), [{ kind: "input", chars: "10" }, "down", "down", { kind: "input", chars: "Remote Sensing" }]);
+	assert.ok(wizardView(state).tabs[0].label.startsWith("■"));
+	const rows = wizardView(state).rows;
+	assert.equal(rows[0].text, "  Min. citations: 10");
+	assert.equal(rows[2].text, "❯ Journals: Remote Sensing_");
+	const done = drive(state, ["confirm", "confirm"]);
+	assert.equal(done.done, "confirmed");
+	assert.deepEqual(wizardResult(done.state), { min_cites: "10", min_score: "", venues: "Remote Sensing" });
+	assert.ok(wizardSummaryLines(done.state).some((line) => line === "Filters: Min. citations 10 · Journals Remote Sensing"));
+	// Enter on a FILLED non-last field moves down; on an empty one it leaves.
+	const walked = drive(initWizard(steps), [{ kind: "input", chars: "3" }, "confirm"]);
+	assert.equal(walked.state.tab, 0);
+	assert.equal(walked.state.cursors[0], 1);
+	const skipped = drive(walked.state, ["confirm"]); // field 2 empty -> out
+	assert.equal(skipped.state.tab, 1);
 }
 
 console.log("dialog-state tests passed");

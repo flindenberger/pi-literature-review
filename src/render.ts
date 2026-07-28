@@ -52,9 +52,14 @@ export interface RenderPayload {
 	query_variants?: string[] | null;
 	generated: string;
 	sources_used: string[];
+	/** Sources that errored during the run (v30.1: a failed source must stay
+	 * visible after the run; null: none failed). */
+	source_failures?: Array<{ source: string; error: string }> | null;
 	/** Boolean expression actually sent to arXiv per query (null: arXiv unused). */
 	arxiv_queries?: string[] | null;
 	grouping: string[][] | null;
+	/** on_target needs only this many groups (null: all groups; v30.3). */
+	grouping_require?: number | null;
 	filters: Record<string, unknown> | null;
 	sort: string | null;
 	results: RenderRecord[];
@@ -97,18 +102,46 @@ const FILTER_LABELS: Record<string, string> = {
 function describeFilters(filters: Record<string, unknown> | null): string {
 	if (!filters) return "none";
 	const parts: string[] = [];
+	// The pickers' "other journals/sources" and "other authors" rows
+	// (v30.11): what such a run actually removes is the LISTED entries that
+	// were not selected -- state that, instead of dumping the whole list.
+	const venuesOther = filters.venuesOther === true;
+	const authorsOther = filters.authorsOther === true;
+	const skip = new Set<string>(["venuesListed", "authorsListed", "venuesOther", "authorsOther"]);
+	if (venuesOther) skip.add("venues");
+	if (authorsOther) skip.add("authors");
 	for (const [key, value] of Object.entries(filters)) {
 		if (value === undefined || value === null) continue;
 		if (Array.isArray(value) && !value.length) continue;
+		if (skip.has(key)) continue;
 		const label = FILTER_LABELS[key] ?? key;
 		parts.push(`${label}: ${Array.isArray(value) ? value.join(", ") : String(value)}`);
+	}
+	const names = (value: unknown): string[] => (Array.isArray(value) ? (value as string[]) : []);
+	const excludedPart = (listed: string[], picked: string[], noun: string): string => {
+		const excluded = listed.filter((name) =>
+			!picked.some((wanted) => name.toLowerCase().includes(wanted.trim().toLowerCase())));
+		return excluded.length
+			? `${noun} excluded: ${excluded.join(", ")} (all other ${noun} kept)`
+			: `${noun}: all kept`;
+	};
+	if (venuesOther && names(filters.venuesListed).length) {
+		parts.push(excludedPart(names(filters.venuesListed), names(filters.venues), "journals"));
+	}
+	if (authorsOther && names(filters.authorsListed).length) {
+		parts.push(excludedPart(names(filters.authorsListed), names(filters.authors), "authors"));
 	}
 	return parts.length ? parts.join("; ") : "none";
 }
 
-function describeGrouping(grouping: string[][] | null): string {
+function describeGrouping(grouping: string[][] | null, require?: number | null): string {
 	if (!grouping?.length) return "none (results ungrouped)";
-	return grouping.map((terms) => `(${terms.join(" OR ")})`).join(" AND ");
+	const expression = grouping.map((terms) => `(${terms.join(" OR ")})`).join(" AND ");
+	// The wide variant (v30.3): on_target needs only `require` of the groups.
+	if (typeof require === "number" && require < grouping.length) {
+		return `at least ${require} of: ${grouping.map((terms) => terms.join(" OR ")).join(" | ")}`;
+	}
+	return expression;
 }
 
 function sourcesOf(record: RenderRecord): string[] {
@@ -425,6 +458,15 @@ export function renderHtml(payload: RenderPayload): string {
 			.map((q, i) => `<dd>${arxivQueries.length > 1 ? `Q${i + 1}: ` : ""}${esc(q)}</dd>`)
 			.join("")}`
 		: "";
+	// Honest degradation stays visible (v30.1): a source that errored is
+	// listed with its reason -- the results may be incomplete and the page
+	// must say so, not just a transient status line during the run.
+	const sourceFailures = payload.source_failures ?? [];
+	const sourceFailureRows = sourceFailures.length
+		? `\n<dt>Failed sources</dt>${sourceFailures
+			.map((f) => `<dd>${esc(f.source)}: ${esc(f.error)} (results may be incomplete)</dd>`)
+			.join("")}`
+		: "";
 
 	const fetchable = results.some((record) => fetchIdOf(record));
 	const onTargetButton = payload.grouping?.length
@@ -474,8 +516,8 @@ ${payload.dropped.map(droppedRow).join("\n")}
 <dl class="meta">
 <dt>Query</dt><dd>${esc(queryLabel)}</dd>${variantRows}
 <dt>Generated</dt><dd>${esc(payload.generated)} (UTC)</dd>
-<dt>Sources</dt><dd>${esc(payload.sources_used.join(", ")) || "none reachable"}</dd>${arxivQueryRows}
-<dt>Grouping</dt><dd>${esc(describeGrouping(payload.grouping))}</dd>
+<dt>Sources</dt><dd>${esc(payload.sources_used.join(", ")) || "none reachable"}</dd>${sourceFailureRows}${arxivQueryRows}
+<dt>Grouping</dt><dd>${esc(describeGrouping(payload.grouping, payload.grouping_require))}</dd>
 <dt>Filters</dt><dd>${esc(describeFilters(payload.filters))}</dd>
 <dt>Sort</dt><dd>${esc(payload.sort ?? "source order")}</dd>
 <dt>Results</dt><dd>${results.length}${groupSummary}; ${verifiedCount}/${results.length} identifiers verified; ${payload.dropped.length} dropped</dd>

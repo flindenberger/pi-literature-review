@@ -82,6 +82,75 @@ export function parseGroupSpec(spec: string): string[][] {
 		.filter((group) => group.length);
 }
 
+/** Function words that never form a useful term group of their own --
+ * whole-word matching would satisfy them in every abstract. English and
+ * German, since queries arrive in both. Shared with the arXiv query
+ * builder (v30.1 field finding: an AND clause over an everyday word like
+ * "using" makes arXiv's search backend time out or 429 -- measured with
+ * the same expression minus the word answering in seconds). */
+export const QUERY_STOPWORDS = new Set([
+	"and", "or", "of", "the", "a", "an", "in", "on", "at", "for", "with", "to", "by", "from",
+	"via", "using",
+	"und", "oder", "der", "die", "das", "dem", "den", "des", "ein", "eine", "einer", "eines",
+	"im", "mit", "für", "von", "vom", "zur", "zum", "auf", "bei", "aus", "über",
+]);
+
+/**
+ * Derive term groups from a plain search query, deterministically (v30:
+ * the search wizard's grouping tab follows the query live -- no LLM on the
+ * command path). Every content word becomes its own AND group; standalone
+ * single characters bind to the neighbouring word as one phrase term (the
+ * v18 arXiv tokenization rule -- "sentinel 2" stays one concept); function
+ * words drop out. A query carrying the user's own boolean syntax or quotes
+ * derives nothing -- their expression is not second-guessed. Synonyms
+ * (OR terms) are the user's or the agent's to add.
+ */
+export function deriveGroupsFromQuery(query: string): string[][] {
+	const trimmed = query.trim().replace(/\s+/g, " ");
+	if (!trimmed) return [];
+	if (/(^|\s)(AND|OR|NOT)(\s|$)/.test(trimmed) || trimmed.includes('"')) return [];
+	const tokens = trimmed.toLowerCase().split(" ").filter(Boolean);
+	const units: string[][] = [];
+	let leading: string[] = []; // single chars with no word yet; bound to the next word
+	for (const token of tokens) {
+		if (QUERY_STOPWORDS.has(token)) continue;
+		if (token.length === 1) {
+			if (units.length) units[units.length - 1].push(token);
+			else leading.push(token);
+		} else {
+			units.push([...leading, token]);
+			leading = [];
+		}
+	}
+	return units.map((unit) => [unit.join(" ")]);
+}
+
+/** Generic task/method words (v30.2): they describe WHAT IS DONE with the
+ * subject, not the subject itself. The "core concepts" grouping variant
+ * drops them, so on_target requires only the domain concepts -- a broader,
+ * often more useful labeling than the strict all-words variant. English
+ * and German. */
+const GENERIC_TASK_WORDS = new Set([
+	"detection", "extraction", "mapping", "monitoring", "classification", "segmentation",
+	"estimation", "analysis", "assessment", "evaluation", "identification", "retrieval",
+	"measurement", "observation", "prediction", "modeling", "modelling", "method", "methods",
+	"approach", "approaches", "technique", "techniques", "study", "studies", "review", "comparison",
+	"erkennung", "extraktion", "kartierung", "überwachung", "klassifikation", "klassifizierung",
+	"segmentierung", "schätzung", "analyse", "bewertung", "auswertung", "identifikation",
+	"messung", "beobachtung", "vorhersage", "modellierung", "methode", "methoden",
+	"ansatz", "ansätze", "verfahren", "studie", "studien", "vergleich",
+]);
+
+/**
+ * The broader grouping variant (v30.2): like deriveGroupsFromQuery, minus
+ * generic task words -- "Water Mask Extraction Using Sentinel 2" keeps
+ * (water) AND (mask) AND (sentinel 2). Falls back to [] when nothing
+ * remains (all-task-word queries offer no core to anchor on).
+ */
+export function deriveCoreGroupsFromQuery(query: string): string[][] {
+	return deriveGroupsFromQuery(query).filter((group) => !GENERIC_TASK_WORDS.has(group[0]));
+}
+
 /** Prefill for the year-range input: "2015-2024", "2015-", "" (no limit). */
 export function yearRangeToSpec(yearFrom?: number, yearTo?: number): string {
 	if (yearFrom === undefined && yearTo === undefined) return "";

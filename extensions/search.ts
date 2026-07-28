@@ -26,10 +26,12 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { detectDialogLang, type DialogLang, type WizardStepDef } from "../src/dialog-state.ts";
+import { detectDialogLang, type DialogLang, type WizardAnswers, type WizardStepDef } from "../src/dialog-state.ts";
 import { renderDigest } from "../src/digest.ts";
 import { DEFAULT_PER_SOURCE, MAX_PER_SOURCE, runSearch, SEARCHERS } from "../src/search.ts";
 import {
+	deriveCoreGroupsFromQuery,
+	deriveGroupsFromQuery,
 	formatGroupExpression,
 	parseGroupSpec,
 	parsePerSource,
@@ -38,97 +40,251 @@ import {
 } from "../src/intake.ts";
 import { writeRunOutputs } from "../src/output.ts";
 import { renderHtml } from "../src/render.ts";
+import { fetchAuthorMetrics, fetchJournalScores } from "../src/enrich.ts";
+import { authorFacets, journalFacets } from "../src/sources/openalex.ts";
 import { chatLangDefault, installChatLangObserver, runWizard } from "./dialogs.ts";
 
 const THOROUGH_PER_SOURCE = 15;
+/** How many journals the in-tab list shows (the facet query returns up to
+ * 200; a wizard tab wants the meaningful head, footprint-friendly).
+ * Declared before SEARCH_TEXT, whose strings quote it. */
+const JOURNAL_PICK_LIMIT = 12;
+/** Sentinel id of the catch-all row under the listed journals (v30.11).
+ * Journal ids are their NAMES, so this cannot collide with one; the row's
+ * visible label comes from SEARCH_TEXT.journalOther. */
+const JOURNAL_OTHER_ID = "__other_journals__";
+/** The same for the author list (v30.11): the top authors carrying results
+ * for this query, with a catch-all row underneath. */
+const AUTHOR_PICK_LIMIT = 12;
+const AUTHOR_OTHER_ID = "__other_authors__";
 const INTAKE_WIDGET = "pi-literature-review-intake";
+/** Transcript entry type for the /lit-search digest card (v30.3: the
+ * 16-line widget truncated real result lists in the field -- the same
+ * lesson as the v27 report cards; entries scroll, widgets do not). */
+const DIGEST_ENTRY = "pi-literature-search-digest";
+let digestEntryReady = false;
 
 /** The user-adjustable subset of a discovery call. */
 interface IntakeValues {
 	query: string;
 	groupTerms: string[][] | undefined;
+	/** on_target needs only this many groups (undefined: all) -- the wide
+	 * "concept pairs" variant (v30.3). */
+	groupRequire?: number | undefined;
 	yearFrom: number | undefined;
 	yearTo: number | undefined;
 	perSource: number | undefined;
+	minCites: number | undefined;
+	minJournalScore: number | undefined;
+	venues: string[] | undefined;
+	/** v30.11: the "Other journals/sources" row of the picker was checked --
+	 * journals outside the listed head pass too (see ResultFilters). */
+	venuesOther?: boolean;
+	/** The journal names the picker listed, so "other" knows what it is
+	 * other THAN. Only meaningful together with venuesOther. */
+	venuesListed?: string[];
+	authors: string[] | undefined;
+	/** v30.11: the author picker's "other authors" row was checked. */
+	authorsOther?: boolean;
+	/** The author names the picker listed (see venuesListed). */
+	authorsListed?: string[];
 }
 
 /** Intake wizard strings per dialog language (the dialogs follow the
- * chat's language, v27; shared observer in dialogs.ts). */
+ * chat's language, v27; shared observer in dialogs.ts; English default
+ * v30). Wording is deliberately sober -- scholarly tool, no chattiness. */
 const SEARCH_TEXT: Record<DialogLang, {
+	/** Line above the tab bar: which dialog this is (v30.12). */
+	header: string;
 	queryTab: string;
 	queryTitle: string;
+	queryPlaceholder: string;
 	groupTab: string;
 	groupTitle: string;
-	groupPlaceholder: string;
-	yearTab: string;
-	yearTitle: string;
-	yearPlaceholder: string;
-	depthTab: string;
-	depthTitle: string;
-	depthQuick: string;
-	depthThorough: string;
-	depthExhaustive: string;
-	depthCustom: string;
+	groupStrict: string;
+	groupCore: string;
+	groupPairs: string;
+	groupPairsPrefix: string;
+	groupAgent: string;
+	groupCustom: string;
+	groupEmpty: string;
+	periodTab: string;
+	periodTitle: string;
+	periodLast: (n: number) => string;
+	periodAll: string;
+	periodCustom: string;
 	countTab: string;
 	countTitle: string;
-	countDisabled: string;
+	countDefault: string;
+	countMax: string;
+	countCustom: string;
+	journalTab: string;
+	journalTitle: string;
+	journalSelectAll: string;
+	journalNext: string;
+	/** List entry suffix: hit count plus the OpenAlex 2-yr citedness when
+	 * the journal has one (v30.8 user wish: the rate in parentheses; the
+	 * rate arrives pre-formatted with one decimal -- "3.0", never "3"). */
+	journalItem: (count: number, score: string | undefined) => string;
+	/** The catch-all row under the listed journals (v30.11): everything the
+	 * top-N list does not show, so checking every row = no filter. */
+	journalOther: string;
+	authorTab: string;
+	authorTitle: string;
+	authorSelectAll: string;
+	/** List entry suffix: hits for THIS query plus the author's OpenAlex
+	 * totals (citations, h-index) where the API has them (v30.11). */
+	authorItem: (count: number, metrics: { cites?: number; hIndex?: number }) => string;
+	authorOther: string;
+	authorLoading: string;
+	authorNoneFound: string;
+	authorFetchFailed: (message: string) => string;
+	journalLoading: string;
+	journalIdle: string;
+	journalNoneFound: string;
+	journalFetchFailed: (message: string) => string;
+	filterTab: string;
+	filterTitle: string;
+	minCitesLabel: string;
+	authorsLabel: string;
 	note: (sources: string[], variants: number) => string;
 	badYears: (spec: string) => string;
 	badCount: (spec: string) => string;
+	badNumber: (label: string, spec: string) => string;
 	capped: string;
 	noQuery: string;
 }> = {
 	de: {
+		header: "/lit-search -- Literatursuche (Esc bricht ab)",
 		queryTab: "Suchanfrage",
-		queryTitle: "Wonach suchen? (geht wörtlich an die Datenbanken; leeren = ursprüngliche Anfrage behalten)",
+		queryTitle: "Bitte formuliere eine Suchanfrage.",
+		queryPlaceholder: "z. B. sandbar detection rivers Sentinel-2",
 		groupTab: "Gruppierung",
-		groupTitle: "Gruppierung: Gruppen mit AND, Begriffe darin mit OR -- markiert Treffer nur als on_target/adjacent, filtert nicht. Leer = ungruppiert.",
-		groupPlaceholder: "z. B. (river OR fluvial) AND (sandbar)",
-		yearTab: "Jahre",
-		yearTitle: "Erscheinungsjahre (2015-2024, 2015- oder 2024). Leer = alle.",
-		yearPlaceholder: "leer = alle Jahre",
-		depthTab: "Tiefe",
-		depthTitle: "Suchtiefe: Treffer je Quelle?",
-		depthQuick: `Schnell (${DEFAULT_PER_SOURCE} je Quelle)`,
-		depthThorough: `Gründlich (${THOROUGH_PER_SOURCE} je Quelle)`,
-		depthExhaustive: `Erschöpfend (${MAX_PER_SOURCE} je Quelle)`,
-		depthCustom: "Eigene Anzahl (nächster Reiter)",
-		countTab: "Anzahl",
-		countTitle: `Treffer je Quelle (1-${MAX_PER_SOURCE}; die Obergrenze ist Höflichkeit gegenüber den freien APIs)`,
-		countDisabled: "Nur bei Tiefe 'Eigene Anzahl' relevant.",
+		groupTitle: "Thematische Etikettierung der Treffer (on_target/adjacent) -- sie schränkt die Suche nicht ein. "
+			+ "Gruppen sind AND-verknüpft, Synonyme innerhalb einer Gruppe mit OR.",
+		groupStrict: "Volle Übereinstimmung (streng)",
+		groupCore: "Kern-Übereinstimmung (breiter)",
+		groupPairs: "Teil-Übereinstimmung (weit)",
+		groupPairsPrefix: "mind. 2 gemeinsam von: ",
+		groupAgent: "Vorschlag des Agenten",
+		groupCustom: "Eigene Übereinstimmung:",
+		groupEmpty: "(keine Begriffe ableitbar)",
+		periodTab: "Suchzeitraum",
+		periodTitle: "Erscheinungszeitraum?",
+		periodLast: (n) => `Letzte ${n} Jahre`,
+		periodAll: "Alle Jahre",
+		periodCustom: "Eigener Zeitraum:",
+		countTab: "Treffer",
+		countTitle: "Wie viele Treffer je Quelle (arXiv, CrossRef, OpenAlex)?",
+		countDefault: `${DEFAULT_PER_SOURCE} (Standard)`,
+		countMax: `${MAX_PER_SOURCE} (Limit)`,
+		countCustom: "Eigene Anzahl:",
+		journalTab: "Journals",
+		journalTitle: `Journal-Filter (optional): die Top-${JOURNAL_PICK_LIMIT}-Journals zu dieser Suchanfrage `
+			+ "(OpenAlex), darunter alle übrigen als eine Zeile. Nichts ausgewählt = kein Filter, "
+			+ "alles ausgewählt = ebenfalls kein Filter.",
+		journalSelectAll: "Alle auswählen (kein Filter)",
+		journalNext: "Weiter",
+		journalItem: (count, score) =>
+			`(${count} Treffer${score !== undefined ? ` · 2-Jahres-Rate ${score}` : ""})`,
+		journalOther: "Andere Journals/Quellen (hier nicht gelistet)",
+		authorTab: "Autoren",
+		authorTitle: `Autorenfilter (optional): die Top-${AUTHOR_PICK_LIMIT}-Autoren zu dieser Suchanfrage `
+			+ "(OpenAlex), darunter alle übrigen als eine Zeile. Zitationen und h-Index gelten für das "
+			+ "GESAMTE Werk der Person, nicht für diese Treffer. Nichts oder alles ausgewählt = kein Filter.",
+		authorSelectAll: "Alle auswählen (kein Filter)",
+		authorItem: (count, metrics) =>
+			`(${count} Treffer${metrics.cites !== undefined ? ` · ${metrics.cites} Zitationen` : ""}`
+			+ `${metrics.hIndex !== undefined ? ` · h-Index ${metrics.hIndex}` : ""})`,
+		authorOther: "Andere Autorinnen und Autoren (hier nicht gelistet)",
+		authorLoading: "(hole Autorenliste von OpenAlex ...)",
+		authorNoneFound: "(keine Autoren zu dieser Suchanfrage gefunden)",
+		authorFetchFailed: (message) => `(Autorenliste nicht abrufbar: ${message})`,
+		journalLoading: "(hole Journal-Liste von OpenAlex ...)",
+		journalIdle: "(wartet auf eine Suchanfrage)",
+		journalNoneFound: "(keine Journals zu dieser Suchanfrage gefunden)",
+		journalFetchFailed: (message) => `(Journal-Liste nicht abrufbar: ${message})`,
+		filterTab: "Filter",
+		filterTitle: "Optionale Filter (leer = aus).",
+		minCitesLabel: "Mindestzitationen",
+		authorsLabel: "Autor (Name enthält)",
 		note: (sources, variants) =>
 			`Quellen: ${sources.join(", ")}${variants ? ` · +${variants} Suchvariante(n) des Agenten` : ""}`,
 		badYears: (spec) => `Jahresangabe "${spec}" nicht verstanden -- Vorschlag bleibt`,
 		badCount: (spec) => `Anzahl "${spec}" nicht verstanden -- Vorschlag bleibt`,
-		capped: `Auf ${MAX_PER_SOURCE} je Quelle gekappt (Höflichkeit gegenüber den freien APIs)`,
+		badNumber: (label, spec) => `${label}: "${spec}" nicht verstanden -- Filter bleibt aus`,
+		capped: `Auf ${MAX_PER_SOURCE} je Quelle gekappt (Rücksicht auf die freien APIs)`,
 		noQuery: "Ohne Suchanfrage keine Suche -- nichts wurde gesucht.",
 	},
 	en: {
+		header: "/lit-search -- literature search (Esc cancels)",
 		queryTab: "Query",
-		queryTitle: "What to search for? (sent to the databases verbatim; clear it to keep the original query)",
+		queryTitle: "Please formulate a search query.",
+		queryPlaceholder: "e.g. sandbar detection rivers Sentinel-2",
 		groupTab: "Grouping",
-		groupTitle: "Grouping: groups AND-linked, terms within a group OR-linked -- only LABELS results on_target/adjacent, does not narrow the search. Empty = ungrouped.",
-		groupPlaceholder: "e.g. (river OR fluvial) AND (sandbar)",
-		yearTab: "Years",
-		yearTitle: "Publication years (2015-2024, 2015- or 2024). Empty = all.",
-		yearPlaceholder: "empty = all years",
-		depthTab: "Depth",
-		depthTitle: "Search depth: results per source?",
-		depthQuick: `Quick scan (${DEFAULT_PER_SOURCE} per source)`,
-		depthThorough: `Thorough (${THOROUGH_PER_SOURCE} per source)`,
-		depthExhaustive: `Exhaustive (${MAX_PER_SOURCE} per source)`,
-		depthCustom: "Custom count (next tab)",
-		countTab: "Count",
-		countTitle: `Results per source (1-${MAX_PER_SOURCE}; the cap is politeness towards the free APIs)`,
-		countDisabled: "Only applies with depth 'Custom count'.",
+		groupTitle: "Thematic labeling of the results (on_target/adjacent) -- it does not narrow the search. "
+			+ "Groups are AND-linked, synonyms within a group OR-linked.",
+		groupStrict: "Full match (strict)",
+		groupCore: "Core match (broader)",
+		groupPairs: "Partial match (wide)",
+		groupPairsPrefix: "any 2 together of: ",
+		groupAgent: "Agent proposal",
+		groupCustom: "Custom match:",
+		groupEmpty: "(no terms derivable)",
+		periodTab: "Search Period",
+		periodTitle: "Publication period?",
+		periodLast: (n) => `Last ${n} years`,
+		periodAll: "All years",
+		periodCustom: "Custom range:",
+		countTab: "Records",
+		countTitle: "How many records per source (arXiv, CrossRef, OpenAlex)?",
+		countDefault: `${DEFAULT_PER_SOURCE} (default)`,
+		countMax: `${MAX_PER_SOURCE} (limit)`,
+		countCustom: "Custom count:",
+		journalTab: "Journals",
+		journalTitle: `Journal filter (optional): the top ${JOURNAL_PICK_LIMIT} journals for this query `
+			+ "(OpenAlex), with everything else as one row below them. Nothing selected = no filter, "
+			+ "everything selected = no filter either.",
+		journalSelectAll: "Select all (no filter)",
+		journalNext: "Next",
+		journalItem: (count, score) =>
+			`(${count} hits${score !== undefined ? ` · 2-yr rate ${score}` : ""})`,
+		journalOther: "Other journals/sources (not listed here)",
+		authorTab: "Authors",
+		authorTitle: `Author filter (optional): the top ${AUTHOR_PICK_LIMIT} authors for this query `
+			+ "(OpenAlex), with everyone else as one row below them. Citations and h-index cover the "
+			+ "author's ENTIRE work, not these records. Nothing or everything selected = no filter.",
+		authorSelectAll: "Select all (no filter)",
+		authorItem: (count, metrics) =>
+			`(${count} hits${metrics.cites !== undefined ? ` · ${metrics.cites} citations` : ""}`
+			+ `${metrics.hIndex !== undefined ? ` · h-index ${metrics.hIndex}` : ""})`,
+		authorOther: "Other authors (not listed here)",
+		authorLoading: "(fetching author list from OpenAlex ...)",
+		authorNoneFound: "(no authors found for this query)",
+		authorFetchFailed: (message) => `(author list not reachable: ${message})`,
+		journalLoading: "(fetching journal list from OpenAlex ...)",
+		journalIdle: "(waiting for a search query)",
+		journalNoneFound: "(no journals found for this query)",
+		journalFetchFailed: (message) => `(journal list not reachable: ${message})`,
+		filterTab: "Filters",
+		filterTitle: "Optional filters (empty = off).",
+		minCitesLabel: "Min. citations",
+		authorsLabel: "Author name (substring)",
 		note: (sources, variants) =>
 			`Sources: ${sources.join(", ")}${variants ? ` · +${variants} agent query variant(s)` : ""}`,
 		badYears: (spec) => `Year range "${spec}" not understood -- keeping the proposal`,
 		badCount: (spec) => `Count "${spec}" not understood -- keeping the proposal`,
-		capped: `Capped at ${MAX_PER_SOURCE} per source (politeness towards the free APIs)`,
+		badNumber: (label, spec) => `${label}: "${spec}" not understood -- filter stays off`,
+		capped: `Capped at ${MAX_PER_SOURCE} per source (consideration for the free APIs)`,
 		noQuery: "No query, no search -- nothing was searched.",
 	},
 };
+
+/** Year inputs meaning "no limit" (the prefilled all-years wording in both
+ * languages plus the short forms). */
+const ALL_YEARS_TOKENS = new Set([
+	"all", "alle", "all years", "alle jahre", "gesamter zeitraum", "entire period",
+]);
 
 /**
  * Code-enforced intake: a blocking dialog the MODEL cannot skip or answer.
@@ -137,13 +293,18 @@ const SEARCH_TEXT: Record<DialogLang, {
  * rationalized away; this gate runs on EVERY call (user decision). Since
  * v29.1 it is the ONE rpiv-style wizard (same look as /lit-synth): with a
  * proposed query it opens ON its submit page -- the review lists query,
- * grouping, years and depth, one Enter runs the proposal (the old "Run as
- * proposed" ergonomics), arrow keys walk into the tabs to adjust, the
- * QUERY itself is editable there too. WITHOUT a query (bare /lit-search)
- * it opens on the empty query tab; a still-empty query at submit cancels
- * honestly. Esc cancels the run before any network call. Values are
- * WYSIWYG: what a tab shows at submit time is what runs (clearing the
- * grouping means ungrouped, clearing the years means all years).
+ * grouping, years, result count and optional filters, one Enter runs the
+ * proposal (the old "Run as proposed" ergonomics), arrow keys walk into
+ * the tabs to adjust, the QUERY itself is editable there too. WITHOUT a
+ * query (bare /lit-search) it opens on the empty query tab. Esc cancels
+ * the run before any network call. Values are WYSIWYG: what a tab shows
+ * at submit time is what runs -- clearing the grouping means ungrouped,
+ * clearing the years means all years, and an empty query at submit
+ * cancels honestly on EVERY path (v30; the silent fallback to the
+ * proposal is gone). The grouping tab derives its expression live from
+ * the query (deriveGroupsFromQuery) until the user edits it; the count
+ * tab carries the presets plus an inline custom row; the filter tab
+ * (min citations, min journal score, journal names) is strictly opt-in.
  */
 async function intakeWizard(
 	ctx: ExtensionContext,
@@ -157,84 +318,283 @@ async function intakeWizard(
 	const lang = detectDialogLang([query], chatLangDefault());
 	const text = SEARCH_TEXT[lang];
 	const proposedDepth = proposed.perSource ?? DEFAULT_PER_SOURCE;
-	const depthInitial = proposed.perSource === undefined || proposed.perSource === DEFAULT_PER_SOURCE ? "quick"
-		: proposed.perSource === THOROUGH_PER_SOURCE ? "thorough"
-		: proposed.perSource === MAX_PER_SOURCE ? "exhaustive"
-		: "custom";
 	const yearInitial = yearRangeToSpec(proposed.yearFrom, proposed.yearTo);
+	// Grouping variant expressions, derived from the LIVE query text (the
+	// option descriptions and the custom seed re-render as the user types).
+	const strictExpression = (answers: WizardAnswers): string =>
+		formatGroupExpression(deriveGroupsFromQuery(String(answers.query ?? "")));
+	const coreExpression = (answers: WizardAnswers): string =>
+		formatGroupExpression(deriveCoreGroupsFromQuery(String(answers.query ?? "")));
+	// The wide variant: on_target when any TWO core concepts co-occur.
+	// Up to three concepts the description spells out the OR-of-pairs form
+	// the user asked for; beyond that it stays readable as "any 2 of".
+	const pairsExpression = (answers: WizardAnswers): string => {
+		const names = deriveCoreGroupsFromQuery(String(answers.query ?? "")).map((group) => group[0]);
+		if (names.length < 2) return "";
+		if (names.length <= 3) {
+			const pairs: string[] = [];
+			for (let i = 0; i < names.length; i++) {
+				for (let j = i + 1; j < names.length; j++) pairs.push(`(${names[i]} AND ${names[j]})`);
+			}
+			return pairs.join(" OR ");
+		}
+		return `${text.groupPairsPrefix}${names.join(" · ")}`;
+	};
+	const thisYear = new Date().getFullYear();
+	// Filled by the journal itemLoader below; the submit mapping needs to
+	// know which journals the list actually showed (v30.11).
+	let listedJournals: string[] = [];
+	let listedAuthors: string[] = [];
 	const steps: WizardStepDef[] = [
-		{ kind: "text", id: "query", tab: text.queryTab, title: text.queryTitle, initial: query },
 		{
-			kind: "text", id: "groups", tab: text.groupTab, title: text.groupTitle,
-			placeholder: text.groupPlaceholder,
-			...(proposed.groupTerms?.length ? { initial: formatGroupExpression(proposed.groupTerms) } : {}),
+			kind: "text", id: "query", tab: text.queryTab, title: text.queryTitle, plain: true,
+			placeholder: text.queryPlaceholder,
+			...(query.trim() ? { initial: query } : {}),
 		},
 		{
-			kind: "text", id: "years", tab: text.yearTab, title: text.yearTitle,
-			placeholder: text.yearPlaceholder,
-			...(yearInitial ? { initial: yearInitial } : {}),
-		},
-		{
-			kind: "choice", id: "depth", tab: text.depthTab, title: text.depthTitle,
+			// Grouping VARIANTS to pick from (v30.2 user wish), all derived
+			// deterministically from the LIVE query text; the last row is a
+			// custom expression, seeded with the strict derivation and owned
+			// by the user from the first keystroke. An agent proposal joins
+			// as its own option and is preselected.
+			kind: "choice", id: "groups", tab: text.groupTab, title: text.groupTitle,
+			// The EXPRESSION is the main (white) row, the variant name the
+			// dim line below it (v30.5 user decision -- the expression is
+			// what one actually picks between).
 			options: [
-				{ value: "quick", label: text.depthQuick },
-				{ value: "thorough", label: text.depthThorough },
-				{ value: "exhaustive", label: text.depthExhaustive },
-				{ value: "custom", label: text.depthCustom },
+				{
+					value: "strict",
+					label: (answers) => strictExpression(answers) || text.groupEmpty,
+					description: text.groupStrict,
+				},
+				{
+					value: "core",
+					label: (answers) => coreExpression(answers) || text.groupEmpty,
+					description: text.groupCore,
+				},
+				{
+					value: "pairs",
+					label: (answers) => pairsExpression(answers) || text.groupEmpty,
+					description: text.groupPairs,
+				},
+				...(proposed.groupTerms?.length
+					? [{
+						value: "agent",
+						label: formatGroupExpression(proposed.groupTerms),
+						description: text.groupAgent,
+					}]
+					: []),
+				{ value: "custom", label: text.groupCustom, freeText: true },
 			],
-			initial: depthInitial,
-			// The proposal IS the answer here -- the wizard opens on the
-			// submit page and one Enter must run it (old dialog parity).
-			initialIsAnswer: true,
+			customSeed: (answers) => strictExpression(answers),
+			initial: proposed.groupTerms?.length ? "agent" : "strict",
+			...(query.trim() ? { initialIsAnswer: true } : {}),
 		},
 		{
-			kind: "text", id: "count", tab: text.countTab, title: text.countTitle,
+			// Search period as a menu (v30.3 user wish): last 5/10/20 years
+			// with the resolved range as the dim line, all years, or a custom
+			// range (2015-2024, 2015- or 2024). Bare calls recommend "last 5
+			// years"; the proposal path defaults to all years unless the
+			// agent proposed a range (which seeds the custom row).
+			kind: "choice", id: "period", tab: text.periodTab, title: text.periodTitle,
+			options: [
+				{ value: "5y", label: text.periodLast(5), description: `${thisYear - 4}-${thisYear}` },
+				{ value: "10y", label: text.periodLast(10), description: `${thisYear - 9}-${thisYear}` },
+				{ value: "20y", label: text.periodLast(20), description: `${thisYear - 19}-${thisYear}` },
+				{ value: "all", label: text.periodAll, description: `≤ ${thisYear}` },
+				{ value: "custom", label: text.periodCustom, freeText: true },
+			],
+			initial: yearInitial || (query.trim() ? "all" : "5y"),
+			...(query.trim() ? { initialIsAnswer: true } : {}),
+		},
+		{
+			kind: "choice", id: "count", tab: text.countTab, title: text.countTitle,
+			options: [
+				{ value: String(DEFAULT_PER_SOURCE), label: text.countDefault },
+				{ value: String(THOROUGH_PER_SOURCE), label: String(THOROUGH_PER_SOURCE) },
+				{ value: String(MAX_PER_SOURCE), label: text.countMax },
+				{ value: "custom", label: text.countCustom, freeText: true },
+			],
 			initial: String(proposedDepth),
-			enabledIf: (answers) => answers.depth === "custom",
-			disabledNote: text.countDisabled,
+			// On the proposal-confirm path the proposal IS the answer (one
+			// Enter runs it); a bare call starts genuinely unanswered (v30
+			// field complaint: no pre-set check marks).
+			...(query.trim() ? { initialIsAnswer: true } : {}),
+		},
+		{
+			// Journal filter (v30.7): the top journals for this query load
+			// INTO the tab (one OpenAlex facet query, fired by the adapter
+			// when the tab is reached -- see itemLoader below); an empty
+			// selection means no filter, so Enter-through stays one stroke.
+			// Typed name substrings (and an agent venues proposal) live in
+			// the filter form's journal-names field.
+			kind: "checkbox", id: "journals", tab: text.journalTab, title: text.journalTitle,
+			items: [], selectAllLabel: text.journalSelectAll, nextLabel: text.journalNext,
+			optional: true, emptyNote: text.journalLoading,
+		},
+		{
+			// Author filter (v30.11 user wish "neben dem Namen auch die Zahl
+			// der Zitationen"): the same mechanics as the journal tab -- the
+			// top authors for this query load into the tab, each row carrying
+			// its hits plus the author's open OpenAlex metrics (total
+			// citations, h-index). A typed name in the Filters tab still
+			// works for anyone outside this head.
+			kind: "checkbox", id: "author_pick", tab: text.authorTab, title: text.authorTitle,
+			items: [], selectAllLabel: text.authorSelectAll, nextLabel: text.journalNext,
+			optional: true, emptyNote: text.authorLoading,
+		},
+		{
+			kind: "form", id: "filters", tab: text.filterTab, title: text.filterTitle,
+			fields: [
+				{
+					id: "min_cites", label: text.minCitesLabel,
+					...(proposed.minCites !== undefined ? { initial: String(proposed.minCites) } : {}),
+				},
+				{
+					id: "authors", label: text.authorsLabel,
+					...(proposed.authors?.length ? { initial: proposed.authors.join(", ") } : {}),
+				},
+			],
 		},
 	];
 	const result = await runWizard(ctx, steps, signal, {
 		lang,
+		header: text.header,
 		// A proposed query is CONFIRMED (review page first, one Enter runs
 		// it); a bare call has nothing to confirm and starts on the query tab.
 		...(query.trim() ? { startTab: "submit" as const } : {}),
 		submitNote: () => text.note(sources, queryVariants?.length ?? 0),
+		// The journal list loads when the tab is reached, keyed on the LIVE
+		// query text (v30.7) -- one OpenAlex facet request plus one batched
+		// score lookup (v30.8: hit count AND 2-yr citedness per entry),
+		// adapter-driven. An agent venues proposal prechecks matching rows.
+		itemLoaders: [{
+			step: "journals",
+			key: (answers) => String(answers.query ?? "").trim().toLowerCase(),
+			load: async (answers) => {
+				const page = await journalFacets(String(answers.query ?? "").trim(), JOURNAL_PICK_LIMIT);
+				const scores = await fetchJournalScores(page.listed.map((facet) => facet.id), () => {});
+				// Remember what the list SHOWED: the "other" row is defined
+				// against exactly these names (v30.11).
+				listedJournals = page.listed.map((facet) => facet.name);
+				const items = page.listed.map((facet) => {
+					const score = scores.get(facet.id);
+					// toFixed keeps the decimal on integers ("3.0", never "3").
+					const rounded = score === undefined ? undefined : score.toFixed(1);
+					return { id: facet.name, label: `${facet.name} ${text.journalItem(facet.count, rounded)}` };
+				});
+				// The catch-all row: checking everything is then genuinely "no
+				// filter" (v30.11 user decision -- "all" must never exclude).
+				return items.length
+					? [...items, {
+						id: JOURNAL_OTHER_ID,
+						label: `${text.journalOther} ${text.journalItem(page.otherCount, undefined)}`,
+					}]
+					: items;
+			},
+			...(proposed.venues?.length
+				? {
+					preselect: (items: { id: string }[]) => items
+						.filter((item) => proposed.venues?.some((venue) =>
+							item.id.toLowerCase().includes(venue.trim().toLowerCase())))
+						.map((item) => item.id),
+				}
+				: {}),
+			loadingNote: text.journalLoading,
+			idleNote: text.journalIdle,
+			emptyNote: text.journalNoneFound,
+			failedNote: text.journalFetchFailed,
+		}, {
+			// The author list (v30.11): one facet request over the query's
+			// works plus one batched author lookup for the open metrics.
+			step: "author_pick",
+			key: (answers) => String(answers.query ?? "").trim().toLowerCase(),
+			load: async (answers) => {
+				const page = await authorFacets(String(answers.query ?? "").trim(), AUTHOR_PICK_LIMIT);
+				const metrics = await fetchAuthorMetrics(page.listed.map((facet) => facet.id), () => {});
+				listedAuthors = page.listed.map((facet) => facet.name);
+				const items = page.listed.map((facet) => {
+					const found = metrics.get(facet.id) ?? {};
+					return {
+						id: facet.name,
+						label: `${facet.name} ${text.authorItem(facet.count, {
+							...(found.cites !== undefined ? { cites: found.cites } : {}),
+							...(found.hIndex !== undefined ? { hIndex: found.hIndex } : {}),
+						})}`,
+					};
+				});
+				return items.length
+					? [...items, {
+						id: AUTHOR_OTHER_ID,
+						label: `${text.authorOther} ${text.authorItem(page.otherCount, {})}`,
+					}]
+					: items;
+			},
+			...(proposed.authors?.length
+				? {
+					preselect: (items: { id: string }[]) => items
+						.filter((item) => proposed.authors?.some((author) =>
+							item.id.toLowerCase().includes(author.trim().toLowerCase())))
+						.map((item) => item.id),
+				}
+				: {}),
+			loadingNote: text.authorLoading,
+			idleNote: text.journalIdle,
+			emptyNote: text.authorNoneFound,
+			failedNote: text.authorFetchFailed,
+		}],
 	});
 	if (result === null) {
 		diagnostics.push("intake dialog: cancelled by the user");
 		return null;
 	}
 	const values: IntakeValues = { ...proposed, query };
-	const editedQuery = typeof result.query === "string" ? result.query.trim() : "";
-	if (editedQuery) values.query = editedQuery;
-	if (!values.query.trim()) {
-		// Bare call submitted without typing a query: nothing to search.
+	// WYSIWYG (v30): the query the tab shows at submit is the query that
+	// runs -- and an EMPTY query cancels honestly on every path (the old
+	// silent fallback to the proposal is gone with its hint text).
+	values.query = typeof result.query === "string" ? result.query.trim() : "";
+	if (!values.query) {
 		ctx.ui.notify(text.noQuery, "warning");
 		diagnostics.push("intake dialog: submitted without a query");
 		return null;
 	}
+	// The grouping step answers with a variant key or a custom expression
+	// (v30.2). Variants are re-derived from the FINAL query text -- exactly
+	// what the option description showed at submit time (WYSIWYG). "pairs"
+	// (v30.3) keeps the core concepts but marks on_target when any TWO of
+	// them co-occur (groupRequire).
 	const groupSpec = typeof result.groups === "string" ? result.groups.trim() : "";
-	const groups = !groupSpec || groupSpec.toLowerCase() === "none" ? [] : parseGroupSpec(groupSpec);
+	const groups = groupSpec === "strict" ? deriveGroupsFromQuery(values.query)
+		: groupSpec === "core" || groupSpec === "pairs" ? deriveCoreGroupsFromQuery(values.query)
+		: groupSpec === "agent" ? proposed.groupTerms ?? []
+		: !groupSpec || groupSpec.toLowerCase() === "none" ? []
+		: parseGroupSpec(groupSpec);
 	values.groupTerms = groups.length ? groups : undefined;
-	const yearSpec = typeof result.years === "string" ? result.years.trim() : "";
-	if (!yearSpec || ["all", "alle"].includes(yearSpec.toLowerCase())) {
+	values.groupRequire = groupSpec === "pairs" && groups.length > 2 ? 2 : undefined;
+	// The period step answers with a preset key or a custom range spec; an
+	// unparseable custom range keeps the proposal, loudly.
+	const periodSpec = typeof result.period === "string" ? result.period.trim() : "";
+	const thisYearNow = new Date().getFullYear();
+	const lastYears: Record<string, number> = { "5y": 4, "10y": 9, "20y": 19 };
+	if (periodSpec in lastYears) {
+		values.yearFrom = thisYearNow - lastYears[periodSpec];
+		values.yearTo = undefined;
+	} else if (!periodSpec || periodSpec === "all" || ALL_YEARS_TOKENS.has(periodSpec.toLowerCase())) {
 		values.yearFrom = undefined;
 		values.yearTo = undefined;
 	} else {
-		const range = parseYearRange(yearSpec);
+		const range = parseYearRange(periodSpec);
 		if (range === null) {
-			ctx.ui.notify(text.badYears(yearSpec), "warning");
+			ctx.ui.notify(text.badYears(periodSpec), "warning");
 		} else {
 			values.yearFrom = range.yearFrom;
 			values.yearTo = range.yearTo;
 		}
 	}
-	if (result.depth === "quick") values.perSource = DEFAULT_PER_SOURCE;
-	else if (result.depth === "thorough") values.perSource = THOROUGH_PER_SOURCE;
-	else if (result.depth === "exhaustive") values.perSource = MAX_PER_SOURCE;
-	else if (result.depth === "custom") {
-		const countSpec = typeof result.count === "string" ? result.count.trim() : "";
+	// The count step answers with a number string: a preset value or the
+	// free-entry input of the "custom" row (v30 -- no separate count tab).
+	const countSpec = typeof result.count === "string" ? result.count.trim() : "";
+	if (countSpec) {
 		const count = parsePerSource(countSpec, MAX_PER_SOURCE);
 		if (count === null) {
 			ctx.ui.notify(text.badCount(countSpec), "warning");
@@ -242,6 +602,74 @@ async function intakeWizard(
 			if (String(count) !== countSpec) ctx.ui.notify(text.capped, "info");
 			values.perSource = count;
 		}
+	}
+	// Optional filters, strictly opt-in: empty fields mean "no filter";
+	// unparseable input stays off, loudly.
+	const numberField = (raw: unknown, label: string, float: boolean): number | undefined => {
+		const spec = typeof raw === "string" ? raw.trim() : "";
+		if (!spec) return undefined;
+		const pattern = float ? /^\d+(?:[.,]\d+)?$/ : /^\d+$/;
+		if (!pattern.test(spec)) {
+			ctx.ui.notify(text.badNumber(label, spec), "warning");
+			return undefined;
+		}
+		return Number(spec.replace(",", "."));
+	};
+	values.minCites = numberField(result.min_cites, text.minCitesLabel, false);
+	// The journal-score filter left the DIALOG in v30.9 (user decision);
+	// WYSIWYG forbids silently applying an agent-passed value the wizard
+	// never showed. The tool param keeps working on headless runs.
+	values.minJournalScore = undefined;
+	// Author filter (v30.9): any listed name substring may match any author.
+	// v30.11: the Authors tab contributes picked names, plus its own
+	// catch-all row -- typed names and picked names are the same kind of
+	// wanted substring and simply merge (deduplicated, case-insensitive).
+	const authorsSpec = typeof result.authors === "string" ? result.authors.trim() : "";
+	const typedAuthors = authorsSpec.split(/[,;]/).map((name) => name.trim()).filter(Boolean);
+	const pickedAuthorRows = Array.isArray(result.author_pick) ? (result.author_pick as string[]) : [];
+	const pickedAuthorOther = pickedAuthorRows.includes(AUTHOR_OTHER_ID);
+	const pickedAuthors = pickedAuthorRows.filter((name) => name !== AUTHOR_OTHER_ID);
+	const wantedAuthors: string[] = [];
+	for (const name of [...pickedAuthors, ...typedAuthors]) {
+		if (!wantedAuthors.some((seen) => seen.toLowerCase() === name.toLowerCase())) wantedAuthors.push(name);
+	}
+	if (pickedAuthorOther && pickedAuthors.length >= listedAuthors.length && !typedAuthors.length) {
+		// Every row checked -> no author filter at all.
+		values.authors = undefined;
+		values.authorsOther = undefined;
+		values.authorsListed = undefined;
+	} else if (pickedAuthorOther) {
+		values.authors = wantedAuthors.length ? wantedAuthors : undefined;
+		values.authorsOther = true;
+		values.authorsListed = listedAuthors;
+	} else {
+		values.authors = wantedAuthors.length ? wantedAuthors : undefined;
+		values.authorsOther = undefined;
+		values.authorsListed = undefined;
+	}
+	// Journal filter: exactly what the tab shows checked (v30.8 -- the
+	// typed-names form field is gone; an agent proposal arrives as
+	// prechecked rows via the loader's preselect); empty = no filter.
+	// v30.11: the list carries an explicit "other journals/sources" row --
+	// with it checked, journals outside the list pass too, and checking
+	// EVERY row is literally no filter (the select-all trap of v30.10 is
+	// gone: "all" can no longer exclude anything).
+	const pickedJournals = Array.isArray(result.journals) ? (result.journals as string[]) : [];
+	const pickedOther = pickedJournals.includes(JOURNAL_OTHER_ID);
+	const pickedNames = pickedJournals.filter((name) => name !== JOURNAL_OTHER_ID);
+	if (pickedOther && pickedNames.length >= listedJournals.length) {
+		// Everything checked -> no venue filter at all.
+		values.venues = undefined;
+		values.venuesOther = undefined;
+		values.venuesListed = undefined;
+	} else if (pickedOther) {
+		values.venues = pickedNames.length ? pickedNames : undefined;
+		values.venuesOther = true;
+		values.venuesListed = listedJournals;
+	} else {
+		values.venues = pickedNames.length ? pickedNames : undefined;
+		values.venuesOther = undefined;
+		values.venuesListed = undefined;
 	}
 	diagnostics.push(
 		values.query === query
@@ -251,10 +679,29 @@ async function intakeWizard(
 	return values;
 }
 
+
 export default function literatureSearch(pi: ExtensionAPI) {
 	// Shared chat-language observer (dialogs.ts): the intake wizard opens
 	// in the language of the user's recent plain chat input.
 	installChatLangObserver(pi);
+	// Rich transcript rendering for the command-path digest (same pattern
+	// as the synthesize answer cards). pi-tui exists only at pi runtime;
+	// without it the capped widget stays the fallback.
+	void (async () => {
+		try {
+			const { Box, Text } = await import("@earendil-works/pi-tui");
+			pi.registerEntryRenderer(DIGEST_ENTRY, (entry, _state, theme) => {
+				const data = entry.data as { heading: string; text: string };
+				const box = new Box(1, 1, (line: string) => theme.bg("customMessageBg", line));
+				box.addChild(new Text(theme.bold(data.heading)));
+				for (const line of data.text.split("\n")) box.addChild(new Text(line));
+				return box;
+			});
+			digestEntryReady = true;
+		} catch {
+			// pi-tui unavailable -> the capped widget fallback stays.
+		}
+	})();
 	pi.registerTool({
 		name: "pi-literature-search",
 		label: "Literature Search",
@@ -267,8 +714,9 @@ export default function literatureSearch(pi: ExtensionAPI) {
 			"pi-literature-synthesize; for downloading found papers, use pi-literature-fetch. " +
 			"Call this tool DIRECTLY; do NOT ask intake or clarification questions in chat first. On every call the " +
 			"tool itself shows the user a terminal wizard summarizing the proposed query (editable there -- the " +
-			"user's wording wins), grouping logic, year range and search depth, where the user confirms or adjusts " +
-			"everything before the search runs. Your job is only to propose sensible parameters. If the result says " +
+			"user's wording wins), grouping logic, year range, result count and optional filters (min citations, " +
+			"min journal score, journal names), where the user confirms or adjusts everything before the search " +
+			"runs. Your job is only to propose sensible parameters. If the result says " +
 			"the user cancelled the dialog, ask what they want to change; do not retry unchanged. " +
 			"The tool result is a short digest only: counts, the HTML file path, and one reference line per record " +
 			"(group flag, year, DOI/arXiv ID, title). Lines marked UNVERIFIED did not resolve at doi.org/arxiv.org; " +
@@ -279,11 +727,12 @@ export default function literatureSearch(pi: ExtensionAPI) {
 			"not mention its path to the user. The HTML file is where the user reviews and selects papers: tell them " +
 			"its path. When you refer to a record, copy its digest line EXACTLY; never re-type, complete or invent " +
 			"titles, authors, years or identifiers, never build your own results table, and never add key findings, " +
-			"methodology advice, next steps or deliverables - this tool only discovers literature. Optional " +
+			"methodology advice, next steps or deliverables - this tool only discovers literature. " +
 			"group_terms sort results into on_target/adjacent by deterministic word rules: a record is on_target when " +
-			"at least one term from EVERY group appears in its title or abstract. Derive the groups from the user's " +
-			"research question, one group per required concept, e.g. for river sandbars via Sentinel: " +
-			'[["river","fluvial"],["sandbar","bar"],["sentinel","s-1","s-2"]]. ' +
+			"at least one term from EVERY group appears in its title or abstract. PROPOSE group_terms on every call: " +
+			"derive one group per required concept from the user's research question, each with OR synonyms, e.g. for " +
+			'river sandbars via Sentinel: [["river","fluvial"],["sandbar","bar"],["sentinel","s-1","s-2"]]. The wizard ' +
+			"shows your proposal as one selectable variant next to code-derived ones; the user picks. " +
 			"If results disappoint, refine group_terms or filters in a new call; NEVER pad the list with loosely " +
 			"related papers to reach a count.",
 		promptSnippet:
@@ -310,6 +759,10 @@ export default function literatureSearch(pi: ExtensionAPI) {
 				minimum: 0,
 				description: "Keep only records with at least this many citations. Records with UNKNOWN counts (arXiv preprints) still pass, visible as cites: null. Note: penalizes very recent papers.",
 			})),
+			min_journal_score: Type.Optional(Type.Number({
+				minimum: 0,
+				description: "Keep only records whose journal 2-yr citedness (OpenAlex, an open JIF analog attached by enrichment) is at least this. Records WITHOUT a score (preprints, unmatched venues) still pass. Needs enrich (default on).",
+			})),
 			year_from: Type.Optional(Type.Integer({
 				description: "Keep only records published in or after this year (records with unknown year are excluded, with a reason)",
 			})),
@@ -318,6 +771,9 @@ export default function literatureSearch(pi: ExtensionAPI) {
 			})),
 			venues: Type.Optional(Type.Array(Type.String(), {
 				description: "Keep only records whose journal/venue name contains one of these strings (case-insensitive). Excludes venue-less preprints, with a reason.",
+			})),
+			authors: Type.Optional(Type.Array(Type.String(), {
+				description: "Keep only records where at least one author name contains one of these strings (case-insensitive). Use when the user asks for papers by a specific author or group.",
 			})),
 			require_pdf: Type.Optional(Type.Boolean({
 				description: "Keep only records with a direct PDF link",
@@ -349,6 +805,10 @@ export default function literatureSearch(pi: ExtensionAPI) {
 				yearFrom: params.year_from,
 				yearTo: params.year_to,
 				perSource: params.per_source,
+				minCites: params.min_cites,
+				minJournalScore: params.min_journal_score,
+				venues: params.venues,
+				authors: params.authors,
 			};
 			if (ctx.hasUI) {
 				const sources = params.sources?.length ? params.sources : Object.keys(SEARCHERS);
@@ -392,11 +852,18 @@ export default function literatureSearch(pi: ExtensionAPI) {
 				perSource: confirmed.perSource,
 				sources: params.sources,
 				groupTerms: confirmed.groupTerms,
+				groupRequire: confirmed.groupRequire,
 				filters: {
-					minCites: params.min_cites,
+					minCites: confirmed.minCites,
+					minJournalScore: confirmed.minJournalScore,
 					yearFrom: confirmed.yearFrom,
 					yearTo: confirmed.yearTo,
-					venues: params.venues,
+					venues: confirmed.venues,
+					venuesOther: confirmed.venuesOther,
+					venuesListed: confirmed.venuesListed,
+					authors: confirmed.authors,
+					authorsOther: confirmed.authorsOther,
+					authorsListed: confirmed.authorsListed,
 					requirePdf: params.require_pdf,
 					verifiedOnly: params.verified_only,
 				},
@@ -445,7 +912,10 @@ export default function literatureSearch(pi: ExtensionAPI) {
 				query,
 				undefined,
 				sources,
-				{ groupTerms: undefined, yearFrom: undefined, yearTo: undefined, perSource: undefined },
+				{
+					groupTerms: undefined, yearFrom: undefined, yearTo: undefined, perSource: undefined,
+					minCites: undefined, minJournalScore: undefined, venues: undefined, authors: undefined,
+				},
 				diagnostics,
 				ctx.signal,
 			);
@@ -454,15 +924,37 @@ export default function literatureSearch(pi: ExtensionAPI) {
 				return;
 			}
 			if (ctx.signal?.aborted) return;
+			// Sign of life (v30.9 field wish): pi's native working indicator
+			// exists only while the AGENT streams (v22) -- the agent-free
+			// command path shows an elapsed line in the widget instead.
+			const startedAt = Date.now();
+			const ticker = setInterval(() => {
+				const seconds = Math.round((Date.now() - startedAt) / 1000);
+				ctx.ui.setWidget(INTAKE_WIDGET, [`working -- ${seconds}s elapsed (searching, verifying, enriching)`]);
+			}, 3000);
 			try {
 				const payload = await runSearch({
 					query: confirmed.query,
 					perSource: confirmed.perSource,
 					groupTerms: confirmed.groupTerms,
-					filters: { yearFrom: confirmed.yearFrom, yearTo: confirmed.yearTo },
+					groupRequire: confirmed.groupRequire,
+					filters: {
+						yearFrom: confirmed.yearFrom,
+						yearTo: confirmed.yearTo,
+						minCites: confirmed.minCites,
+						minJournalScore: confirmed.minJournalScore,
+						venues: confirmed.venues,
+						venuesOther: confirmed.venuesOther,
+						venuesListed: confirmed.venuesListed,
+						authors: confirmed.authors,
+						authorsOther: confirmed.authorsOther,
+						authorsListed: confirmed.authorsListed,
+					},
 					onWarn: progress,
 					signal: ctx.signal,
 				});
+				clearInterval(ticker);
+				ctx.ui.setWidget(INTAKE_WIDGET, undefined);
 				let htmlPath: string | null = null;
 				try {
 					({ htmlPath } = writeRunOutputs(renderHtml(payload), payload, undefined));
@@ -473,16 +965,30 @@ export default function literatureSearch(pi: ExtensionAPI) {
 					);
 				}
 				if (htmlPath) ctx.ui.notify(`Results written to ${htmlPath}`, "info");
-				// Show the digest in the widget: reliable and immediate. (An earlier
-				// version used sendMessage with deliverAs:"nextTurn", which only
-				// QUEUES the text for the next prompt, so it never rendered.) The
-				// full results are in the HTML file the notify points at.
-				const digestLines = renderDigest(payload, htmlPath).split("\n");
-				ctx.ui.setWidget(INTAKE_WIDGET, digestLines.length > 16
-					? [...digestLines.slice(0, 15), `... (${digestLines.length - 15} more lines -- full results in the HTML)`]
-					: digestLines);
+				// Show the digest as a FULL transcript card (v30.3: the capped
+				// widget truncated real result lists -- "widget truncated" was
+				// a field complaint, not a policy; nothing is blocked). The
+				// card scrolls with the chat and is not in the LLM context.
+				// Widget fallback when pi-tui is unavailable. (An even earlier
+				// version used sendMessage with deliverAs:"nextTurn", which
+				// only QUEUES the text for the next prompt -- never rendered.)
+				const digest = renderDigest(payload, htmlPath);
+				if (digestEntryReady) {
+					pi.appendEntry(DIGEST_ENTRY, {
+						heading: `Literature search -- ${confirmed.query}`,
+						text: digest,
+					});
+					ctx.ui.setWidget(INTAKE_WIDGET, undefined);
+				} else {
+					const digestLines = digest.split("\n");
+					ctx.ui.setWidget(INTAKE_WIDGET, digestLines.length > 16
+						? [...digestLines.slice(0, 15), `... (${digestLines.length - 15} more lines -- full results in the HTML)`]
+						: digestLines);
+				}
 			} catch (error) {
 				ctx.ui.notify(`Search failed: ${error instanceof Error ? error.message : error}`, "error");
+			} finally {
+				clearInterval(ticker); // idempotent; covers the failure path
 			}
 		},
 	});

@@ -12,6 +12,7 @@
  */
 
 import { XMLParser } from "fast-xml-parser";
+import { QUERY_STOPWORDS } from "../intake.ts";
 import { type SourceRecord, userAgent } from "../types.ts";
 
 const BASE_URL = "https://export.arxiv.org/api/query";
@@ -51,9 +52,17 @@ function extractDoi(entry: Record<string, any>): string {
  * quoted phrase, and join the units with explicit AND. Zero hits from a
  * source that has nothing on the topic is the honest answer.
  *
+ * Function words are dropped before building the expression (v30.1 field
+ * finding: `all:using` as an AND clause made arXiv's backend hang for 60s
+ * or answer 429, while the same expression without it answered within
+ * seconds -- an everyday word matches half the corpus and the AND join
+ * turns that into an expensive intersection). The list is shared with the
+ * grouping derivation (QUERY_STOPWORDS), so the arXiv expression and the
+ * derived term groups stay consistent.
+ *
  * Two pass-through cases keep the user in control: a query that already
  * carries uppercase operators or quotes is the user's own arXiv syntax, and
- * a query without any multi-character word offers nothing to anchor on --
+ * a query without any usable content word offers nothing to anchor on --
  * both go out in the legacy all:<query> form unchanged.
  */
 export function buildSearchQuery(query: string): string {
@@ -65,6 +74,7 @@ export function buildSearchQuery(query: string): string {
 	const units: string[][] = [];
 	let leading: string[] = []; // single chars with no word yet; bound to the next word
 	for (const token of tokens) {
+		if (QUERY_STOPWORDS.has(token)) continue;
 		if (token.length === 1) {
 			if (units.length) units[units.length - 1].push(token);
 			else leading.push(token);
@@ -73,6 +83,7 @@ export function buildSearchQuery(query: string): string {
 			leading = [];
 		}
 	}
+	if (!units.length) return `all:${trimmed}`; // nothing but function words
 	return units
 		.map((unit) => (unit.length === 1 ? `all:${unit[0]}` : `all:"${unit.join(" ")}"`))
 		.join(" AND ");

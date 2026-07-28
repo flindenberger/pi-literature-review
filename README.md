@@ -57,17 +57,51 @@ opened directly ON its review page: one Enter runs the proposal, arrow keys
 walk into the tabs to adjust, Escape (or Ctrl+C) cancels the whole run -- no
 search fires -- and the agent is told to ask you what to change. The tabs:
 the QUERY itself (editable -- your wording wins over the agent's), the
-grouping rules as an explicit logic expression edited in place (groups are
-AND-linked, terms within a group OR-linked -- e.g.
-`(river OR fluvial) AND (sandbar OR bar)`; the compact `a,b; c,d` syntax also
-works; grouping only labels results as on_target/adjacent, it does not narrow
-the search; clearing the field means ungrouped), the publication year range
-(`2015-2024`, `2015-` or `2024`; clearing means all years), and the search
-depth (quick/thorough/exhaustive or a custom results-per-source count on its
-own tab -- greyed out unless chosen -- capped at 50 out of politeness towards
-the free APIs). What a tab shows at submit time is what runs. The dialog
-follows the chat's language (German/English). Headless runs (no interactive
-UI) skip the dialog. The agent calls the `pi-literature-search` tool with:
+grouping as a CHOICE OF VARIANTS derived live from the query (v30.2-.4):
+"Full match (strict)" -- every content word one AND group, "Sentinel 2"
+style number bindings stay one concept; "Core match (broader)" -- the
+same minus generic task words like detection/extraction; "Partial match
+(wide)" -- on_target when any TWO core concepts co-occur (shown as
+`(a AND b) OR (a AND c) OR ...`); the agent's proposal when it sent one;
+and a "Custom match" row seeded with the strict derivation, editable in
+place (groups AND-linked, synonyms within a group OR-linked -- e.g.
+`(river OR fluvial) AND (sandbar OR bar)`; the compact `a,b; c,d` syntax
+also works; typing `none` means ungrouped). Each variant shows its
+EXPRESSION as the main row with the variant name dimmed below it
+(v30.5). Grouping only labels results as on_target/adjacent, it does
+not narrow the search. Then the SEARCH
+PERIOD as a menu (last 5 / 10 / 20 years with the resolved range shown
+-- computed from today's date, so the ranges roll over with the calendar
+year -- all years, or a custom range `2015-2024`,
+`2015-` or `2024`; a bare call recommends the last 5 years), the RECORDS
+per source (5 default / 15 / 50 -- our politeness limit towards the free
+APIs -- plus an inline custom count), a JOURNALS tab (v30.7/.8: reaching
+the tab fires one OpenAlex facet query plus one batched score lookup,
+and the top journals carrying results for this query load INTO the tab
+as a checkbox list -- each entry shows its hit count and its OpenAlex
+2-yr citedness, the open analog of the proprietary impact factor, e.g.
+"Remote Sensing (1739 hits · 2-yr rate 4.6)"; below the listed journals
+sits a catch-all row "Other journals/sources (not listed here)" carrying
+the hits outside the list, so checking EVERY row -- or the select-all row
+-- means no filter at all rather than a hidden top-12 whitelist (v30.11);
+the selection feeds the venues filter, an empty selection means no
+filter, Enter passes straight
+through while the list is still loading, and an agent venues proposal
+arrives as prechecked rows), an AUTHORS tab with the same mechanics
+(v30.11: the top authors for this query, each row showing its hits plus
+the author's open OpenAlex metrics -- total citations and h-index over
+the author's entire work, not these records -- again with an "Other
+authors" catch-all row), and OPTIONAL filters, all off by default
+(minimum citations and an author-name substring filter that merges with
+the picked authors; the journal
+score filter remains available as the `min_journal_score` tool parameter
+for agent/headless calls). What a tab shows at submit time is what runs;
+submitting with an empty query cancels honestly. The dialog follows the
+chat's language (German/English; English when no chat has been observed
+yet). Headless runs (no interactive UI) skip the dialog. On the
+`/lit-search` command path the digest renders as a full transcript card
+(v30.3; the earlier capped widget truncated real result lists). The
+agent calls the `pi-literature-search` tool with:
 
 - `query` -- the search string (required)
 - `query_variants` -- alternative phrasings of the same question (synonyms,
@@ -86,10 +120,17 @@ UI) skip the dialog. The agent calls the `pi-literature-search` tool with:
 - `min_cites` -- keep only records with at least this many citations. Records
   with an unknown count (arXiv preprints; `cites: null`) still pass. Beware:
   citation thresholds penalize very recent papers.
+- `min_journal_score` -- keep only records whose `journal_2yr_citedness` (see
+  `enrich` below) is at least this. Records WITHOUT a score (preprints,
+  unmatched venues) always pass -- absence of the open JIF analog is not
+  evidence against the paper. Needs `enrich` (default on).
 - `year_from` / `year_to` -- publication year range. Records that cannot prove
   they are in range (unknown year) are excluded, with a reason.
 - `venues` -- keep only records whose journal name contains one of these strings
   (case-insensitive). Venue-less preprints are excluded, with a reason.
+- `authors` -- keep only records where at least one author name contains one of
+  these strings (case-insensitive). Non-matching records are excluded, with a
+  reason.
 - `require_pdf` / `verified_only` -- keep only records with a direct PDF link /
   a resolving identifier.
 - `sort` -- `cites` (citation count, a rough impact proxy) or `year` (newest
@@ -245,8 +286,9 @@ before the agent hand-writes a file.
 CHAT's language: a deterministic German/English detection over the
 question texts, else the language OBSERVED in the user's recent plain
 chat input (a passive `pi.on("input")` listener -- opening moves carry no
-question text); German is the final default. The report page chrome
-(`ui_language`) follows the same resolution.
+question text); ENGLISH is the final default (v30 -- a bare command in a
+fresh session speaks English until the first German chat input flips
+it). The report page chrome (`ui_language`) follows the same resolution.
 
 **Scope.** Everything runs over a document SCOPE: one paper, a selection,
 or the whole library. The scope is picked in the `/lit-synth` wizard

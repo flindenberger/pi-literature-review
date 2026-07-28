@@ -84,3 +84,104 @@ export async function searchOpenalex(query: string, rows: number): Promise<Sourc
 		};
 	});
 }
+
+/** One bucket of a facet query below: plain API metadata. Journals and
+ * authors share the shape (v30.11: the author picker mirrors the journal
+ * picker). */
+export interface Facet {
+	/** OpenAlex id -- a source id ("S43295729", feeds the journal score
+	 * lookup, v30.8) or an author id ("A5059343226", feeds the author
+	 * metrics lookup, v30.11). */
+	id: string;
+	name: string;
+	count: number;
+}
+
+/** Kept for the journal call sites: journals were the first facet (v30.6). */
+export type JournalFacet = Facet;
+
+/**
+ * Parse the group_by buckets of an OpenAlex works response into facets
+ * (v30.6: the wizard's "choose journals from a list" option; v30.11: the
+ * same for authors). Pure and exported for offline tests. Buckets without a
+ * display name (works without a source, e.g. some preprints) are dropped;
+ * order is by count descending, deterministic tie-break by name.
+ */
+export function parseFacets(data: unknown, limit: number): Facet[] {
+	const buckets = Array.isArray((data as Record<string, any>)?.group_by)
+		? ((data as Record<string, any>).group_by as Array<Record<string, any>>)
+		: [];
+	return buckets
+		.map((bucket) => ({
+			id: typeof bucket?.key === "string" ? bucket.key.replace("https://openalex.org/", "").trim() : "",
+			name: typeof bucket?.key_display_name === "string" ? bucket.key_display_name.trim() : "",
+			count: Number.isInteger(bucket?.count) ? (bucket.count as number) : 0,
+		}))
+		.filter((facet) => facet.name && facet.name.toLowerCase() !== "unknown")
+		.sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
+		.slice(0, Math.max(1, limit));
+}
+
+/** The listed head of a facet query plus everything behind it (v30.11:
+ * the picker shows an explicit "other ..." row, so selecting every row
+ * really means "no filter"). */
+export interface FacetPage {
+	listed: Facet[];
+	/** Works matching the query that sit OUTSIDE the listed facets:
+	 * meta.count minus the listed buckets (works without a source / without
+	 * a listed author included). Plain API arithmetic -- nothing estimated. */
+	otherCount: number;
+}
+
+/**
+ * Parse a facet response into the listed head AND the count behind it.
+ * meta.count is the total number of matching works; without it (degenerate
+ * responses) the bucket sum is the honest floor.
+ */
+export function parseFacetPage(data: unknown, limit: number): FacetPage {
+	const listed = parseFacets(data, limit);
+	const buckets = Array.isArray((data as Record<string, any>)?.group_by)
+		? ((data as Record<string, any>).group_by as Array<Record<string, any>>)
+		: [];
+	const bucketSum = buckets.reduce(
+		(sum, bucket) => sum + (Number.isInteger(bucket?.count) ? (bucket.count as number) : 0),
+		0,
+	);
+	const total = Number.isInteger((data as Record<string, any>)?.meta?.count)
+		? ((data as Record<string, any>).meta.count as number)
+		: bucketSum;
+	const listedSum = listed.reduce((sum, facet) => sum + facet.count, 0);
+	return { listed, otherCount: Math.max(0, total - listedSum) };
+}
+
+/**
+ * ONE cheap facet request over the query's works, grouped by the given
+ * field -- the pre-query behind the wizard's pickers. Deterministic API
+ * data; the LLM is nowhere near it.
+ */
+async function facetPage(query: string, groupBy: string, limit: number): Promise<FacetPage> {
+	// NO per-page here: sending it alongside group_by makes OpenAlex return
+	// a single bucket (measured 2026-07-28); bare group_by returns 200.
+	const params = new URLSearchParams({ search: query, group_by: groupBy });
+	const mailto = contactMailto();
+	if (mailto) params.set("mailto", mailto);
+	const response = await fetch(`${BASE_URL}?${params}`, {
+		headers: { "User-Agent": userAgent(), Accept: "application/json" },
+		signal: AbortSignal.timeout(TIMEOUT_MS),
+	});
+	if (!response.ok) {
+		throw new Error(`OpenAlex answered HTTP ${response.status}`);
+	}
+	return parseFacetPage(await response.json(), limit);
+}
+
+/** Which journals do results for this query appear in (v30.6). */
+export function journalFacets(query: string, limit: number): Promise<FacetPage> {
+	return facetPage(query, "primary_location.source.id", limit);
+}
+
+/** Which authors publish the results for this query (v30.11) -- the same
+ * mechanics as the journal list, one request. */
+export function authorFacets(query: string, limit: number): Promise<FacetPage> {
+	return facetPage(query, "authorships.author.id", limit);
+}

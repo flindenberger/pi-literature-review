@@ -289,6 +289,8 @@ interface ScopeItems {
  * language param, else detected from the question texts; German is the
  * default and the bare-command language). */
 const SYNTH_TEXT: Record<DialogLang, {
+	/** Line above the tab bar: which dialog this is (v30.12). */
+	header: string;
 	scopeTitle: string;
 	scopeTab: string;
 	selectAll: string;
@@ -322,6 +324,7 @@ const SYNTH_TEXT: Record<DialogLang, {
 	unitWarnCancel: string;
 }> = {
 	de: {
+		header: "/lit-synth -- Literatur verstehen und zusammenfassen (Esc bricht ab)",
 		scopeTitle: "Über welche Dokumente möchtest du sprechen?",
 		scopeTab: "Dokumente",
 		selectAll: "Alle auswählen (ganze Bibliothek)",
@@ -342,7 +345,7 @@ const SYNTH_TEXT: Record<DialogLang, {
 		detailDisabled: "Braucht mehrere Dokumente und mindestens eine Frage.",
 		reviewTab: "Review",
 		reviewTitle: "Review-Synthese (Stand der Literatur) anhängen? (Empfohlen bei ganzer Bibliothek; bei kleiner Auswahl oft schwach.)",
-		reviewDisabled: "Braucht mindestens zwei Dokumente (über EINEM Papier wäre das nur eine schwächere Zusammenfassung).",
+		reviewDisabled: "Braucht mindestens zwei Dokumente (über EINEM Artikel wäre das nur eine schwächere Zusammenfassung).",
 		htmlTab: "HTML",
 		htmlTitle: "Als HTML speichern?",
 		htmlYes: "Ja, HTML-Bericht schreiben",
@@ -355,6 +358,7 @@ const SYNTH_TEXT: Record<DialogLang, {
 		unitWarnCancel: "Abbrechen",
 	},
 	en: {
+		header: "/lit-synth -- understand and summarize literature (Esc cancels)",
 		scopeTitle: "Which documents do you want to talk about?",
 		scopeTab: "Documents",
 		selectAll: "Select all (whole library)",
@@ -646,7 +650,7 @@ async function synthWizard(
 		staticSize ?? (Array.isArray(answers.papers) ? answers.papers.length : 0);
 	steps.push(questionsStep(seedQuestions?.join("; "), lang));
 	steps.push(...reportSteps(scopeSizeOf, defaults, lang));
-	const answers = await runWizard(ctx, steps, signal, { submitNote: reportSubmitNote(scopeSizeOf, lang), lang });
+	const answers = await runWizard(ctx, steps, signal, { submitNote: reportSubmitNote(scopeSizeOf, lang), lang, header: SYNTH_TEXT[lang].header });
 	if (answers === null) return null;
 	const confirmedScope: string[] | "library" = scope
 		?? ((answers.papers as string[]).length === items.length ? "library" : answers.papers as string[]);

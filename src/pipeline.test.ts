@@ -208,6 +208,127 @@ function record(overrides: Partial<SourceRecord>): SourceRecord {
 	assert.ok(dropped.every((d) => d.reason.startsWith("filtered: ")));
 }
 
+// "Other journals/sources" (v30.11): the picker's catch-all row keeps every
+// journal that is NOT on the listed head, so checking every row filters
+// nothing at all -- "select all" can never exclude.
+{
+	const fr = (venue: string) => ({
+		cites: 50, year: "2021", venue, authors: ["A"], pdf_url: "x", verified: true,
+	});
+	const listed = ["Remote Sensing", "Water", "Sensors"];
+	const records = [
+		fr("Remote Sensing"), // listed AND selected
+		fr("Water"), // listed, NOT selected -> the only drop
+		fr("Acta Scientiarum Polonorum"), // unlisted -> "other"
+		fr(""), // venue-less preprint -> "other"
+	];
+	const other = applyFilters(records, {
+		venues: ["Remote Sensing", "Sensors"], venuesOther: true, venuesListed: listed,
+	});
+	assert.equal(other.kept.length, 3);
+	assert.equal(other.dropped.length, 1);
+	assert.equal(other.dropped[0].record.venue, "Water");
+	assert.ok(other.dropped[0].reason.includes("listed journal that was not selected"));
+	// Everything checked: no filter -- including the venue-less record.
+	assert.equal(
+		applyFilters(records, { venues: listed, venuesOther: true, venuesListed: listed }).dropped.length,
+		0,
+	);
+	// Without the catch-all row the whitelist semantics stay untouched.
+	const strict = applyFilters(records, { venues: ["Remote Sensing", "Sensors"] });
+	assert.equal(strict.kept.length, 1);
+	assert.equal(strict.dropped.length, 3);
+	// "other" without a list of what IS listed excludes nothing, honestly.
+	assert.equal(applyFilters(records, { venuesOther: true }).dropped.length, 0);
+}
+
+// author filter (v30.9): any listed name substring may match any author;
+// no match drops with a reason
+{
+	const fr = (authors: string[]) => ({
+		cites: 50, year: "2021", venue: "Remote Sensing", authors, pdf_url: "x", verified: true,
+	});
+	const { kept, dropped } = applyFilters(
+		[
+			fr(["A. Kryniecka", "B. Magnuszewski"]), // matches "kryniecka"
+			fr(["C. Calvillo"]), // no match
+			fr(["Jan Magnuszewski"]), // matches the second substring
+		],
+		{ authors: ["Kryniecka", "magnuszewski"] },
+	);
+	assert.equal(kept.length, 2);
+	assert.equal(dropped.length, 1);
+	assert.ok(dropped[0].reason.includes("no author matches Kryniecka, magnuszewski"));
+}
+
+// "Other authors" (v30.11): the author picker's catch-all row keeps every
+// record whose authors are all OFF the listed head -- so checking every row
+// filters nothing, exactly like the journal picker.
+{
+	const fr = (authors: string[]) => ({
+		cites: 50, year: "2021", venue: "Remote Sensing", authors, pdf_url: "x", verified: true,
+	});
+	const listed = ["Claudia Kuenzer", "Xiao Xiang Zhu", "Meisam Amani"];
+	const records = [
+		fr(["Claudia Kuenzer", "Someone Else"]), // listed AND selected
+		fr(["Xiao Xiang Zhu"]), // listed, NOT selected -> the only drop
+		fr(["A. Nobody", "B. Unknown"]), // nobody listed -> "other"
+	];
+	const other = applyFilters(records, {
+		authors: ["Claudia Kuenzer"], authorsOther: true, authorsListed: listed,
+	});
+	assert.equal(other.kept.length, 2);
+	assert.equal(other.dropped.length, 1);
+	assert.deepEqual(other.dropped[0].record.authors, ["Xiao Xiang Zhu"]);
+	assert.ok(other.dropped[0].reason.includes("only listed authors that were not selected"));
+	// Everything checked = no filter; and without a listed head "other"
+	// excludes nobody.
+	assert.equal(
+		applyFilters(records, { authors: listed, authorsOther: true, authorsListed: listed }).dropped.length,
+		0,
+	);
+	assert.equal(applyFilters(records, { authorsOther: true }).dropped.length, 0);
+	// A record with a listed co-author is NOT "other" -- co-authorship with
+	// a deselected name is enough to drop it (documented semantics).
+	assert.equal(
+		applyFilters([fr(["A. Nobody", "Meisam Amani"])], { authorsOther: true, authorsListed: listed }).dropped.length,
+		1,
+	);
+}
+
+// minGroups (v30.3): the wide "any two concepts" variant -- on_target when
+// at least minGroups of the term groups match; default stays "all"
+{
+	const record = (title: string) => ({ title, abstract: "" });
+	const groups = [["water"], ["mask"], ["sentinel 2"]];
+	assert.equal(group(record("water mask study"), groups), "adjacent"); // strict: all three needed
+	assert.equal(group(record("water mask study"), groups, 2), "on_target"); // any two suffice
+	assert.equal(group(record("water study"), groups, 2), "adjacent"); // one is not enough
+	assert.equal(group(record("mask of the sentinel-2 sensor"), groups, 2), "on_target"); // hyphen tolerance holds
+	// minGroups above the group count degrades to "all" (never impossible).
+	assert.equal(group(record("water mask sentinel 2"), groups, 5), "on_target");
+}
+
+// min journal score (v30): drops only records WITH a lower score; records
+// without a score (preprints, unmatched venues) always pass -- absence of
+// the open JIF analog is not evidence against the paper
+{
+	const fr = (over: object) => ({
+		cites: 50, year: "2021", venue: "Remote Sensing", pdf_url: "x", verified: true, ...over,
+	});
+	const { kept, dropped } = applyFilters(
+		[
+			fr({ journal_2yr_citedness: 5.2 }), // passes
+			fr({ journal_2yr_citedness: 1.1 }), // below the threshold
+			fr({}), // no score at all -> passes
+		],
+		{ minJournalScore: 3 },
+	);
+	assert.equal(kept.length, 2);
+	assert.equal(dropped.length, 1);
+	assert.ok(dropped[0].reason.includes("journal score 1.1 < requested minimum 3"));
+}
+
 // no filters -> everything passes untouched
 {
 	const { kept, dropped } = applyFilters(
