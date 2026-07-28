@@ -253,7 +253,7 @@ export function renderChatDigest(answer: ChatAnswer): string {
 		lines.push(
 			"The validated Q&A round was recorded in the session protocol on disk. "
 			+ "When the user wants a summary report OR any HTML/file/export of this chat "
-			+ "('mach mir eine html', 'save this', 'export'): call this tool with report: true -- "
+			+ "('mach mir eine html', 'save this', 'export'): tell them to run the /lit-synth command -- "
 			+ "NEVER write an HTML or any other file about this paper yourself.",
 		);
 	} else {

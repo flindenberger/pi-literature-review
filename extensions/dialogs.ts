@@ -248,8 +248,12 @@ async function wizardOverlay(
 					const clip = (line: string): string => (width > 1 && line.length > width ? `${line.slice(0, width - 1)}…` : line);
 					const view = wizardView(state);
 					const rule = paint("borderAccent", "─".repeat(Math.max(1, width)));
+					// Disabled tabs stay visible but parenthesized + dim (v29:
+					// grey out instead of hide; the reason shows on visiting).
 					const tabBar = view.tabs
-						.map((tab) => (tab.active ? paint("accent", `[ ${tab.label} ]`) : paint("dim", `  ${tab.label}  `)))
+						.map((tab) => (tab.active ? paint("accent", `[ ${tab.label} ]`)
+							: tab.disabled ? paint("dim", `( ${tab.label} )`)
+							: paint("dim", `  ${tab.label}  `)))
 						.join(" ");
 					const lines: string[] = [rule, clip(tabBar), "", paint("accent", clip(view.title))];
 					for (const row of view.rows) {

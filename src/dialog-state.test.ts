@@ -330,14 +330,32 @@ function drive(
 			options: [{ value: "yes", label: "Ja" }, { value: "no", label: "Nein" }],
 		},
 	];
-	// Without questions the detail tab is skipped in BOTH directions, leaves
-	// the tab bar, never blocks the finish and is absent from the result.
+	// Without questions the detail tab is DISABLED: it STAYS in the tab bar
+	// greyed out (v29: visibility never changes while navigating), never
+	// blocks the finish and is absent from the result; the Enter-through
+	// flow still skips it.
 	let { state } = drive(initWizard(steps), ["confirm"]); // empty text -> next enabled = save
 	assert.equal(state.tab, 2);
 	// (a text step is always answered -- empty is valid -- hence its mark)
-	assert.deepEqual(wizardView(state).tabs.map((tab) => tab.label.trim()), ["Fragen ✔", "HTML", "Bestätigen"]);
+	assert.deepEqual(wizardView(state).tabs.map((tab) => [tab.label.trim(), tab.disabled ?? false]), [
+		["Fragen ✔", false],
+		["Fragen-Modus", true],
+		["HTML", false],
+		["Bestätigen", false],
+	]);
+	// Back VISITS the disabled step: it shows a reason line, nothing else.
 	({ state } = drive(state, ["left"]));
-	assert.equal(state.tab, 0); // back skips the disabled step too
+	assert.equal(state.tab, 1);
+	const disabledView = wizardView(state);
+	assert.ok(disabledView.rows[0].text.includes(DIALOG_TEXT.de.disabledDefault));
+	assert.equal(disabledView.hint, DIALOG_TEXT.de.hintDisabled);
+	// Everything but navigation is inert there...
+	const idle = drive(state, [{ kind: "input", chars: "x" }, "toggle", "up", "backspace"]);
+	assert.equal(idle.state, state);
+	// ...and Enter advances PAST it to the next enabled step.
+	assert.equal(drive(state, ["confirm"]).state.tab, 2);
+	({ state } = drive(state, ["left"]));
+	assert.equal(state.tab, 0);
 	const finished = drive(state, ["confirm", "confirm", "confirm"]); // save "yes" -> submit -> Absenden
 	assert.equal(finished.done, "confirmed");
 	assert.deepEqual(wizardResult(finished.state), { questions: "", save: "yes" });
@@ -350,6 +368,9 @@ function drive(
 	withQ = drive(withQ.state, ["confirm", "confirm", "confirm"]); // answer detail -> save answered? save already yes -> submit -> Absenden
 	assert.equal(withQ.done, "confirmed");
 	assert.equal(wizardResult(withQ.state).detail, "per-paper");
+	// A step-specific disabledNote wins over the generic reason (v29).
+	const noted = initWizard([steps[0], { ...steps[1], disabledNote: "Braucht eine Frage." }, steps[2]]);
+	assert.ok(wizardView({ ...noted, tab: 1 }).rows[0].text.includes("Braucht eine Frage."));
 }
 
 /* ---------------- wizard: submit note (v27) ---------------- */

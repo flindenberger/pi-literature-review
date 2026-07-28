@@ -252,7 +252,9 @@ const chatAnswer: ChatAnswer = {
 	assert.ok(digest.includes("[1] 2021 | 10.1234/abc | River sandbar dynamics (S. 2, 5)"));
 	// Integrity + protocol note; no HTML path in question mode.
 	assert.ok(digest.includes("1 invalid citation marker(s) were stripped"));
-	assert.ok(digest.includes("report: true"));
+	// v29: export wishes route to the /lit-synth command, never tool report mode.
+	assert.ok(digest.includes("tell them to run the /lit-synth command"));
+	assert.ok(!digest.includes("report: true"));
 	assert.ok(!digest.includes(".html"));
 	assert.ok(!digest.includes("FAILED"));
 }

@@ -153,11 +153,16 @@ export type WizardStepDef =
 		/** Label of the explicit commit row ("Weiter"/"Fertig"). */
 		nextLabel: string;
 		preselected?: string[];
-		/** Step exists only while this holds over the current answers (v27:
-		 * the detail-mode tab appears only with >= 2 documents AND >= 1
-		 * question). Disabled steps leave the tab bar, navigation, the
-		 * finish guard, the summary and the result. */
+		/** Step applies only while this holds over the current answers (v27:
+		 * the detail-mode tab applies only with >= 2 documents AND >= 1
+		 * question). v29: a disabled step STAYS in the tab bar greyed out
+		 * (a tab's visibility must not change while navigating) and can be
+		 * visited -- it shows disabledNote instead of its rows -- but it
+		 * never blocks the finish and is absent from summary and result. */
 		enabledIf?: (answers: WizardAnswers) => boolean;
+		/** One-line reason shown when the step is disabled (v29: grey out
+		 * with a reason instead of hiding). Falls back to a generic line. */
+		disabledNote?: string;
 	}
 	| {
 		kind: "choice";
@@ -170,6 +175,7 @@ export type WizardStepDef =
 		 * 2026-07-22: a recommendation must never silently be an answer). */
 		initial?: string;
 		enabledIf?: (answers: WizardAnswers) => boolean;
+		disabledNote?: string;
 	}
 	| {
 		/** Single-line free-text input (v27: the questions intake joined the
@@ -184,6 +190,7 @@ export type WizardStepDef =
 		placeholder?: string;
 		initial?: string;
 		enabledIf?: (answers: WizardAnswers) => boolean;
+		disabledNote?: string;
 	};
 
 export interface WizardState {
@@ -239,6 +246,8 @@ export const DIALOG_TEXT: Record<DialogLang, {
 	hintCheckbox: string;
 	hintText: string;
 	hintChoice: string;
+	disabledDefault: string;
+	hintDisabled: string;
 }> = {
 	de: {
 		submitTab: "Bestätigen",
@@ -252,6 +261,8 @@ export const DIALOG_TEXT: Record<DialogLang, {
 		hintCheckbox: "Space/Enter auswählen · Enter auf der Weiter-Zeile bestätigt · ←/→ Schritt · Esc abbrechen",
 		hintText: "Tippen · Semikolon trennt Fragen · Enter übernimmt · ←/→ Schritt · Esc abbrechen",
 		hintChoice: "Enter wählt und geht weiter · ←/→ Schritt · Esc abbrechen",
+		disabledDefault: "Dieser Schritt ist bei den aktuellen Antworten nicht relevant.",
+		hintDisabled: "Enter geht weiter · ←/→ Schritt · Esc abbrechen",
 	},
 	en: {
 		submitTab: "Confirm",
@@ -265,6 +276,8 @@ export const DIALOG_TEXT: Record<DialogLang, {
 		hintCheckbox: "Space/Enter selects · Enter on the Next row confirms · ←/→ step · Esc cancels",
 		hintText: "Type · semicolons separate questions · Enter confirms · ←/→ step · Esc cancels",
 		hintChoice: "Enter picks and advances · ←/→ step · Esc cancels",
+		disabledDefault: "This step does not apply with the current answers.",
+		hintDisabled: "Enter advances · ←/→ step · Esc cancels",
 	},
 };
 
@@ -401,16 +414,11 @@ function stepInvalid(state: WizardState, index: number): boolean {
 		: state.chosen[index] === null;
 }
 
-/** Next tab in the given direction, skipping disabled steps (the submit
- * tab always exists). Falls back to staying put if nothing is enabled. */
+/** Next tab in the given direction. v29: disabled steps stay VISITABLE
+ * (they render their reason line) -- only advance() skips them, so the
+ * Enter-through flow never stops on one. */
 function movedTab(state: WizardState, dir: 1 | -1): number {
-	const totalTabs = state.steps.length + 1;
-	let tab = state.tab;
-	for (let i = 0; i < totalTabs; i++) {
-		tab = wrap(tab + dir, totalTabs);
-		if (tab === state.steps.length || stepEnabled(state, tab)) return tab;
-	}
-	return state.tab;
+	return wrap(state.tab + dir, state.steps.length + 1);
 }
 
 /** Advance from the current step; the last enabled step leads to the
@@ -447,7 +455,9 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 		...state,
 		cursors: state.cursors.map((value, i) => (i === state.tab ? next : value)),
 	});
-	const onText = state.tab < state.steps.length && state.steps[state.tab].kind === "text";
+	const onText = state.tab < state.steps.length
+		&& state.steps[state.tab].kind === "text"
+		&& stepEnabled(state, state.tab);
 	const withText = (value: string): WizardState => ({
 		...state,
 		texts: state.texts.map((prev, i) => (i === state.tab ? value : prev)),
@@ -477,6 +487,22 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 				return { state };
 			case "confirm":
 				return cursor === 0 ? finish(state) : { state, done: "cancelled" };
+		}
+	}
+	// A visited DISABLED step (v29): only navigation works; Enter advances
+	// through the same skip logic as everywhere else.
+	if (!stepEnabled(state, state.tab)) {
+		switch (event) {
+			case "cancel":
+				return { state, done: "cancelled" };
+			case "left":
+				return { state: { ...state, tab: movedTab(state, -1) } };
+			case "right":
+				return { state: { ...state, tab: movedTab(state, 1) } };
+			case "confirm":
+				return advance(state);
+			default:
+				return { state };
 		}
 	}
 	const step = state.steps[state.tab];
@@ -554,8 +580,9 @@ export interface WizardViewRow {
 }
 
 export interface WizardView {
-	/** Tab bar entries in step order. */
-	tabs: Array<{ label: string; active: boolean }>;
+	/** Tab bar entries in step order; disabled tabs stay listed (v29) and
+	 * the adapter greys them out. */
+	tabs: Array<{ label: string; active: boolean; disabled?: boolean }>;
 	title: string;
 	rows: WizardViewRow[];
 	/** Key hint matching the current step kind. */
@@ -591,17 +618,19 @@ export function wizardSummaryLines(state: WizardState): string[] {
  * borders and the constant-height padding. */
 export function wizardView(state: WizardState): WizardView {
 	// Answered steps carry a check mark in the tab bar (field wish
-	// 2026-07-22); disabled steps leave the bar; the submit tab itself
+	// 2026-07-22); disabled steps STAY in the bar greyed out (v29: a tab's
+	// visibility must never change while navigating); the submit tab itself
 	// never carries a mark.
 	const text = DIALOG_TEXT[state.lang];
 	const tabs = [
-		...state.steps
-			.map((other, i) => ({ step: other, i }))
-			.filter(({ i }) => stepEnabled(state, i))
-			.map(({ step: other, i }) => ({
-				label: `${other.tab}${stepInvalid(state, i) ? "" : " ✔"}`,
+		...state.steps.map((other, i) => {
+			const enabled = stepEnabled(state, i);
+			return {
+				label: `${other.tab}${enabled && !stepInvalid(state, i) ? " ✔" : ""}`,
 				active: i === state.tab,
-			})),
+				...(enabled ? {} : { disabled: true }),
+			};
+		}),
 		{ label: text.submitTab, active: state.tab === state.steps.length },
 	];
 	if (state.tab === state.steps.length) {
@@ -622,6 +651,15 @@ export function wizardView(state: WizardState): WizardView {
 		};
 	}
 	const step = state.steps[state.tab];
+	// A visited disabled step shows its reason instead of its rows (v29).
+	if (!stepEnabled(state, state.tab)) {
+		return {
+			tabs,
+			title: step.title,
+			rows: [{ text: `     ${step.disabledNote ?? text.disabledDefault}`, active: false }],
+			hint: text.hintDisabled,
+		};
+	}
 	const cursor = state.cursors[state.tab];
 	const rows: WizardViewRow[] = [];
 	if (step.kind === "checkbox") {

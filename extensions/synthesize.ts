@@ -3,16 +3,20 @@
  * pi-literature-synthesize + the /lit-synth command (v25 E2e).
  *
  * The former pi-literature-chat and pi-literature-synthesize tools merged
- * into one: SCOPE (one paper | a selection | the whole library) and the
- * report menu are settled by CODE dialogs -- the Claude-Code-style wizard
- * from extensions/dialogs.ts -- never by chat questions. Grounded Q&A
- * rounds, the composable report (summaries, detail questions in mode A/B,
- * review synthesis) and the classic session report all run the same fused
- * engine in src/synthesize.ts with the same citation gate.
+ * into one. Grounded Q&A rounds, the composable report (summaries, detail
+ * questions in mode A/B, review synthesis) and the classic session report
+ * all run the same fused engine in src/synthesize.ts with the same
+ * citation gate.
  *
- * Dialog policy: NO consent dialog per chat question (it would kill the
- * conversation loop) -- the gate sits at the scope/report intake. Esc in
- * any dialog cancels the whole run before any LLM call.
+ * Dialog policy (v29, user decision 2026-07-28): the wizard belongs to the
+ * /lit-synth COMMAND; the agent-called TOOL runs dialog-free. A chat call
+ * with a settled scope answers immediately (the card shows the verbatim
+ * executed question and, via terminate, has the last word); an unsettled
+ * scope hands a REAL file list back to the agent (single-PDF libraries
+ * resolve themselves); report-flavoured calls hand back to /lit-synth --
+ * dialog-free AND expensive don't mix. The one dialog that can still open
+ * from an agent turn is the HTML-write gate, which ASKS whether to build
+ * the deterministic report instead of the agent's hand-written file.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -22,7 +26,6 @@ import {
 	type CheckboxItem,
 	detectDialogLang,
 	type DialogLang,
-	langFromName,
 	parseQuestionLines,
 	type WizardAnswers,
 	type WizardResult,
@@ -112,6 +115,7 @@ function answerWidgetLines(answer: ChatAnswer, scopeLabel: string): string[] {
 		answer.grounded
 			? `Validated answer (code-checked) -- ${scopeLabel}`
 			: `UNGROUNDED DRAFT (not usable as an answer) -- ${scopeLabel}`,
+		clip(executedQuestionLine(answer.question)),
 		...wrapText(answer.prose),
 		...answer.references.map((reference) => clip(referenceLine(reference))),
 	];
@@ -123,6 +127,15 @@ function answerWidgetLines(answer: ChatAnswer, scopeLabel: string): string[] {
 function formatAnswerText(answer: ChatAnswer): string {
 	const refs = answer.references.map(referenceLine);
 	return `${answer.prose}${refs.length ? `\n\n${refs.join("\n")}` : ""}`;
+}
+
+/** The verbatim question the engine actually ran, shown on every answer
+ * card (v29: dialog-free chat calls make agent rephrasing VISIBLE instead
+ * of preventing it -- /lit-synth <question> is the verbatim fallback). */
+function executedQuestionLine(question: string): string {
+	return detectDialogLang([question], chatLangDefault()) === "en"
+		? `Question, as executed: ${question}`
+		: `Frage, so ausgeführt: ${question}`;
 }
 
 /** Report body for the transcript card: unit headings + validated prose,
@@ -159,7 +172,7 @@ function showAnswer(pi: ExtensionAPI, ctx: ExtensionContext, answer: ChatAnswer)
 		pi.appendEntry(ANSWER_ENTRY, {
 			paper: label,
 			grounded: answer.grounded,
-			text: formatAnswerText(answer),
+			text: `${executedQuestionLine(answer.question)}\n\n${formatAnswerText(answer)}`,
 		});
 		if (ctx.hasUI) ctx.ui.setWidget(SYNTH_WIDGET, undefined);
 	} else if (ctx.hasUI) {
@@ -307,12 +320,15 @@ const SYNTH_TEXT: Record<DialogLang, {
 	detailTitle: string;
 	detailPerPaper: string;
 	detailCross: string;
+	detailDisabled: string;
 	reviewTab: string;
 	reviewTitle: string;
+	reviewDisabled: string;
 	htmlTab: string;
 	htmlTitle: string;
 	htmlYes: string;
 	htmlNo: string;
+	htmlDisabled: string;
 	nothingNote: string;
 	unitNote: (n: number) => string;
 	unitWarn: (n: number) => string;
@@ -337,12 +353,15 @@ const SYNTH_TEXT: Record<DialogLang, {
 		detailTitle: "Detailfragen: pro Dokument einzeln oder übergreifend?",
 		detailPerPaper: "Pro Dokument einzeln (Modus A -- deckt jedes Dokument ab, mehr Modellaufrufe)",
 		detailCross: "Übergreifend zusammengeführt (Modus B -- ein Aufruf je Frage)",
+		detailDisabled: "Braucht mehrere Dokumente und mindestens eine Frage.",
 		reviewTab: "Review",
 		reviewTitle: "Review-Synthese (Stand der Literatur) anhängen? (Empfohlen bei ganzer Bibliothek; bei kleiner Auswahl oft schwach.)",
+		reviewDisabled: "Braucht mindestens zwei Dokumente (über EINEM Papier wäre das nur eine schwächere Zusammenfassung).",
 		htmlTab: "HTML",
 		htmlTitle: "Als HTML speichern?",
 		htmlYes: "Ja, HTML-Bericht schreiben",
 		htmlNo: "Nein, nur Antwort im Chat",
+		htmlDisabled: "Nichts zu speichern -- erst eine Frage, Zusammenfassung oder Review wählen.",
 		nothingNote: "Nichts zu generieren -- das wird ein Chat.",
 		unitNote: (n) => `~${n} Modellaufruf(e), je etwa eine Minute lokal`,
 		unitWarn: (n) => `Dieser Report braucht ${n} Modellaufrufe (je etwa eine Minute lokal). Fortfahren?`,
@@ -367,17 +386,46 @@ const SYNTH_TEXT: Record<DialogLang, {
 		detailTitle: "Detail questions: per document or merged across documents?",
 		detailPerPaper: "Per document (mode A -- covers every document, more model calls)",
 		detailCross: "Merged across documents (mode B -- one call per question)",
+		detailDisabled: "Needs several documents and at least one question.",
 		reviewTab: "Review",
 		reviewTitle: "Append a review synthesis (state of the literature)? (Recommended on the whole library; often weak on a small selection.)",
+		reviewDisabled: "Needs at least two documents (over ONE paper it would just be a weaker summary).",
 		htmlTab: "HTML",
 		htmlTitle: "Save as HTML?",
 		htmlYes: "Yes, write the HTML report",
 		htmlNo: "No, answer in the chat only",
+		htmlDisabled: "Nothing to save -- pick a question, summary or review first.",
 		nothingNote: "Nothing to generate -- this will be a chat.",
 		unitNote: (n) => `~${n} model call(s), about a minute each locally`,
 		unitWarn: (n) => `This report needs ${n} model calls (about a minute each locally). Continue?`,
 		unitWarnYes: "Yes, run it",
 		unitWarnCancel: "Cancel",
+	},
+};
+
+/** The HTML-write gate's question dialog (v29: the gate ASKS instead of
+ * hard-blocking -- the wizard choice IS the report consent). */
+const GATE_TEXT: Record<DialogLang, {
+	title: (path: string, label: string) => string;
+	wizard: string;
+	allow: string;
+	cancel: string;
+}> = {
+	de: {
+		title: (path, label) =>
+			`Der Agent will ${path} von Hand schreiben, während ein Dokument-Chat (${label}) läuft. `
+			+ "Soll stattdessen ein richtiger Report entstehen (geprüfte Zitate, seitengenaue PDF-Links)?",
+		wizard: "Report-Wizard öffnen (empfohlen)",
+		allow: "Diesen Schreibvorgang erlauben -- die Datei hat mit dem Dokument-Chat nichts zu tun",
+		cancel: "Abbrechen -- weder Agent-Datei noch Report",
+	},
+	en: {
+		title: (path, label) =>
+			`The agent wants to hand-write ${path} while a document chat (${label}) is active. `
+			+ "Generate the real report instead (verified citations, page-exact PDF links)?",
+		wizard: "Open the report wizard (recommended)",
+		allow: "Allow this write -- the file is unrelated to the document chat",
+		cancel: "Cancel -- neither the agent file nor a report",
 	},
 };
 
@@ -472,6 +520,7 @@ function reportSteps(
 			],
 			initial: defaults.detailMode ?? "per-paper",
 			enabledIf: (answers) => scopeSizeOf(answers) > 1 && questionsOf(answers).length > 0,
+			disabledNote: text.detailDisabled,
 		},
 		{
 			kind: "choice", id: "review", tab: text.reviewTab,
@@ -484,6 +533,7 @@ function reportSteps(
 			// A "state of the literature" over ONE paper is just a weaker
 			// summary (v27 user decision) -- the tab needs several documents.
 			enabledIf: (answers) => scopeSizeOf(answers) > 1,
+			disabledNote: text.reviewDisabled,
 		},
 		{
 			kind: "choice", id: "html", tab: text.htmlTab,
@@ -495,41 +545,9 @@ function reportSteps(
 			initial: defaults.saveHtml === false ? "no" : "yes",
 			enabledIf: (answers) =>
 				questionsOf(answers).length > 0 || answers.summary !== "none" || answers.review === "yes",
+			disabledNote: text.htmlDisabled,
 		},
 	];
-}
-
-/**
- * Liberal normalization of agent-passed report tokens (v27 field failure:
- * the agent sent summary '"bullets"' -- WITH literal quotes -- and pi's
- * schema validation rejected the call in an endless retry loop before our
- * code ever ran). The schema now accepts any string; THIS code maps it,
- * and anything unrecognized counts as "not given" (settled in the wizard)
- * instead of a hard validation dead end.
- */
-function normalizeToken(value: string | undefined): string | undefined {
-	if (value === undefined) return undefined;
-	const cleaned = value.trim().replace(/^["'„“‚‘\s]+|["'“”‘’\s]+$/g, "").toLowerCase();
-	return cleaned || undefined;
-}
-
-function normalizeSummary(value: string | undefined, onWarn: (message: string) => void): ReportChoices["summary"] | undefined {
-	const token = normalizeToken(value);
-	if (token === undefined) return undefined;
-	if (["bullets", "bulletpoints", "bullet", "stichpunkte", "liste"].includes(token)) return "bullets";
-	if (["prose", "prosa", "fliesstext", "fließtext", "text"].includes(token)) return "prose";
-	if (["none", "no", "nein", "keine", "false", "off"].includes(token)) return "none";
-	onWarn(`unrecognized summary value ${JSON.stringify(value)} -- treating it as not given (the dialog settles it)`);
-	return undefined;
-}
-
-function normalizeDetailMode(value: string | undefined, onWarn: (message: string) => void): ReportChoices["detailMode"] | undefined {
-	const token = normalizeToken(value)?.replace(/[\s_]+/g, "-");
-	if (token === undefined) return undefined;
-	if (["per-paper", "perpaper", "paper", "a", "mode-a", "modus-a"].includes(token)) return "per-paper";
-	if (["cross-paper", "crosspaper", "cross", "b", "mode-b", "modus-b", "merged"].includes(token)) return "cross-paper";
-	onWarn(`unrecognized detail_mode value ${JSON.stringify(value)} -- treating it as not given (the dialog settles it)`);
-	return undefined;
 }
 
 /** THIS session's asked questions for the scope, read from the protocol
@@ -799,77 +817,73 @@ async function runReportWithUi(
  * Registration                                                        *
  * ------------------------------------------------------------------ */
 
+/** Tool name -- also the setActiveTools identity (v29). */
+const TOOL_NAME = "pi-literature-synthesize";
+
 export default async function literatureSynthesize(pi: ExtensionAPI) {
 	pi.registerTool({
-		name: "pi-literature-synthesize",
+		name: TOOL_NAME,
 		label: "Literature Synthesis",
 		description:
-			"Chat about and report on the LOCAL PDF papers (papers/ or the current folder): grounded answers with " +
-			"page-exact, code-validated citations over ONE paper, a selection, or the whole library. Use this tool " +
-			"WHENEVER the user wants to chat about, understand, question, summarize, review or report on local " +
-			"papers/PDFs -- including German requests like 'zu einem Paper chatten', 'erklaere mir das Paper', " +
-			"'Frage zum Paper', 'zusammenfassen', 'Bericht/Report erstellen'. NOT this tool: searching ONLINE for " +
-			"new literature (pi-literature-search) or downloading PDFs (pi-literature-fetch). " +
-			"Call this tool DIRECTLY and IMMEDIATELY, even without a concrete question ('ich moechte ueber ein " +
-			"Paper chatten'): when the document scope is missing, the tool shows a terminal dialog where the user " +
-			"picks the documents -- never ask in chat which paper is meant. The tool REMEMBERS the session's scope: " +
-			"follow-up calls only need the question (self-contained -- the generator has no chat memory); set " +
+			"Chat about the LOCAL PDF papers (papers/ or the current folder): grounded answers with page-exact, " +
+			"code-validated citations over ONE paper, a selection, or the whole library. Use this tool WHENEVER " +
+			"the user asks something about local papers/PDFs -- including German requests like 'zu einem Paper " +
+			"chatten', 'erklaere mir das Paper', 'Frage zum Paper'. NOT this tool: searching ONLINE for new " +
+			"literature (pi-literature-search) or downloading PDFs (pi-literature-fetch). " +
+			"The tool runs WITHOUT dialogs and REMEMBERS the session's document scope. Pass the user's question " +
+			"VERBATIM, in their language and wording -- retrieval is measurably sensitive to phrasing; only " +
+			"substitute a pronoun's referent when the question alone would be ambiguous, never rephrase, expand " +
+			"or translate it. When no scope is set yet, the tool returns the REAL file list: show it to the " +
+			"user, let them choose, and pass the EXACT filenames -- never guess or invent document names " +
+			"(unknown names are rejected with the real list). A single-PDF library resolves itself. Set " +
 			"pick: true when the user wants to switch documents. " +
-			"TWO MODES. (1) CHAT: pass question -> one grounded answer. Pass the user's question VERBATIM, in " +
-			"their language and wording -- retrieval is measurably sensitive to phrasing; only substitute a " +
-			"pronoun's referent when the question alone would be ambiguous, never rephrase, expand or translate " +
-			"it. EVERY interactive call (chat and report alike) opens the SAME wizard dialog where the user " +
-			"confirms scope, question wording and report options -- your parameters only prefill it. So call " +
-			"the tool IMMEDIATELY instead of discussing the question in chat first. The digest carries the answer between " +
-			"'--- answer ---' delimiters: output that text EXACTLY as written, unchanged, including the [n] " +
-			"markers -- never summarize, extend, translate or 'improve' it, and never re-type titles, authors or " +
-			"identifiers: copy reference lines EXACTLY. If it FAILED to ground, relay the warning verbatim. " +
-			"(2) REPORT: set report: true (or pass questions/summary/include_review) for the composable HTML " +
-			"report -- per-paper structured summaries, detail questions, optional review synthesis. Report mode is " +
-			"ALSO the only way to save/export/print anything from this chat ('mach mir eine html', 'save this'): " +
-			"NEVER write an HTML or any other file about these papers yourself. The report intake ALWAYS runs " +
-			"in the tool's own wizard dialog: any parameters you pass and the questions already asked in this " +
-			"session's chat merely PREFILL it, the user confirms. So for 'fasse das zusammen' just call " +
-			"report: true without inventing questions. If the user cancelled a dialog, ask what they want to " +
-			"change; do not retry unchanged. " +
+			"The validated answer appears as a durable card in the transcript. When you relay the digest between " +
+			"'--- answer ---' delimiters, output it EXACTLY as written, including the [n] markers -- never " +
+			"summarize, extend, translate or 'improve' it, and never re-type titles, authors or identifiers: " +
+			"copy reference lines EXACTLY. If it FAILED to ground, relay the warning verbatim. " +
+			"REPORTS, SUMMARIES AND FILES ('fasse zusammen', 'Bericht erstellen', 'mach mir eine html', 'save " +
+			"this'): this tool does NOT build them -- tell the user to run the /lit-synth command; its wizard " +
+			"confirms documents, questions and format, prefilled with this session's chat questions. NEVER " +
+			"write an HTML or any other file about these papers yourself. " +
 			"The answers are written by a separate LOCAL generator in excerpts-only calls (not by you); fixed code " +
 			"validates every citation marker and builds references from HTTP-verified records. Loose PDFs are " +
 			"adopted automatically when their DOI/arXiv ID can be extracted and verified; unverified PDFs are " +
 			"cited honestly by filename and page. Never supply metadata for a PDF yourself.",
 		promptSnippet:
-			"Chat about local PDFs with page-exact, code-validated citations; report mode writes the composable " +
-			"HTML report. EVERY question about the papers goes through this tool (the scope is remembered); never " +
-			"answer from memory, relay validated answers verbatim.",
+			"Chat about local PDFs with page-exact, code-validated citations. EVERY question about the papers " +
+			"goes through this tool (the scope is remembered); never answer from memory, relay validated answers " +
+			"verbatim. Reports and HTML exports are built only by the user's /lit-synth command -- never write " +
+			"such files yourself.",
 		parameters: Type.Object({
 			question: Type.Optional(Type.String({
 				description: "The user's question for ONE grounded chat answer, VERBATIM in their wording and language (retrieval is sensitive to phrasing; only substitute a pronoun's referent when needed, never rephrase or translate). Omit on an opening move without a concrete question -- the user then picks the scope and you ask for their question.",
 			})),
 			papers: Type.Optional(Type.Array(Type.String(), {
-				description: "Document scope: PDF filenames from the library. Omit to use the session's remembered scope (or let the user pick in the dialog).",
+				description: "Document scope: PDF filenames from the library, EXACTLY as listed (unknown names are rejected and the real list is returned). Omit to use the session's remembered scope.",
 			})),
 			library: Type.Optional(Type.Boolean({
 				description: "true: the scope is the WHOLE library (every PDF in the folder).",
 			})),
 			pick: Type.Optional(Type.Boolean({
-				description: "true: show the document picker even though a scope is remembered -- use when the user wants to switch documents.",
+				description: "true: the user wants to switch documents -- the tool returns the file list so they can choose.",
 			})),
 			report: Type.Optional(Type.Boolean({
-				description: "true: build the composable HTML report instead of answering one question (missing choices are settled in the tool's wizard).",
+				description: "Do not use: reports are built by the user's /lit-synth command; this call would only return that instruction.",
 			})),
 			questions: Type.Optional(Type.Array(Type.String(), {
-				description: "Report mode: the detail questions, one string each, in the user's words.",
+				description: "Do not use (report parameter): reports run via the /lit-synth command only.",
 			})),
 			summary: Type.Optional(Type.String({
-				description: "Report mode: structured per-paper summary -- \"bullets\", \"prose\" or \"none\" (free string; the tool normalizes and lets the user confirm in its dialog).",
+				description: "Do not use (report parameter): reports run via the /lit-synth command only.",
 			})),
 			detail_mode: Type.Optional(Type.String({
-				description: "Report mode: \"per-paper\" (mode A, covers every document) or \"cross-paper\" (mode B, one call per question). Free string; normalized by the tool.",
+				description: "Do not use (report parameter): reports run via the /lit-synth command only.",
 			})),
 			include_review: Type.Optional(Type.Boolean({
-				description: "Report mode: append a review synthesis (state of the literature) over the scope.",
+				description: "Do not use (report parameter): reports run via the /lit-synth command only.",
 			})),
 			save_html: Type.Optional(Type.Boolean({
-				description: "Report mode: write the HTML file (default true; false keeps the result in the digest only).",
+				description: "Do not use (report parameter): reports run via the /lit-synth command only.",
 			})),
 			model: Type.Optional(Type.String({
 				description: "Generator model override. Default: the model selected in pi for chat/summaries, the configured generator for review genres. Only pass when the user explicitly asks.",
@@ -892,151 +906,118 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 				diagnostics.push(message);
 				onUpdate?.({ content: [{ type: "text", text: message }] });
 			};
-			const reply = (text: string) => ({ content: [{ type: "text" as const, text }], details: { diagnostics } });
-			let question = params.question?.trim() ?? "";
+			const reply = (text: string, terminate = false) => ({
+				content: [{ type: "text" as const, text }],
+				details: { diagnostics },
+				...(terminate ? { terminate: true } : {}),
+			});
+			const question = params.question?.trim() ?? "";
 			const wantsReport = params.report === true
 				|| params.questions !== undefined
 				|| params.summary !== undefined
+				|| params.detail_mode !== undefined
 				|| params.include_review !== undefined
 				|| params.save_html !== undefined;
 			const root = outputRoot();
 
-			// 1. Scope: params > sticky (unless pick). Everything still open is
-			// settled in the ONE full wizard below (v27 user decision: the same
-			// dialog every time -- no slim gate, no scope-only picker).
+			// v29: reports, summaries and exports run ONLY via the /lit-synth
+			// command -- its wizard is the consent. A dialog-free tool call
+			// must never start a many-model-call run (dialog-free AND
+			// expensive don't mix), so a report-flavoured call is a handback.
+			if (wantsReport) {
+				return reply(
+					"Reports, summaries and HTML exports are built with the /lit-synth command only -- its "
+					+ "wizard lets the user confirm documents, questions and format (this session's chat "
+					+ "questions are prefilled there). Tell the user to run /lit-synth. Do not retry with "
+					+ "report parameters, and NEVER write an HTML or any other file about the papers yourself.",
+				);
+			}
+
+			// The library list is the ground truth: only real filenames are
+			// accepted as scope -- an agent cannot invent documents (v29).
+			const pool = chatPool(matchLibrary(root, (message) => diagnostics.push(message)));
+			if (!pool.length) {
+				return reply("The library holds no PDFs at all -- run a literature search and fetch first (or start pi in the folder containing the PDFs).");
+			}
+			const available = pool.map((entry) => `${entry.base}.pdf`).join(", ");
+
+			// Scope: params > sticky. Everything still open is handed BACK to
+			// the chat as a real file list (v29: no dialog on the tool path;
+			// /lit-synth is the dialog path).
 			let scope: string[] | "library" | undefined = params.library === true
 				? "library"
 				: params.papers?.length ? params.papers.map((name) => name.trim().replace(/\.pdf$/i, "")) : undefined;
-			if (!scope && params.pick !== true) {
+			if (Array.isArray(scope)) {
+				const known = new Map(pool.map((entry) => [entry.base.toLowerCase(), entry.base]));
+				const unknown = scope.filter((base) => !known.has(base.toLowerCase()));
+				if (unknown.length) {
+					return reply(
+						`Unknown document name(s): ${unknown.map((base) => `${base}.pdf`).join(", ")}. Only these `
+						+ `PDFs exist: ${available}. Show the user this list, let them choose, and pass the exact `
+						+ "filenames -- or point them to the /lit-synth command for the document dialog.",
+					);
+				}
+				scope = scope.map((base) => known.get(base.toLowerCase()) as string);
+			}
+			if (params.pick === true) {
+				return reply(
+					"The user wants to switch documents. Show them this list and let them choose, then call "
+					+ "again with the exact filenames in papers -- or point them to /lit-synth for the dialog. "
+					+ `Available PDFs: ${available}`,
+				);
+			}
+			if (!scope) {
 				const sticky = readCurrentScope(root, sessionId(ctx));
 				if (sticky) {
 					scope = sticky.papers;
 					report(`using the session's scope: ${scope === "library" ? "whole library" : scope.join(", ")} (pick: true switches)`);
 				}
 			}
-			if (signal?.aborted) return reply("The run was aborted before anything was generated.");
-
-			const summaryParam = normalizeSummary(params.summary, report);
-			const detailParam = normalizeDetailMode(params.detail_mode, report);
-			let questions = params.questions?.map((entry) => entry.trim()).filter(Boolean);
-			let choices: ReportChoices = {
-				summary: summaryParam ?? (wantsReport ? "bullets" : "none"),
-				detailMode: detailParam ?? "per-paper",
-				includeReview: params.include_review ?? (wantsReport && scope === "library"),
-				saveHtml: params.save_html ?? wantsReport,
-			};
-
-			// 2. Interactive: the ONE wizard for chat AND report calls -- they
-			// differ only in the prefills (chat: the passed question, nothing
-			// else; report: params + this session's chat questions as seed).
-			// The submitted answers decide what runs.
-			let lang: DialogLang = "de";
-			if (ctx.hasUI) {
-				const seed = wantsReport
-					? (questions?.length ? questions : scope ? sessionSeedQuestions(root, scope, sessionId(ctx)) : [])
-					: question ? [question] : [];
-				lang = langFromName(params.language)
-					?? detectDialogLang([question, ...(params.questions ?? []), ...seed], chatLangDefault());
-				const intake = await synthWizard(ctx, scope ?? null, seed, {
-					...choices,
-					summary: summaryParam ?? (wantsReport ? (seed.length ? "none" : "bullets") : "none"),
-				}, lang, diagnostics, signal);
-				if (intake === null) {
-					return reply("The user cancelled the dialog. Nothing was generated. Ask what they want instead; do not retry unchanged.");
-				}
-				if (intake === "empty") {
-					return reply("The library holds no PDFs at all -- run a literature search and fetch first (or start pi in the folder containing the PDFs).");
-				}
-				if (!scope) {
-					diagnostics.push(`scope picked in the dialog: ${intake.scope === "library" ? "whole library" : intake.scope.join(", ")}`);
-				}
-				scope = intake.scope;
-				// Remember immediately: the call may still end questionless.
-				writeCurrentScope(root, { papers: scope }, sessionId(ctx), undefined, (message) => diagnostics.push(message));
-				questions = intake.questions;
-				choices = intake.choices;
-			} else {
-				// Headless: parameters are authoritative, no dialogs.
-				if (!scope) {
-					const pool = chatPool(matchLibrary(root, (message) => diagnostics.push(message)));
-					const available = pool.map((entry) => `${entry.base}.pdf`).join(", ") || "(none)";
-					return reply(`No scope was given and no interactive picker is available. Pass papers or library: true; PDFs in the library: ${available}`);
-				}
-				if (!wantsReport) questions = question ? [question] : [];
-				questions = questions ?? [];
-			}
-
-			// 3. Outcome mapping (identical for chat and report calls).
-			// Nothing chosen -> the user wants to CHAT: hand the loop back.
-			if (!questions.length && choices.summary === "none" && !choices.includeReview) {
-				const label = scope === "library" ? "the whole library" : scope.map((base) => `${base}.pdf`).join(", ");
-				return reply(
-					`The user selected ${label} for a grounded chat (already settled -- do not ask again) and `
-					+ "chose no question, no summary and no review. Ask the user what they want to know about "
-					+ "these documents, then call this tool again with their question (the scope is remembered; "
-					+ "the user confirms everything in the tool's own dialog).",
-				);
-			}
-			// Exactly ONE question and nothing else: the classic chat round
-			// (protocolled, relayed verbatim, transcript card).
-			if (questions.length === 1 && choices.summary === "none" && !choices.includeReview && !choices.saveHtml) {
-				const outcome = await runRoundWithUi(pi, ctx, {
-					question: questions[0],
-					papers: scope,
-					model: params.model?.trim() || undefined,
-					topK: params.top_k,
-					language: params.language,
-					reindex: params.reindex,
-					onWarn: report,
-					signal,
-				});
-				if ("error" in outcome) {
+			if (!scope) {
+				if (pool.length === 1) {
+					// Nothing to decide: a one-PDF library resolves itself
+					// (v29); the card names the document.
+					scope = [pool[0].base];
+					report(`single PDF in the library -- scope resolves to ${pool[0].base}.pdf`);
+				} else {
 					return reply(
-						`The chat run failed: ${outcome.error} -- nothing was generated. Report this to the user `
-						+ "verbatim. If it names an unreachable LLM server, Ollama is probably not running; the "
-						+ "user can verify the backend with: node src/cli.ts llm-check",
+						"No document scope is set for this session. Do NOT guess or invent filenames: show the "
+						+ "user this list, ask which document(s) they mean, then call again with the exact names "
+						+ "in papers (the /lit-synth command offers the same choice as a dialog). Available "
+						+ `PDFs: ${available}`,
 					);
 				}
-				return reply(renderChatDigest(outcome.answer));
 			}
-			// Anything more: the composable report.
-			const scopeSize = scope === "library"
-				? chatPool(matchLibrary(root, () => {})).length
-				: scope.length;
-			const unitCount = reportUnitCount(scopeSize, questions.length, choices);
-			if (ctx.hasUI && unitCount > UNIT_WARN_THRESHOLD) {
-				const warnText = SYNTH_TEXT[lang];
-				const go = await ctx.ui.select(
-					warnText.unitWarn(unitCount),
-					[warnText.unitWarnYes, warnText.unitWarnCancel],
-					{ signal },
+			if (!question) {
+				// Opening move: the scope is settled, only the question is missing.
+				const label = scope === "library" ? "the whole library" : scope.map((base) => `${base}.pdf`).join(", ");
+				return reply(
+					`The scope is ${label} (already settled -- do not ask about documents again). Ask the user `
+					+ "what they want to know, then call this tool again with their question passed VERBATIM.",
 				);
-				if (go !== warnText.unitWarnYes) {
-					return reply(`The user cancelled: the report would need ${unitCount} generation calls. Suggest fewer questions, mode B, or a smaller scope.`);
-				}
 			}
-			const outcome = await runReportWithUi(pi, ctx, {
+			if (signal?.aborted) return reply("The run was aborted before anything was generated.");
+			const outcome = await runRoundWithUi(pi, ctx, {
+				question,
 				papers: scope,
-				questions,
-				summary: choices.summary,
-				detailMode: choices.detailMode,
-				includeReview: choices.includeReview,
 				model: params.model?.trim() || undefined,
 				topK: params.top_k,
-				// The whole report speaks ONE language -- the chat's (v27 user
-				// decision); an explicit language param still wins.
-				language: params.language ?? (lang === "en" ? "English" : "German"),
-				uiLanguage: lang,
+				language: params.language,
 				reindex: params.reindex,
-			}, choices.saveHtml, report, diagnostics, signal);
+				onWarn: report,
+				signal,
+			});
 			if ("error" in outcome) {
 				return reply(
-					`The report run failed: ${outcome.error} -- nothing was generated. Report this to the user `
-					+ "verbatim. If it names an unreachable LLM server, Ollama is probably not running; the user "
-					+ "can verify the backend with: node src/cli.ts llm-check",
+					`The chat run failed: ${outcome.error} -- nothing was generated. Report this to the user `
+					+ "verbatim. If it names an unreachable LLM server, Ollama is probably not running; the "
+					+ "user can verify the backend with: node src/cli.ts llm-check",
 				);
 			}
-			return reply(outcome.digest);
+			// v29: with the answer card on screen the agent has nothing to
+			// add -- terminate makes the card the last word (no retelling).
+			// Headless has no card, so the digest must still be relayed.
+			return reply(renderChatDigest(outcome.answer), ctx.hasUI);
 		},
 	});
 
@@ -1103,7 +1084,7 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 						+ "overview, specific details, or bullet points are all fine, in German or English. Route "
 						+ "EVERY question through the pi-literature-synthesize tool: pass only the question (the "
 						+ "scope is remembered) and relay each validated answer verbatim. If they ask for a "
-						+ "summary, an HTML, or to save/export anything, call the tool with report: true -- never "
+						+ "summary, an HTML, or to save/export anything, tell them to run /lit-synth -- never "
 						+ "write such a file yourself.",
 					display: false,
 				}, { triggerTurn: true });
@@ -1153,21 +1134,56 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 		},
 	});
 
+	// v29: with an EMPTY library the tool stays deactivated, so the agent
+	// cannot stumble into it in unrelated chats (setActiveTools). Checked
+	// on session start; while inactive, every input re-checks (a fetch may
+	// have filled the library meanwhile). Best-effort: any doubt keeps the
+	// tool available -- it still answers honestly on an empty library.
+	const libraryHasPdfs = (): boolean => {
+		try {
+			return chatPool(matchLibrary(outputRoot(), () => {})).length > 0;
+		} catch {
+			return true;
+		}
+	};
+	const syncToolActivation = (): void => {
+		try {
+			const active = pi.getActiveTools();
+			const isActive = active.includes(TOOL_NAME);
+			const shouldBe = libraryHasPdfs();
+			if (shouldBe && !isActive) pi.setActiveTools([...active, TOOL_NAME]);
+			else if (!shouldBe && isActive) pi.setActiveTools(active.filter((name) => name !== TOOL_NAME));
+		} catch {
+			// Activation sync must never break a session.
+		}
+	};
+	pi.on("session_start", () => syncToolActivation());
+
 	// Passive chat-language observer (v27): plain user input updates the
 	// language the dialogs open in; commands, bash lines and
 	// extension-injected messages are ignored, and the input itself passes
 	// through untouched (no return value).
 	pi.on("input", (event) => {
+		// Cheap while active (one lookup); a real rescan only runs while the
+		// tool is deactivated and might need waking up.
+		try {
+			if (!pi.getActiveTools().includes(TOOL_NAME)) syncToolActivation();
+		} catch {
+			// same best-effort rule as above
+		}
 		const text = event.text?.trim();
 		if (!text || text.startsWith("/") || text.startsWith("!")) return;
 		if (event.source === "extension") return;
 		observedChatLang = detectDialogLang([text], chatLangDefault());
 	});
 
-	// HTML-export gate (v23 field failure, moved here in E2e and now hanging
-	// on the sticky SCOPE): while any document scope is active in THIS
-	// session, an agent write/edit of an .html file opens a blocking dialog;
-	// the default is to block and send the agent to report mode.
+	// HTML-write gate (v23 field failure, REPURPOSED in v29): while any
+	// document scope is active in THIS session, an agent write/edit of an
+	// .html file is the classic hand-built-report failure ("baue mir eine
+	// html"). The gate no longer just blocks -- it ASKS: the default choice
+	// opens the report wizard right here (the dialog choice IS the consent
+	// the wizard otherwise gets via /lit-synth), "allow" lets unrelated
+	// HTML writes through, cancel/Esc blocks. Headless keeps the hard block.
 	pi.on("tool_call", async (event, ctx) => {
 		if (event.toolName !== "write" && event.toolName !== "edit") return;
 		// pi's write/edit accept file_path with path as a fallback alias.
@@ -1175,24 +1191,91 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 		const path = typeof input?.file_path === "string" ? input.file_path
 			: typeof input?.path === "string" ? input.path : "";
 		if (!/\.html?$/i.test(path)) return;
-		const sticky = readCurrentScope(outputRoot(), sessionId(ctx));
+		const root = outputRoot();
+		const session = sessionId(ctx);
+		const sticky = readCurrentScope(root, session);
 		if (!sticky) return;
 		const label = sticky.papers === "library" ? "the whole library" : sticky.papers.map((base) => `${base}.pdf`).join(", ");
 		const blockReason =
 			`Blocked by pi-literature-review: a grounded document chat (${label}) is active. HTML exports come `
-			+ "from the pi-literature-synthesize tool with report: true (deterministic HTML with verified "
-			+ "citations and page-exact PDF links). Call that tool now instead of writing a file yourself.";
+			+ "from the deterministic report (verified citations, page-exact PDF links), which the user starts "
+			+ "with the /lit-synth command. Suggest /lit-synth to the user; never write such a file yourself.";
 		if (!ctx.hasUI) return { block: true, reason: blockReason };
-		const OPTION_BLOCK = "Block it: generate the deterministic report instead (report: true)";
-		const OPTION_ALLOW = "Allow this write: the file is unrelated to the document chat";
+		const lang = chatLangDefault();
+		const text = GATE_TEXT[lang];
 		const choice = await ctx.ui.select(
-			`The agent wants to hand-write ${path} while a document chat (${label}) is active. `
-			+ "Chat exports should be the code-validated report, never an agent-written file.",
-			[OPTION_BLOCK, OPTION_ALLOW],
+			text.title(path, label),
+			[text.wizard, text.allow, text.cancel],
 			{ signal: ctx.signal },
 		);
-		if (choice === OPTION_ALLOW) return;
-		return { block: true, reason: blockReason }; // chosen block, Esc or abort
+		if (choice === text.allow) return;
+		if (choice !== text.wizard) return { block: true, reason: blockReason }; // cancel, Esc or abort
+		// Wizard chosen: configure and run the real report right here. The
+		// scope is the sticky one; this session's chat questions seed the
+		// questions tab ("fasse das zusammen" needs no invented questions).
+		const quiet = (message: string) => ctx.ui.notify(message, "info");
+		const diagnostics: string[] = [];
+		const intake = await synthWizard(
+			ctx,
+			sticky.papers,
+			sessionSeedQuestions(root, sticky.papers, session),
+			{ summary: "bullets", saveHtml: true },
+			lang,
+			diagnostics,
+			ctx.signal,
+		);
+		if (intake === null || intake === "empty") return { block: true, reason: blockReason };
+		const { scope, questions, choices } = intake;
+		if (!questions.length && choices.summary === "none" && !choices.includeReview) {
+			return {
+				block: true,
+				reason: "Blocked: the user chose nothing to generate. Ask what they want instead; never write "
+					+ "an HTML about the papers yourself (/lit-synth builds reports).",
+			};
+		}
+		// Exactly one question and nothing else: a grounded chat round.
+		if (questions.length === 1 && choices.summary === "none" && !choices.includeReview && !choices.saveHtml) {
+			const outcome = await runRoundWithUi(pi, ctx, {
+				question: questions[0],
+				papers: scope,
+				onWarn: quiet,
+				signal: ctx.signal,
+			});
+			return {
+				block: true,
+				reason: "error" in outcome
+					? `Blocked; the user ran a grounded chat round instead and it failed: ${outcome.error} -- report this verbatim.`
+					: "Blocked: the user ran a grounded chat round instead; its validated answer is on screen "
+						+ "as a card. Do not write an HTML yourself.",
+			};
+		}
+		const scopeSize = scope === "library" ? chatPool(matchLibrary(root, () => {})).length : scope.length;
+		const unitCount = reportUnitCount(scopeSize, questions.length, choices);
+		if (unitCount > UNIT_WARN_THRESHOLD) {
+			const warnText = SYNTH_TEXT[lang];
+			const go = await ctx.ui.select(
+				warnText.unitWarn(unitCount),
+				[warnText.unitWarnYes, warnText.unitWarnCancel],
+				{ signal: ctx.signal },
+			);
+			if (go !== warnText.unitWarnYes) return { block: true, reason: blockReason };
+		}
+		const outcome = await runReportWithUi(pi, ctx, {
+			papers: scope,
+			questions,
+			summary: choices.summary,
+			detailMode: choices.detailMode,
+			includeReview: choices.includeReview,
+			language: lang === "en" ? "English" : "German",
+			uiLanguage: lang,
+		}, choices.saveHtml, quiet, diagnostics, ctx.signal);
+		return {
+			block: true,
+			reason: "error" in outcome
+				? `Blocked; the deterministic report was attempted instead and failed: ${outcome.error} -- report this verbatim.`
+				: "Blocked: the deterministic report was generated instead; the result card (and the HTML path, "
+					+ "if saved) is on screen. Do not write an HTML yourself.",
+		};
 	});
 
 	// Rich transcript rendering for validated answers (appendEntry cards).

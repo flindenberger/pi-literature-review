@@ -234,48 +234,54 @@ Loose PDFs are adopted automatically when their own DOI/arXiv ID can be
 extracted from the PDF text and verified by an API lookup; whatever stays
 unverified is still usable -- cited honestly by filename and page.
 
-**Dialog language.** All code dialogs (question gate, wizard, warnings)
-follow the CHAT's language: the explicit `language` parameter wins, else a
-deterministic German/English detection over the question texts, else the
-language OBSERVED in the user's recent plain chat input (a passive
-`pi.on("input")` listener -- opening moves carry no question text);
-German is the final default. The report page chrome (`ui_language`)
-follows the same resolution.
+**Dialog policy (v29).** The wizard belongs to the `/lit-synth` COMMAND;
+the agent-called TOOL runs dialog-free. The rule fits in one sentence:
+chat freely, build reports with `/lit-synth`. The one dialog that can
+still open from an agent turn is the HTML-write gate (below), which asks
+before the agent hand-writes a file.
+
+**Dialog language.** All code dialogs (wizard, gate, warnings) follow the
+CHAT's language: a deterministic German/English detection over the
+question texts, else the language OBSERVED in the user's recent plain
+chat input (a passive `pi.on("input")` listener -- opening moves carry no
+question text); German is the final default. The report page chrome
+(`ui_language`) follows the same resolution.
 
 **Scope.** Everything runs over a document SCOPE: one paper, a selection,
-or the whole library. The scope is picked in a Claude-Code-style wizard
+or the whole library. The scope is picked in the `/lit-synth` wizard
 (checkbox list with a select-all row; selecting everything means the
-library) and is sticky WITHIN one pi session (`chats/current-scope.json`,
-stamped with the session id) -- follow-up calls need only the question.
-A new pi session starts blank; `/resume` keeps the scope.
+library) or passed by the agent as EXACT filenames, and is sticky WITHIN
+one pi session (`chats/current-scope.json`, stamped with the session id)
+-- follow-up calls need only the question. A new pi session starts blank;
+`/resume` keeps the scope. With an EMPTY library the tool is deactivated
+entirely (`setActiveTools`), so it cannot interfere with unrelated chats.
 
-**Chat mode.** One grounded answer per question, didactic tone, page-exact
-references (`[1] 2026 | 10.5194/... | Title (S. 4)`). EVERY interactive
-call -- chat or report -- opens the SAME full wizard (v27 user decision:
-one dialog, always): scope checkboxes (when unsettled), the questions tab
-prefilled with the agent-passed question (field tests showed agents
-systematically rephrase the user's words, which measurably degrades
-retrieval, and no instruction stopped it -- the confirmed wording is what
-the engine runs), then summary/mode/review/HTML tabs and the submit page.
-The submitted answers decide what runs: exactly ONE question with nothing
-else is a classic protocolled chat round; anything more is the composable
-report; nothing at all hands the conversation back to the agent. The validated answer
-travels verbatim in the tool result between explicit delimiters AND renders
-as a full transcript card (anti-paraphrase ground truth; capped-widget
-fallback without pi-tui). Every validated round is appended to a protocol
-file under `chats/` (multi-paper and library rounds under a scope
-identity); corrupt or foreign files are quarantined, never overwritten.
-No chat memory in the generator: each call is stateless; the pi
-conversation carries the thread.
+**Chat mode (the tool).** One grounded answer per question, didactic tone,
+page-exact references (`[1] 2026 | 10.5194/... | Title (S. 4)`), no
+dialogs: a call with a settled scope runs immediately. When no scope is
+set, the tool returns the REAL file list for the user to choose from
+(unknown filenames are rejected with that list -- an agent cannot invent
+documents); a single-PDF library resolves itself. The validated answer
+renders as a full transcript card whose first line shows the VERBATIM
+question the engine ran ("Frage, so ausgeführt: ...") -- field tests
+showed agents systematically rephrase the user's words, which measurably
+degrades retrieval; without a gate the rephrasing is at least VISIBLE,
+and `/lit-synth <question>` is the verbatim fallback. With the card on
+screen the tool result carries `terminate`, so the agent cannot retell
+the answer -- the card has the last word (headless runs keep the verbatim
+digest relay between explicit delimiters). Every validated round is
+appended to a protocol file under `chats/` (multi-paper and library
+rounds under a scope identity); corrupt or foreign files are quarantined,
+never overwritten. No chat memory in the generator: each call is
+stateless; the pi conversation carries the thread.
 
-**Report mode** (`report: true`, or the wizard) builds the composable
-report from three building blocks, written to `reports/`. With a UI the
-report intake ALWAYS runs in the wizard: agent-passed parameters and the
-questions already asked in this session's chat merely prefill it ("fasse
-das zusammen" opens the wizard with the chat's questions, editable), and
-enum-like parameters (`summary`, `detail_mode`) are free strings
-normalized in code -- a malformed agent value can no longer dead-end in
-schema validation. The finished
+**Report mode (`/lit-synth` only, v29)** builds the composable report
+from three building blocks, written to `reports/`. Reports cost many
+model calls, so they never start from a dialog-free tool call: a
+report-flavoured tool call (or a summary/export wish in chat) is handed
+back with the instruction to run `/lit-synth`; the wizard is the consent,
+its questions tab prefilled with this session's chat questions ("fasse
+das zusammen" needs no invented questions). The finished
 report also renders as a full transcript card (answers + reference lines
 + HTML path) -- the durable answer in the chat, with or without the HTML
 export. Building blocks:
@@ -337,20 +343,23 @@ off); mode B and review synthesis run on the configured local generator
 Embeddings always stay on the configured local embedding server.
 
 - **Slash commands.** `/lit-search`, `/lit-fetch` and `/lit-synth` are
-  checked by pi BEFORE the agent. Bare `/lit-synth` runs the same ONE
-  wizard (documents preselected with the sticky scope, questions typed
-  inline and separated by semicolons, summary/mode/review/HTML tabs, a
-  submit page showing the expected model-call count); the submitted
-  answers decide between chat round, report and agent handoff exactly as
-  on the tool path. `/lit-synth <question>` with a remembered scope
-  answers once, agent-free and dialog-free; without one it opens the
-  wizard with the question prefilled. Long engine calls show an
-  elapsed-seconds ticker plus per-unit progress ("Unit 3/9: ...").
-- **HTML-export gate.** "Make me an HTML of that" must produce the
-  deterministic report, never an agent-written file (observed twice in the
-  field). While a document scope is active in the session, any agent
-  `write`/`edit` of an `.html` file opens a blocking dialog; default is to
-  block and point the agent at report mode. Headless runs block outright.
+  checked by pi BEFORE the agent. Bare `/lit-synth` runs the ONE wizard
+  (documents preselected with the sticky scope, questions typed inline
+  and separated by semicolons, summary/mode/review/HTML tabs -- tabs that
+  do not apply stay VISIBLE but greyed out with a one-line reason, so the
+  dialog never changes shape while navigating -- and a submit page showing
+  the expected model-call count); the submitted answers decide between
+  chat round, report and agent handoff. `/lit-synth <question>` with a
+  remembered scope answers once, agent-free and dialog-free; without one
+  it opens the wizard with the question prefilled. Long engine calls show
+  an elapsed-seconds ticker plus per-unit progress ("Unit 3/9: ...").
+- **HTML-write gate.** "Make me an HTML of that" must produce the
+  deterministic report, never an agent-written file (observed twice in
+  the field). While a document scope is active in the session, any agent
+  `write`/`edit` of an `.html` file opens a question dialog (v29): the
+  default choice opens the report wizard right there -- the dialog choice
+  IS the consent -- "allow" lets an unrelated HTML write through, and
+  cancel blocks. Headless runs block outright.
 
 Standalone CLI (no Pi):
 
