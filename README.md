@@ -344,16 +344,20 @@ off); mode B and review synthesis run on the configured local generator
 Embeddings always stay on the configured local embedding server.
 
 - **Slash commands.** `/lit-search`, `/lit-fetch` and `/lit-synth` are
-  checked by pi BEFORE the agent. Bare `/lit-synth` runs the ONE wizard
-  (documents preselected with the sticky scope, questions typed inline
-  and separated by semicolons, summary/mode/review/HTML tabs -- tabs that
-  do not apply stay VISIBLE but greyed out with a one-line reason, so the
-  dialog never changes shape while navigating -- and a submit page showing
-  the expected model-call count); the submitted answers decide between
-  chat round, report and agent handoff. `/lit-synth <question>` with a
-  remembered scope answers once, agent-free and dialog-free; without one
-  it opens the wizard with the question prefilled. Long engine calls show
-  an elapsed-seconds ticker plus per-unit progress ("Unit 3/9: ...").
+  checked by pi BEFORE the agent, and every BARE command opens its own
+  dialog directly (v29.1 -- no agent handoff asking in chat first):
+  `/lit-search` starts the intake wizard on the query tab, `/lit-fetch`
+  asks for the DOIs/arXiv IDs in a one-step dialog (the pasted "Download
+  these papers: ..." line works there too), and `/lit-synth` runs the ONE
+  wizard (documents preselected with the sticky scope, questions typed
+  inline and separated by semicolons, summary/mode/review/HTML tabs --
+  tabs that do not apply stay VISIBLE but greyed out with a one-line
+  reason, so the dialog never changes shape while navigating -- and a
+  submit page showing the expected model-call count); the submitted
+  answers decide between chat round, report and agent handoff.
+  `/lit-synth <question>` with a remembered scope answers once,
+  agent-free and dialog-free. Long engine calls show an elapsed-seconds
+  ticker plus per-unit progress ("Unit 3/9: ...").
 - **HTML-write gate.** "Make me an HTML of that" must produce the
   deterministic report, never an agent-written file (observed twice in
   the field). While a document scope is active in the session, any agent

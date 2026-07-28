@@ -18,6 +18,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { configPath, isPlausibleMailto, storeMailto } from "../src/config.ts";
+import { type DialogLang, type WizardStepDef } from "../src/dialog-state.ts";
 import {
 	loadSidecarIndex,
 	parseIdentifier,
@@ -26,8 +27,63 @@ import {
 } from "../src/fetch.ts";
 import { outputRoot } from "../src/output.ts";
 import { contactMailto } from "../src/types.ts";
+import { chatLangDefault, installChatLangObserver, runWizard } from "./dialogs.ts";
 
 const FETCH_WIDGET = "pi-literature-review-fetch";
+
+/** The bare-command identifier intake (v29.1: every bare command opens its
+ * dialog directly; the agent handoff is gone). */
+const FETCH_TEXT: Record<DialogLang, {
+	idTab: string;
+	idTitle: string;
+	idPlaceholder: string;
+	noIds: string;
+}> = {
+	de: {
+		idTab: "Papiere",
+		idTitle: "Welche Papiere herunterladen? DOIs / arXiv-IDs, durch Leerzeichen oder Komma getrennt -- "
+			+ "oder die Zeile \"Download these papers: ...\" von der Suchseite einfügen.",
+		idPlaceholder: "z. B. 10.3390/rs13081505 arXiv:2401.16393",
+		noIds: "Keine Identifier angegeben -- nichts wurde heruntergeladen.",
+	},
+	en: {
+		idTab: "Papers",
+		idTitle: "Which papers to download? DOIs / arXiv IDs separated by spaces or commas -- "
+			+ "or paste the \"Download these papers: ...\" line from the search page.",
+		idPlaceholder: "e.g. 10.3390/rs13081505 arXiv:2401.16393",
+		noIds: "No identifiers given -- nothing was downloaded.",
+	},
+};
+
+/** Split pasted identifier text; tolerates the search page's copy sentence
+ * and the semicolons a text step makes of pasted newlines. */
+function splitIdentifiers(raw: string): string[] {
+	return raw
+		.replace(/^\s*download\s+these\s+papers\s*:?\s*/i, "")
+		.split(/[\s,;]+/)
+		.map((s) => s.trim())
+		.filter(Boolean);
+}
+
+/** One-step wizard asking for the identifiers (same look as every other
+ * intake since v29.1; skipSubmit -- one Enter finishes). Null on cancel. */
+async function identifiersDialog(
+	ctx: ExtensionContext,
+	signal: AbortSignal | undefined,
+): Promise<string[] | null> {
+	const lang = chatLangDefault();
+	const text = FETCH_TEXT[lang];
+	const steps: WizardStepDef[] = [{
+		kind: "text",
+		id: "identifiers",
+		tab: text.idTab,
+		title: text.idTitle,
+		placeholder: text.idPlaceholder,
+	}];
+	const result = await runWizard(ctx, steps, signal, { lang, skipSubmit: true });
+	if (result === null) return null;
+	return splitIdentifiers(typeof result.identifiers === "string" ? result.identifiers : "");
+}
 
 /** Widgets have no documented height limit and no scrolling -- an oversized
  * list would push the chat off screen. Cap the paper list and clip each
@@ -155,6 +211,9 @@ async function fetchConsentDialog(
 }
 
 export default function literatureFetch(pi: ExtensionAPI) {
+	// Shared chat-language observer (dialogs.ts): the identifier dialog
+	// opens in the language of the user's recent plain chat input.
+	installChatLangObserver(pi);
 	pi.registerTool({
 		name: "pi-literature-fetch",
 		label: "Literature Fetch",
@@ -253,33 +312,27 @@ export default function literatureFetch(pi: ExtensionAPI) {
 		},
 	});
 
-	// /lit-fetch -- the agent-free path (companion to /lit-chat and
-	// /lit-search). The user pastes identifiers, or the whole
-	// "Download these papers: ..." sentence copied from the search page; the
-	// SAME Unpaywall-email and consent dialogs gate the download.
+	// /lit-fetch -- the agent-free path. The user pastes identifiers, or the
+	// whole "Download these papers: ..." sentence copied from the search
+	// page; bare /lit-fetch opens the identifier dialog DIRECTLY (v29.1:
+	// the command owns the dialog, the v22 agent handoff is gone). The SAME
+	// Unpaywall-email and consent dialogs gate the download.
 	pi.registerCommand("lit-fetch", {
 		description:
-			"Download papers as PDFs: /lit-fetch <DOIs / arXiv IDs> runs agent-free (or paste the "
-			+ "\"Download these papers: ...\" line from the search page). Bare /lit-fetch lets the agent ask.",
+			"Download papers as PDFs: /lit-fetch [DOIs / arXiv IDs] runs agent-free (or paste the "
+			+ "\"Download these papers: ...\" line from the search page); bare /lit-fetch asks for the "
+			+ "identifiers in a dialog.",
 		handler: async (args, ctx) => {
 			if (!ctx.hasUI) return;
-			const raw = (args ?? "").replace(/^\s*download\s+these\s+papers\s*:?\s*/i, "");
-			const identifiers = raw.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+			let identifiers = splitIdentifiers(args ?? "");
 			if (!identifiers.length) {
-				// Bare invocation: hand over to the agent, which asks for the
-				// identifiers in chat and then calls the pi-literature-fetch
-				// tool (the email and consent dialogs still gate the download).
-				// A dim usage notify was invisible in the field (2026-07-20).
-				pi.sendMessage({
-					customType: "pi-literature-fetch-handoff",
-					content:
-						"The user invoked /lit-fetch without identifiers. Ask them, in ONE short sentence, which "
-						+ "papers to download -- DOIs or arXiv IDs, or the \"Download these papers: ...\" line "
-						+ "copied from a search results page -- then call the pi-literature-fetch tool with "
-						+ "those identifiers. Never invent or complete identifiers yourself.",
-					display: false,
-				}, { triggerTurn: true });
-				return;
+				const typed = await identifiersDialog(ctx, ctx.signal);
+				if (typed === null) return; // cancelled
+				if (!typed.length) {
+					ctx.ui.notify(FETCH_TEXT[chatLangDefault()].noIds, "warning");
+					return;
+				}
+				identifiers = typed;
 			}
 			const diagnostics: string[] = [];
 			const progress = (message: string) => ctx.ui.notify(message, "info");
