@@ -22,6 +22,7 @@ import {
 	type WizardState,
 	type WizardStepDef,
 	wizardResult,
+	wizardSummaryLines,
 	wizardView,
 } from "./dialog-state.ts";
 
@@ -371,6 +372,51 @@ function drive(
 	// A step-specific disabledNote wins over the generic reason (v29).
 	const noted = initWizard([steps[0], { ...steps[1], disabledNote: "Braucht eine Frage." }, steps[2]]);
 	assert.ok(wizardView({ ...noted, tab: 1 }).rows[0].text.includes("Braucht eine Frage."));
+}
+
+/* -------- wizard: startTab submit + initialIsAnswer (v29.1) -------- */
+{
+	// The search intake pattern: open ON the review page, every step
+	// pre-answered -- ONE Enter runs the proposal (old dialog parity).
+	const steps: WizardStepDef[] = [
+		{ kind: "text", id: "query", tab: "Suchanfrage", title: "Wonach suchen?", initial: "sandbar detection" },
+		{
+			kind: "choice", id: "depth", tab: "Tiefe", title: "Suchtiefe?",
+			options: [{ value: "quick", label: "Schnell" }, { value: "custom", label: "Eigene Anzahl" }],
+			initial: "quick", initialIsAnswer: true,
+		},
+		{
+			kind: "text", id: "count", tab: "Anzahl", title: "Treffer je Quelle",
+			initial: "5",
+			enabledIf: (answers) => answers.depth === "custom",
+			disabledNote: "Nur bei eigener Anzahl relevant.",
+		},
+	];
+	const opened = initWizard(steps, { startTab: "submit" });
+	assert.equal(opened.tab, steps.length); // review page first
+	const confirmed = drive(opened, ["confirm"]);
+	assert.equal(confirmed.done, "confirmed");
+	// The disabled count step is absent; the pre-answered choice is in.
+	assert.deepEqual(wizardResult(confirmed.state), { query: "sandbar detection", depth: "quick" });
+	// The review page shows the pre-answered choice, not "(offen)".
+	assert.ok(wizardSummaryLines(opened).some((line) => line.includes("Tiefe: Schnell")));
+	// Walking left from the review lands on the last step; adjusting to
+	// "custom" enables the count tab, and the result carries it.
+	let { state } = drive(opened, ["left"]); // -> count tab (disabled, visitable)
+	assert.equal(state.tab, 2);
+	({ state } = drive(state, ["left", "down", "confirm"])); // depth -> custom (advance lands on count)
+	assert.equal(state.tab, 2);
+	const custom = drive(state, [{ kind: "input", chars: "0" }, "confirm", "confirm"]); // count "50" -> submit -> Absenden
+	assert.equal(custom.done, "confirmed");
+	assert.deepEqual(wizardResult(custom.state), { query: "sandbar detection", depth: "custom", count: "50" });
+	// WITHOUT initialIsAnswer the finish guard still protects: an
+	// unanswered choice pulls the wizard back from the review page.
+	const strict = initWizard([
+		{ kind: "choice", id: "depth", tab: "Tiefe", title: "?", options: [{ value: "a", label: "A" }], initial: "a" },
+	], { startTab: "submit" });
+	const guarded = drive(strict, ["confirm"]);
+	assert.equal(guarded.done, undefined);
+	assert.equal(guarded.state.tab, 0);
 }
 
 /* ---------------- wizard: submit note (v27) ---------------- */

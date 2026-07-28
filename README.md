@@ -49,24 +49,25 @@ filesystems without symlink support, e.g. exFAT, use `npm install --no-bin-links
 Ask the agent naturally, for example: "Find papers on drone remote sensing of
 floodplains, 10 per source, group by floodplain vs. drone terms."
 
-**Every** tool call opens an intake dialog in your terminal before anything is
+**Every** tool call opens an intake wizard in your terminal before anything is
 searched -- enforced by code, not by an instruction the model could skip (field
-tests showed models reliably skip "ask the user first" instructions). The
-dialog summarizes the proposed parameters: query (and variants), the grouping
-rules as an explicit logic expression (groups are AND-linked, terms within a
-group OR-linked -- e.g. `(river OR fluvial) AND (sandbar OR bar)`; grouping
-only labels results as on_target/adjacent, it does not narrow the search), the
-publication year range, and the search depth. Choose "Run as proposed" to
-start, or "Adjust parameters" to edit them in prefilled prompts: the grouping
-is edited directly in the displayed expression form (e.g. change
-`(river OR fluvial) AND (sandbar OR bar)` in place; the compact `a,b; c,d`
-syntax also works, `none` = ungrouped), the year range accepts `2015-2024`,
-`2015-` or `all`, and the depth offers keep/quick/thorough/exhaustive plus a
-custom results-per-source count of your own (capped at 50 out of politeness
-towards the free APIs). Escape or Ctrl+C in ANY dialog cancels the whole run
--- no search fires -- and the agent is told to ask you what to change; to
-leave a field unchanged, submit it as-is (or leave the input empty). Headless runs (no interactive UI) skip the dialog. The agent
-calls the `pi-literature-search` tool with:
+tests showed models reliably skip "ask the user first" instructions). Since
+v29.1 it is the same one-overlay, tabbed wizard the synthesis stage uses,
+opened directly ON its review page: one Enter runs the proposal, arrow keys
+walk into the tabs to adjust, Escape (or Ctrl+C) cancels the whole run -- no
+search fires -- and the agent is told to ask you what to change. The tabs:
+the QUERY itself (editable -- your wording wins over the agent's), the
+grouping rules as an explicit logic expression edited in place (groups are
+AND-linked, terms within a group OR-linked -- e.g.
+`(river OR fluvial) AND (sandbar OR bar)`; the compact `a,b; c,d` syntax also
+works; grouping only labels results as on_target/adjacent, it does not narrow
+the search; clearing the field means ungrouped), the publication year range
+(`2015-2024`, `2015-` or `2024`; clearing means all years), and the search
+depth (quick/thorough/exhaustive or a custom results-per-source count on its
+own tab -- greyed out unless chosen -- capped at 50 out of politeness towards
+the free APIs). What a tab shows at submit time is what runs. The dialog
+follows the chat's language (German/English). Headless runs (no interactive
+UI) skip the dialog. The agent calls the `pi-literature-search` tool with:
 
 - `query` -- the search string (required)
 - `query_variants` -- alternative phrasings of the same question (synonyms,

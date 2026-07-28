@@ -17,11 +17,12 @@
  * Cancel is always null -- callers abort the WHOLE run before any LLM call.
  */
 
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	type CheckboxEvent,
 	type CheckboxItem,
 	checkboxLines,
+	detectDialogLang,
 	DIALOG_TEXT,
 	type DialogLang,
 	initCheckbox,
@@ -312,6 +313,13 @@ async function wizardSelectLoop(
 	const adapterText = ADAPTER_TEXT[lang];
 	const backRow = adapterText.backRow;
 	const answers: WizardResult = {};
+	// Overlay parity: text initials and pre-answered choices
+	// (initialIsAnswer) count as answers from the start, so a startTab
+	// "submit" review shows the proposal instead of "(offen)".
+	for (const step of steps) {
+		if (step.kind === "text" && step.initial !== undefined) answers[step.id] = step.initial;
+		if (step.kind === "choice" && step.initialIsAnswer && step.initial !== undefined) answers[step.id] = step.initial;
+	}
 	const liveAnswers = (): WizardAnswers => {
 		const live: WizardAnswers = {};
 		for (const step of steps) {
@@ -323,7 +331,7 @@ async function wizardSelectLoop(
 		return live;
 	};
 	const enabled = (i: number): boolean => steps[i].enabledIf?.(liveAnswers()) ?? true;
-	let index = 0;
+	let index = options?.startTab === "submit" ? steps.length : 0;
 	let direction: 1 | -1 = 1;
 	for (;;) {
 		while (index >= 0 && index < steps.length && !enabled(index)) index += direction;
@@ -442,6 +450,39 @@ export async function choice<T extends string>(
 	const picked = await ctx.ui.select(title, options.map((option) => option.label), { signal });
 	if (picked === undefined) return null;
 	return options.find((option) => option.label === picked)?.value ?? null;
+}
+
+/* ------------------------------------------------------------------ *
+ * Shared chat-language observer                                        *
+ * ------------------------------------------------------------------ */
+
+/**
+ * Language of the most recent PLAIN user input, observed passively via
+ * pi.on("input") (v27 field finding: an opening move carries no question
+ * text, so detection had nothing to read). Lives HERE since v29.1 so
+ * every extension's dialogs follow the chat's language from the same
+ * observation; the module instance is shared through the ESM cache.
+ * Neutral lines (commands, bash, extension-injected) keep the previous
+ * value; the input itself passes through untouched.
+ */
+let observedChatLang: DialogLang | null = null;
+let observerInstalled = false;
+
+/** Fallback chain tail: the observed chat language, else German. */
+export function chatLangDefault(): DialogLang {
+	return observedChatLang ?? "de";
+}
+
+/** Idempotent: the first caller installs the listener, later calls no-op. */
+export function installChatLangObserver(pi: ExtensionAPI): void {
+	if (observerInstalled) return;
+	observerInstalled = true;
+	pi.on("input", (event) => {
+		const text = event.text?.trim();
+		if (!text || text.startsWith("/") || text.startsWith("!")) return;
+		if (event.source === "extension") return;
+		observedChatLang = detectDialogLang([text], chatLangDefault());
+	});
 }
 
 /** Yes/no; null on cancel (cancel is NOT no -- callers abort the run). */

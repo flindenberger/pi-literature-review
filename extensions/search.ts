@@ -15,13 +15,16 @@
  * the full data goes to disk as an HTML rendering plus a JSON sidecar.
  *
  * Parameter confirmation is likewise code, not instruction: every call opens
- * a blocking ctx.ui intake dialog with the user (see intakeDialog below) --
- * models reliably skip "ask the user first" instructions, but they cannot
- * skip a dialog that the tool itself puts between them and the search.
+ * a blocking intake wizard with the user (see intakeWizard below; since
+ * v29.1 the same rpiv-style one-overlay dialog as /lit-synth, opened on its
+ * submit page so one Enter runs the proposal) -- models reliably skip "ask
+ * the user first" instructions, but they cannot skip a dialog that the tool
+ * itself puts between them and the search.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { detectDialogLang, type DialogLang, type WizardStepDef } from "../src/dialog-state.ts";
 import { renderDigest } from "../src/digest.ts";
 import { DEFAULT_PER_SOURCE, MAX_PER_SOURCE, runSearch, SEARCHERS } from "../src/search.ts";
 import {
@@ -33,144 +36,210 @@ import {
 } from "../src/intake.ts";
 import { writeRunOutputs } from "../src/output.ts";
 import { renderHtml } from "../src/render.ts";
+import { chatLangDefault, installChatLangObserver, runWizard } from "./dialogs.ts";
 
 const THOROUGH_PER_SOURCE = 15;
 const INTAKE_WIDGET = "pi-literature-review-intake";
 
 /** The user-adjustable subset of a discovery call. */
 interface IntakeValues {
+	query: string;
 	groupTerms: string[][] | undefined;
 	yearFrom: number | undefined;
 	yearTo: number | undefined;
 	perSource: number | undefined;
 }
 
+/** Intake wizard strings per dialog language (the dialogs follow the
+ * chat's language, v27; shared observer in dialogs.ts). */
+const SEARCH_TEXT: Record<DialogLang, {
+	queryTab: string;
+	queryTitle: string;
+	groupTab: string;
+	groupTitle: string;
+	groupPlaceholder: string;
+	yearTab: string;
+	yearTitle: string;
+	yearPlaceholder: string;
+	depthTab: string;
+	depthTitle: string;
+	depthQuick: string;
+	depthThorough: string;
+	depthExhaustive: string;
+	depthCustom: string;
+	countTab: string;
+	countTitle: string;
+	countDisabled: string;
+	note: (sources: string[], variants: number) => string;
+	badYears: (spec: string) => string;
+	badCount: (spec: string) => string;
+	capped: string;
+}> = {
+	de: {
+		queryTab: "Suchanfrage",
+		queryTitle: "Wonach suchen? (geht wörtlich an die Datenbanken; leeren = ursprüngliche Anfrage behalten)",
+		groupTab: "Gruppierung",
+		groupTitle: "Gruppierung: Gruppen mit AND, Begriffe darin mit OR -- markiert Treffer nur als on_target/adjacent, filtert nicht. Leer = ungruppiert.",
+		groupPlaceholder: "z. B. (river OR fluvial) AND (sandbar)",
+		yearTab: "Jahre",
+		yearTitle: "Erscheinungsjahre (2015-2024, 2015- oder 2024). Leer = alle.",
+		yearPlaceholder: "leer = alle Jahre",
+		depthTab: "Tiefe",
+		depthTitle: "Suchtiefe: Treffer je Quelle?",
+		depthQuick: `Schnell (${DEFAULT_PER_SOURCE} je Quelle)`,
+		depthThorough: `Gründlich (${THOROUGH_PER_SOURCE} je Quelle)`,
+		depthExhaustive: `Erschöpfend (${MAX_PER_SOURCE} je Quelle)`,
+		depthCustom: "Eigene Anzahl (nächster Reiter)",
+		countTab: "Anzahl",
+		countTitle: `Treffer je Quelle (1-${MAX_PER_SOURCE}; die Obergrenze ist Höflichkeit gegenüber den freien APIs)`,
+		countDisabled: "Nur bei Tiefe 'Eigene Anzahl' relevant.",
+		note: (sources, variants) =>
+			`Quellen: ${sources.join(", ")}${variants ? ` · +${variants} Suchvariante(n) des Agenten` : ""}`,
+		badYears: (spec) => `Jahresangabe "${spec}" nicht verstanden -- Vorschlag bleibt`,
+		badCount: (spec) => `Anzahl "${spec}" nicht verstanden -- Vorschlag bleibt`,
+		capped: `Auf ${MAX_PER_SOURCE} je Quelle gekappt (Höflichkeit gegenüber den freien APIs)`,
+	},
+	en: {
+		queryTab: "Query",
+		queryTitle: "What to search for? (sent to the databases verbatim; clear it to keep the original query)",
+		groupTab: "Grouping",
+		groupTitle: "Grouping: groups AND-linked, terms within a group OR-linked -- only LABELS results on_target/adjacent, does not narrow the search. Empty = ungrouped.",
+		groupPlaceholder: "e.g. (river OR fluvial) AND (sandbar)",
+		yearTab: "Years",
+		yearTitle: "Publication years (2015-2024, 2015- or 2024). Empty = all.",
+		yearPlaceholder: "empty = all years",
+		depthTab: "Depth",
+		depthTitle: "Search depth: results per source?",
+		depthQuick: `Quick scan (${DEFAULT_PER_SOURCE} per source)`,
+		depthThorough: `Thorough (${THOROUGH_PER_SOURCE} per source)`,
+		depthExhaustive: `Exhaustive (${MAX_PER_SOURCE} per source)`,
+		depthCustom: "Custom count (next tab)",
+		countTab: "Count",
+		countTitle: `Results per source (1-${MAX_PER_SOURCE}; the cap is politeness towards the free APIs)`,
+		countDisabled: "Only applies with depth 'Custom count'.",
+		note: (sources, variants) =>
+			`Sources: ${sources.join(", ")}${variants ? ` · +${variants} agent query variant(s)` : ""}`,
+		badYears: (spec) => `Year range "${spec}" not understood -- keeping the proposal`,
+		badCount: (spec) => `Count "${spec}" not understood -- keeping the proposal`,
+		capped: `Capped at ${MAX_PER_SOURCE} per source (politeness towards the free APIs)`,
+	},
+};
+
 /**
- * Code-enforced intake: a blocking terminal dialog the MODEL cannot skip or
- * answer. Three field tests (2x Granite, 1x Gemini, 2026-07-10) proved that a
+ * Code-enforced intake: a blocking dialog the MODEL cannot skip or answer.
+ * Three field tests (2x Granite, 1x Gemini, 2026-07-10) proved that a
  * description-level instruction to ask intake questions gets ignored or
- * rationalized away; this gate runs on EVERY call (user decision). Returns
- * null when the user cancels the run.
+ * rationalized away; this gate runs on EVERY call (user decision). Since
+ * v29.1 it is the ONE rpiv-style wizard (same look as /lit-synth) opened
+ * ON its submit page: the review lists query, grouping, years and depth,
+ * one Enter runs the proposal (the old "Run as proposed" ergonomics),
+ * arrow keys walk into the tabs to adjust -- the QUERY itself is editable
+ * there too -- and Esc cancels the run before any network call. Values
+ * are WYSIWYG: what a tab shows at submit time is what runs (clearing the
+ * grouping means ungrouped, clearing the years means all years).
  */
-async function intakeDialog(
+async function intakeWizard(
 	ctx: ExtensionContext,
 	query: string,
 	queryVariants: string[] | undefined,
 	sources: string[],
-	proposed: IntakeValues,
+	proposed: Omit<IntakeValues, "query">,
 	diagnostics: string[],
 	signal: AbortSignal | undefined,
 ): Promise<IntakeValues | null> {
-	const values = { ...proposed };
-	const summary = [
-		`Query:    ${query}`,
-		...(queryVariants ?? []).map((variant, i) => `Variant:  Q${i + 2}: ${variant}`),
-		`Grouping: ${values.groupTerms?.length ? formatGroupExpression(values.groupTerms) : "none (results ungrouped)"}`,
-		"          groups AND-linked, terms within a group OR-linked;",
-		"          grouping only LABELS results on_target/adjacent, it does not narrow the search",
-		`Years:    ${yearRangeToSpec(values.yearFrom, values.yearTo) || "all"}`,
-		`Depth:    ${values.perSource ?? DEFAULT_PER_SOURCE} results per source (${sources.join(", ")})`,
+	const lang = detectDialogLang([query], chatLangDefault());
+	const text = SEARCH_TEXT[lang];
+	const proposedDepth = proposed.perSource ?? DEFAULT_PER_SOURCE;
+	const depthInitial = proposed.perSource === undefined || proposed.perSource === DEFAULT_PER_SOURCE ? "quick"
+		: proposed.perSource === THOROUGH_PER_SOURCE ? "thorough"
+		: proposed.perSource === MAX_PER_SOURCE ? "exhaustive"
+		: "custom";
+	const yearInitial = yearRangeToSpec(proposed.yearFrom, proposed.yearTo);
+	const steps: WizardStepDef[] = [
+		{ kind: "text", id: "query", tab: text.queryTab, title: text.queryTitle, initial: query },
+		{
+			kind: "text", id: "groups", tab: text.groupTab, title: text.groupTitle,
+			placeholder: text.groupPlaceholder,
+			...(proposed.groupTerms?.length ? { initial: formatGroupExpression(proposed.groupTerms) } : {}),
+		},
+		{
+			kind: "text", id: "years", tab: text.yearTab, title: text.yearTitle,
+			placeholder: text.yearPlaceholder,
+			...(yearInitial ? { initial: yearInitial } : {}),
+		},
+		{
+			kind: "choice", id: "depth", tab: text.depthTab, title: text.depthTitle,
+			options: [
+				{ value: "quick", label: text.depthQuick },
+				{ value: "thorough", label: text.depthThorough },
+				{ value: "exhaustive", label: text.depthExhaustive },
+				{ value: "custom", label: text.depthCustom },
+			],
+			initial: depthInitial,
+			// The proposal IS the answer here -- the wizard opens on the
+			// submit page and one Enter must run it (old dialog parity).
+			initialIsAnswer: true,
+		},
+		{
+			kind: "text", id: "count", tab: text.countTab, title: text.countTitle,
+			initial: String(proposedDepth),
+			enabledIf: (answers) => answers.depth === "custom",
+			disabledNote: text.countDisabled,
+		},
 	];
-	ctx.ui.setWidget(INTAKE_WIDGET, summary);
-	try {
-		const choice = await ctx.ui.select("pi-literature-search: run this search?", [
-			"Run as proposed",
-			"Adjust parameters",
-		], { signal });
-		if (choice === undefined) {
-			diagnostics.push("intake dialog: cancelled by the user");
-			return null;
-		}
-		if (choice === "Run as proposed") {
-			diagnostics.push("intake dialog: confirmed as proposed");
-			return values;
-		}
-
-		// Adjust: three prefilled steps. Escape/Ctrl+C in ANY step cancels the
-		// whole run (both keys map to the same dialog cancel; a field is kept
-		// unchanged by submitting it as-is or leaving the input empty).
-		const cancelled = () => {
-			diagnostics.push("intake dialog: cancelled by the user during adjustment");
-			return null;
-		};
-
-		const groupPrompt =
-			"Grouping: groups AND-linked, terms within a group OR-linked (labels results only, does " +
-			"not narrow the search). Edit the expression directly - 'none' = ungrouped, empty keeps " +
-			"the proposal, Esc cancels the run";
-		// editor() works in TUI and RPC alike (pi docs); headless never gets
-		// here because the ctx.hasUI gate skips the whole dialog.
-		const groupSpec = await ctx.ui.editor(
-			groupPrompt,
-			formatGroupExpression(values.groupTerms ?? []),
-			{ signal },
-		);
-		if (groupSpec === undefined) return cancelled();
-		if (groupSpec.trim()) {
-			values.groupTerms = groupSpec.trim().toLowerCase() === "none" ? undefined : parseGroupSpec(groupSpec);
-		}
-
-		const yearPrompt =
-			"Publication years: 2015-2024, 2015- or 2024 - 'all' = no limit, empty keeps the " +
-			"proposal, Esc cancels the run";
-		const yearSpec = await ctx.ui.editor(
-			yearPrompt,
-			yearRangeToSpec(values.yearFrom, values.yearTo),
-			{ signal },
-		);
-		if (yearSpec === undefined) return cancelled();
-		if (yearSpec.trim()) {
-			if (yearSpec.trim().toLowerCase() === "all") {
-				values.yearFrom = undefined;
-				values.yearTo = undefined;
-			} else {
-				const range = parseYearRange(yearSpec);
-				if (range === null) {
-					ctx.ui.notify(`Year range "${yearSpec.trim()}" not understood; keeping the proposal`, "warning");
-				} else {
-					values.yearFrom = range.yearFrom;
-					values.yearTo = range.yearTo;
-				}
-			}
-		}
-
-		const proposedDepth = values.perSource ?? DEFAULT_PER_SOURCE;
-		const depth = await ctx.ui.select("Search depth (results per source)", [
-			`Keep proposed (${proposedDepth} per source)`,
-			`Quick scan (${DEFAULT_PER_SOURCE} per source)`,
-			`Thorough (${THOROUGH_PER_SOURCE} per source)`,
-			`Exhaustive (${MAX_PER_SOURCE} per source)`,
-			"Custom count...",
-		], { signal });
-		if (depth === undefined) return cancelled();
-		if (depth.startsWith("Quick")) values.perSource = DEFAULT_PER_SOURCE;
-		else if (depth.startsWith("Thorough")) values.perSource = THOROUGH_PER_SOURCE;
-		else if (depth.startsWith("Exhaustive")) values.perSource = MAX_PER_SOURCE;
-		else if (depth.startsWith("Custom")) {
-			const countPrompt = `Results per source (1-${MAX_PER_SOURCE}; the cap is politeness towards the free APIs)`;
-			const countSpec = await ctx.ui.editor(countPrompt, String(proposedDepth), { signal });
-			if (countSpec === undefined) return cancelled();
-			if (countSpec.trim()) {
-				const count = parsePerSource(countSpec, MAX_PER_SOURCE);
-				if (count === null) {
-					ctx.ui.notify(`Count "${countSpec.trim()}" not understood; keeping the proposal`, "warning");
-				} else {
-					if (String(count) !== countSpec.trim()) {
-						ctx.ui.notify(`Capped at ${MAX_PER_SOURCE} per source (politeness towards the free APIs)`, "info");
-					}
-					values.perSource = count;
-				}
-			}
-		}
-
-		diagnostics.push("intake dialog: parameters adjusted by the user");
-		return values;
-	} finally {
-		ctx.ui.setWidget(INTAKE_WIDGET, undefined);
+	const result = await runWizard(ctx, steps, signal, {
+		lang,
+		startTab: "submit",
+		submitNote: () => text.note(sources, queryVariants?.length ?? 0),
+	});
+	if (result === null) {
+		diagnostics.push("intake dialog: cancelled by the user");
+		return null;
 	}
+	const values: IntakeValues = { ...proposed, query };
+	const editedQuery = typeof result.query === "string" ? result.query.trim() : "";
+	if (editedQuery) values.query = editedQuery;
+	const groupSpec = typeof result.groups === "string" ? result.groups.trim() : "";
+	const groups = !groupSpec || groupSpec.toLowerCase() === "none" ? [] : parseGroupSpec(groupSpec);
+	values.groupTerms = groups.length ? groups : undefined;
+	const yearSpec = typeof result.years === "string" ? result.years.trim() : "";
+	if (!yearSpec || ["all", "alle"].includes(yearSpec.toLowerCase())) {
+		values.yearFrom = undefined;
+		values.yearTo = undefined;
+	} else {
+		const range = parseYearRange(yearSpec);
+		if (range === null) {
+			ctx.ui.notify(text.badYears(yearSpec), "warning");
+		} else {
+			values.yearFrom = range.yearFrom;
+			values.yearTo = range.yearTo;
+		}
+	}
+	if (result.depth === "quick") values.perSource = DEFAULT_PER_SOURCE;
+	else if (result.depth === "thorough") values.perSource = THOROUGH_PER_SOURCE;
+	else if (result.depth === "exhaustive") values.perSource = MAX_PER_SOURCE;
+	else if (result.depth === "custom") {
+		const countSpec = typeof result.count === "string" ? result.count.trim() : "";
+		const count = parsePerSource(countSpec, MAX_PER_SOURCE);
+		if (count === null) {
+			ctx.ui.notify(text.badCount(countSpec), "warning");
+		} else {
+			if (String(count) !== countSpec) ctx.ui.notify(text.capped, "info");
+			values.perSource = count;
+		}
+	}
+	diagnostics.push(
+		values.query === query
+			? "intake dialog: confirmed"
+			: "intake dialog: confirmed, query edited by the user",
+	);
+	return values;
 }
 
 export default function literatureSearch(pi: ExtensionAPI) {
+	// Shared chat-language observer (dialogs.ts): the intake wizard opens
+	// in the language of the user's recent plain chat input.
+	installChatLangObserver(pi);
 	pi.registerTool({
 		name: "pi-literature-search",
 		label: "Literature Search",
@@ -182,10 +251,10 @@ export default function literatureSearch(pi: ExtensionAPI) {
 			"Paper'), use pi-literature-chat; for a summary or review across the local PDF library, use " +
 			"pi-literature-synthesize; for downloading found papers, use pi-literature-fetch. " +
 			"Call this tool DIRECTLY; do NOT ask intake or clarification questions in chat first. On every call the " +
-			"tool itself shows the user a terminal dialog summarizing the proposed query, grouping logic, year range " +
-			"and search depth, where the user confirms or adjusts them before the search runs. Your job is only to " +
-			"propose sensible parameters. If the result says the user cancelled the dialog, ask what they want to " +
-			"change; do not retry unchanged. " +
+			"tool itself shows the user a terminal wizard summarizing the proposed query (editable there -- the " +
+			"user's wording wins), grouping logic, year range and search depth, where the user confirms or adjusts " +
+			"everything before the search runs. Your job is only to propose sensible parameters. If the result says " +
+			"the user cancelled the dialog, ask what they want to change; do not retry unchanged. " +
 			"The tool result is a short digest only: counts, the HTML file path, and one reference line per record " +
 			"(group flag, year, DOI/arXiv ID, title). Lines marked UNVERIFIED did not resolve at doi.org/arxiv.org; " +
 			"treat them with suspicion and say so. Every run writes a deterministic HTML rendering (sortable table, " +
@@ -260,6 +329,7 @@ export default function literatureSearch(pi: ExtensionAPI) {
 				onUpdate?.({ content: [{ type: "text", text: message }] });
 			};
 			let confirmed: IntakeValues = {
+				query: params.query,
 				groupTerms: params.group_terms,
 				yearFrom: params.year_from,
 				yearTo: params.year_to,
@@ -267,7 +337,7 @@ export default function literatureSearch(pi: ExtensionAPI) {
 			};
 			if (ctx.hasUI) {
 				const sources = params.sources?.length ? params.sources : Object.keys(SEARCHERS);
-				const result = await intakeDialog(
+				const result = await intakeWizard(
 					ctx,
 					params.query,
 					params.query_variants,
@@ -302,7 +372,7 @@ export default function literatureSearch(pi: ExtensionAPI) {
 				};
 			}
 			const payload = await runSearch({
-				query: params.query,
+				query: confirmed.query,
 				queryVariants: params.query_variants,
 				perSource: confirmed.perSource,
 				sources: params.sources,
@@ -370,7 +440,7 @@ export default function literatureSearch(pi: ExtensionAPI) {
 			const diagnostics: string[] = [];
 			const progress = (message: string) => ctx.ui.notify(message, "info");
 			const sources = Object.keys(SEARCHERS);
-			const confirmed = await intakeDialog(
+			const confirmed = await intakeWizard(
 				ctx,
 				query,
 				undefined,
@@ -386,7 +456,7 @@ export default function literatureSearch(pi: ExtensionAPI) {
 			if (ctx.signal?.aborted) return;
 			try {
 				const payload = await runSearch({
-					query,
+					query: confirmed.query,
 					perSource: confirmed.perSource,
 					groupTerms: confirmed.groupTerms,
 					filters: { yearFrom: confirmed.yearFrom, yearTo: confirmed.yearTo },

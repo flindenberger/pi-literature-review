@@ -51,7 +51,7 @@ import {
 	scopeProtocolId,
 	type SynthReport,
 } from "../src/synthesize.ts";
-import { runWizard } from "./dialogs.ts";
+import { chatLangDefault, installChatLangObserver, runWizard } from "./dialogs.ts";
 
 const SYNTH_WIDGET = "pi-literature-review-synth";
 const ANSWER_ENTRY = "pi-literature-chat-answer";
@@ -63,20 +63,6 @@ export const UNIT_WARN_THRESHOLD = 15;
 /** True once the pi-tui entry renderer is registered (see the default
  * export); validated answers then render as full transcript entries. */
 let answerEntryReady = false;
-
-/**
- * Language of the most recent PLAIN user input, observed passively via
- * pi.on("input") (v27 field finding: the opening move carries no question
- * text, so detection had nothing to read and the gate opened German in an
- * English chat). This is the only reliable source of the chat's language
- * on question-less tool calls; neutral lines keep the previous value.
- */
-let observedChatLang: DialogLang | null = null;
-
-/** Fallback chain tail: the observed chat language, else German. */
-function chatLangDefault(): DialogLang {
-	return observedChatLang ?? "de";
-}
 
 const MAX_LINE = 110;
 
@@ -1159,11 +1145,12 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 	};
 	pi.on("session_start", () => syncToolActivation());
 
-	// Passive chat-language observer (v27): plain user input updates the
-	// language the dialogs open in; commands, bash lines and
-	// extension-injected messages are ignored, and the input itself passes
-	// through untouched (no return value).
-	pi.on("input", (event) => {
+	// The passive chat-language observer (v27) is shared package-wide since
+	// v29.1 -- it lives in dialogs.ts; every extension's dialogs read the
+	// same observation.
+	installChatLangObserver(pi);
+
+	pi.on("input", () => {
 		// Cheap while active (one lookup); a real rescan only runs while the
 		// tool is deactivated and might need waking up.
 		try {
@@ -1171,10 +1158,6 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 		} catch {
 			// same best-effort rule as above
 		}
-		const text = event.text?.trim();
-		if (!text || text.startsWith("/") || text.startsWith("!")) return;
-		if (event.source === "extension") return;
-		observedChatLang = detectDialogLang([text], chatLangDefault());
 	});
 
 	// HTML-write gate (v23 field failure, REPURPOSED in v29): while any

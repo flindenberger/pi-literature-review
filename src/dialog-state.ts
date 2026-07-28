@@ -174,6 +174,11 @@ export type WizardStepDef =
 		 * as answered only after an explicit Enter (field decision
 		 * 2026-07-22: a recommendation must never silently be an answer). */
 		initial?: string;
+		/** Opt-out of the rule above (v29.1): the initial IS the answer.
+		 * For proposal-confirm intakes (the search wizard opens on its
+		 * submit page; every step already carries the proposed value, and
+		 * one Enter runs it -- the old "Run as proposed" ergonomics). */
+		initialIsAnswer?: boolean;
 		enabledIf?: (answers: WizardAnswers) => boolean;
 		disabledNote?: string;
 	}
@@ -220,6 +225,11 @@ export interface WizardState {
 export interface WizardOptions {
 	submitNote?: (answers: WizardAnswers) => string | null;
 	skipSubmit?: boolean;
+	/** "submit": open ON the review page (v29.1 proposal-confirm intakes --
+	 * one Enter runs the proposal, arrows walk into the tabs to adjust).
+	 * Pair with initialIsAnswer on choice steps, else the finish guard
+	 * jumps to the unanswered step. */
+	startTab?: "submit";
 	/** Dialog language; default "de" (v27: follow the chat's language). */
 	lang?: DialogLang;
 }
@@ -347,7 +357,7 @@ export function initWizard(steps: WizardStepDef[], options?: WizardOptions): Wiz
 	if (!steps.length) throw new Error("wizard needs at least one step");
 	return {
 		steps,
-		tab: 0,
+		tab: options?.startTab === "submit" ? steps.length : 0,
 		cursors: [...steps.map((step) => step.kind === "choice"
 			? Math.max(0, step.options.findIndex((option) => option.value === step.initial))
 			: 0), 0],
@@ -356,8 +366,10 @@ export function initWizard(steps: WizardStepDef[], options?: WizardOptions): Wiz
 			const known = new Set(step.items.map((item) => item.id));
 			return new Set((step.preselected ?? []).filter((id) => known.has(id)));
 		}),
-		// initial is a cursor recommendation, never a pre-answer.
-		chosen: steps.map(() => null),
+		// initial is a cursor recommendation, never a pre-answer -- unless
+		// the step opts out via initialIsAnswer (proposal-confirm intakes).
+		chosen: steps.map((step) =>
+			(step.kind === "choice" && step.initialIsAnswer && step.initial !== undefined ? step.initial : null)),
 		texts: steps.map((step) => (step.kind === "text" ? step.initial ?? "" : "")),
 		...(options?.submitNote ? { submitNote: options.submitNote } : {}),
 		...(options?.skipSubmit ? { skipSubmit: true } : {}),
