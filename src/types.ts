@@ -27,6 +27,17 @@ export interface SourceRecord {
 	journal_2yr_citedness?: number;
 }
 
+/**
+ * Scope pushed into the SOURCE query itself (v30.14 user decision): picked
+ * author names narrow what a source FETCHES, not only what survives the
+ * post-filter -- a small run can then actually contain the wanted authors'
+ * papers. Every source maps it onto its own author search field; an empty
+ * scope leaves the request byte-identical to a scopeless one.
+ */
+export interface SourceScope {
+	authors?: string[];
+}
+
 export const VERSION = "0.1.0";
 
 /**

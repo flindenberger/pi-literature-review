@@ -241,7 +241,11 @@ const html = renderHtml(payload);
 	assert.ok(html.includes('data-id="arXiv:2401.16393v1"'));
 	assert.ok(html.includes('<div class="selectbar">'));
 	assert.ok(html.includes("Copy download request"));
-	assert.ok(html.includes("Select all on_target")); // grouping is on in the fixture
+	// v30.15: plain "Select all" (the on_target-only button was useless on
+	// runs without any on_target hit); the copy button is the blue primary.
+	assert.ok(html.includes(">Select all</button>"));
+	assert.ok(!html.includes("Select all on_target"));
+	assert.ok(html.includes("button.copy-selection { background: #2b4a6f"));
 	assert.ok(html.includes("paste it into the Pi chat"));
 	assert.ok(html.includes('"Download these papers: "')); // the copy script's sentence
 
@@ -254,9 +258,9 @@ const html = renderHtml(payload);
 	assert.ok(!noId.includes('class="pick"'));
 	assert.ok(!noId.includes('<div class="selectbar">')); // nothing fetchable, no bar
 
-	// no grouping -> no "Select all on_target" button, bar still there
+	// "Select all" is independent of grouping (v30.15), bar still there
 	const ungrouped = renderHtml({ ...payload, grouping: null });
-	assert.ok(!ungrouped.includes("Select all on_target"));
+	assert.ok(ungrouped.includes(">Select all</button>"));
 	assert.ok(ungrouped.includes('<div class="selectbar">'));
 
 	// hostile identifier text stays inside the escaped attribute

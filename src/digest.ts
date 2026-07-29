@@ -13,8 +13,9 @@
  * the tool description tells the agent the sidecar sits next to the HTML.
  */
 
+import { pathToFileURL } from "node:url";
 import type { ChatAnswer, ChatReport, SynthReport } from "./synthesize.ts";
-import type { RenderPayload } from "./render.ts";
+import { describeFilters, describeGrouping, type RenderPayload } from "./render.ts";
 import type { ReferenceEntry, SynthesisResult } from "./synthesize.ts";
 
 /** Safety cap (Pi docs: tools must bound their own output). An exhaustive
@@ -30,7 +31,18 @@ function recordId(record: { doi: string; arxiv_id: string }): string {
 	return "no identifier";
 }
 
-export function renderDigest(payload: RenderPayload, htmlPath: string | null): string {
+/**
+ * The digest speaks to two audiences (v30.13): "agent" (default) is the
+ * tool result and carries the handling instructions for the model; "user"
+ * is the /lit-search transcript card -- same facts, but instructions TO an
+ * LLM have no business in front of the user (field complaint 2026-07-29:
+ * the card said "Tell the user to open the HTML ...").
+ */
+export function renderDigest(
+	payload: RenderPayload,
+	htmlPath: string | null,
+	audience: "agent" | "user" = "agent",
+): string {
 	const results = payload.results;
 	const grouped = payload.grouping !== null && payload.grouping !== undefined;
 	const verified = results.filter((r) => r.verified).length;
@@ -59,18 +71,35 @@ export function renderDigest(payload: RenderPayload, htmlPath: string | null): s
 	for (const failure of payload.source_failures ?? []) {
 		lines.push(`SOURCE FAILED: ${failure.source} -- ${failure.error} (results may be incomplete)`);
 	}
+	// What was actually asked for (v30.13 field wish: the digest must log
+	// the dialog inputs, not just the query) -- same wording as the HTML
+	// meta block, from the same functions.
+	lines.push(`Grouping: ${describeGrouping(payload.grouping, payload.grouping_require)}`);
+	lines.push(`Filters: ${describeFilters(payload.filters)}`);
+	if (payload.per_source) lines.push(`Records per source: ${payload.per_source}`);
+	// The HTML pointer: on the user card it moves BELOW the record list
+	// (v30.15 field wish: on a 40-record run the link drowned in the middle)
+	// and becomes a file:// URL, which terminals linkify for right-click ->
+	// open. The agent keeps the plain path up front, next to its handling
+	// instructions.
+	const htmlBlock: string[] = [];
 	if (htmlPath) {
-		lines.push("Full sortable table (abstracts, links, dropped list):");
-		lines.push(`  ${htmlPath}`);
-		lines.push("Tell the user to open the HTML file to review and select papers.");
+		htmlBlock.push("Full sortable table (abstracts, links, dropped list):");
+		htmlBlock.push(`  ${audience === "user" ? pathToFileURL(htmlPath).href : htmlPath}`);
+		htmlBlock.push(audience === "agent"
+			? "Tell the user to open the HTML file to review and select papers."
+			: "Open it in a browser to review and select papers.");
 	} else {
-		lines.push("WARNING: the output files could not be written (see diagnostics).");
+		htmlBlock.push("WARNING: the output files could not be written (see diagnostics).");
 	}
-	lines.push(
-		"When referring to a record, copy its line below EXACTLY; never re-type titles,",
-		"authors or identifiers from memory. Do not build your own table and do not add",
-		"key findings, methodology advice, next steps or deliverables.",
-	);
+	if (audience === "agent") {
+		lines.push(...htmlBlock);
+		lines.push(
+			"When referring to a record, copy its line below EXACTLY; never re-type titles,",
+			"authors or identifiers from memory. Do not build your own table and do not add",
+			"key findings, methodology advice, next steps or deliverables.",
+		);
+	}
 	lines.push("");
 
 	if (!results.length) {
@@ -89,6 +118,10 @@ export function renderDigest(payload: RenderPayload, htmlPath: string | null): s
 			`... and ${results.length - MAX_DIGEST_RECORDS} more record(s) not listed here -- `
 			+ "the complete list is in the HTML and JSON files.",
 		);
+	}
+	if (audience === "user") {
+		lines.push("");
+		lines.push(...htmlBlock);
 	}
 
 	return lines.join("\n");

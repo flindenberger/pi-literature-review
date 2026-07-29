@@ -52,6 +52,8 @@ export interface RenderPayload {
 	query_variants?: string[] | null;
 	generated: string;
 	sources_used: string[];
+	/** Requested records per source (undefined in pre-v30.13 sidecars). */
+	per_source?: number | null;
 	/** Sources that errored during the run (v30.1: a failed source must stay
 	 * visible after the run; null: none failed). */
 	source_failures?: Array<{ source: string; error: string }> | null;
@@ -99,7 +101,9 @@ const FILTER_LABELS: Record<string, string> = {
 	verifiedOnly: "verified only",
 };
 
-function describeFilters(filters: Record<string, unknown> | null): string {
+/** Human-readable filter summary; exported since v30.13 -- the digest logs
+ * the same dialog inputs as the HTML meta block, from one wording. */
+export function describeFilters(filters: Record<string, unknown> | null): string {
 	if (!filters) return "none";
 	const parts: string[] = [];
 	// The pickers' "other journals/sources" and "other authors" rows
@@ -134,7 +138,9 @@ function describeFilters(filters: Record<string, unknown> | null): string {
 	return parts.length ? parts.join("; ") : "none";
 }
 
-function describeGrouping(grouping: string[][] | null, require?: number | null): string {
+/** Grouping expression as shown to the reader; exported since v30.13 (see
+ * describeFilters). */
+export function describeGrouping(grouping: string[][] | null, require?: number | null): string {
 	if (!grouping?.length) return "none (results ungrouped)";
 	const expression = grouping.map((terms) => `(${terms.join(" OR ")})`).join(" AND ");
 	// The wide variant (v30.3): on_target needs only `require` of the groups.
@@ -277,6 +283,11 @@ const STYLE = `
 		background: #f1f1ec; border: 1px solid #c9c9c2; border-radius: 3px; }
 	.selectbar button:hover:enabled { background: #e6e6df; }
 	.selectbar button:disabled { color: #9a9a94; cursor: default; }
+	.selectbar button.copy-selection { background: #2b4a6f; border-color: #223c5b; color: #fff;
+		font-weight: 600; }
+	.selectbar button.copy-selection:hover:enabled { background: #223c5b; }
+	.selectbar button.copy-selection:disabled { background: #f1f1ec; border-color: #c9c9c2;
+		color: #9a9a94; font-weight: 400; }
 	.selectbar .hint { color: #6b6b6b; font-size: 0.78rem; }
 	.selectbar .copied { color: #2e7d43; font-weight: 600; }
 	footer { margin: 2.5rem 0 1rem; font-size: 0.78rem; color: #6b6b6b;
@@ -390,8 +401,8 @@ const SELECT_SCRIPT = `
 		document.addEventListener("change", (event) => {
 			if (event.target instanceof HTMLInputElement && event.target.classList.contains("pick")) update();
 		});
-		bar.querySelector(".select-on-target")?.addEventListener("click", () => {
-			for (const box of picks()) box.checked = box.closest("tr").classList.contains("on-target");
+		bar.querySelector(".select-all")?.addEventListener("click", () => {
+			for (const box of picks()) box.checked = true;
 			update();
 		});
 		bar.querySelector(".select-clear").addEventListener("click", () => {
@@ -469,13 +480,13 @@ export function renderHtml(payload: RenderPayload): string {
 		: "";
 
 	const fetchable = results.some((record) => fetchIdOf(record));
-	const onTargetButton = payload.grouping?.length
-		? `<button type="button" class="select-on-target">Select all on_target</button>\n`
-		: "";
+	// Plain "Select all" (v30.15 user decision): the earlier on_target-only
+	// button was useless on runs without any on_target hit.
 	const selectBar = results.length && fetchable
 		? `\n<div class="selectbar">
 <span class="selectcount">0 selected</span>
-${onTargetButton}<button type="button" class="select-clear">Clear</button>
+<button type="button" class="select-all">Select all</button>
+<button type="button" class="select-clear">Clear</button>
 <button type="button" class="copy-selection" disabled>Copy download request</button>
 <span class="copy-feedback copied"></span>
 <span class="hint">Tick papers above, copy the request, then paste it into the Pi chat -- the fetch tool
@@ -516,7 +527,8 @@ ${payload.dropped.map(droppedRow).join("\n")}
 <dl class="meta">
 <dt>Query</dt><dd>${esc(queryLabel)}</dd>${variantRows}
 <dt>Generated</dt><dd>${esc(payload.generated)} (UTC)</dd>
-<dt>Sources</dt><dd>${esc(payload.sources_used.join(", ")) || "none reachable"}</dd>${sourceFailureRows}${arxivQueryRows}
+<dt>Sources</dt><dd>${esc(payload.sources_used.join(", ")) || "none reachable"}</dd>${sourceFailureRows}${arxivQueryRows}${
+	payload.per_source ? `\n<dt>Records per source</dt><dd>${esc(payload.per_source)}</dd>` : ""}
 <dt>Grouping</dt><dd>${esc(describeGrouping(payload.grouping, payload.grouping_require))}</dd>
 <dt>Filters</dt><dd>${esc(describeFilters(payload.filters))}</dd>
 <dt>Sort</dt><dd>${esc(payload.sort ?? "source order")}</dd>

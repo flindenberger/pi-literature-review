@@ -7,7 +7,7 @@
  * at the source boundary; no field is ever invented.
  */
 
-import { contactMailto, type SourceRecord, userAgent } from "../types.ts";
+import { contactMailto, type SourceRecord, type SourceScope, userAgent } from "../types.ts";
 
 const BASE_URL = "https://api.crossref.org/works";
 const TIMEOUT_MS = 30_000;
@@ -51,13 +51,18 @@ function stripJats(abstract: unknown): string {
 	return abstract.replace(/<\/?jats:[a-zA-Z]+[^>]*>/g, "").trim();
 }
 
-export async function searchCrossref(query: string, rows: number): Promise<SourceRecord[]> {
+export async function searchCrossref(query: string, rows: number, scope?: SourceScope): Promise<SourceRecord[]> {
 	const params = new URLSearchParams({
 		query,
 		rows: String(rows),
 		sort: "relevance",
 		order: "desc",
 	});
+	// Picked authors go into CrossRef's author search field (v30.14). The
+	// field is relevance-ranked, not boolean -- the deterministic post-filter
+	// still guarantees that only matching records survive.
+	const authorTerms = (scope?.authors ?? []).map((name) => name.trim()).filter(Boolean);
+	if (authorTerms.length) params.set("query.author", authorTerms.join(" "));
 	const mailto = contactMailto();
 	if (mailto) params.set("mailto", mailto);
 

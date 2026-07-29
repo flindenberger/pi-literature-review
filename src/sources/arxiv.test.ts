@@ -4,7 +4,7 @@
  */
 
 import assert from "node:assert/strict";
-import { buildSearchQuery } from "./arxiv.ts";
+import { buildSearchQuery, retryDelayMs } from "./arxiv.ts";
 
 // Standalone single character binds to the PREVIOUS word as a phrase;
 // remaining words are AND-linked (the ALOHA 2 fix).
@@ -87,6 +87,48 @@ import { buildSearchQuery } from "./arxiv.ts";
 // Whitespace runs collapse; surrounding whitespace is trimmed.
 {
 	assert.equal(buildSearchQuery("  Sentinel   2  "), 'all:"sentinel 2"');
+}
+
+// Author scope (v30.14 user decision): picked authors become an AND-linked
+// au: clause so arXiv FETCHES their papers; both sides parenthesized so the
+// clause composes with the legacy pass-through forms too. Without authors
+// the expression stays byte-identical.
+{
+	assert.equal(
+		buildSearchQuery("water mask", ["Claudia Kuenzer"]),
+		'(all:water AND all:mask) AND (au:"Claudia Kuenzer")',
+	);
+	assert.equal(
+		buildSearchQuery("water mask", ["Kuenzer", "Mahdianpari"]),
+		'(all:water AND all:mask) AND (au:"Kuenzer" OR au:"Mahdianpari")',
+	);
+	// Legacy pass-through (user's own operators) still gets the clause.
+	assert.equal(
+		buildSearchQuery('ti:"water mask" AND cat:eess.IV', ["Kuenzer"]),
+		'(all:ti:"water mask" AND cat:eess.IV) AND (au:"Kuenzer")',
+	);
+	// Quotes/pipes/commas in a name cannot break the expression syntax.
+	assert.equal(
+		buildSearchQuery("water mask", ['Kuenzer, "C." |']),
+		'(all:water AND all:mask) AND (au:"Kuenzer C.")',
+	);
+	// No usable names -> unchanged expression.
+	assert.equal(buildSearchQuery("water mask", []), "all:water AND all:mask");
+	assert.equal(buildSearchQuery("water mask", ["  "]), "all:water AND all:mask");
+}
+
+// Rate-limit backoff (v30.13, field 2026-07-29: consecutive wizard runs hit
+// arXiv 429 on every search): fixed delays, a sane Retry-After header wins,
+// a huge or exhausted one gives up.
+{
+	assert.equal(retryDelayMs(0, null), 5_000);
+	assert.equal(retryDelayMs(1, null), 15_000);
+	assert.equal(retryDelayMs(2, null), null); // attempts used up
+	assert.equal(retryDelayMs(0, "7"), 7_000); // header wins
+	assert.equal(retryDelayMs(0, "0"), 5_000); // zero: fall back to the fixed delay
+	assert.equal(retryDelayMs(0, "3600"), null); // "come back in an hour": not worth blocking
+	assert.equal(retryDelayMs(0, "soon"), 5_000); // non-numeric header ignored
+	assert.equal(retryDelayMs(2, "7"), null); // header never revives used-up attempts
 }
 
 console.log("arxiv.test.ts: all assertions passed");

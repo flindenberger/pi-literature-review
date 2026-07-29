@@ -13,7 +13,7 @@
 
 import { XMLParser } from "fast-xml-parser";
 import { QUERY_STOPWORDS } from "../intake.ts";
-import { type SourceRecord, userAgent } from "../types.ts";
+import { type SourceRecord, type SourceScope, userAgent } from "../types.ts";
 
 const BASE_URL = "https://export.arxiv.org/api/query";
 const TIMEOUT_MS = 30_000;
@@ -64,12 +64,25 @@ function extractDoi(entry: Record<string, any>): string {
  * carries uppercase operators or quotes is the user's own arXiv syntax, and
  * a query without any usable content word offers nothing to anchor on --
  * both go out in the legacy all:<query> form unchanged.
+ *
+ * Picked authors (v30.14 user decision) join as an AND-linked au: clause --
+ * the source then FETCHES papers by those authors on the topic instead of
+ * the post-filter dropping everything the topic query happened to return.
+ * Both sides are parenthesized so the clause composes with every query
+ * form, including the legacy pass-throughs.
  */
-export function buildSearchQuery(query: string): string {
+export function buildSearchQuery(query: string, authors?: string[]): string {
 	const trimmed = query.trim().replace(/\s+/g, " ");
 	const hasOperators = /(^|\s)(AND|OR|NOT|ANDNOT)(\s|$)/.test(trimmed) || trimmed.includes('"');
 	const tokens = trimmed.toLowerCase().split(" ").filter(Boolean);
-	if (hasOperators || !tokens.some((token) => token.length > 1)) return `all:${trimmed}`;
+	const withAuthors = (expression: string): string => {
+		const names = (authors ?? [])
+			.map((name) => name.replace(/["|,]/g, " ").replace(/\s+/g, " ").trim())
+			.filter(Boolean);
+		if (!names.length) return expression;
+		return `(${expression}) AND (${names.map((name) => `au:"${name}"`).join(" OR ")})`;
+	};
+	if (hasOperators || !tokens.some((token) => token.length > 1)) return withAuthors(`all:${trimmed}`);
 
 	const units: string[][] = [];
 	let leading: string[] = []; // single chars with no word yet; bound to the next word
@@ -83,10 +96,10 @@ export function buildSearchQuery(query: string): string {
 			leading = [];
 		}
 	}
-	if (!units.length) return `all:${trimmed}`; // nothing but function words
-	return units
+	if (!units.length) return withAuthors(`all:${trimmed}`); // nothing but function words
+	return withAuthors(units
 		.map((unit) => (unit.length === 1 ? `all:${unit[0]}` : `all:"${unit.join(" ")}"`))
-		.join(" AND ");
+		.join(" AND "));
 }
 
 /** Parse an arXiv Atom feed into records; shared by the relevance search
@@ -123,20 +136,65 @@ export function parseArxivFeed(xml: string): SourceRecord[] {
 	});
 }
 
-async function fetchFeed(params: URLSearchParams): Promise<SourceRecord[]> {
-	const response = await fetch(`${BASE_URL}?${params}`, {
-		headers: { "User-Agent": userAgent() },
-		signal: AbortSignal.timeout(TIMEOUT_MS),
-	});
-	if (!response.ok) {
-		throw new Error(`arXiv answered HTTP ${response.status}`);
-	}
-	return parseArxivFeed(await response.text());
+/** arXiv's API terms ask for no more than one request every 3 seconds; 429
+ * (and 503) is how it answers a client that comes back faster. Field runs
+ * 2026-07-29: several wizard test searches in a row hit 429 on EVERY run --
+ * the client must pace itself and ride a rate-limit answer out instead of
+ * reporting the source as failed. */
+const REQUEST_SPACING_MS = 3_000;
+const RETRY_DELAYS_MS = [5_000, 15_000];
+
+/** Earliest time the next arXiv request may go out (module-wide: query
+ * variants in one run AND back-to-back runs in one pi session share it). */
+let nextRequestAt = 0;
+
+function sleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-export async function searchArxiv(query: string, rows: number): Promise<SourceRecord[]> {
+/**
+ * How long to wait before retry number `attempt + 1` after a rate-limit
+ * answer, or null when the attempts are used up. A sane numeric Retry-After
+ * header wins over the fixed backoff; a huge one (arXiv sometimes says
+ * "come back tomorrow") is not worth blocking a run for -- give up then.
+ * Pure; exported for offline tests.
+ */
+export function retryDelayMs(attempt: number, retryAfter: string | null): number | null {
+	if (attempt >= RETRY_DELAYS_MS.length) return null;
+	const trimmed = retryAfter?.trim() ?? "";
+	if (/^\d+$/.test(trimmed)) {
+		const ms = Number(trimmed) * 1000;
+		if (ms > 60_000) return null;
+		if (ms > 0) return ms;
+	}
+	return RETRY_DELAYS_MS[attempt];
+}
+
+async function fetchFeed(params: URLSearchParams): Promise<SourceRecord[]> {
+	for (let attempt = 0; ; attempt++) {
+		const wait = nextRequestAt - Date.now();
+		if (wait > 0) await sleep(wait);
+		nextRequestAt = Date.now() + REQUEST_SPACING_MS;
+		const response = await fetch(`${BASE_URL}?${params}`, {
+			headers: { "User-Agent": userAgent() },
+			signal: AbortSignal.timeout(TIMEOUT_MS),
+		});
+		if (response.ok) return parseArxivFeed(await response.text());
+		const rateLimited = response.status === 429 || response.status === 503;
+		const delay = rateLimited ? retryDelayMs(attempt, response.headers.get("retry-after")) : null;
+		if (delay === null) {
+			throw new Error(
+				`arXiv answered HTTP ${response.status}`
+				+ (rateLimited && attempt ? ` (rate limited; ${attempt} retr${attempt === 1 ? "y" : "ies"} did not clear it)` : ""),
+			);
+		}
+		await sleep(delay);
+	}
+}
+
+export async function searchArxiv(query: string, rows: number, scope?: SourceScope): Promise<SourceRecord[]> {
 	return fetchFeed(new URLSearchParams({
-		search_query: buildSearchQuery(query),
+		search_query: buildSearchQuery(query, scope?.authors),
 		max_results: String(rows),
 		sortBy: "relevance",
 		sortOrder: "descending",

@@ -20,10 +20,10 @@ import { addJournalScores, enrichAll } from "./enrich.ts";
 import { buildSearchQuery, searchArxiv } from "./sources/arxiv.ts";
 import { searchCrossref } from "./sources/crossref.ts";
 import { searchOpenalex } from "./sources/openalex.ts";
-import type { SourceRecord } from "./types.ts";
+import type { SourceRecord, SourceScope } from "./types.ts";
 import { verifyAll } from "./verify.ts";
 
-type Searcher = (query: string, perSource: number) => Promise<SourceRecord[]>;
+type Searcher = (query: string, perSource: number, scope?: SourceScope) => Promise<SourceRecord[]>;
 
 export const SEARCHERS: Record<string, Searcher> = {
 	arxiv: searchArxiv,
@@ -86,6 +86,19 @@ export async function runSearch(options: SearchOptions) {
 		if (options.signal?.aborted) throw new Error("search aborted by the user");
 	};
 
+	// Picked authors narrow the SOURCE queries themselves (v30.14 user
+	// decision): a small run then actually fetches the wanted authors'
+	// papers instead of the post-filter dropping a whole author-less head.
+	// Only for a pure positive selection -- with the "other authors" row
+	// (authorsOther) the filter means "these OR anyone unlisted", which no
+	// source query can express; and without any authors the requests stay
+	// byte-identical to before. The post-filter keeps running either way:
+	// it is the guarantee, the scope is the fetch optimization.
+	const scopeAuthors = options.filters?.authors?.length && !options.filters.authorsOther
+		? options.filters.authors
+		: undefined;
+	const sourceScope: SourceScope = scopeAuthors ? { authors: scopeAuthors } : {};
+
 	const records: SourceRecord[] = [];
 	const sourcesUsed: string[] = [];
 	// A failed source must stay visible AFTER the run (v30.1 field finding:
@@ -104,7 +117,7 @@ export async function runSearch(options: SearchOptions) {
 			aborted();
 			const label = multiQuery ? `source '${source}' (Q${index + 1})` : `source '${source}'`;
 			try {
-				const found = await search(query, perSource);
+				const found = await search(query, perSource, sourceScope);
 				warn(`${label}: ${found.length} record(s)`);
 				records.push(...(multiQuery ? found.map((r) => ({ ...r, found_by: [query] })) : found));
 				succeeded = true;
@@ -172,11 +185,18 @@ export async function runSearch(options: SearchOptions) {
 		query_variants: multiQuery ? queries.slice(1) : null,
 		generated: new Date().toISOString().replace(/\.\d{3}Z$/, "Z"),
 		sources_used: sourcesUsed,
+		// How deep the run went (v30.13: the digest logs the dialog inputs;
+		// the requested depth is one of them).
+		per_source: perSource,
 		source_failures: sourceFailures.length ? sourceFailures : null,
 		// Transparency (design/2026-07-14_v18): the boolean expression actually
-		// sent to arXiv per query, so every reader can verify what was asked.
-		// CrossRef/OpenAlex receive the query text unchanged.
-		arxiv_queries: sourcesUsed.includes("arxiv") ? queries.map(buildSearchQuery) : null,
+		// sent to arXiv per query, so every reader can verify what was asked --
+		// including the au: author clause when authors scoped the fetch
+		// (v30.14). CrossRef/OpenAlex receive the query text unchanged (their
+		// author scope rides in a separate request field).
+		arxiv_queries: sourcesUsed.includes("arxiv")
+			? queries.map((query) => buildSearchQuery(query, scopeAuthors))
+			: null,
 		grouping: termGroups.length ? termGroups : null,
 		grouping_require: groupRequire !== undefined && groupRequire < termGroups.length ? groupRequire : null,
 		filters: filtersActive ? filters : null,

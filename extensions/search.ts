@@ -41,7 +41,7 @@ import {
 import { writeRunOutputs } from "../src/output.ts";
 import { renderHtml } from "../src/render.ts";
 import { fetchAuthorMetrics, fetchJournalScores } from "../src/enrich.ts";
-import { authorFacets, journalFacets } from "../src/sources/openalex.ts";
+import { authorFacets, type FacetScope, journalFacets } from "../src/sources/openalex.ts";
 import { chatLangDefault, installChatLangObserver, runWizard } from "./dialogs.ts";
 
 const THOROUGH_PER_SOURCE = 15;
@@ -181,17 +181,19 @@ const SEARCH_TEXT: Record<DialogLang, {
 		countCustom: "Eigene Anzahl:",
 		journalTab: "Journals",
 		journalTitle: `Journal-Filter (optional): die Top-${JOURNAL_PICK_LIMIT}-Journals zu dieser Suchanfrage `
-			+ "(OpenAlex), darunter alle übrigen als eine Zeile. Nichts ausgewählt = kein Filter, "
-			+ "alles ausgewählt = ebenfalls kein Filter.",
+			+ "im gewählten Zeitraum (OpenAlex), darunter alle übrigen als eine Zeile. Nichts ausgewählt = "
+			+ "kein Filter, alles ausgewählt = ebenfalls kein Filter.",
 		journalSelectAll: "Alle auswählen (kein Filter)",
 		journalNext: "Weiter",
 		journalItem: (count, score) =>
 			`(${count} Treffer${score !== undefined ? ` · 2-Jahres-Rate ${score}` : ""})`,
 		journalOther: "Andere Journals/Quellen (hier nicht gelistet)",
 		authorTab: "Autoren",
-		authorTitle: `Autorenfilter (optional): die Top-${AUTHOR_PICK_LIMIT}-Autoren zu dieser Suchanfrage `
-			+ "(OpenAlex), darunter alle übrigen als eine Zeile. Zitationen und h-Index gelten für das "
-			+ "GESAMTE Werk der Person, nicht für diese Treffer. Nichts oder alles ausgewählt = kein Filter.",
+		authorTitle: `Autorenfilter (optional): die Top-${AUTHOR_PICK_LIMIT}-Autoren zu Suchanfrage, Zeitraum `
+			+ "und Journal-Auswahl (OpenAlex), darunter alle übrigen als eine Zeile. Ausgewählte Namen fließen "
+			+ "direkt in die Quellen-Suche ein (die Suche holt dann Papers DIESER Personen zum Thema). Zitationen "
+			+ "und h-Index gelten für das GESAMTE Werk der Person, nicht für diese Treffer. Nichts oder alles "
+			+ "ausgewählt = kein Filter.",
 		authorSelectAll: "Alle auswählen (kein Filter)",
 		authorItem: (count, metrics) =>
 			`(${count} Treffer${metrics.cites !== undefined ? ` · ${metrics.cites} Zitationen` : ""}`
@@ -243,17 +245,19 @@ const SEARCH_TEXT: Record<DialogLang, {
 		countCustom: "Custom count:",
 		journalTab: "Journals",
 		journalTitle: `Journal filter (optional): the top ${JOURNAL_PICK_LIMIT} journals for this query `
-			+ "(OpenAlex), with everything else as one row below them. Nothing selected = no filter, "
-			+ "everything selected = no filter either.",
+			+ "within the chosen period (OpenAlex), with everything else as one row below them. Nothing "
+			+ "selected = no filter, everything selected = no filter either.",
 		journalSelectAll: "Select all (no filter)",
 		journalNext: "Next",
 		journalItem: (count, score) =>
 			`(${count} hits${score !== undefined ? ` · 2-yr rate ${score}` : ""})`,
 		journalOther: "Other journals/sources (not listed here)",
 		authorTab: "Authors",
-		authorTitle: `Author filter (optional): the top ${AUTHOR_PICK_LIMIT} authors for this query `
-			+ "(OpenAlex), with everyone else as one row below them. Citations and h-index cover the "
-			+ "author's ENTIRE work, not these records. Nothing or everything selected = no filter.",
+		authorTitle: `Author filter (optional): the top ${AUTHOR_PICK_LIMIT} authors for this query, period `
+			+ "and journal selection (OpenAlex), with everyone else as one row below them. Picked names feed "
+			+ "directly into the source queries (the search then fetches THESE authors' papers on the topic). "
+			+ "Citations and h-index cover the author's ENTIRE work, not these records. Nothing or everything "
+			+ "selected = no filter.",
 		authorSelectAll: "Select all (no filter)",
 		authorItem: (count, metrics) =>
 			`(${count} hits${metrics.cites !== undefined ? ` · ${metrics.cites} citations` : ""}`
@@ -285,6 +289,22 @@ const SEARCH_TEXT: Record<DialogLang, {
 const ALL_YEARS_TOKENS = new Set([
 	"all", "alle", "all years", "alle jahre", "gesamter zeitraum", "entire period",
 ]);
+
+/**
+ * Resolve the period tab's answer (preset key, all-years wording or a
+ * custom range) into a year range. Null means an unparseable custom spec:
+ * the submit mapping warns and keeps the proposal; the facet loaders
+ * silently scope by nothing. Shared so the pickers and the run itself
+ * always agree on what the chosen period means (v30.13).
+ */
+function periodToRange(raw: unknown): { yearFrom?: number; yearTo?: number } | null {
+	const spec = typeof raw === "string" ? raw.trim() : "";
+	const thisYear = new Date().getFullYear();
+	const lastYears: Record<string, number> = { "5y": 4, "10y": 9, "20y": 19 };
+	if (spec in lastYears) return { yearFrom: thisYear - lastYears[spec] };
+	if (!spec || spec === "all" || ALL_YEARS_TOKENS.has(spec.toLowerCase())) return {};
+	return parseYearRange(spec);
+}
 
 /**
  * Code-enforced intake: a blocking dialog the MODEL cannot skip or answer.
@@ -342,9 +362,27 @@ async function intakeWizard(
 	};
 	const thisYear = new Date().getFullYear();
 	// Filled by the journal itemLoader below; the submit mapping needs to
-	// know which journals the list actually showed (v30.11).
+	// know which journals the list actually showed (v30.11), and the author
+	// loader needs their OpenAlex source ids to scope its facet (v30.13).
 	let listedJournals: string[] = [];
+	let listedJournalIds = new Map<string, string>();
 	let listedAuthors: string[] = [];
+	// Facet scope from the LIVE answers (v30.13 field finding: lists built
+	// from the query text alone showed journals/authors the configured run
+	// could never return). Both parts feed the loader cache keys, so editing
+	// the period or the journal picks re-fetches on the next tab visit.
+	const liveYearScope = (answers: WizardAnswers): FacetScope => periodToRange(answers.period) ?? {};
+	const livePickedSourceIds = (answers: WizardAnswers): string[] => {
+		const picked = Array.isArray(answers.journals) ? (answers.journals as string[]) : [];
+		// The "other journals" row means "these OR anything unlisted" -- that
+		// is nearly everything, so it scopes nothing.
+		if (!picked.length || picked.includes(JOURNAL_OTHER_ID)) return [];
+		return picked
+			.map((name) => listedJournalIds.get(name))
+			.filter((id): id is string => !!id);
+	};
+	const scopeKey = (scope: FacetScope): string =>
+		`${scope.yearFrom ?? ""}:${scope.yearTo ?? ""}:${(scope.sourceIds ?? []).join("|")}`;
 	const steps: WizardStepDef[] = [
 		{
 			kind: "text", id: "query", tab: text.queryTab, title: text.queryTitle, plain: true,
@@ -470,13 +508,17 @@ async function intakeWizard(
 		// adapter-driven. An agent venues proposal prechecks matching rows.
 		itemLoaders: [{
 			step: "journals",
-			key: (answers) => String(answers.query ?? "").trim().toLowerCase(),
+			key: (answers) => `${String(answers.query ?? "").trim().toLowerCase()}|${scopeKey(liveYearScope(answers))}`,
 			load: async (answers) => {
-				const page = await journalFacets(String(answers.query ?? "").trim(), JOURNAL_PICK_LIMIT);
+				const page = await journalFacets(
+					String(answers.query ?? "").trim(), JOURNAL_PICK_LIMIT, liveYearScope(answers),
+				);
 				const scores = await fetchJournalScores(page.listed.map((facet) => facet.id), () => {});
 				// Remember what the list SHOWED: the "other" row is defined
-				// against exactly these names (v30.11).
+				// against exactly these names (v30.11); the ids scope the
+				// author facet (v30.13).
 				listedJournals = page.listed.map((facet) => facet.name);
+				listedJournalIds = new Map(page.listed.map((facet) => [facet.name, facet.id]));
 				const items = page.listed.map((facet) => {
 					const score = scores.get(facet.id);
 					// toFixed keeps the decimal on integers ("3.0", never "3").
@@ -507,10 +549,15 @@ async function intakeWizard(
 		}, {
 			// The author list (v30.11): one facet request over the query's
 			// works plus one batched author lookup for the open metrics.
+			// Scoped by the live period AND the picked journals (v30.13).
 			step: "author_pick",
-			key: (answers) => String(answers.query ?? "").trim().toLowerCase(),
+			key: (answers) => `${String(answers.query ?? "").trim().toLowerCase()}|${
+				scopeKey({ ...liveYearScope(answers), sourceIds: livePickedSourceIds(answers) })}`,
 			load: async (answers) => {
-				const page = await authorFacets(String(answers.query ?? "").trim(), AUTHOR_PICK_LIMIT);
+				const page = await authorFacets(String(answers.query ?? "").trim(), AUTHOR_PICK_LIMIT, {
+					...liveYearScope(answers),
+					sourceIds: livePickedSourceIds(answers),
+				});
 				const metrics = await fetchAuthorMetrics(page.listed.map((facet) => facet.id), () => {});
 				listedAuthors = page.listed.map((facet) => facet.name);
 				const items = page.listed.map((facet) => {
@@ -572,24 +619,16 @@ async function intakeWizard(
 	values.groupTerms = groups.length ? groups : undefined;
 	values.groupRequire = groupSpec === "pairs" && groups.length > 2 ? 2 : undefined;
 	// The period step answers with a preset key or a custom range spec; an
-	// unparseable custom range keeps the proposal, loudly.
+	// unparseable custom range keeps the proposal, loudly. Same resolution
+	// the facet loaders used live (periodToRange), so the pickers and the
+	// run agree on the period.
 	const periodSpec = typeof result.period === "string" ? result.period.trim() : "";
-	const thisYearNow = new Date().getFullYear();
-	const lastYears: Record<string, number> = { "5y": 4, "10y": 9, "20y": 19 };
-	if (periodSpec in lastYears) {
-		values.yearFrom = thisYearNow - lastYears[periodSpec];
-		values.yearTo = undefined;
-	} else if (!periodSpec || periodSpec === "all" || ALL_YEARS_TOKENS.has(periodSpec.toLowerCase())) {
-		values.yearFrom = undefined;
-		values.yearTo = undefined;
+	const range = periodToRange(periodSpec);
+	if (range === null) {
+		ctx.ui.notify(text.badYears(periodSpec), "warning");
 	} else {
-		const range = parseYearRange(periodSpec);
-		if (range === null) {
-			ctx.ui.notify(text.badYears(periodSpec), "warning");
-		} else {
-			values.yearFrom = range.yearFrom;
-			values.yearTo = range.yearTo;
-		}
+		values.yearFrom = range.yearFrom;
+		values.yearTo = range.yearTo;
 	}
 	// The count step answers with a number string: a preset value or the
 	// free-entry input of the "custom" row (v30 -- no separate count tab).
@@ -773,7 +812,7 @@ export default function literatureSearch(pi: ExtensionAPI) {
 				description: "Keep only records whose journal/venue name contains one of these strings (case-insensitive). Excludes venue-less preprints, with a reason.",
 			})),
 			authors: Type.Optional(Type.Array(Type.String(), {
-				description: "Keep only records where at least one author name contains one of these strings (case-insensitive). Use when the user asks for papers by a specific author or group.",
+				description: "Fetch and keep only papers by these authors: the names are pushed into each source's author search field (arXiv au:, CrossRef query.author, OpenAlex raw_author_name.search), and a deterministic post-filter keeps only records where at least one author name contains one of these strings (case-insensitive). Use when the user asks for papers by a specific author or group.",
 			})),
 			require_pdf: Type.Optional(Type.Boolean({
 				description: "Keep only records with a direct PDF link",
@@ -972,7 +1011,10 @@ export default function literatureSearch(pi: ExtensionAPI) {
 				// Widget fallback when pi-tui is unavailable. (An even earlier
 				// version used sendMessage with deliverAs:"nextTurn", which
 				// only QUEUES the text for the next prompt -- never rendered.)
-				const digest = renderDigest(payload, htmlPath);
+				// Audience "user" (v30.13 field complaint: the card showed the
+				// agent instructions "Tell the user to open the HTML ..." --
+				// those belong in the tool result, not in front of the user).
+				const digest = renderDigest(payload, htmlPath, "user");
 				if (digestEntryReady) {
 					pi.appendEntry(DIGEST_ENTRY, {
 						heading: `Literature search -- ${confirmed.query}`,

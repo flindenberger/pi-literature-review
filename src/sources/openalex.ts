@@ -9,7 +9,7 @@
  * (primary_location.source.display_name); it too is plain API metadata.
  */
 
-import { contactMailto, type SourceRecord, userAgent } from "../types.ts";
+import { contactMailto, type SourceRecord, type SourceScope, userAgent } from "../types.ts";
 
 const BASE_URL = "https://api.openalex.org/works";
 const TIMEOUT_MS = 30_000;
@@ -28,11 +28,30 @@ function reconstructAbstract(invertedIndex: unknown): string {
 	return positioned.map(([, word]) => word).join(" ").trim();
 }
 
-export async function searchOpenalex(query: string, rows: number): Promise<SourceRecord[]> {
+/**
+ * Author scope as an OpenAlex filter= value: raw_author_name.search is the
+ * documented full-text search over author names as printed on the works;
+ * "|" OR-joins the names. Commas and pipes are OpenAlex filter syntax and
+ * are stripped from the names ("Kuenzer, C." arrives as a tool param like
+ * that). Pure; exported for offline tests. Empty result = no filter.
+ */
+export function buildAuthorSearchFilter(authors: string[] | undefined): string {
+	const names = (authors ?? [])
+		.map((name) => name.replace(/[|,]/g, " ").replace(/\s+/g, " ").trim())
+		.filter(Boolean);
+	return names.length ? `raw_author_name.search:${names.join("|")}` : "";
+}
+
+export async function searchOpenalex(query: string, rows: number, scope?: SourceScope): Promise<SourceRecord[]> {
 	const params = new URLSearchParams({
 		search: query,
 		"per-page": String(Math.min(rows, 200)),
 	});
+	// Picked authors narrow the fetch itself (v30.14): OpenAlex then returns
+	// per-page papers BY those authors on the topic instead of the global
+	// relevance head the post-filter would decimate.
+	const authorFilter = buildAuthorSearchFilter(scope?.authors);
+	if (authorFilter) params.set("filter", authorFilter);
 	const mailto = contactMailto();
 	if (mailto) params.set("mailto", mailto);
 
@@ -154,15 +173,40 @@ export function parseFacetPage(data: unknown, limit: number): FacetPage {
 	return { listed, otherCount: Math.max(0, total - listedSum) };
 }
 
+/** Scope of a facet pre-query (v30.13): the picker lists must reflect the
+ * run the user is configuring -- search period and picked journals included
+ * -- not the query text alone. Field finding 2026-07-29: the top authors
+ * over ALL years and journals hardly ever appear in a small, scoped run's
+ * result table, which made the author list look unrelated to the search. */
+export interface FacetScope {
+	yearFrom?: number;
+	yearTo?: number;
+	/** OpenAlex source ids ("S...") of picked journals. */
+	sourceIds?: string[];
+}
+
+/** Build the OpenAlex filter= value for a facet scope: documented from/to
+ * publication-date filters plus an OR-joined source-id filter. Pure;
+ * exported for offline tests. */
+export function buildFacetFilter(scope: FacetScope): string {
+	const parts: string[] = [];
+	if (scope.yearFrom !== undefined) parts.push(`from_publication_date:${scope.yearFrom}-01-01`);
+	if (scope.yearTo !== undefined) parts.push(`to_publication_date:${scope.yearTo}-12-31`);
+	if (scope.sourceIds?.length) parts.push(`primary_location.source.id:${scope.sourceIds.join("|")}`);
+	return parts.join(",");
+}
+
 /**
  * ONE cheap facet request over the query's works, grouped by the given
  * field -- the pre-query behind the wizard's pickers. Deterministic API
  * data; the LLM is nowhere near it.
  */
-async function facetPage(query: string, groupBy: string, limit: number): Promise<FacetPage> {
+async function facetPage(query: string, groupBy: string, limit: number, scope?: FacetScope): Promise<FacetPage> {
 	// NO per-page here: sending it alongside group_by makes OpenAlex return
 	// a single bucket (measured 2026-07-28); bare group_by returns 200.
 	const params = new URLSearchParams({ search: query, group_by: groupBy });
+	const filter = buildFacetFilter(scope ?? {});
+	if (filter) params.set("filter", filter);
 	const mailto = contactMailto();
 	if (mailto) params.set("mailto", mailto);
 	const response = await fetch(`${BASE_URL}?${params}`, {
@@ -175,13 +219,15 @@ async function facetPage(query: string, groupBy: string, limit: number): Promise
 	return parseFacetPage(await response.json(), limit);
 }
 
-/** Which journals do results for this query appear in (v30.6). */
-export function journalFacets(query: string, limit: number): Promise<FacetPage> {
-	return facetPage(query, "primary_location.source.id", limit);
+/** Which journals do results for this query appear in (v30.6; v30.13:
+ * scoped to the wizard's live search period). */
+export function journalFacets(query: string, limit: number, scope?: FacetScope): Promise<FacetPage> {
+	return facetPage(query, "primary_location.source.id", limit, scope);
 }
 
 /** Which authors publish the results for this query (v30.11) -- the same
- * mechanics as the journal list, one request. */
-export function authorFacets(query: string, limit: number): Promise<FacetPage> {
-	return facetPage(query, "authorships.author.id", limit);
+ * mechanics as the journal list, one request; v30.13: scoped to the live
+ * period AND the picked journals. */
+export function authorFacets(query: string, limit: number, scope?: FacetScope): Promise<FacetPage> {
+	return facetPage(query, "authorships.author.id", limit, scope);
 }

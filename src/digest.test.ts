@@ -71,6 +71,49 @@ function payload(overrides: Partial<RenderPayload>): RenderPayload {
 	assert.ok(!digest.includes("Remote Sensing"));
 }
 
+// Settings logging (v30.13): grouping expression, filters and depth appear;
+// the "user" audience card carries NO instructions aimed at the LLM
+{
+	const p = payload({
+		grouping: [["water"], ["mask", "extraction"]],
+		filters: { minCites: 5, yearFrom: 2022, authors: ["Kuenzer"] },
+		per_source: 15,
+		results: [record({ group: "adjacent" })],
+	});
+	const agent = renderDigest(p, "/x.html");
+	assert.ok(agent.includes("Grouping: (water) AND (mask OR extraction)"));
+	assert.ok(agent.includes("min. citations: 5"));
+	assert.ok(agent.includes("year from: 2022"));
+	assert.ok(agent.includes("authors: Kuenzer"));
+	assert.ok(agent.includes("Records per source: 15"));
+	assert.ok(agent.includes("Tell the user to open the HTML file"));
+	assert.ok(agent.includes("Do not build your own table"));
+
+	const user = renderDigest(p, "/x.html", "user");
+	assert.ok(user.includes("Grouping: (water) AND (mask OR extraction)"));
+	assert.ok(user.includes("Records per source: 15"));
+	assert.ok(user.includes("Open it in a browser to review and select papers."));
+	assert.ok(!user.includes("Tell the user"));
+	assert.ok(!user.includes("Do not build your own table"));
+	assert.ok(!user.includes("never re-type titles"));
+	// the record lines themselves stay identical for both audiences
+	assert.ok(user.includes("1. [adjacent] 2021 | 10.1234/example | A Paper"));
+	// v30.15: on the user card the HTML pointer sits BELOW the record list
+	// (a 40-record run drowned it in the middle) and is a clickable file://
+	// URL; the agent keeps the plain path ABOVE its record lines.
+	assert.ok(user.includes("  file:///x.html"));
+	assert.ok(user.indexOf("Full sortable table") > user.indexOf("1. [adjacent]"));
+	assert.ok(!user.includes("  /x.html"));
+	assert.ok(agent.includes("  /x.html"));
+	assert.ok(!agent.includes("file:///x.html"));
+	assert.ok(agent.indexOf("Full sortable table") < agent.indexOf("1. [adjacent]"));
+
+	// write failure: the warning ends the user card too
+	const failed = renderDigest(p, null, "user");
+	assert.ok(failed.indexOf("WARNING: the output files could not be written")
+		> failed.indexOf("1. [adjacent]"));
+}
+
 // Ungrouped run: no group bracket; UNVERIFIED flag; arXiv-ID fallback; n.d. year
 {
 	const digest = renderDigest(

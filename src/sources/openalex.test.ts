@@ -5,7 +5,7 @@
  */
 
 import assert from "node:assert/strict";
-import { parseFacetPage, parseFacets } from "./openalex.ts";
+import { buildAuthorSearchFilter, buildFacetFilter, parseFacetPage, parseFacets } from "./openalex.ts";
 
 /** v30.11: journals and authors share the facet parser. */
 const parseJournalFacets = parseFacets;
@@ -63,6 +63,36 @@ const parseJournalFacetPage = parseFacetPage;
 	assert.deepEqual(parseJournalFacets(null, 5), []);
 	assert.deepEqual(parseJournalFacets({ group_by: "nope" }, 5), []);
 	assert.deepEqual(parseJournalFacets({ group_by: [{ count: 3 }] }, 5), []);
+}
+
+// Facet scope -> OpenAlex filter= value (v30.13: the pickers reflect the
+// configured run -- period and picked journals -- not the query alone).
+{
+	assert.equal(buildFacetFilter({}), "");
+	assert.equal(buildFacetFilter({ yearFrom: 2022 }), "from_publication_date:2022-01-01");
+	assert.equal(
+		buildFacetFilter({ yearFrom: 2022, yearTo: 2024 }),
+		"from_publication_date:2022-01-01,to_publication_date:2024-12-31",
+	);
+	assert.equal(
+		buildFacetFilter({ yearTo: 2024, sourceIds: ["S1", "S2"] }),
+		"to_publication_date:2024-12-31,primary_location.source.id:S1|S2",
+	);
+	assert.equal(buildFacetFilter({ sourceIds: [] }), ""); // empty list scopes nothing
+}
+
+// Author scope -> raw_author_name.search filter (v30.14): picked authors
+// narrow the fetch itself; commas/pipes are filter syntax and get stripped.
+{
+	assert.equal(buildAuthorSearchFilter(["Claudia Kuenzer"]), "raw_author_name.search:Claudia Kuenzer");
+	assert.equal(
+		buildAuthorSearchFilter(["Kuenzer", "Mahdianpari"]),
+		"raw_author_name.search:Kuenzer|Mahdianpari",
+	);
+	assert.equal(buildAuthorSearchFilter(["Kuenzer, C."]), "raw_author_name.search:Kuenzer C.");
+	assert.equal(buildAuthorSearchFilter([]), "");
+	assert.equal(buildAuthorSearchFilter(undefined), "");
+	assert.equal(buildAuthorSearchFilter(["  ", "|"]), "");
 }
 
 console.log("openalex.test.ts: all assertions passed");
