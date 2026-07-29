@@ -5,12 +5,12 @@
  * package (that folder is code and gets replaced on update). Default root:
  * <working directory>/pi-literature-review, overridable via the
  * PI_LITERATURE_REVIEW_HOME environment variable. HTML renderings go to
- * queries/<YYYY-MM-DD>_<query-slug>.html; a same-day rerun of the same
+ * lit-search/<YYYY-MM-DD>_<query-slug>.html; a same-day rerun of the same
  * query gets _2, _3, ... appended instead of overwriting. The full JSON
  * payload lands next to the HTML as a .json sidecar with the same basename
  * (the agent model only receives a short digest, so the structured data has
  * to live on disk for follow-up steps and for the archive). PDF downloads
- * (Phase 3) will join as papers/, one shared library keyed by DOI/arXiv ID
+ * (Phase 3) joined as the lit-selection/ PDF library keyed by DOI/arXiv ID
  * so the same paper is never stored twice.
  */
 
@@ -33,14 +33,14 @@ export function querySlug(query: string): string {
 }
 
 /** Pure path builder; collision policy: append _2, _3, ... The subdir
- * separates the pipeline stages: queries/ for search runs, reviews/ for
+ * separates the pipeline stages: lit-search/ for search runs, lit-synthesis/ for
  * synthesis runs -- same naming and collision rules everywhere. */
 export function htmlPathFor(
 	root: string,
 	generatedIso: string,
 	query: string,
 	exists: (path: string) => boolean,
-	subdir = "queries",
+	subdir = "lit-search",
 ): string {
 	const date = generatedIso.slice(0, 10);
 	const base = join(root, subdir, `${date}_${querySlug(query)}`);
@@ -67,7 +67,7 @@ export function writeRunOutputs(
 	html: string,
 	payload: { query?: string; question?: string; generated: string },
 	explicitHtmlPath?: string,
-	subdir = "queries",
+	subdir = "lit-search",
 ): { htmlPath: string; jsonPath: string } {
 	const pairExists = (path: string) => existsSync(path) || existsSync(jsonPathFor(path));
 	const name = payload.query ?? payload.question ?? "output";

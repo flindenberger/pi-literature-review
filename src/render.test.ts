@@ -7,7 +7,7 @@
  */
 
 import assert from "node:assert/strict";
-import type { ChatReport, SynthReport } from "./synthesize.ts";
+import type { ChatReport, SynthReport } from "./synthesis.ts";
 import {
 	localPdfHref,
 	renderHtml,
@@ -17,7 +17,7 @@ import {
 	renderReviewHtml,
 	searchSnippet,
 } from "./render.ts";
-import type { SynthesisResult } from "./synthesize.ts";
+import type { SynthesisResult } from "./synthesis.ts";
 
 const payload: RenderPayload = {
 	query: 'sandbars & "Sentinel" <test>',
@@ -638,7 +638,11 @@ const baseReport: SynthReport = {
 		kind: "detail-per-paper", question: "Welche Kamera?", format: undefined,
 		prose: "Die Kamera steht auf Seite vier [1].",
 		sites: [{ ref: 1, chunk_id: 1, paper_key: "doi:10.1/x", page: 4, snippet: null }],
-		chunks: [{ id: 1, paper_key: "doi:10.1/x", page: 4, score: 0.8, text: "Chunk two text about cameras." }],
+		chunks: [
+			{ id: 1, paper_key: "doi:10.1/x", page: 4, score: 0.8, text: "Chunk two text about cameras." },
+			// Retrieved but never cited (v31.6): lands in the rest block.
+			{ id: 2, paper_key: "doi:10.1/x", page: 9, score: 0.7, text: "Uncited chunk text." },
+		],
 	});
 	const html = renderSynthReportHtml({
 		...baseReport,
@@ -656,7 +660,20 @@ const baseReport: SynthReport = {
 	assert.ok(html.includes("Textstellen-Suche"));
 	assert.ok(html.includes("Qualitätsprüfung"));
 	assert.ok(html.includes("Belegstellen"));
-	assert.ok(html.includes("Textauszüge"));
+	// v31.6/.7: the truncated passage line IS the expander -- a "more" hint
+	// at its end, the truncated span hidden while open (no duplicated first
+	// sentence), full excerpt + retrieval rank/similarity per citing unit...
+	assert.ok(html.includes('<details class="passage"><summary>'));
+	assert.ok(html.includes('<span class="short">'));
+	assert.ok(html.includes('<span class="hint-more">▸ mehr</span>'));
+	assert.ok(html.includes('<span class="hint-less">▾ weniger</span>'));
+	assert.ok(html.includes("details.passage[open] summary .short { display: none; }"));
+	assert.ok(html.includes("Zusammenfassung: a.pdf: abgerufen als Treffer 1 von 2, similarity 0.900"));
+	assert.ok(html.includes("a.pdf -- Welche Kamera?: abgerufen als Treffer 1 von 2, similarity 0.800"));
+	// ...and the advanced block holds ONLY the retrieved-but-uncited rest.
+	assert.ok(html.includes("Weitere abgerufene, nicht zitierte Textstellen (für Fortgeschrittene)"));
+	assert.ok(html.includes("Uncited chunk text."));
+	assert.ok(html.includes("Kosinus-Ähnlichkeit"));
 	assert.ok(!html.includes('id="references"')); // no reference table in single mode
 	// Passage numbering: chunk one -> 1, chunk two -> 2; the detail unit
 	// cites chunk two again -> ALSO 2 (stable identity across units).
@@ -675,7 +692,10 @@ const baseReport: SynthReport = {
 	assert.ok(html.includes('<details class="block"><summary>Zusammenfassung</summary>'));
 	assert.ok(html.includes('<details class="block"><summary>Fragen</summary>'));
 	assert.ok(html.includes('<details class="block"><summary>Belegstellen</summary>'));
-	assert.ok(html.includes('<details class="block"><summary>Textauszüge</summary>'));
+	// v31.5/.6: no top-level excerpts block anymore -- the uncited REST
+	// nests at the END of the cited-passages block (after the list).
+	assert.ok(!html.includes('<details class="block"><summary>Quell-Textstellen'));
+	assert.ok(html.includes('</ol>\n<details><summary>Weitere abgerufene, nicht zitierte Textstellen (für Fortgeschrittene)</summary>'));
 	// The anchor-opening script ships (targets live inside details).
 	assert.ok(html.includes("openTarget"));
 	// Summary/review choices are stated in plain rows.

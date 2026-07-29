@@ -15,13 +15,13 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import literatureSearch from "./extensions/search.ts";
-import literatureFetch from "./extensions/fetch.ts";
-import literatureSynthesize from "./extensions/synthesize.ts";
+import literatureSelection from "./extensions/selection.ts";
+import literatureSynthesis from "./extensions/synthesis.ts";
 
 export default async function literatureReview(pi: ExtensionAPI) {
 	literatureSearch(pi);
-	literatureFetch(pi);
+	literatureSelection(pi);
 	// Awaited: the fused synthesize adapter lazily imports pi-tui to register
 	// its transcript renderer; pi awaits this factory before startup.
-	await literatureSynthesize(pi);
+	await literatureSynthesis(pi);
 }

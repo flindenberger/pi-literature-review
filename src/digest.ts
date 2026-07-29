@@ -14,9 +14,9 @@
  */
 
 import { pathToFileURL } from "node:url";
-import type { ChatAnswer, ChatReport, SynthReport } from "./synthesize.ts";
+import type { ChatAnswer, ChatReport, SynthReport } from "./synthesis.ts";
 import { describeFilters, describeGrouping, type RenderPayload } from "./render.ts";
-import type { ReferenceEntry, SynthesisResult } from "./synthesize.ts";
+import type { ReferenceEntry, SynthesisResult } from "./synthesis.ts";
 
 /** Safety cap (Pi docs: tools must bound their own output). An exhaustive
  * multi-variant sweep can yield hundreds of records; the digest lists at
@@ -213,7 +213,7 @@ function pushRetrievalLines(
 	}
 }
 
-/* ---------------- paper chat (pi-literature-chat) ---------------- */
+/* ---------------- paper chat (pi-literature-synthesis chat mode) ---------------- */
 
 /** Reference line with the cited PDF pages: "[1] 2021 | 10.x/y | Title
  * (S. 2, 5)". "S." (Seite) by user decision -- the chat's audience reads
@@ -292,7 +292,7 @@ export function renderChatDigest(answer: ChatAnswer): string {
 		lines.push(
 			"The validated Q&A round was recorded in the session protocol on disk. "
 			+ "When the user wants a summary report OR any HTML/file/export of this chat "
-			+ "('mach mir eine html', 'save this', 'export'): tell them to run the /lit-synth command -- "
+			+ "('mach mir eine html', 'save this', 'export'): tell them to run the /lit-synthesis command -- "
 			+ "NEVER write an HTML or any other file about this paper yourself.",
 		);
 	} else {

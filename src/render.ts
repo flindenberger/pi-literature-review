@@ -38,13 +38,13 @@ interface RenderRecord {
 	journal_2yr_citedness?: number | null;
 }
 
-import type { ChatReport } from "./synthesize.ts";
+import type { ChatReport } from "./synthesis.ts";
 import type { CitationSite } from "./protocol.ts";
-import { highlightPhrase, type ReportUnit, type SynthesisResult, type SynthReport } from "./synthesize.ts";
+import { highlightPhrase, type ReportUnit, type SynthesisResult, type SynthReport } from "./synthesis.ts";
 
 // Moved to synthesize.ts in v25 E2b (the snippet is citation provenance);
 // re-exported here for existing importers.
-export { searchSnippet } from "./synthesize.ts";
+export { searchSnippet } from "./synthesis.ts";
 
 export interface RenderPayload {
 	query: string;
@@ -380,7 +380,7 @@ const RESULT_HEADERS = "<tr><th class=\"no-sort\" title=\"Select rows, then copy
  * identifiers that are already printed on the page -- the page itself can
  * never download (file:// pages have neither filesystem access nor
  * permission to call other servers); the sentence is pasted into the Pi
- * chat, where the fetch tool downloads after the user confirms the terminal
+ * chat, where the selection tool downloads after the user confirms the terminal
  * dialog.
  */
 const SELECT_SCRIPT = `
@@ -489,8 +489,8 @@ export function renderHtml(payload: RenderPayload): string {
 <button type="button" class="select-clear">Clear</button>
 <button type="button" class="copy-selection" disabled>Copy download request</button>
 <span class="copy-feedback copied"></span>
-<span class="hint">Tick papers above, copy the request, then paste it into the Pi chat -- the fetch tool
-downloads the PDFs into the papers/ library after you confirm the terminal dialog.</span>
+<span class="hint">Tick papers above, copy the request, then paste it into the Pi chat -- the selection tool
+downloads the PDFs into the lit-selection/ library after you confirm the terminal dialog.</span>
 </div>`
 		: "";
 
@@ -1052,8 +1052,17 @@ const REPORT_LABELS = {
 		passages: "Belegstellen",
 		passagesNote: "Hochgestellte Zahlen öffnen die zitierte Seite des Quell-PDFs in einem neuen Tab; "
 			+ "Firefox markiert zusätzlich die Passage (Chromium öffnet nur die Seite).",
-		excerpts: "Textauszüge",
-		excerptsNote: "Die vollständige Beweisspur: nur diese Auszüge hat das Modell gesehen.",
+		excerpts: "Quell-Textstellen (für Fortgeschrittene)",
+		excerptsNote: "Die vollständige Beweisspur: nur diese Auszüge hat das Modell gesehen. "
+			+ "\"similarity\" ist der Abruf-Score (Kosinus-Ähnlichkeit), nach dem sie ausgewählt wurden.",
+		excerptsRest: "Weitere abgerufene, nicht zitierte Textstellen (für Fortgeschrittene)",
+		excerptsRestNote: "Diese Auszüge hat das Modell ebenfalls gesehen -- und NICHT als Beleg verwendet. "
+			+ "Zusammen mit den Belegstellen oben ist das die vollständige Beweisspur; \"similarity\" ist der "
+			+ "Abruf-Score (Kosinus-Ähnlichkeit).",
+		expandMore: "▸ mehr",
+		expandLess: "▾ weniger",
+		retrievedAs: (unit: string, rank: number, of: number, score: string, lexical: boolean) =>
+			`${unit}: abgerufen als Treffer ${rank} von ${of}, similarity ${score}${lexical ? ", exakter Worttreffer" : ""}`,
 		unverified: "UNVERIFIZIERT -- ohne bibliografischen Nachweis, zitiert nur über Dateiname und Seite",
 		authors: "Autoren",
 		year: "Jahr",
@@ -1113,8 +1122,17 @@ const REPORT_LABELS = {
 		passages: "Cited passages",
 		passagesNote: "Superscript numbers open the cited page of the source PDF in a new tab; "
 			+ "Firefox also highlights the passage (Chromium opens the page only).",
-		excerpts: "Source passages",
-		excerptsNote: "The complete evidence trail: these are the only excerpts the model saw.",
+		excerpts: "Source passages (advanced)",
+		excerptsNote: "The complete evidence trail: these are the only excerpts the model saw. "
+			+ "\"similarity\" is the retrieval score (cosine similarity) they were selected by.",
+		excerptsRest: "Other retrieved, uncited passages (advanced)",
+		excerptsRestNote: "The model saw these excerpts too -- and did NOT use them as evidence. "
+			+ "Together with the cited passages above they are the complete evidence trail; \"similarity\" "
+			+ "is the retrieval score (cosine similarity).",
+		expandMore: "▸ more",
+		expandLess: "▾ less",
+		retrievedAs: (unit: string, rank: number, of: number, score: string, lexical: boolean) =>
+			`${unit}: retrieved as hit ${rank} of ${of}, similarity ${score}${lexical ? ", exact term match" : ""}`,
 		unverified: "UNVERIFIED -- no bibliographic record, cited by filename and page only",
 		authors: "Authors",
 		year: "Year",
@@ -1151,6 +1169,20 @@ const REPORT_STYLE = `
 	.reviewnote { background: #eef3f8; border-left: 4px solid #4a6fa5; padding: 0.5rem 0.9rem;
 		font-size: 0.86rem; color: #2c3e50; margin: 0.6rem 0; }
 	ol.passages li { margin: 0.25rem 0; }
+	/* v31.7: the truncated passage line IS the expander -- no default
+	 * disclosure triangle, a dim "more"/"less" hint at the line end, and
+	 * while OPEN the truncated span disappears (the full excerpt below
+	 * replaces it instead of repeating it). */
+	ol.passages details.passage { display: inline; }
+	/* The preview text matches the EXPANDED excerpt (same grey, same size,
+	 * v31.7 user wish) -- only the more/less hint keeps the accent color. */
+	ol.passages details.passage summary { cursor: pointer; list-style: none; display: inline;
+		color: #2c2c2c; font-size: 0.84rem; }
+	ol.passages details.passage summary::-webkit-details-marker { display: none; }
+	ol.passages details.passage .expandhint { color: #44506b; font-size: 0.78rem; white-space: nowrap; }
+	ol.passages details.passage[open] summary .short { display: none; }
+	ol.passages details.passage[open] summary .hint-more { display: none; }
+	ol.passages details.passage:not([open]) summary .hint-less { display: none; }
 	details.technical { margin: 0.6rem 0; }
 	details.technical > summary { cursor: pointer; color: #4a6fa5; font-size: 0.9rem; }
 	details.block { margin: 0.8rem 0; }
@@ -1174,22 +1206,48 @@ export function renderSynthReportHtml(report: SynthReport): string {
 		`<a href="${esc(href)}" target="_blank" rel="noopener">${esc(text)}</a>`;
 
 	// Single-paper mode: number distinct cited passages across all units in
-	// first-citation order (identity: paper, page, chunk text).
+	// first-citation order (identity: paper, page, chunk text). Each passage
+	// remembers WHERE it came from (v31.6 user wish: the retrieval detail
+	// belongs at the passage): per citing unit its retrieval rank and score
+	// -- chunk ids are assigned in score order, so the id IS the rank.
 	const passageOfSite = new Map<CitationSite, number>();
-	const passages: Array<{ n: number; page: number; text: string; snippet: string | null; paper_key: string }> = [];
+	const passages: Array<{
+		n: number; page: number; text: string; snippet: string | null; paper_key: string;
+		origins: Array<{ unit: string; rank: number; of: number; score: number; lexical: boolean }>;
+	}> = [];
+	// Identity keys of all CITED chunks -- the advanced rest block below
+	// shows only what was retrieved and NOT cited.
+	const citedChunkKeys = new Set<string>();
 	if (singleMode) {
 		const byKey = new Map<string, number>();
 		for (const unit of report.units) {
 			for (const site of unit.sites) {
 				const chunk = unit.chunks.find((entry) => entry.id === site.chunk_id);
 				const key = `${site.paper_key}\u0000${site.page}\u0000${chunk?.text ?? site.snippet ?? ""}`;
+				citedChunkKeys.add(key);
 				let n = byKey.get(key);
 				if (n === undefined) {
 					n = passages.length + 1;
 					byKey.set(key, n);
-					passages.push({ n, page: site.page, text: chunk?.text ?? "", snippet: site.snippet, paper_key: site.paper_key });
+					passages.push({
+						n, page: site.page, text: chunk?.text ?? "", snippet: site.snippet,
+						paper_key: site.paper_key, origins: [],
+					});
 				}
 				passageOfSite.set(site, n);
+				if (chunk) {
+					const origin = {
+						unit: unitLabel(unit, labels),
+						rank: chunk.id,
+						of: unit.chunks.length,
+						score: chunk.score,
+						lexical: chunk.lexical === true,
+					};
+					const origins = passages[n - 1].origins;
+					if (!origins.some((seen) => seen.unit === origin.unit && seen.rank === origin.rank)) {
+						origins.push(origin);
+					}
+				}
 			}
 		}
 	}
@@ -1286,8 +1344,12 @@ ${technicalBlock}
 	// Per-block reference table: only the entries the given units cite,
 	// keeping their GLOBAL [n] numbers. Anchor ids stay unique across the
 	// page (first occurrence wins -- marker fallback links land there).
+	// v31.5 (user decision): the retrieval excerpts are no longer their own
+	// top-level block -- they ride collapsed at the END of this block as an
+	// "advanced" sub-details (the user reads the cited passages; similarity
+	// scores are for the curious).
 	const usedRefIds = new Set<number>();
-	const referencesBlock = (units: ReportUnit[]): string | null => {
+	const referencesBlock = (units: ReportUnit[], trail: string | null): string | null => {
 		const cited = new Set(units.flatMap((unit) => unit.sites.map((site) => site.ref)));
 		const refs = report.references.filter((reference) => cited.has(reference.n));
 		if (!refs.length) return null;
@@ -1312,25 +1374,36 @@ ${technicalBlock}
 <tbody>
 ${rows}
 </tbody>
-</table>
+</table>${trail ? `\n${trail}` : ""}
 </details>`;
 	};
 
-	// Per-block evidence trail (the excerpts each unit's model saw).
-	const excerptsBlock = (units: ReportUnit[]): string | null => {
-		const withChunks = units.filter((unit) => unit.chunks.length);
-		if (!withChunks.length) return null;
-		const inner = withChunks.map((unit) => {
-			const items = unit.chunks.map((chunk) => {
+	// Per-block evidence trail (the excerpts each unit's model saw) --
+	// since v31.5 a NESTED details at the end of the cited-passages block.
+	// v31.6 (single mode): the CITED chunks carry their retrieval detail at
+	// the passage itself, so the trail here shows only what was retrieved
+	// and NOT cited (onlyUncited) -- together they stay the complete trail.
+	const excerptsBlock = (units: ReportUnit[], onlyUncited = false): string | null => {
+		const chunkKey = (chunk: ReportUnit["chunks"][number]): string =>
+			`${chunk.paper_key}\u0000${chunk.page}\u0000${chunk.text}`;
+		const perUnit = units
+			.map((unit) => ({
+				unit,
+				chunks: unit.chunks.filter((chunk) => !onlyUncited || !citedChunkKeys.has(chunkKey(chunk))),
+			}))
+			.filter((entry) => entry.chunks.length);
+		if (!perUnit.length) return null;
+		const inner = perUnit.map(({ unit, chunks }) => {
+			const items = chunks.map((chunk) => {
 				const path = pdfPathByKey.get(chunk.paper_key);
 				const anchor = path ? `\n<p class="meta">${pdfAnchor(localPdfHref(path, chunk.page, highlightPhrase(chunk)), `${labels.page} ${chunk.page}`)}</p>` : "";
 				return `<details><summary>[${chunk.id}] ${labels.page} ${chunk.page}, similarity ${chunk.score.toFixed(3)}${chunk.lexical ? ", exact term match" : ""}</summary>
 <p class="excerpt">${esc(chunk.text)}</p>${anchor}</details>`;
 			}).join("\n");
-			return `<details><summary>${esc(unitLabel(unit, labels))} (${unit.chunks.length})</summary>\n${items}\n</details>`;
+			return `<details><summary>${esc(unitLabel(unit, labels))} (${chunks.length})</summary>\n${items}\n</details>`;
 		}).join("\n");
-		return `<details class="block"><summary>${labels.excerpts}</summary>
-<p class="meta">${esc(labels.excerptsNote)}</p>
+		return `<details><summary>${onlyUncited ? labels.excerptsRest : labels.excerpts}</summary>
+<p class="meta">${esc(onlyUncited ? labels.excerptsRestNote : labels.excerptsNote)}</p>
 ${inner}
 </details>`;
 	};
@@ -1354,27 +1427,48 @@ ${inner}
 			parts.push(`<details class="block"><summary>${labels.questionsLabel}</summary>\n${questionUnits
 				.map((unit) => `<h4>${esc(unit.question ?? "")}</h4>\n${unitHtml(unit)}`).join("\n")}\n</details>`);
 		}
+		// Single mode: cited chunks explain themselves at the passage
+		// (v31.6), so the trail carries only the uncited leftovers.
+		const trail = excerptsBlock(paperUnits, singleMode);
+		let trailPlaced = false;
 		if (singleMode) {
 			// Single paper: the numbered passages replace the reference table.
+			// The truncated line itself is the expander (v31.7 user wish: no
+			// duplicated first sentence): a "more" hint at its end opens the
+			// FULL excerpt -- CSS hides the truncated span while open -- plus,
+			// per citing question, the retrieval rank and similarity.
 			const items = passages.map((passage) => {
 				const href = localPdfHref(paper.pdf_path, passage.page, passage.snippet);
 				const excerpt = passage.text.length > 160 ? `${passage.text.slice(0, 160)}...` : passage.text;
-				return `<li id="site-${passage.n}">${pdfAnchor(href, `${labels.page} ${passage.page}`)} -- ${esc(excerpt)}</li>`;
+				const originLines = passage.origins
+					.map((origin) => `<br>${esc(labels.retrievedAs(origin.unit, origin.rank, origin.of, origin.score.toFixed(3), origin.lexical))}`)
+					.join("");
+				if (!passage.origins.length && !passage.text) {
+					return `<li id="site-${passage.n}">${pdfAnchor(href, `${labels.page} ${passage.page}`)} -- ${esc(excerpt)}</li>`;
+				}
+				return `<li id="site-${passage.n}"><details class="passage"><summary>${pdfAnchor(href, `${labels.page} ${passage.page}`)} -- <span class="short">${esc(excerpt)}</span> <span class="expandhint"><span class="hint-more">${labels.expandMore}</span><span class="hint-less">${labels.expandLess}</span></span></summary>
+<p class="excerpt">${esc(passage.text)}</p>${originLines ? `\n<p class="meta">${originLines.slice("<br>".length)}</p>` : ""}
+</details></li>`;
 			}).join("\n");
 			if (items) {
 				parts.push(`<details class="block"><summary>${labels.passages}</summary>
 <p class="meta">${esc(labels.passagesNote)}</p>
 <ol class="passages">
 ${items}
-</ol>
+</ol>${trail ? `\n${trail}` : ""}
 </details>`);
+				trailPlaced = true;
 			}
 		} else {
-			const refs = referencesBlock(paperUnits);
-			if (refs) parts.push(refs);
+			const refs = referencesBlock(paperUnits, trail);
+			if (refs) {
+				parts.push(refs);
+				trailPlaced = true;
+			}
 		}
-		const trail = excerptsBlock(paperUnits);
-		if (trail) parts.push(trail);
+		// No cited passages at all (e.g. an ungrounded unit): the trail
+		// still appears, honestly, as its own collapsed block.
+		if (trail && !trailPlaced) parts.push(`<details class="block">${trail.slice("<details>".length)}`);
 		const content = parts.length ? parts.join("\n") : `<p class="meta">${esc(labels.noUnits)}</p>`;
 		blocks.push(`<section class="paper" id="paper-${esc(paper.base)}">
 <h2>${esc(paperTitle)}</h2>
@@ -1389,10 +1483,10 @@ ${content}
 	// Cross-paper detail questions (mode B), with their own references.
 	if (crossUnits.length) {
 		const parts = crossUnits.map((unit) => `<h4>${esc(unit.question ?? "")}</h4>\n${unitHtml(unit)}`);
-		const refs = singleMode ? null : referencesBlock(crossUnits);
-		if (refs) parts.push(refs);
 		const trail = excerptsBlock(crossUnits);
-		if (trail) parts.push(trail);
+		const refs = singleMode ? null : referencesBlock(crossUnits, trail);
+		if (refs) parts.push(refs);
+		else if (trail) parts.push(`<details class="block">${trail.slice("<details>".length)}`);
 		blocks.push(`<section id="cross-questions">
 <h2>${labels.crossQuestions}</h2>
 ${parts.join("\n")}
@@ -1402,10 +1496,10 @@ ${parts.join("\n")}
 	// State of the literature (review synthesis), with its own references.
 	if (reviewUnits.length) {
 		const parts = reviewUnits.map((unit) => unitHtml(unit));
-		const refs = singleMode ? null : referencesBlock(reviewUnits);
-		if (refs) parts.push(refs);
 		const trail = excerptsBlock(reviewUnits);
-		if (trail) parts.push(trail);
+		const refs = singleMode ? null : referencesBlock(reviewUnits, trail);
+		if (refs) parts.push(refs);
+		else if (trail) parts.push(`<details class="block">${trail.slice("<details>".length)}`);
 		blocks.push(`<section id="review">
 <h2>${labels.review}</h2>
 <div class="reviewnote">${esc(labels.reviewNote)}</div>

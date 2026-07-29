@@ -1,9 +1,9 @@
 /**
- * Library corpus for the synthesis stage: which PDFs in papers/ belong to
+ * Library corpus for the synthesis stage: which PDFs in lit-selection/ belong to
  * which VERIFIED search record, and a persisted embedding index per paper.
  *
  * Matching order per PDF (no fuzzy matching, no guessing):
- *   1. the metadata twin papers/<basename>.json written by fetch
+ *   1. the metadata twin lit-selection/<basename>.json written by fetch
  *   2. filename recomputation: every saved-search record's paperFilename()
  *      and identifierSlug() (legacy names) against the PDF's basename
  * A PDF matching neither has no verified bibliographic identity -- it is
@@ -30,7 +30,7 @@ import {
 	stripBibliography,
 	verifiedPhraseWords,
 } from "./extract.ts";
-import { identifierSlug, loadSidecarIndex, paperFilename, parseIdentifier, type SidecarEntry } from "./fetch.ts";
+import { identifierSlug, loadSidecarIndex, paperFilename, parseIdentifier, type SidecarEntry } from "./selection.ts";
 import { viewerPageTexts } from "./pdfjs-find.ts";
 import { identityKey } from "./pipeline.ts";
 
@@ -48,30 +48,54 @@ export interface LibraryMatch {
 	matched: LibraryPaper[];
 	/** PDF basenames without a verified record -- excluded from synthesis. */
 	unmatched: string[];
-	/** Directory the PDFs were found in (see resolvePapersDir). */
+	/** The unmatched files grouped by the folder they live in (v31.1: the
+	 * corpus may span several folders; adoption and filename-only citation
+	 * need the right one per file). Optional so injected test fixtures and
+	 * older callers keep working -- read it via unmatchedGroups(). */
+	unmatchedByDir?: Array<{ dir: string; files: string[] }>;
+	/** Primary directory (the first of dirs) -- kept for messages and as
+	 * the place "no papers" errors point at. */
 	papersDir: string;
+	/** Every directory that contributed PDFs (v31.1). Optional, see above. */
+	dirs?: string[];
+}
+
+/** The unmatched files with their folders; falls back to the single
+ * papersDir for matches built before v31.1 (test fixtures, core results). */
+export function unmatchedGroups(match: LibraryMatch): Array<{ dir: string; files: string[] }> {
+	if (match.unmatchedByDir) return match.unmatchedByDir;
+	return match.unmatched.length ? [{ dir: match.papersDir, files: match.unmatched }] : [];
 }
 
 /**
- * Where the PDFs live. Fallback chain (user decision 2026-07-15, so that
+ * Where PDFs live. Candidate chain (user decision 2026-07-15, so that
  * starting pi in ANY folder of papers just works):
- *   1. <root>/papers        -- the canonical fetched library
- *   2. <cwd>/papers         -- a papers folder next to where pi runs
+ *   1. <root>/lit-selection -- the canonical fetched library
+ *   2. <cwd>/lit-selection  -- a library folder next to where pi runs
  *   3. <cwd> itself         -- loose PDFs right in the working directory
- * When none exists (or holds a PDF), the canonical location is reported so
- * "no papers" messages point at the place fetch would fill. Pure via
- * injected checks for tests.
+ * Since v31.1 EVERY candidate that holds a PDF contributes to the corpus
+ * (user decision 2026-07-29: an existing library must not hide loose PDFs
+ * -- all documents stay selectable). When none holds one, the canonical
+ * location is reported so "no papers" messages point at the place the
+ * selection stage would fill. Pure via injected checks for tests.
  */
+export function papersDirs(
+	root: string,
+	cwd: string = process.cwd(),
+	hasPdfs: (dir: string) => boolean = hasPdfsReal,
+): string[] {
+	const candidates = [...new Set([join(root, "lit-selection"), join(cwd, "lit-selection"), cwd])];
+	const withPdfs = candidates.filter((dir) => hasPdfs(dir));
+	return withPdfs.length ? withPdfs : [candidates[0]];
+}
+
+/** First folder of the chain -- messages and single-folder callers. */
 export function resolvePapersDir(
 	root: string,
 	cwd: string = process.cwd(),
 	hasPdfs: (dir: string) => boolean = hasPdfsReal,
 ): string {
-	const canonical = join(root, "papers");
-	for (const candidate of [canonical, join(cwd, "papers"), cwd]) {
-		if (hasPdfs(candidate)) return candidate;
-	}
-	return canonical;
+	return papersDirs(root, cwd, hasPdfs)[0];
 }
 
 function hasPdfsReal(dir: string): boolean {
@@ -139,31 +163,62 @@ export function matchLibraryCore(
 			unmatched.push(`${base}.pdf`);
 		}
 	}
-	return { matched, unmatched, papersDir };
+	return {
+		matched,
+		unmatched,
+		unmatchedByDir: unmatched.length ? [{ dir: papersDir, files: unmatched }] : [],
+		papersDir,
+	};
 }
 
-/** Thin IO wrapper: locate the PDFs, read twins, delegate to the pure core. */
+/**
+ * Thin IO wrapper: locate the PDFs, read twins, delegate to the pure core.
+ * Since v31.1 the corpus is the UNION of every candidate folder holding
+ * PDFs (canonical library, cwd library, cwd itself) -- a library must not
+ * hide loose PDFs. Basenames stay unique corpus-wide (they key the sticky
+ * scope, protocols and the index cache): on a collision the earlier folder
+ * in the chain wins and the shadowed file is skipped with a warning.
+ */
 export function matchLibrary(root: string, onWarn: (message: string) => void): LibraryMatch {
-	const papersDir = resolvePapersDir(root);
-	let names: string[] = [];
-	try {
-		names = readdirSync(papersDir);
-	} catch {
-		return { matched: [], unmatched: [], papersDir }; // no library yet -- honest empty
-	}
-	const bases = names
-		.filter((name) => name.toLowerCase().endsWith(".pdf"))
-		.map((name) => name.slice(0, -4))
-		.sort();
-	const twins = new Map<string, unknown>();
-	for (const base of bases) {
+	const dirs = papersDirs(root);
+	const index = loadSidecarIndex(root, onWarn);
+	const matched: LibraryPaper[] = [];
+	const unmatched: string[] = [];
+	const unmatchedByDir: Array<{ dir: string; files: string[] }> = [];
+	const seen = new Set<string>();
+	for (const dir of dirs) {
+		let names: string[] = [];
 		try {
-			twins.set(base, JSON.parse(readFileSync(join(papersDir, `${base}.json`), "utf8")));
+			names = readdirSync(dir);
 		} catch {
-			// no twin (pre-twin download) or unreadable -- recomputation decides
+			continue; // no folder yet -- the others may still hold PDFs
 		}
+		const bases: string[] = [];
+		for (const base of names
+			.filter((name) => name.toLowerCase().endsWith(".pdf"))
+			.map((name) => name.slice(0, -4))
+			.sort()) {
+			if (seen.has(base)) {
+				onWarn(`skipped ${join(dir, `${base}.pdf`)}: a paper with this filename is already in the corpus (earlier folder wins)`);
+				continue;
+			}
+			seen.add(base);
+			bases.push(base);
+		}
+		const twins = new Map<string, unknown>();
+		for (const base of bases) {
+			try {
+				twins.set(base, JSON.parse(readFileSync(join(dir, `${base}.json`), "utf8")));
+			} catch {
+				// no twin (pre-twin download) or unreadable -- recomputation decides
+			}
+		}
+		const result = matchLibraryCore(bases, twins, index, dir);
+		matched.push(...result.matched);
+		unmatched.push(...result.unmatched);
+		if (result.unmatched.length) unmatchedByDir.push({ dir, files: result.unmatched });
 	}
-	return matchLibraryCore(bases, twins, loadSidecarIndex(root, onWarn), papersDir);
+	return { matched, unmatched, unmatchedByDir, papersDir: dirs[0], dirs };
 }
 
 /* ------------------------------------------------------------------ *

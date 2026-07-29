@@ -18,10 +18,10 @@ import {
 	enforceCitations,
 	promptTokens,
 	type RetrievedChunk,
-	runSynthesize,
-	type SynthesizeDeps,
+	runSynthesis,
+	type SynthesisDeps,
 	topKChunks,
-} from "./synthesize.ts";
+} from "./synthesis.ts";
 
 /* ---------------- cosine ---------------- */
 {
@@ -214,7 +214,7 @@ const indexB: PaperIndex = {
 	assert.deepEqual(single.references.map((reference) => reference.key), [paperA.key]);
 }
 
-/* ---------------- runSynthesize with fake deps ---------------- */
+/* ---------------- runSynthesis with fake deps ---------------- */
 
 const library: LibraryMatch = {
 	matched: [
@@ -232,7 +232,7 @@ const library: LibraryMatch = {
 /** Corpus deps that serve the prebuilt indexes from "cache" -- extraction
  * must never run; readPdf/sha256 cooperate so the hashes match per file. */
 function fakeCorpus(): CorpusDeps {
-	const indexByFile = new Map([["/index/a.json", indexA], ["/index/b.json", indexB]]);
+	const indexByFile = new Map([["/lit-synthesis/index/a.json", indexA], ["/lit-synthesis/index/b.json", indexB]]);
 	return {
 		readPdf: (path) => new TextEncoder().encode(path),
 		sha256: (bytes) => (new TextDecoder().decode(bytes).endsWith("a.pdf") ? "hash-a" : "hash-b"),
@@ -246,7 +246,7 @@ function fakeCorpus(): CorpusDeps {
 }
 
 function makeDeps(generatorOutput: string): {
-	deps: SynthesizeDeps;
+	deps: SynthesisDeps;
 	generateCalls: Array<{ system: string; user: string; opts?: GenerateOptions }>;
 } {
 	const corpus = fakeCorpus();
@@ -283,7 +283,7 @@ function makeDeps(generatorOutput: string): {
 		"Sandbars show up in Sentinel-2 [1]. The Amazon contracted [3]. Both matter [1, 3]. Fabricated [9].",
 	);
 	const warnings: string[] = [];
-	const result = await runSynthesize({
+	const result = await runSynthesis({
 		question: "How are river sandbars detected?",
 		root: "/",
 		model: "fake-gen",
@@ -325,7 +325,7 @@ function makeDeps(generatorOutput: string): {
 // Ungrounded run: zero valid citations -> honest failure flag, no references.
 {
 	const { deps } = makeDeps("A fluent, confident answer without a single citation.");
-	const result = await runSynthesize({
+	const result = await runSynthesis({
 		question: "How are river sandbars detected?",
 		root: "/", model: "fake-gen", embedModel: "fake-embed",
 	}, deps);
@@ -339,7 +339,7 @@ function makeDeps(generatorOutput: string): {
 {
 	const { deps } = makeDeps("Answer [1].");
 	const warnings: string[] = [];
-	const result = await runSynthesize({
+	const result = await runSynthesis({
 		question: "q", root: "/", model: "g", embedModel: "fake-embed",
 		papers: ["a.pdf", "missing.pdf"],
 		onWarn: (m) => warnings.push(m),
@@ -347,7 +347,7 @@ function makeDeps(generatorOutput: string): {
 	assert.equal(result.papers_matched, 1);
 	assert.ok(warnings.some((m) => m.includes("missing.pdf")));
 	await assert.rejects(
-		() => runSynthesize({ question: "q", root: "/", papers: ["missing.pdf"], embedModel: "fake-embed" }, deps),
+		() => runSynthesis({ question: "q", root: "/", papers: ["missing.pdf"], embedModel: "fake-embed" }, deps),
 		/no papers with verified metadata/,
 	);
 }
@@ -368,7 +368,7 @@ function makeDeps(generatorOutput: string): {
 		adoptCalls.push({ files, dir });
 		return [{ file: "b.pdf", status: "adopted", detail: "identity arXiv:2401.16393 verified by API lookup" }];
 	};
-	const result = await runSynthesize({
+	const result = await runSynthesis({
 		question: "q", root: "/", model: "g", embedModel: "fake-embed",
 	}, deps);
 	assert.deepEqual(adoptCalls, [{ files: ["b.pdf"], dir: "/papers" }]);
@@ -385,7 +385,7 @@ function makeDeps(generatorOutput: string): {
 	const controller = new AbortController();
 	controller.abort();
 	await assert.rejects(
-		() => runSynthesize({ question: "q", root: "/", embedModel: "fake-embed", signal: controller.signal }, deps),
+		() => runSynthesis({ question: "q", root: "/", embedModel: "fake-embed", signal: controller.signal }, deps),
 		/aborted/,
 	);
 }

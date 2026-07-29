@@ -16,7 +16,7 @@
  *
  * Parameter confirmation is likewise code, not instruction: every call opens
  * a blocking intake wizard with the user (see intakeWizard below; since
- * v29.1 the same rpiv-style one-overlay dialog as /lit-synth, opened on its
+ * v29.1 the same rpiv-style one-overlay dialog as /lit-synthesis, opened on its
  * submit page so one Enter runs the proposal; a BARE /lit-search opens the
  * same wizard on its empty query tab instead -- the command owns the
  * dialog, no agent handoff) -- models reliably skip "ask the user first"
@@ -311,7 +311,7 @@ function periodToRange(raw: unknown): { yearFrom?: number; yearTo?: number } | n
  * Three field tests (2x Granite, 1x Gemini, 2026-07-10) proved that a
  * description-level instruction to ask intake questions gets ignored or
  * rationalized away; this gate runs on EVERY call (user decision). Since
- * v29.1 it is the ONE rpiv-style wizard (same look as /lit-synth): with a
+ * v29.1 it is the ONE rpiv-style wizard (same look as /lit-synthesis): with a
  * proposed query it opens ON its submit page -- the review lists query,
  * grouping, years, result count and optional filters, one Enter runs the
  * proposal (the old "Run as proposed" ergonomics), arrow keys walk into
@@ -749,8 +749,8 @@ export default function literatureSearch(pi: ExtensionAPI) {
 			"written to disk by fixed code. " +
 			"This tool DISCOVERS NEW papers in online databases. It is NOT for papers already on disk: when the " +
 			"user wants to chat about, ask about or understand ONE local PDF ('zu einem Paper chatten', 'Frage zum " +
-			"Paper'), use pi-literature-chat; for a summary or review across the local PDF library, use " +
-			"pi-literature-synthesize; for downloading found papers, use pi-literature-fetch. " +
+			"Paper'), use pi-literature-synthesis (chat mode); for a summary or review across the local PDF library, use " +
+			"pi-literature-synthesis; for downloading found papers, use pi-literature-selection. " +
 			"Call this tool DIRECTLY; do NOT ask intake or clarification questions in chat first. On every call the " +
 			"tool itself shows the user a terminal wizard summarizing the proposed query (editable there -- the " +
 			"user's wording wins), grouping logic, year range, result count and optional filters (min citations, " +
@@ -760,7 +760,7 @@ export default function literatureSearch(pi: ExtensionAPI) {
 			"The tool result is a short digest only: counts, the HTML file path, and one reference line per record " +
 			"(group flag, year, DOI/arXiv ID, title). Lines marked UNVERIFIED did not resolve at doi.org/arxiv.org; " +
 			"treat them with suspicion and say so. Every run writes a deterministic HTML rendering (sortable table, " +
-			"abstracts, links, dropped list) to pi-literature-review/queries/<date>_<query>.html in the working directory " +
+			"abstracts, links, dropped list) to pi-literature-review/lit-search/<date>_<query>.html in the working directory " +
 			"(root overridable via PI_LITERATURE_REVIEW_HOME; exact path via html_file), plus a machine-readable .json " +
 			"copy of the full results with the same basename - read that file for structured follow-up steps, but do " +
 			"not mention its path to the user. The HTML file is where the user reviews and selects papers: tell them " +
@@ -824,7 +824,7 @@ export default function literatureSearch(pi: ExtensionAPI) {
 				description: 'Sort results descending: "cites" (citation count, a rough impact proxy) or "year" (newest first). Unknown values sort last. Default: source order.',
 			})),
 			html_file: Type.Optional(Type.String({
-				description: "Override for the HTML output path. Default (recommended): omit, and the deterministic location pi-literature-review/queries/<date>_<query>.html in the working directory is used. The page is generated from the JSON payload by fixed code, never by a model.",
+				description: "Override for the HTML output path. Default (recommended): omit, and the deterministic location pi-literature-review/lit-search/<date>_<query>.html in the working directory is used. The page is generated from the JSON payload by fixed code, never by a model.",
 			})),
 			enrich: Type.Optional(Type.Boolean({
 				description: "Fill missing citation counts / journal names via a deterministic OpenAlex identifier lookup (open API, no scraping). Filled fields are listed per record under 'enriched' and marked with * in the HTML. Default: true.",

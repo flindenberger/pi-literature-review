@@ -4,10 +4,10 @@
  */
 
 import assert from "node:assert/strict";
-import type { ChatAnswer, ChatReport } from "./synthesize.ts";
+import type { ChatAnswer, ChatReport } from "./synthesis.ts";
 import { MAX_DIGEST_RECORDS, renderChatDigest, renderChatReportDigest, renderDigest, renderSynthesisDigest } from "./digest.ts";
 import type { RenderPayload } from "./render.ts";
-import type { SynthesisResult } from "./synthesize.ts";
+import type { SynthesisResult } from "./synthesis.ts";
 
 function record(overrides: Record<string, unknown>) {
 	return {
@@ -296,8 +296,8 @@ const chatAnswer: ChatAnswer = {
 	assert.ok(digest.includes("[1] 2021 | 10.1234/abc | River sandbar dynamics (S. 2, 5)"));
 	// Integrity + protocol note; no HTML path in question mode.
 	assert.ok(digest.includes("1 invalid citation marker(s) were stripped"));
-	// v29: export wishes route to the /lit-synth command, never tool report mode.
-	assert.ok(digest.includes("tell them to run the /lit-synth command"));
+	// v29: export wishes route to the /lit-synthesis command, never tool report mode.
+	assert.ok(digest.includes("tell them to run the /lit-synthesis command"));
 	assert.ok(!digest.includes("report: true"));
 	assert.ok(!digest.includes(".html"));
 	assert.ok(!digest.includes("FAILED"));

@@ -1,6 +1,6 @@
 /**
  * pi-literature-review Pi extension: the ONE fused stage tool
- * pi-literature-synthesize + the /lit-synth command (v25 E2e).
+ * pi-literature-synthesis + the /lit-synthesis command (v25 E2e).
  *
  * The former pi-literature-chat and pi-literature-synthesize tools merged
  * into one. Grounded Q&A rounds, the composable report (summaries, detail
@@ -9,16 +9,17 @@
  * citation gate.
  *
  * Dialog policy (v29, user decision 2026-07-28): the wizard belongs to the
- * /lit-synth COMMAND; the agent-called TOOL runs dialog-free. A chat call
+ * /lit-synthesis COMMAND; the agent-called TOOL runs dialog-free. A chat call
  * with a settled scope answers immediately (the card shows the verbatim
  * executed question and, via terminate, has the last word); an unsettled
  * scope hands a REAL file list back to the agent (single-PDF libraries
- * resolve themselves); report-flavoured calls hand back to /lit-synth --
+ * resolve themselves); report-flavoured calls hand back to /lit-synthesis --
  * dialog-free AND expensive don't mix. The one dialog that can still open
  * from an agent turn is the HTML-write gate, which ASKS whether to build
  * the deterministic report instead of the agent's hand-written file.
  */
 
+import { pathToFileURL } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { llmConfig } from "../src/config.ts";
@@ -31,7 +32,7 @@ import {
 	type WizardResult,
 	type WizardStepDef,
 } from "../src/dialog-state.ts";
-import { matchLibrary } from "../src/corpus.ts";
+import { type LibraryPaper, matchLibrary } from "../src/corpus.ts";
 import { renderChatDigest, renderReportDigest } from "../src/digest.ts";
 import { createBackend, type LlmBackend } from "../src/llm.ts";
 import { outputRoot, writeRunOutputs } from "../src/output.ts";
@@ -50,10 +51,10 @@ import {
 	runRound,
 	scopeProtocolId,
 	type SynthReport,
-} from "../src/synthesize.ts";
+} from "../src/synthesis.ts";
 import { chatLangDefault, installChatLangObserver, runWizard } from "./dialogs.ts";
 
-const SYNTH_WIDGET = "pi-literature-review-synth";
+const SYNTHESIS_WIDGET = "pi-literature-review-synthesis";
 const ANSWER_ENTRY = "pi-literature-chat-answer";
 
 /** Wizard warning threshold: a mode-A report runs P x Q generation calls,
@@ -117,7 +118,7 @@ function formatAnswerText(answer: ChatAnswer): string {
 
 /** The verbatim question the engine actually ran, shown on every answer
  * card (v29: dialog-free chat calls make agent rephrasing VISIBLE instead
- * of preventing it -- /lit-synth <question> is the verbatim fallback). */
+ * of preventing it -- /lit-synthesis <question> is the verbatim fallback). */
 function executedQuestionLine(question: string): string {
 	return detectDialogLang([question], chatLangDefault()) === "en"
 		? `Question, as executed: ${question}`
@@ -140,7 +141,9 @@ function formatReportText(report: SynthReport, htmlPath: string | null): string 
 	return [
 		parts.join("\n\n----\n\n"),
 		report.references.map(referenceLine).join("\n"),
-		htmlPath ? `HTML-Report: ${htmlPath}` : "",
+		// file:// URL (v31.5, same as the search card): terminals linkify
+		// it, so right-click -> open lands in the browser.
+		htmlPath ? `HTML-Report: ${pathToFileURL(htmlPath).href}` : "",
 	].filter(Boolean).join("\n\n");
 }
 
@@ -160,9 +163,9 @@ function showAnswer(pi: ExtensionAPI, ctx: ExtensionContext, answer: ChatAnswer)
 			grounded: answer.grounded,
 			text: `${executedQuestionLine(answer.question)}\n\n${formatAnswerText(answer)}`,
 		});
-		if (ctx.hasUI) ctx.ui.setWidget(SYNTH_WIDGET, undefined);
+		if (ctx.hasUI) ctx.ui.setWidget(SYNTHESIS_WIDGET, undefined);
 	} else if (ctx.hasUI) {
-		ctx.ui.setWidget(SYNTH_WIDGET, answerWidgetLines(answer, label));
+		ctx.ui.setWidget(SYNTHESIS_WIDGET, answerWidgetLines(answer, label));
 	}
 }
 
@@ -190,7 +193,7 @@ function showReport(pi: ExtensionAPI, ctx: ExtensionContext, report: SynthReport
 	}
 	if (ctx.hasUI) {
 		const lines = wrapText(text);
-		ctx.ui.setWidget(SYNTH_WIDGET, lines.length > WIDGET_MAX_LINES
+		ctx.ui.setWidget(SYNTHESIS_WIDGET, lines.length > WIDGET_MAX_LINES
 			? [...lines.slice(0, WIDGET_MAX_LINES - 1), "... (full report in the HTML / JSON sidecar)"]
 			: lines);
 		return true;
@@ -324,13 +327,13 @@ const SYNTH_TEXT: Record<DialogLang, {
 	unitWarnCancel: string;
 }> = {
 	de: {
-		header: "/lit-synth -- Literatur verstehen und zusammenfassen (Esc bricht ab)",
+		header: "/lit-synthesis -- Literatur verstehen und zusammenfassen (Esc bricht ab)",
 		scopeTitle: "Über welche Dokumente möchtest du sprechen?",
 		scopeTab: "Dokumente",
 		selectAll: "Alle auswählen (ganze Bibliothek)",
 		next: "Weiter",
 		questionsTab: "Fragen",
-		questionsTitle: "Welche Frage(n) interessieren dich? (mit Semikolon trennen; leer lassen zum Chatten oder für nur Zusammenfassung)",
+		questionsTitle: "Welche Frage(n) interessieren dich? (eine je Zeile -- Enter beginnt die nächste; leer lassen zum Chatten oder für nur Zusammenfassung)",
 		questionsPlaceholder: "leer = chatten oder nur Zusammenfassung",
 		summaryTab: "Zusammenfassung",
 		summaryTitle: "Strukturierte Zusammenfassung je Dokument?",
@@ -358,13 +361,13 @@ const SYNTH_TEXT: Record<DialogLang, {
 		unitWarnCancel: "Abbrechen",
 	},
 	en: {
-		header: "/lit-synth -- understand and summarize literature (Esc cancels)",
+		header: "/lit-synthesis -- understand and summarize literature (Esc cancels)",
 		scopeTitle: "Which documents do you want to talk about?",
 		scopeTab: "Documents",
 		selectAll: "Select all (whole library)",
 		next: "Next",
 		questionsTab: "Questions",
-		questionsTitle: "Which question(s) interest you? (separate with semicolons; leave empty to chat or for a summary only)",
+		questionsTitle: "Which question(s) interest you? (one per line -- Enter starts the next; leave empty to chat or for a summary only)",
 		questionsPlaceholder: "empty = chat or summary only",
 		summaryTab: "Summary",
 		summaryTitle: "Structured summary per document?",
@@ -419,18 +422,36 @@ const GATE_TEXT: Record<DialogLang, {
 	},
 };
 
-/** Checkbox items for the scope step: EVERY PDF in the folder, verified
- * papers with year+title, the rest honestly as filename-only. */
+/** The dim metadata line under a document row (v31.2 user wish): year -
+ * first author et al. - title - identifier; only what the record carries,
+ * nothing invented. */
+function paperMetaLine(entry: LibraryPaper["entry"]): string {
+	const author = entry.authors[0]
+		? `${entry.authors[0]}${entry.authors.length > 1 ? " et al." : ""}`
+		: "";
+	const id = entry.doi || (entry.arxiv_id ? `arXiv:${entry.arxiv_id}` : "");
+	return [entry.year ?? "n.d.", author, entry.title, id].filter(Boolean).join(" - ");
+}
+
+/** Checkbox items for the scope step: EVERY PDF in the folder(s). The
+ * FILENAME is the selectable row; the verified metadata sits dim below it
+ * (v31.2 -- before, filename and title fought for one clipped line). PDFs
+ * without a record honestly say so in their dim line. */
 function scopeItems(diagnostics: string[]): ScopeItems {
 	const match = matchLibrary(outputRoot(), (message) => diagnostics.push(message));
+	// NOT pre-clipped (v31.2 field wish "später abschneiden"): the overlay
+	// clips at the LIVE terminal width anyway, so a fixed MAX_LINE cap here
+	// only threw away text that would have fit on a wide terminal.
 	const items: CheckboxItem[] = [
 		...match.matched.map((paper) => ({
 			id: paper.base,
-			label: clip(`${paper.base}.pdf -- ${paper.entry.year ?? "n.d."}  ${paper.entry.title || "(title unknown)"}`),
+			label: `${paper.base}.pdf`,
+			description: paperMetaLine(paper.entry),
 		})),
 		...match.unmatched.map((file) => ({
 			id: file.replace(/\.pdf$/i, ""),
-			label: clip(`${file} -- (no metadata yet; adoption is attempted, else cited by filename)`),
+			label: file,
+			description: "(no metadata yet; adoption is attempted, else cited by filename)",
 		})),
 	];
 	return { items, papersDir: match.papersDir, unmatchedCount: match.unmatched.length };
@@ -464,7 +485,8 @@ function questionsOf(answers: WizardAnswers | WizardResult): string[] {
 }
 
 /** The questions intake as a wizard tab (v27: joined the ONE wizard;
- * semicolon separates -- "one per line" made no sense in the terminal). */
+ * v31.4: MULTILINE -- one question per line, Enter opens the next;
+ * semicolons still separate too, so pasted old-format lists keep working). */
 function questionsStep(initial: string | undefined, lang: DialogLang = "de"): WizardStepDef {
 	const text = SYNTH_TEXT[lang];
 	return {
@@ -482,7 +504,7 @@ function questionsStep(initial: string | undefined, lang: DialogLang = "de"): Wi
  * (appears only with >= 2 documents AND >= 1 question), review synthesis,
  * HTML (appears only when anything would be generated). scopeSizeOf reads
  * the LIVE answers, so the same steps work with the scope step in the same
- * wizard (bare /lit-synth) and with a scope settled beforehand (tool path).
+ * wizard (bare /lit-synthesis) and with a scope settled beforehand (tool path).
  */
 function reportSteps(
 	scopeSizeOf: (answers: WizardAnswers) => number,
@@ -611,7 +633,7 @@ function reportSubmitNote(
 
 /**
  * THE one wizard (v27 user decision "immer der volle Dialog"): every
- * interactive intake -- chat call, report call, bare /lit-synth -- opens
+ * interactive intake -- chat call, report call, bare /lit-synthesis -- opens
  * the SAME full dialog. The scope step joins in when no scope is settled
  * yet; agent parameters, the passed question and the session's chat
  * questions only PREFILL. The submitted answers decide what runs (the
@@ -648,7 +670,9 @@ async function synthWizard(
 		: scope === "library" ? chatPool(matchLibrary(outputRoot(), () => {})).length : scope.length;
 	const scopeSizeOf = (answers: WizardAnswers): number =>
 		staticSize ?? (Array.isArray(answers.papers) ? answers.papers.length : 0);
-	steps.push(questionsStep(seedQuestions?.join("; "), lang));
+	// Seeds join with newlines (v31.4: the questions tab is multiline --
+	// one question per line, exactly how the seeds should appear).
+	steps.push(questionsStep(seedQuestions?.join("\n"), lang));
 	steps.push(...reportSteps(scopeSizeOf, defaults, lang));
 	const answers = await runWizard(ctx, steps, signal, { submitNote: reportSubmitNote(scopeSizeOf, lang), lang, header: SYNTH_TEXT[lang].header });
 	if (answers === null) return null;
@@ -718,8 +742,8 @@ async function runRoundWithUi(
 				clip(`Question: ${options.question}`),
 				`${wiring.generatorLine} -- progress appears below.`,
 			];
-			ctx.ui.setWidget(SYNTH_WIDGET, widgetLines);
-			stopTicker = startElapsedTicker((line) => ctx.ui.setWidget(SYNTH_WIDGET, [...widgetLines, line]));
+			ctx.ui.setWidget(SYNTHESIS_WIDGET, widgetLines);
+			stopTicker = startElapsedTicker((line) => ctx.ui.setWidget(SYNTHESIS_WIDGET, [...widgetLines, line]));
 		}
 		const answer = await runRound({
 			question: options.question,
@@ -742,7 +766,7 @@ async function runRoundWithUi(
 		return { error: error instanceof Error ? error.message : String(error) };
 	} finally {
 		stopTicker();
-		if (ctx.hasUI && !keepWidget) ctx.ui.setWidget(SYNTH_WIDGET, undefined);
+		if (ctx.hasUI && !keepWidget) ctx.ui.setWidget(SYNTHESIS_WIDGET, undefined);
 	}
 }
 
@@ -767,8 +791,8 @@ async function runReportWithUi(
 	];
 	try {
 		if (ctx.hasUI) {
-			ctx.ui.setWidget(SYNTH_WIDGET, baseLines);
-			stopTicker = startElapsedTicker((line) => ctx.ui.setWidget(SYNTH_WIDGET, [...baseLines, ...progressLines.slice(-3), line]));
+			ctx.ui.setWidget(SYNTHESIS_WIDGET, baseLines);
+			stopTicker = startElapsedTicker((line) => ctx.ui.setWidget(SYNTHESIS_WIDGET, [...baseLines, ...progressLines.slice(-3), line]));
 		}
 		const result = await runReport({
 			...options,
@@ -785,7 +809,7 @@ async function runReportWithUi(
 		let htmlPath: string | null = null;
 		if (saveHtml) {
 			try {
-				const written = writeRunOutputs(renderSynthReportHtml(result), result, undefined, "reports");
+				const written = writeRunOutputs(renderSynthReportHtml(result), result, undefined, "lit-synthesis");
 				htmlPath = written.htmlPath;
 				diagnostics.push(`wrote HTML report to ${written.htmlPath} and JSON copy to ${written.jsonPath}`);
 			} catch (error) {
@@ -799,7 +823,7 @@ async function runReportWithUi(
 		return { error: error instanceof Error ? error.message : String(error) };
 	} finally {
 		stopTicker();
-		if (ctx.hasUI && !keepWidget) ctx.ui.setWidget(SYNTH_WIDGET, undefined);
+		if (ctx.hasUI && !keepWidget) ctx.ui.setWidget(SYNTHESIS_WIDGET, undefined);
 	}
 }
 
@@ -808,18 +832,18 @@ async function runReportWithUi(
  * ------------------------------------------------------------------ */
 
 /** Tool name -- also the setActiveTools identity (v29). */
-const TOOL_NAME = "pi-literature-synthesize";
+const TOOL_NAME = "pi-literature-synthesis";
 
-export default async function literatureSynthesize(pi: ExtensionAPI) {
+export default async function literatureSynthesis(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: TOOL_NAME,
 		label: "Literature Synthesis",
 		description:
-			"Chat about the LOCAL PDF papers (papers/ or the current folder): grounded answers with page-exact, " +
+			"Chat about the LOCAL PDF papers (the lit-selection/ library AND loose PDFs in the current folder): grounded answers with page-exact, " +
 			"code-validated citations over ONE paper, a selection, or the whole library. Use this tool WHENEVER " +
 			"the user asks something about local papers/PDFs -- including German requests like 'zu einem Paper " +
 			"chatten', 'erklaere mir das Paper', 'Frage zum Paper'. NOT this tool: searching ONLINE for new " +
-			"literature (pi-literature-search) or downloading PDFs (pi-literature-fetch). " +
+			"literature (pi-literature-search) or downloading PDFs (pi-literature-selection). " +
 			"The tool runs WITHOUT dialogs and REMEMBERS the session's document scope. Pass the user's question " +
 			"VERBATIM, in their language and wording -- retrieval is measurably sensitive to phrasing; only " +
 			"substitute a pronoun's referent when the question alone would be ambiguous, never rephrase, expand " +
@@ -832,7 +856,7 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 			"summarize, extend, translate or 'improve' it, and never re-type titles, authors or identifiers: " +
 			"copy reference lines EXACTLY. If it FAILED to ground, relay the warning verbatim. " +
 			"REPORTS, SUMMARIES AND FILES ('fasse zusammen', 'Bericht erstellen', 'mach mir eine html', 'save " +
-			"this'): this tool does NOT build them -- tell the user to run the /lit-synth command; its wizard " +
+			"this'): this tool does NOT build them -- tell the user to run the /lit-synthesis command; its wizard " +
 			"confirms documents, questions and format, prefilled with this session's chat questions. NEVER " +
 			"write an HTML or any other file about these papers yourself. " +
 			"The answers are written by a separate LOCAL generator in excerpts-only calls (not by you); fixed code " +
@@ -842,7 +866,7 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 		promptSnippet:
 			"Chat about local PDFs with page-exact, code-validated citations. EVERY question about the papers " +
 			"goes through this tool (the scope is remembered); never answer from memory, relay validated answers " +
-			"verbatim. Reports and HTML exports are built only by the user's /lit-synth command -- never write " +
+			"verbatim. Reports and HTML exports are built only by the user's /lit-synthesis command -- never write " +
 			"such files yourself.",
 		parameters: Type.Object({
 			question: Type.Optional(Type.String({
@@ -858,22 +882,22 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 				description: "true: the user wants to switch documents -- the tool returns the file list so they can choose.",
 			})),
 			report: Type.Optional(Type.Boolean({
-				description: "Do not use: reports are built by the user's /lit-synth command; this call would only return that instruction.",
+				description: "Do not use: reports are built by the user's /lit-synthesis command; this call would only return that instruction.",
 			})),
 			questions: Type.Optional(Type.Array(Type.String(), {
-				description: "Do not use (report parameter): reports run via the /lit-synth command only.",
+				description: "Do not use (report parameter): reports run via the /lit-synthesis command only.",
 			})),
 			summary: Type.Optional(Type.String({
-				description: "Do not use (report parameter): reports run via the /lit-synth command only.",
+				description: "Do not use (report parameter): reports run via the /lit-synthesis command only.",
 			})),
 			detail_mode: Type.Optional(Type.String({
-				description: "Do not use (report parameter): reports run via the /lit-synth command only.",
+				description: "Do not use (report parameter): reports run via the /lit-synthesis command only.",
 			})),
 			include_review: Type.Optional(Type.Boolean({
-				description: "Do not use (report parameter): reports run via the /lit-synth command only.",
+				description: "Do not use (report parameter): reports run via the /lit-synthesis command only.",
 			})),
 			save_html: Type.Optional(Type.Boolean({
-				description: "Do not use (report parameter): reports run via the /lit-synth command only.",
+				description: "Do not use (report parameter): reports run via the /lit-synthesis command only.",
 			})),
 			model: Type.Optional(Type.String({
 				description: "Generator model override. Default: the model selected in pi for chat/summaries, the configured generator for review genres. Only pass when the user explicitly asks.",
@@ -910,15 +934,15 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 				|| params.save_html !== undefined;
 			const root = outputRoot();
 
-			// v29: reports, summaries and exports run ONLY via the /lit-synth
+			// v29: reports, summaries and exports run ONLY via the /lit-synthesis
 			// command -- its wizard is the consent. A dialog-free tool call
 			// must never start a many-model-call run (dialog-free AND
 			// expensive don't mix), so a report-flavoured call is a handback.
 			if (wantsReport) {
 				return reply(
-					"Reports, summaries and HTML exports are built with the /lit-synth command only -- its "
+					"Reports, summaries and HTML exports are built with the /lit-synthesis command only -- its "
 					+ "wizard lets the user confirm documents, questions and format (this session's chat "
-					+ "questions are prefilled there). Tell the user to run /lit-synth. Do not retry with "
+					+ "questions are prefilled there). Tell the user to run /lit-synthesis. Do not retry with "
 					+ "report parameters, and NEVER write an HTML or any other file about the papers yourself.",
 				);
 			}
@@ -933,7 +957,7 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 
 			// Scope: params > sticky. Everything still open is handed BACK to
 			// the chat as a real file list (v29: no dialog on the tool path;
-			// /lit-synth is the dialog path).
+			// /lit-synthesis is the dialog path).
 			let scope: string[] | "library" | undefined = params.library === true
 				? "library"
 				: params.papers?.length ? params.papers.map((name) => name.trim().replace(/\.pdf$/i, "")) : undefined;
@@ -944,7 +968,7 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 					return reply(
 						`Unknown document name(s): ${unknown.map((base) => `${base}.pdf`).join(", ")}. Only these `
 						+ `PDFs exist: ${available}. Show the user this list, let them choose, and pass the exact `
-						+ "filenames -- or point them to the /lit-synth command for the document dialog.",
+						+ "filenames -- or point them to the /lit-synthesis command for the document dialog.",
 					);
 				}
 				scope = scope.map((base) => known.get(base.toLowerCase()) as string);
@@ -952,7 +976,7 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 			if (params.pick === true) {
 				return reply(
 					"The user wants to switch documents. Show them this list and let them choose, then call "
-					+ "again with the exact filenames in papers -- or point them to /lit-synth for the dialog. "
+					+ "again with the exact filenames in papers -- or point them to /lit-synthesis for the dialog. "
 					+ `Available PDFs: ${available}`,
 				);
 			}
@@ -973,7 +997,7 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 					return reply(
 						"No document scope is set for this session. Do NOT guess or invent filenames: show the "
 						+ "user this list, ask which document(s) they mean, then call again with the exact names "
-						+ "in papers (the /lit-synth command offers the same choice as a dialog). Available "
+						+ "in papers (the /lit-synthesis command offers the same choice as a dialog). Available "
 						+ `PDFs: ${available}`,
 					);
 				}
@@ -1011,14 +1035,14 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 		},
 	});
 
-	// /lit-synth -- ONE command for the whole stage. Bare: ONE wizard
+	// /lit-synthesis -- ONE command for the whole stage. Bare: ONE wizard
 	// (documents -> questions -> report menu -> submit, v27); a pure chat
 	// wish hands the loop to the agent (v22 doctrine). With arguments: ONE
 	// agent-free grounded round.
-	pi.registerCommand("lit-synth", {
+	pi.registerCommand("lit-synthesis", {
 		description:
-			"Chat about and report on local PDFs with verified citations. Bare /lit-synth runs the wizard "
-			+ "(documents, questions, report menu); /lit-synth <question> answers once, agent-free.",
+			"Chat about and report on local PDFs with verified citations. Bare /lit-synthesis runs the wizard "
+			+ "(documents, questions, report menu); /lit-synthesis <question> answers once, agent-free.",
 		handler: async (args, ctx) => {
 			if (!ctx.hasUI) return;
 			const question = (args ?? "").trim();
@@ -1029,7 +1053,7 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 			const sticky = readCurrentScope(root, session);
 
 			if (question && sticky) {
-				// /lit-synth <question> with a remembered scope: the
+				// /lit-synthesis <question> with a remembered scope: the
 				// deterministic agent-free quick path, NO dialog (documented).
 				const outcome = await runRoundWithUi(pi, ctx, {
 					question,
@@ -1067,14 +1091,14 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 				// Chat wish: hand the loop to the agent (v22 pattern).
 				const label = scope === "library" ? "the whole library" : scope.map((base) => `${base}.pdf`).join(", ");
 				pi.sendMessage({
-					customType: "pi-literature-synth-handoff",
+					customType: "pi-literature-synthesis-handoff",
 					content:
-						`The user picked ${label} for a grounded chat via /lit-synth. `
+						`The user picked ${label} for a grounded chat via /lit-synthesis. `
 						+ "Ask them now, in ONE short sentence, what they would like to know -- mention that an "
 						+ "overview, specific details, or bullet points are all fine, in German or English. Route "
-						+ "EVERY question through the pi-literature-synthesize tool: pass only the question (the "
+						+ "EVERY question through the pi-literature-synthesis tool: pass only the question (the "
 						+ "scope is remembered) and relay each validated answer verbatim. If they ask for a "
-						+ "summary, an HTML, or to save/export anything, tell them to run /lit-synth -- never "
+						+ "summary, an HTML, or to save/export anything, tell them to run /lit-synthesis -- never "
 						+ "write such a file yourself.",
 					display: false,
 				}, { triggerTurn: true });
@@ -1169,7 +1193,7 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 	// .html file is the classic hand-built-report failure ("baue mir eine
 	// html"). The gate no longer just blocks -- it ASKS: the default choice
 	// opens the report wizard right here (the dialog choice IS the consent
-	// the wizard otherwise gets via /lit-synth), "allow" lets unrelated
+	// the wizard otherwise gets via /lit-synthesis), "allow" lets unrelated
 	// HTML writes through, cancel/Esc blocks. Headless keeps the hard block.
 	pi.on("tool_call", async (event, ctx) => {
 		if (event.toolName !== "write" && event.toolName !== "edit") return;
@@ -1186,7 +1210,7 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 		const blockReason =
 			`Blocked by pi-literature-review: a grounded document chat (${label}) is active. HTML exports come `
 			+ "from the deterministic report (verified citations, page-exact PDF links), which the user starts "
-			+ "with the /lit-synth command. Suggest /lit-synth to the user; never write such a file yourself.";
+			+ "with the /lit-synthesis command. Suggest /lit-synthesis to the user; never write such a file yourself.";
 		if (!ctx.hasUI) return { block: true, reason: blockReason };
 		const lang = chatLangDefault();
 		const text = GATE_TEXT[lang];
@@ -1217,7 +1241,7 @@ export default async function literatureSynthesize(pi: ExtensionAPI) {
 			return {
 				block: true,
 				reason: "Blocked: the user chose nothing to generate. Ask what they want instead; never write "
-					+ "an HTML about the papers yourself (/lit-synth builds reports).",
+					+ "an HTML about the papers yourself (/lit-synthesis builds reports).",
 			};
 		}
 		// Exactly one question and nothing else: a grounded chat round.

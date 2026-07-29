@@ -115,6 +115,22 @@ const items = [
 	const wide = checkboxLines(many, "Alle");
 	assert.ok(wide[1].text.startsWith("   1. "));
 	assert.ok(wide[10].text.startsWith("  10. "));
+
+	// v31.2: an item description renders as a dim line under the label,
+	// indented to the label column; it is never a cursor row.
+	const withMeta = initCheckbox([
+		{ id: "a", label: "a.pdf", description: "2024 - A. Author et al. - Title - 10.1/x" },
+		{ id: "b", label: "b.pdf" },
+	]);
+	const metaLines = checkboxLines(withMeta, "Alle");
+	assert.deepEqual(metaLines.map((line) => line.text), [
+		"❯    [ ] Alle",
+		"  1. [ ] a.pdf",
+		"         2024 - A. Author et al. - Title - 10.1/x",
+		"  2. [ ] b.pdf",
+	]);
+	assert.deepEqual(metaLines.map((line) => line.dim ?? false), [false, false, true, false]);
+	assert.deepEqual(metaLines.map((line) => line.active), [true, false, false, false]);
 }
 
 /* ---------------- parseQuestionLines ---------------- */
@@ -289,25 +305,43 @@ function drive(
 		},
 		wizardSteps[2], // the save choice
 	];
-	// Typing appends; control chars are stripped; pasted newlines become
-	// semicolons; backspace deletes.
+	// Typing appends; control chars are stripped; pasted newlines STAY
+	// newlines on the multiline question step (v31.4); backspace deletes.
 	let { state } = drive(initWizard(steps, { lang: "de" }), [
 		{ kind: "input", chars: "Welche Kamera?" },
 		{ kind: "input", chars: "\nWo installiert??" },
 		"backspace",
 	]);
-	assert.equal(state.texts[0], "Welche Kamera?;Wo installiert?");
+	assert.equal(state.texts[0], "Welche Kamera?\nWo installiert?");
 	let view = wizardView(state);
-	assert.ok(view.rows[0].text.startsWith("❯ Welche Kamera?;Wo installiert?"));
-	assert.ok(view.rows[1].text.includes("2 Frage(n) erkannt"));
-	assert.ok(view.hint.includes("Semikolon"));
-	// Enter commits the text and advances; the summary carries the questions.
-	({ state } = drive(state, ["confirm", "confirm", "confirm"])); // text -> save "yes" -> submit? no: save confirm advances to submit; last confirm = Absenden
+	// One question per line: earlier lines plain, the LAST line carries the
+	// cursor; the count line follows; the hint explains the Enter semantics.
+	assert.equal(view.rows[0].text, "  Welche Kamera?");
+	assert.ok(view.rows[1].text.startsWith("❯ Wo installiert?"));
+	assert.ok(view.rows[2].text.includes("2 Frage(n) erkannt"));
+	assert.ok(view.hint.includes("neue Zeile"));
+	// Enter on a filled last line opens a NEW line; Enter on the blank line
+	// trims it and advances (v31.4: two strokes leave a filled tab).
+	({ state } = drive(state, ["confirm"]));
+	assert.equal(state.texts[0], "Welche Kamera?\nWo installiert?\n");
+	assert.equal(drive(state, []).state.tab, 0); // still on the questions tab
+	({ state } = drive(state, ["confirm"])); // blank line -> trim + advance
+	assert.equal(state.texts[0], "Welche Kamera?\nWo installiert?");
+	({ state } = drive(state, ["confirm", "confirm"])); // save "yes" -> submit Absenden
 	const finished = drive(state, []);
 	assert.deepEqual(wizardResult(finished.state), {
-		questions: "Welche Kamera?;Wo installiert?",
+		questions: "Welche Kamera?\nWo installiert?",
 		save: "yes",
 	});
+	// With more lines than the window the view shows the tail plus an
+	// overflow note counting the hidden lines above.
+	const many = drive(initWizard(steps, { lang: "de" }), [
+		{ kind: "input", chars: Array.from({ length: 10 }, (_, i) => `Frage ${i + 1}?`).join("\n") },
+	]);
+	const tall = wizardView(many.state);
+	assert.ok(tall.rows[0].text.includes("2 weitere Zeile(n) oben"));
+	assert.equal(tall.rows[1].text, "  Frage 3?");
+	assert.ok(tall.rows[8].text.startsWith("❯ Frage 10?"));
 	// An EMPTY text is a valid answer (= no questions): finish succeeds.
 	const empty = drive(initWizard(steps, { lang: "de" }), ["confirm", "confirm", "confirm"]);
 	assert.equal(empty.done, "confirmed");
@@ -361,6 +395,10 @@ function drive(
 	const disabledView = wizardView(state);
 	assert.ok(disabledView.rows[0].text.includes(DIALOG_TEXT.de.disabledDefault));
 	assert.equal(disabledView.hint, DIALOG_TEXT.de.hintDisabled);
+	// v31.3: the reason renders as a WARNING row (yellow, ⚠) -- same look
+	// as the submit page's "answer remaining" line.
+	assert.ok(disabledView.rows[0].text.includes("⚠ "));
+	assert.equal(disabledView.rows[0].warn, true);
 	// Everything but navigation is inert there...
 	const idle = drive(state, [{ kind: "input", chars: "x" }, "toggle", "up", "backspace"]);
 	assert.equal(idle.state, state);
@@ -371,8 +409,9 @@ function drive(
 	const finished = drive(state, ["confirm", "confirm", "confirm"]); // save "yes" -> submit -> Absenden
 	assert.equal(finished.done, "confirmed");
 	assert.deepEqual(wizardResult(finished.state), { questions: "", save: "yes" });
-	// WITH a question the step exists again and gates the finish.
-	let withQ = drive(initWizard(steps, { lang: "de" }), [{ kind: "input", chars: "Welche Kamera?" }, "confirm"]);
+	// WITH a question the step exists again and gates the finish (v31.4:
+	// the filled multiline tab needs Enter twice -- new line, then advance).
+	let withQ = drive(initWizard(steps, { lang: "de" }), [{ kind: "input", chars: "Welche Kamera?" }, "confirm", "confirm"]);
 	assert.equal(withQ.state.tab, 1);
 	withQ = drive(withQ.state, ["right", "confirm", "confirm"]); // skip detail, answer save, Absenden
 	assert.equal(withQ.done, undefined);
@@ -390,7 +429,7 @@ function drive(
 	// The search intake pattern: open ON the review page, every step
 	// pre-answered -- ONE Enter runs the proposal (old dialog parity).
 	const steps: WizardStepDef[] = [
-		{ kind: "text", id: "query", tab: "Suchanfrage", title: "Wonach suchen?", initial: "sandbar detection" },
+		{ kind: "text", id: "query", tab: "Suchanfrage", title: "Wonach suchen?", initial: "sandbar detection", plain: true },
 		{
 			kind: "choice", id: "depth", tab: "Tiefe", title: "Suchtiefe?",
 			options: [{ value: "quick", label: "Schnell" }, { value: "custom", label: "Eigene Anzahl" }],
@@ -398,7 +437,7 @@ function drive(
 		},
 		{
 			kind: "text", id: "count", tab: "Anzahl", title: "Treffer je Quelle",
-			initial: "5",
+			initial: "5", plain: true,
 			enabledIf: (answers) => answers.depth === "custom",
 			disabledNote: "Nur bei eigener Anzahl relevant.",
 		},
@@ -450,7 +489,7 @@ function drive(
 	// A one-step question gate: Enter finishes DIRECTLY, no review page.
 	const gate: WizardStepDef[] = [{
 		kind: "text", id: "question", tab: "Frage", title: "Frage prüfen",
-		initial: "welche kameras wurden verwendet?",
+		initial: "welche kameras wurden verwendet?", plain: true,
 	}];
 	const confirmed = drive(initWizard(gate, { skipSubmit: true }), ["confirm"]);
 	assert.equal(confirmed.done, "confirmed");

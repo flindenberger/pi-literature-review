@@ -122,7 +122,9 @@ async function checkboxOverlay(ctx: ExtensionContext, options: CheckboxListOptio
 					const clip = (line: string): string => (width > 1 && line.length > width ? `${line.slice(0, width - 1)}…` : line);
 					const lines: string[] = [paint("accent", clip(options.title))];
 					for (const row of checkboxLines(state, options.selectAllLabel)) {
-						lines.push(row.active ? paint("accent", clip(row.text)) : clip(row.text));
+						lines.push(row.active ? paint("accent", clip(row.text))
+							: row.dim ? paint("dim", clip(row.text))
+							: clip(row.text));
 					}
 					lines.push(paint("dim", clip(ADAPTER_TEXT[options.lang ?? "en"].checkboxHint)));
 					return lines;
@@ -164,7 +166,10 @@ async function checkboxSelectLoop(
 		const all = shown.length > 0 && shown.every((item) => selected.has(item.id));
 		const rows = [
 			`[${all ? "x" : " "}] ${options.selectAllLabel}`,
-			...shown.map((item) => `[${selected.has(item.id) ? "x" : " "}] ${item.label}`),
+			// The select-loop has no dim second line; the description joins
+			// the row so the metadata survives the fallback (v31.2).
+			...shown.map((item) =>
+				`[${selected.has(item.id) ? "x" : " "}] ${item.label}${item.description !== undefined ? ` -- ${item.description}` : ""}`),
 			doneRow,
 			...(options.backRow ? [backRow] : []),
 		];

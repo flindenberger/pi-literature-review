@@ -15,6 +15,11 @@ export interface CheckboxItem {
 	/** Stable identity returned by selection() (e.g. the PDF basename). */
 	id: string;
 	label: string;
+	/** Optional dim metadata line under the label (v31.2 user wish: the
+	 * documents tab keeps the filename as the selectable row and shows
+	 * year/author/title/DOI in grey below it). View-only -- the cursor
+	 * walks the items, never these lines. */
+	description?: string;
 }
 
 export interface CheckboxState {
@@ -87,6 +92,8 @@ export interface CheckboxLine {
 	text: string;
 	/** True for the cursor row (the adapter highlights it). */
 	active: boolean;
+	/** True for an item's description line (the adapter dims it). */
+	dim?: boolean;
 }
 
 /** Deterministic row texts in the rpiv look: a select-all summary row on
@@ -105,6 +112,11 @@ export function checkboxLines(state: CheckboxState, selectAllLabel: string): Che
 			text: `${active ? "❯ " : "  "}${String(i + 1).padStart(width)}. ${mark(state.selected.has(item.id))} ${item.label}`,
 			active,
 		});
+		// Dim metadata line, indented to the label column (v31.2); never a
+		// cursor stop -- the item above stays the selectable row.
+		if (item.description !== undefined) {
+			lines.push({ text: `${" ".repeat(width + 8)}${item.description}`, active: false, dim: true });
+		}
 	});
 	return lines;
 }
@@ -339,6 +351,8 @@ export const DIALOG_TEXT: Record<DialogLang, {
 	 * the rpiv look -- shown up front instead of only jumping on Enter). */
 	answerRemaining: (tabs: string[]) => string;
 	questionsDetected: (n: number) => string;
+	/** Overflow note of the multiline question window (v31.4). */
+	linesAbove: (n: number) => string;
 	hintSubmit: string;
 	hintCheckbox: string;
 	hintText: string;
@@ -357,9 +371,10 @@ export const DIALOG_TEXT: Record<DialogLang, {
 		noQuestions: "(keine)",
 		answerRemaining: (tabs) => `⚠ Vor dem Absenden noch beantworten: ${tabs.join(", ")}`,
 		questionsDetected: (n) => `${n} Frage(n) erkannt`,
+		linesAbove: (n) => `(… ${n} weitere Zeile(n) oben)`,
 		hintSubmit: "Enter bestätigt · ←/→ Schritt · Esc abbrechen",
 		hintCheckbox: "Space/Enter auswählen · Enter auf der Weiter-Zeile bestätigt · ←/→ Schritt · Esc abbrechen",
-		hintText: "Tippen · Semikolon trennt Fragen · Enter übernimmt · ←/→ Schritt · Esc abbrechen",
+		hintText: "Tippen · Enter: neue Zeile/Frage · Enter auf leerer Zeile oder →: weiter · Esc abbrechen",
 		hintPlainText: "Tippen · Enter übernimmt · ←/→ Schritt · Esc abbrechen",
 		hintForm: "Tippen · ↑/↓ Feld · Enter übernimmt · ←/→ Schritt · Esc abbrechen",
 		hintChoice: "Enter wählt und geht weiter · ←/→ Schritt · Esc abbrechen",
@@ -375,9 +390,10 @@ export const DIALOG_TEXT: Record<DialogLang, {
 		noQuestions: "(none)",
 		answerRemaining: (tabs) => `⚠ Answer remaining questions before submitting: ${tabs.join(", ")}`,
 		questionsDetected: (n) => `${n} question(s) recognized`,
+		linesAbove: (n) => `(… ${n} more line(s) above)`,
 		hintSubmit: "Enter confirms · ←/→ step · Esc cancels",
 		hintCheckbox: "Space/Enter selects · Enter on the Next row confirms · ←/→ step · Esc cancels",
-		hintText: "Type · semicolons separate questions · Enter confirms · ←/→ step · Esc cancels",
+		hintText: "Type · Enter: new line/question · Enter on an empty line or →: continue · Esc cancels",
 		hintPlainText: "Type · Enter confirms · ←/→ step · Esc cancels",
 		hintForm: "Type · ↑/↓ field · Enter confirms · ←/→ step · Esc cancels",
 		hintChoice: "Enter picks and advances · ←/→ step · Esc cancels",
@@ -496,9 +512,17 @@ export function initWizard(steps: WizardStepDef[], options?: WizardOptions): Wiz
 	};
 }
 
+/** Visible line window of a multiline question step (v31.4): with more
+ * lines the view shows the TAIL (the cursor lives on the last line) plus
+ * an overflow note counting the lines above. */
+export const MAX_TEXT_ROWS = 8;
+
 function rowCount(step: WizardStepDef): number {
-	return step.kind === "checkbox" ? step.items.length + 2
-		: step.kind === "text" ? 2 // input line + count/placeholder line
+	return step.kind === "checkbox"
+		? step.items.length + step.items.filter((item) => item.description !== undefined).length + 2
+		// Plain: input + placeholder line. Multiline questions (v31.4): the
+		// line window, a possible overflow note and the count line.
+		: step.kind === "text" ? (step.plain ? 2 : MAX_TEXT_ROWS + 2)
 		: step.kind === "form" ? step.fields.length
 		// A description adds a dim explanation row under its option (v30.2).
 		: step.options.length + step.options.filter((option) => option.description !== undefined).length;
@@ -639,10 +663,15 @@ function finish(state: WizardState): WizardStep {
 	return { state, done: "confirmed" };
 }
 
-/** Control characters never enter a text value; pasted newlines become the
- * question separator. */
-function sanitizeInput(chars: string): string {
-	return chars.replace(/\r\n?|\n/g, ";").replace(/[\u0000-\u001f\u007f]/g, "");
+/** Control characters never enter a text value. Single-line inputs turn
+ * pasted newlines into the question separator; MULTILINE question steps
+ * (v31.4) keep them -- one question per line. */
+function sanitizeInput(chars: string, multiline = false): string {
+	const normalized = chars.replace(/\r\n?|\n/g, multiline ? "\n" : ";");
+	// \n itself is a control character -- the multiline strip must keep it.
+	return multiline
+		? normalized.replace(/[\u0000-\u0009\u000b-\u001f\u007f]/g, "")
+		: normalized.replace(/[\u0000-\u001f\u007f]/g, "");
 }
 
 export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep {
@@ -704,7 +733,8 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 	// Typed characters and backspace only ever edit an input context.
 	if (typeof event === "object") {
 		if (editedValue === null) return { state };
-		const chars = sanitizeInput(event.chars);
+		// Only a non-plain text step (the questions tab) is multiline.
+		const chars = sanitizeInput(event.chars, onText && current?.kind === "text" && !current.plain);
 		if (!chars) return { state };
 		const value = editedValue + chars;
 		return { state: onForm ? withFormText(value) : withText(value) };
@@ -790,6 +820,19 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 				return advance(state);
 			}
 			if (step.kind === "text") {
+				// MULTILINE question steps (v31.4 user wish "jede Frage in
+				// einer Zeile"): Enter opens a new line; Enter on a BLANK
+				// last line (or on an empty step) advances -- so an untouched
+				// tab still passes with one stroke, a filled one with two.
+				if (!step.plain) {
+					const value = effectiveText(state, state.tab);
+					if (value.trim() === "") return advance(state);
+					const lines = value.split("\n");
+					if (lines[lines.length - 1].trim() === "") {
+						return advance(withText(lines.slice(0, -1).join("\n")));
+					}
+					return { state: withText(`${value}\n`) };
+				}
 				return advance(state); // empty text is a valid answer
 			}
 			if (step.kind === "form") {
@@ -957,11 +1000,13 @@ export function wizardView(state: WizardState): WizardView {
 	}
 	const step = state.steps[state.tab];
 	// A visited disabled step shows its reason instead of its rows (v29).
+	// The reason is a WARNING row (v31.3 user wish): yellow with the ⚠ sign,
+	// same look as the submit page's "answer remaining" line.
 	if (!stepEnabled(state, state.tab)) {
 		return {
 			tabs,
 			title: step.title,
-			rows: [{ text: `     ${step.disabledNote ?? text.disabledDefault}`, active: false }],
+			rows: [{ text: `   ⚠ ${step.disabledNote ?? text.disabledDefault}`, active: false, warn: true }],
 			hint: text.hintDisabled,
 		};
 	}
@@ -986,17 +1031,37 @@ export function wizardView(state: WizardState): WizardView {
 		}
 	} else if (step.kind === "text") {
 		const value = effectiveText(state, state.tab);
-		rows.push({ text: `❯ ${value}_`, active: true });
-		// Plain inputs (query, years, grouping) get no question counter --
-		// only the placeholder while empty (v30); the info line renders dim
-		// (v30.3 user wish: the example query in grey).
-		rows.push({
-			text: !value ? `     ${step.placeholder ?? ""}`
-				: step.plain ? ""
-				: `     ${text.questionsDetected(parseQuestionLines(value).length)}`,
-			active: false,
-			dim: true,
-		});
+		if (step.plain) {
+			rows.push({ text: `❯ ${value}_`, active: true });
+			// Plain inputs (query, years, grouping) get no question counter --
+			// only the placeholder while empty (v30); the info line renders
+			// dim (v30.3 user wish: the example query in grey).
+			rows.push({
+				text: !value ? `     ${step.placeholder ?? ""}` : "",
+				active: false,
+				dim: true,
+			});
+		} else {
+			// MULTILINE question step (v31.4): one question per line, the
+			// cursor always on the last line; with many lines a window shows
+			// the tail and an overflow note counts the lines above it.
+			const lines = value.split("\n");
+			const visible = lines.slice(-MAX_TEXT_ROWS);
+			const hidden = lines.length - visible.length;
+			if (hidden > 0) {
+				rows.push({ text: `     ${text.linesAbove(hidden)}`, active: false, dim: true });
+			}
+			visible.forEach((line, index) => {
+				const last = index === visible.length - 1;
+				rows.push(last ? { text: `❯ ${line}_`, active: true } : { text: `  ${line}`, active: false });
+			});
+			rows.push({
+				text: !value ? `     ${step.placeholder ?? ""}`
+					: `     ${text.questionsDetected(parseQuestionLines(value).length)}`,
+				active: false,
+				dim: true,
+			});
+		}
 	} else if (step.kind === "form") {
 		step.fields.forEach((field, i) => {
 			const active = cursor === i;

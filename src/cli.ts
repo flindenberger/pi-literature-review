@@ -12,9 +12,9 @@
  * Clean JSON to stdout; warnings and diagnostics to stderr. A failing
  * source degrades gracefully and never crashes the run.
  *
- * Second subcommand -- deterministic PDF retrieval into the papers/ library:
+ * Second subcommand -- deterministic PDF retrieval into the lit-selection/ library:
  *
- *     node src/cli.ts fetch <DOI-or-arXiv-ID> [more ...]
+ *     node src/cli.ts selection <DOI-or-arXiv-ID> [more ...]
  *
  * Diagnostic subcommands for the synthesis stage -- llm-check resolves the
  * LLM backend config, then round-trips one embedding and a tiny generation
@@ -29,13 +29,13 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { adoptUnmatched, realAdoptDeps } from "./adopt.ts";
-import { runChatReport, runReport, runRound } from "./synthesize.ts";
+import { runChatReport, runReport, runRound } from "./synthesis.ts";
 import { llmConfig } from "./config.ts";
-import { ensureIndexed, matchLibrary, realCorpusDeps } from "./corpus.ts";
+import { ensureIndexed, matchLibrary, realCorpusDeps, unmatchedGroups } from "./corpus.ts";
 import { chunkPages, cleanPageText, extractPdfPages, isExtractionUsable } from "./extract.ts";
-import { renderFetchReport, runFetch } from "./fetch.ts";
+import { renderFetchReport, runSelection } from "./selection.ts";
 import { createBackend } from "./llm.ts";
-import { runSynthesize, type SynthesizeOptions } from "./synthesize.ts";
+import { runSynthesis, type SynthesisOptions } from "./synthesis.ts";
 import { renderChatDigest, renderChatReportDigest, renderDigest, renderReportDigest, renderSynthesisDigest } from "./digest.ts";
 import { runSearch, SEARCHERS, type SearchOptions } from "./search.ts";
 import { parseGroupTerms } from "./intake.ts";
@@ -64,30 +64,30 @@ function usage(): never {
 	warn("       [--min-cites N] [--year-from YYYY] [--year-to YYYY] [--venues \"a,b\"]");
 	warn("       [--require-pdf] [--verified-only] [--sort cites|year] [--html [FILE]] [--no-enrich]");
 	warn("       [--variant \"...\" (repeatable)] [--digest]");
-	warn("       --html without FILE writes to pi-literature-review/queries/<date>_<query>.html");
+	warn("       --html without FILE writes to pi-literature-review/lit-search/<date>_<query>.html");
 	warn("       (the full JSON payload is always written next to the HTML, same basename)");
 	warn("       --variant adds an alternative phrasing; results are deduplicated across variants");
 	warn("       --digest prints the agent-facing digest instead of JSON (combine with --html for real paths)");
 	warn(`available sources: ${Object.keys(SEARCHERS).join(", ")}`);
-	warn("or:    node src/cli.ts fetch <DOI-or-arXiv-ID> [more ...]");
-	warn("       downloads legal open-access PDFs into pi-literature-review/papers/");
+	warn("or:    node src/cli.ts selection <DOI-or-arXiv-ID> [more ...]");
+	warn("       downloads legal open-access PDFs into pi-literature-review/lit-selection/");
 	warn("or:    node src/cli.ts llm-check");
 	warn("       resolves the LLM backend config and round-trips embed + generate");
 	warn("or:    node src/cli.ts extract <file.pdf>");
 	warn("       shows pages, the usability gate and the chunking for one PDF");
 	warn("or:    node src/cli.ts index [--reindex]");
-	warn("       matches papers/ against the saved searches and updates the embedding index");
-	warn('or:    node src/cli.ts synth "<question>" [--paper <file.pdf>] [--session ID] [--model M]');
+	warn("       matches lit-selection/ against the saved searches and updates the embedding index");
+	warn('or:    node src/cli.ts synthesis "<question>" [--paper <file.pdf>] [--session ID] [--model M]');
 	warn("       [--embed-model E] [--top-k N] [--language L] [--reindex] [--digest]");
 	warn("       one grounded chat round about ONE paper (page-exact citations; sticky paper");
-	warn("       of the session when --paper is omitted); recorded in chats/<date>_<paper>.json");
-	warn('or:    node src/cli.ts synth --report [--papers "a.pdf,b.pdf" | --all | --paper X]');
+	warn("       of the session when --paper is omitted); recorded in lit-synthesis/protocols/<date>_<paper>.json");
+	warn('or:    node src/cli.ts synthesis --report [--papers "a.pdf,b.pdf" | --all | --paper X]');
 	warn('       [--questions "q1;q2"] [--summary bullets|prose] [--detail-mode per-paper|cross-paper]');
 	warn("       [--review] [--session ID] [--model M] [--embed-model E] [--top-k N] [--language L]");
 	warn("       [--ui-language de|en] [--reindex] [--html [FILE]] [--digest]");
 	warn("       composable report: per-paper summaries, detail questions (mode A per paper /");
-	warn("       mode B cross-paper), optional review synthesis; writes reports/<date>_Report_...html");
-	warn('or:    node src/cli.ts synth --session-report [--paper <file.pdf>] ["<focus>"] [--session ID]');
+	warn("       mode B cross-paper), optional review synthesis; writes lit-synthesis/<date>_Report_...html");
+	warn('or:    node src/cli.ts synthesis --session-report [--paper <file.pdf>] ["<focus>"] [--session ID]');
 	warn("       [--html [FILE]] [--digest]");
 	warn("       grounded summary of ONE pi session's chat rounds (the classic session report)");
 	process.exit(2);
@@ -194,12 +194,12 @@ if (process.argv[2] === "llm-check") {
 	}
 }
 
-if (process.argv[2] === "synthesize" || process.argv[2] === "chat") {
-	warn(`the "${process.argv[2]}" subcommand was merged into "synth" (v25) -- see usage`);
+if (["synthesize", "chat", "synth"].includes(process.argv[2] ?? "")) {
+	warn(`the "${process.argv[2]}" subcommand is now "synthesis" (v31; "synthesize"/"chat" merged in v25) -- see usage`);
 	usage();
 }
 
-if (process.argv[2] === "synth") {
+if (process.argv[2] === "synthesis") {
 	// The fused stage (v25): one grounded round, the composable report
 	// (--report) or the classic session report (--session-report).
 	const argv = process.argv.slice(3);
@@ -295,7 +295,7 @@ if (process.argv[2] === "synth") {
 			question: question.trim() || undefined,
 			paper, session, model, embedModel, language, reindex, onWarn: warn,
 		});
-		const written = writeRunOutputs(renderPaperChatReportHtml(result), result, htmlArg || undefined, "chats");
+		const written = writeRunOutputs(renderPaperChatReportHtml(result), result, htmlArg || undefined, "lit-synthesis");
 		warn(`wrote HTML report to ${written.htmlPath}`);
 		warn(`wrote JSON copy to ${written.jsonPath}`);
 		process.stdout.write(`${renderChatReportDigest(result, written.htmlPath)}\n`);
@@ -326,7 +326,7 @@ if (process.argv[2] === "synth") {
 			onWarn: warn,
 			onProgress: warn,
 		});
-		const written = writeRunOutputs(renderSynthReportHtml(result), result, htmlArg || undefined, "reports");
+		const written = writeRunOutputs(renderSynthReportHtml(result), result, htmlArg || undefined, "lit-synthesis");
 		warn(`wrote HTML report to ${written.htmlPath}`);
 		warn(`wrote JSON copy to ${written.jsonPath}`);
 		process.stdout.write(`${renderReportDigest(result, written.htmlPath)}\n`);
@@ -370,11 +370,14 @@ if (process.argv[2] === "index") {
 	const force = process.argv.includes("--reindex");
 	const root = outputRoot();
 	let match = matchLibrary(root, warn);
-	warn(`papers found in ${match.papersDir}`);
+	warn(`papers found in ${(match.dirs ?? [match.papersDir]).join(", ")}`);
 	// Loose PDFs get an adoption attempt (identifier from the PDF text,
 	// verified API lookup) before anything is declared unmatched.
 	if (match.unmatched.length) {
-		const adoptions = await adoptUnmatched(match.unmatched, match.papersDir, realAdoptDeps(), warn);
+		const adoptions: Awaited<ReturnType<typeof adoptUnmatched>> = [];
+		for (const group of unmatchedGroups(match)) {
+			adoptions.push(...await adoptUnmatched(group.files, group.dir, realAdoptDeps(), warn));
+		}
 		for (const adoption of adoptions) {
 			warn(`${adoption.status === "adopted" ? "adopted" : "not adopted"}: ${adoption.file} -- ${adoption.detail}`);
 		}
@@ -391,7 +394,7 @@ if (process.argv[2] === "index") {
 	}
 	const cfg = llmConfig();
 	const backend = createBackend(cfg);
-	const indexDir = join(root, "index");
+	const indexDir = join(root, "lit-synthesis", "index");
 	mkdirSync(indexDir, { recursive: true });
 	const deps = realCorpusDeps((texts, signal) => backend.embed(texts, signal));
 	const { indexes, failures } = await ensureIndexed(matched, indexDir, cfg.embedModel, deps, {
@@ -424,7 +427,7 @@ if (process.argv[2] === "extract") {
 	process.exit(0);
 }
 
-if (process.argv[2] === "fetch") {
+if (process.argv[2] === "selection" || process.argv[2] === "fetch") {
 	// Identifiers may arrive comma-separated (pasted chat sentence) or as
 	// separate arguments; both spellings end up as one clean list.
 	const identifiers = process.argv.slice(3)
@@ -432,7 +435,7 @@ if (process.argv[2] === "fetch") {
 		.map((s) => s.trim())
 		.filter(Boolean);
 	if (!identifiers.length) usage();
-	const { results, papersDir } = await runFetch({ identifiers, onWarn: warn });
+	const { results, papersDir } = await runSelection({ identifiers, onWarn: warn });
 	process.stdout.write(`${renderFetchReport(results, papersDir)}\n`);
 	process.exit(0);
 }

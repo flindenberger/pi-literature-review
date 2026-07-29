@@ -30,6 +30,7 @@ import {
 	type LibraryPaper,
 	matchLibrary,
 	realCorpusDeps,
+	unmatchedGroups,
 } from "./corpus.ts";
 import { phraseOf } from "./extract.ts";
 import { createBackend, type GenerateOptions, type LlmBackend } from "./llm.ts";
@@ -397,7 +398,7 @@ export function assembleReport(units: CitedUnit[]): { units: CitedUnit[]; refere
  * Orchestration                                                        *
  * ------------------------------------------------------------------ */
 
-export interface SynthesizeOptions {
+export interface SynthesisOptions {
 	question: string;
 	/** Restrict to these PDF filenames (basename, with or without .pdf). */
 	papers?: string[];
@@ -413,7 +414,7 @@ export interface SynthesizeOptions {
 	signal?: AbortSignal;
 }
 
-export interface SynthesizeDeps {
+export interface SynthesisDeps {
 	corpus: CorpusDeps;
 	backend: LlmBackend;
 	/** Library scan; injectable so the orchestration tests offline. */
@@ -480,9 +481,9 @@ function filterPapers(matched: LibraryPaper[], wanted: string[] | undefined, onW
 	return kept;
 }
 
-export async function runSynthesize(
-	options: SynthesizeOptions,
-	deps?: SynthesizeDeps,
+export async function runSynthesis(
+	options: SynthesisOptions,
+	deps?: SynthesisDeps,
 ): Promise<SynthesisResult> {
 	const onWarn = options.onWarn ?? (() => {});
 	const question = options.question.trim();
@@ -506,7 +507,11 @@ export async function runSynthesize(
 		onWarn(`${match.unmatched.length} PDF(s) without verified metadata -- attempting adoption (identifier lookup)`);
 		const adoptFn = deps?.adopt
 			?? ((files: string[], dir: string) => adoptUnmatched(files, dir, realAdoptDeps(), onWarn, options.signal));
-		const adoptions = await adoptFn(match.unmatched, match.papersDir);
+		// One adoption pass per folder (v31.1: the corpus may span several).
+		const adoptions: AdoptionResult[] = [];
+		for (const group of unmatchedGroups(match)) {
+			adoptions.push(...await adoptFn(group.files, group.dir));
+		}
 		for (const adoption of adoptions) {
 			if (adoption.status === "adopted") {
 				adoptedPdfs.push(adoption.file);
@@ -530,7 +535,7 @@ export async function runSynthesize(
 	}
 
 	// 2. Index (cached unless content/model changed), then the question vector.
-	const { indexes, failures } = await ensureIndexed(papers, join(root, "index"), embedModel, corpus, {
+	const { indexes, failures } = await ensureIndexed(papers, join(root, "lit-synthesis", "index"), embedModel, corpus, {
 		force: options.reindex,
 		onProgress: onWarn,
 		signal: options.signal,
@@ -725,15 +730,17 @@ export const FILE_KEY_PREFIX = "file:";
  * filename and page -- nothing bibliographic is ever invented). Pure.
  */
 export function chatPool(match: LibraryMatch): LibraryPaper[] {
-	const unverified = match.unmatched.map((file) => {
+	// v31.1: unmatched files may live in different folders (library + loose
+	// PDFs in the cwd) -- each entry keeps its own path.
+	const unverified = unmatchedGroups(match).flatMap(({ dir, files }) => files.map((file) => {
 		const base = file.replace(/\.pdf$/i, "");
 		return {
-			file: join(match.papersDir, file),
+			file: join(dir, file),
 			base,
 			key: `${FILE_KEY_PREFIX}${base}`,
 			entry: { title: "", pdf_url: "", doi: "", arxiv_id: "", authors: [], year: null },
 		};
-	});
+	}));
 	return [...match.matched, ...unverified];
 }
 
@@ -811,7 +818,11 @@ export async function ensureLibrary(
 		onWarn(`${match.unmatched.length} PDF(s) without verified metadata -- attempting adoption (identifier lookup)`);
 		const adoptFn = options.adopt
 			?? ((files: string[], dir: string) => adoptUnmatched(files, dir, realAdoptDeps(), onWarn, options.signal));
-		const adoptions = await adoptFn(match.unmatched, match.papersDir);
+		// One adoption pass per folder (v31.1: the corpus may span several).
+		const adoptions: AdoptionResult[] = [];
+		for (const group of unmatchedGroups(match)) {
+			adoptions.push(...await adoptFn(group.files, group.dir));
+		}
 		for (const adoption of adoptions) {
 			if (adoption.status === "adopted") {
 				adopted.push(adoption.file);
@@ -985,7 +996,7 @@ export async function runRound(options: ChatOptions, deps?: ChatDeps): Promise<C
 	}
 
 	// 2. Index the scope (cached after the first question), then retrieval.
-	const { indexes, failures } = await ensureIndexed(scopePapers, join(root, "index"), embedModel, corpus, {
+	const { indexes, failures } = await ensureIndexed(scopePapers, join(root, "lit-synthesis", "index"), embedModel, corpus, {
 		force: options.reindex,
 		onProgress: onWarn,
 		signal: options.signal,
@@ -1269,7 +1280,7 @@ export async function runChatReport(options: ChatReportOptions, deps?: ChatDeps)
 	}
 
 	// 3. Index, then ONE embed call for all queries.
-	const { indexes, failures } = await ensureIndexed([paper], join(root, "index"), embedModel, corpus, {
+	const { indexes, failures } = await ensureIndexed([paper], join(root, "lit-synthesis", "index"), embedModel, corpus, {
 		force: options.reindex,
 		onProgress: onWarn,
 		signal: options.signal,
@@ -1584,7 +1595,7 @@ export async function runReport(options: ReportOptions, deps?: ChatDeps): Promis
 	}
 
 	// 2. Index the whole scope once.
-	const { indexes, failures } = await ensureIndexed(scopePapers, join(root, "index"), embedModel, corpus, {
+	const { indexes, failures } = await ensureIndexed(scopePapers, join(root, "lit-synthesis", "index"), embedModel, corpus, {
 		force: options.reindex,
 		onProgress: onWarn,
 		signal: options.signal,

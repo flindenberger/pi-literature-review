@@ -21,7 +21,7 @@ import {
 	selectPaper,
 	SUMMARY_FACETS,
 	summarySystemPrompt,
-} from "./synthesize.ts";
+} from "./synthesis.ts";
 import { type CorpusDeps, INDEX_SCHEMA, type LibraryMatch, type PaperIndex } from "./corpus.ts";
 import { CHUNK_SIGNATURE } from "./extract.ts";
 import type { GenerateOptions } from "./llm.ts";
@@ -78,7 +78,7 @@ const library: LibraryMatch = {
 /** Corpus deps serving the prebuilt indexes from "cache" -- extraction
  * must never run; readPdf/sha256 cooperate so the hashes match per file. */
 function fakeCorpus(): CorpusDeps {
-	const indexByFile = new Map([["/index/a.json", indexA], ["/index/b.json", indexB], ["/index/c.json", indexC]]);
+	const indexByFile = new Map([["/lit-synthesis/index/a.json", indexA], ["/lit-synthesis/index/b.json", indexB], ["/lit-synthesis/index/c.json", indexC]]);
 	return {
 		readPdf: (path) => new TextEncoder().encode(path),
 		sha256: (bytes) => {
@@ -244,7 +244,7 @@ function makeRound(question: string, session: string | null = null): Round {
 	assert.equal(result.paper.title, "Vistula sandbars");
 	assert.equal(result.paper.pdf_path, "/papers/a.pdf");
 	// The validated round went to the protocol file of the day.
-	assert.equal(result.protocol_path, "/chats/2026-07-16_a.json");
+	assert.equal(result.protocol_path, "/lit-synthesis/protocols/2026-07-16_a.json");
 	assert.equal(result.round, 1);
 	assert.equal(result.generated, "2026-07-16T10:00:00.000Z"); // injected clock
 	assert.equal(result.raw_output.includes("[9]"), true); // raw kept for inspection
@@ -334,7 +334,7 @@ function makeRound(question: string, session: string | null = null): Round {
 		question: "Frage eins?", paper: "a", root: "/", model: "fake-gen", embedModel: "fake-embed",
 	}, deps);
 	assert.equal(first.round, 1);
-	assert.equal(first.protocol_path, "/chats/2026-07-16_a.json");
+	assert.equal(first.protocol_path, "/lit-synthesis/protocols/2026-07-16_a.json");
 	const second = await runRound({
 		question: "Frage zwei?", paper: "a", root: "/", model: "fake-gen", embedModel: "fake-embed",
 	}, deps);
@@ -342,8 +342,8 @@ function makeRound(question: string, session: string | null = null): Round {
 	assert.equal(second.protocol_path, first.protocol_path); // same day -> same file
 	// Two files: the protocol and the sticky current-scope marker.
 	assert.equal(files.size, 2);
-	assert.deepEqual(JSON.parse(files.get("/chats/current-scope.json")!), { papers: ["a"], session: null }); // no session passed
-	const protocol = JSON.parse(files.get("/chats/2026-07-16_a.json")!) as Protocol;
+	assert.deepEqual(JSON.parse(files.get("/lit-synthesis/protocols/current-scope.json")!), { papers: ["a"], session: null }); // no session passed
+	const protocol = JSON.parse(files.get("/lit-synthesis/protocols/2026-07-16_a.json")!) as Protocol;
 	assert.equal(protocol.schema, PROTOCOL_SCHEMA);
 	assert.equal(protocol.base, "a");
 	assert.equal(protocol.paper.key, paperA.key);
@@ -386,7 +386,7 @@ function makeRound(question: string, session: string | null = null): Round {
 	const { deps, files } = makeDeps("Antwort [1].");
 	// Pre-v25 marker: with no current-scope.json yet, the legacy file still
 	// resolves the paper (read for one more release).
-	files.set("/chats/current-paper.json", JSON.stringify({ base: "a", session: "s1" }));
+	files.set("/lit-synthesis/protocols/current-paper.json", JSON.stringify({ base: "a", session: "s1" }));
 	// No paper option, SAME session: the sticky marker resolves it.
 	const result = await runRound({ question: "q", root: "/", session: "s1", model: "fake-gen", embedModel: "fake-embed" }, deps);
 	assert.equal(result.paper.base, "a");
@@ -405,12 +405,12 @@ function makeRound(question: string, session: string | null = null): Round {
 	// once a scope file exists).
 	const explicit = await runRound({ question: "q", paper: "b", root: "/", session: "s2", model: "fake-gen", embedModel: "fake-embed" }, deps);
 	assert.equal(explicit.paper.base, "b");
-	assert.deepEqual(JSON.parse(files.get("/chats/current-scope.json")!), { papers: ["b"], session: "s2" });
+	assert.deepEqual(JSON.parse(files.get("/lit-synthesis/protocols/current-scope.json")!), { papers: ["b"], session: "s2" });
 }
 {
 	// A legacy marker without a session field never matches (migration path).
 	const { deps, files } = makeDeps("never reached");
-	files.set("/chats/current-paper.json", JSON.stringify({ base: "a" }));
+	files.set("/lit-synthesis/protocols/current-paper.json", JSON.stringify({ base: "a" }));
 	await assert.rejects(
 		() => runRound({ question: "q", root: "/", session: "s1", embedModel: "fake-embed" }, deps),
 		/no paper selected/,
@@ -419,7 +419,7 @@ function makeRound(question: string, session: string | null = null): Round {
 {
 	// A corrupt marker falls back to the honest missing-paper error.
 	const { deps, files } = makeDeps("never reached");
-	files.set("/chats/current-paper.json", "{ garbage");
+	files.set("/lit-synthesis/protocols/current-paper.json", "{ garbage");
 	await assert.rejects(
 		() => runRound({ question: "q", root: "/", session: "s1", embedModel: "fake-embed" }, deps),
 		/no paper selected/,
@@ -507,7 +507,7 @@ function makeRound(question: string, session: string | null = null): Round {
 			makeRound("Alte Frage?", "s0"), makeRound("Uralte Frage ohne Session?"),
 		],
 	};
-	files.set("/chats/2026-07-15_a.json", JSON.stringify(protocol));
+	files.set("/lit-synthesis/protocols/2026-07-15_a.json", JSON.stringify(protocol));
 	const report = await runChatReport({
 		question: "Fokus: Validierung?", paper: "a.pdf", session: "s1", root: "/", model: "fake-gen", embedModel: "fake-embed",
 	}, deps);
@@ -533,8 +533,8 @@ function makeRound(question: string, session: string | null = null): Round {
 	// NOT append a round and the file keeps all 5.
 	assert.equal(report.rounds.length, 3);
 	assert.ok(report.rounds.every((round) => round.session === "s1"));
-	assert.deepEqual(report.protocol_files, ["/chats/2026-07-15_a.json"]);
-	assert.equal((JSON.parse(files.get("/chats/2026-07-15_a.json")!) as ChatProtocol).rounds.length, 5);
+	assert.deepEqual(report.protocol_files, ["/lit-synthesis/protocols/2026-07-15_a.json"]);
+	assert.equal((JSON.parse(files.get("/lit-synthesis/protocols/2026-07-15_a.json")!) as ChatProtocol).rounds.length, 5);
 	// Determinism: an identical second run retrieves the identical excerpts.
 	const again = await runChatReport({
 		question: "Fokus: Validierung?", paper: "a.pdf", session: "s1", root: "/", model: "fake-gen", embedModel: "fake-embed",
@@ -561,7 +561,7 @@ function makeRound(question: string, session: string | null = null): Round {
 	// A session with no recorded rounds behaves the same (fresh session,
 	// report as the first action).
 	const { deps, files, embedCalls } = makeDeps("Antwort [1].");
-	files.set("/chats/2026-07-15_a.json", JSON.stringify({
+	files.set("/lit-synthesis/protocols/2026-07-15_a.json", JSON.stringify({
 		schema: PROTOCOL_SCHEMA, base: "a", date: "2026-07-15",
 		paper: { key: paperA.key, title: paperA.title, authors: paperA.authors, year: paperA.year, doi: paperA.doi, arxiv_id: "" },
 		rounds: [makeRound("Alte Frage?", "s0")],
@@ -591,11 +591,11 @@ function makeRound(question: string, session: string | null = null): Round {
 	assert.equal(answer.papers.length, 2);
 	assert.deepEqual(answer.scope, ["a", "b"]);
 	assert.equal(answer.references.length, 2); // chunk 1 = paper A, chunk 3 = paper B
-	assert.equal(answer.protocol_path, "/chats/2026-07-16_scope_a+b.json");
-	const protocol = JSON.parse(files.get("/chats/2026-07-16_scope_a+b.json")!) as Protocol;
+	assert.equal(answer.protocol_path, "/lit-synthesis/protocols/2026-07-16_scope_a+b.json");
+	const protocol = JSON.parse(files.get("/lit-synthesis/protocols/2026-07-16_scope_a+b.json")!) as Protocol;
 	assert.equal(protocol.paper.key, "scope:a+b");
 	assert.deepEqual(protocol.rounds[0].scope, ["a", "b"]);
-	assert.deepEqual(JSON.parse(files.get("/chats/current-scope.json")!), { papers: ["a", "b"], session: "s1" });
+	assert.deepEqual(JSON.parse(files.get("/lit-synthesis/protocols/current-scope.json")!), { papers: ["a", "b"], session: "s1" });
 	// The next call of the SAME session without any scope reuses it.
 	const followUp = await runRound({
 		question: "Und die Methoden?", session: "s1", root: "/", model: "fake-gen", embedModel: "fake-embed",
@@ -611,9 +611,9 @@ function makeRound(question: string, session: string | null = null): Round {
 	}, deps);
 	assert.equal(answer.scope, "library");
 	assert.equal(answer.papers.length, 2);
-	assert.equal(answer.protocol_path, "/chats/2026-07-16_library.json");
-	assert.equal((JSON.parse(files.get("/chats/2026-07-16_library.json")!) as Protocol).paper.key, "scope:library");
-	assert.deepEqual(JSON.parse(files.get("/chats/current-scope.json")!), { papers: "library", session: "s1" });
+	assert.equal(answer.protocol_path, "/lit-synthesis/protocols/2026-07-16_library.json");
+	assert.equal((JSON.parse(files.get("/lit-synthesis/protocols/2026-07-16_library.json")!) as Protocol).paper.key, "scope:library");
+	assert.deepEqual(JSON.parse(files.get("/lit-synthesis/protocols/current-scope.json")!), { papers: "library", session: "s1" });
 }
 
 /* ---------------- runReport: the composable report (v25 E2d) ---------------- */
@@ -676,7 +676,7 @@ function makeRound(question: string, session: string | null = null): Round {
 	assert.ok(progress[6].includes("Review synthesis"));
 	// Scope + sticky: the library scope was remembered for the session.
 	assert.deepEqual(report.scope, { papers: ["a", "b"], library: true });
-	assert.deepEqual(JSON.parse(files.get("/chats/current-scope.json")!), { papers: "library", session: "s1" });
+	assert.deepEqual(JSON.parse(files.get("/lit-synthesis/protocols/current-scope.json")!), { papers: "library", session: "s1" });
 	assert.equal(report.ui_language, "de");
 	assert.equal(report.question, "Report: library");
 }

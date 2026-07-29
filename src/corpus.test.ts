@@ -15,10 +15,12 @@ import {
 	type LibraryPaper,
 	matchLibraryCore,
 	type PaperIndex,
+	papersDirs,
 	resolvePapersDir,
+	unmatchedGroups,
 } from "./corpus.ts";
 import { CHUNK_SIGNATURE } from "./extract.ts";
-import type { SidecarEntry } from "./fetch.ts";
+import type { SidecarEntry } from "./selection.ts";
 
 const vistula: SidecarEntry = {
 	title: "Vistula", pdf_url: "", doi: "10.3390/rs13081505", arxiv_id: "",
@@ -68,13 +70,48 @@ const amazon: SidecarEntry = {
 	const chain = (dirsWithPdfs: string[]) =>
 		sep(resolvePapersDir("/root", "/cwd", (dir) => dirsWithPdfs.includes(sep(dir))));
 	// Canonical library first.
-	assert.equal(chain(["/root/papers", "/cwd/papers", "/cwd"]), "/root/papers");
-	// Then a papers/ folder next to where pi runs.
-	assert.equal(chain(["/cwd/papers", "/cwd"]), "/cwd/papers");
+	assert.equal(chain(["/root/lit-selection", "/cwd/lit-selection", "/cwd"]), "/root/lit-selection");
+	// Then a lit-selection/ folder next to where pi runs.
+	assert.equal(chain(["/cwd/lit-selection", "/cwd"]), "/cwd/lit-selection");
 	// Then loose PDFs right in the working directory.
 	assert.equal(chain(["/cwd"]), "/cwd");
 	// Nothing anywhere: report the canonical location (where fetch would fill).
-	assert.equal(chain([]), "/root/papers");
+	assert.equal(chain([]), "/root/lit-selection");
+}
+
+/* ---------------- papersDirs + unmatchedGroups (v31.1) ---------------- */
+{
+	const sep = (p: string) => p.replaceAll("\\", "/");
+	const dirs = (dirsWithPdfs: string[]) =>
+		papersDirs("/root", "/cwd", (dir) => dirsWithPdfs.includes(sep(dir))).map(sep);
+	// EVERY candidate holding PDFs contributes (user decision 2026-07-29:
+	// a library must not hide loose PDFs), priority order preserved.
+	assert.deepEqual(
+		dirs(["/root/lit-selection", "/cwd"]),
+		["/root/lit-selection", "/cwd"],
+	);
+	assert.deepEqual(
+		dirs(["/root/lit-selection", "/cwd/lit-selection", "/cwd"]),
+		["/root/lit-selection", "/cwd/lit-selection", "/cwd"],
+	);
+	assert.deepEqual(dirs(["/cwd"]), ["/cwd"]);
+	// Nothing anywhere: the canonical location alone (honest empty target).
+	assert.deepEqual(dirs([]), ["/root/lit-selection"]);
+
+	// unmatchedGroups: explicit per-dir groups win; matches without the
+	// field (pre-v31.1 fixtures) fall back to the single papersDir.
+	assert.deepEqual(
+		unmatchedGroups({
+			matched: [], unmatched: ["a.pdf", "b.pdf"], papersDir: "/lib",
+			unmatchedByDir: [{ dir: "/lib", files: ["a.pdf"] }, { dir: "/cwd", files: ["b.pdf"] }],
+		}),
+		[{ dir: "/lib", files: ["a.pdf"] }, { dir: "/cwd", files: ["b.pdf"] }],
+	);
+	assert.deepEqual(
+		unmatchedGroups({ matched: [], unmatched: ["a.pdf"], papersDir: "/lib" }),
+		[{ dir: "/lib", files: ["a.pdf"] }],
+	);
+	assert.deepEqual(unmatchedGroups({ matched: [], unmatched: [], papersDir: "/lib" }), []);
 }
 
 /* ---------------- matchLibraryCore ---------------- */

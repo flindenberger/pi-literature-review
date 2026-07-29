@@ -1,7 +1,7 @@
 /**
- * pi-literature-review Pi extension: the pi-literature-fetch tool.
+ * pi-literature-review Pi extension: the pi-literature-selection tool.
  *
- * Downloads selected papers as PDFs into the shared papers/ library. The
+ * Downloads selected papers as PDFs into the shared lit-selection/ library. The
  * model's only job is to transport identifiers (DOIs / arXiv IDs) -- from
  * the user's pasted "Download these papers: ..." sentence, from digest
  * lines or from the JSON sidecar -- to this tool. Resolution and download
@@ -23,13 +23,13 @@ import {
 	loadSidecarIndex,
 	parseIdentifier,
 	renderFetchReport,
-	runFetch,
-} from "../src/fetch.ts";
+	runSelection,
+} from "../src/selection.ts";
 import { outputRoot } from "../src/output.ts";
 import { contactMailto } from "../src/types.ts";
 import { chatLangDefault, installChatLangObserver, runWizard } from "./dialogs.ts";
 
-const FETCH_WIDGET = "pi-literature-review-fetch";
+const SELECTION_WIDGET = "pi-literature-review-selection";
 
 /** The bare-command identifier intake (v29.1: every bare command opens its
  * dialog directly; the agent handoff is gone). */
@@ -42,7 +42,7 @@ const FETCH_TEXT: Record<DialogLang, {
 	noIds: string;
 }> = {
 	de: {
-		header: "/lit-fetch -- Paper/Artikel herunterladen (Esc bricht ab)",
+		header: "/lit-selection -- Paper/Artikel herunterladen (Esc bricht ab)",
 		idTab: "Artikel",
 		idTitle: "Welche Paper/Artikel herunterladen? DOIs / arXiv-IDs, durch Leerzeichen oder Komma getrennt -- "
 			+ "oder die Zeile \"Download these papers: ...\" von der Suchseite einfügen.",
@@ -50,7 +50,7 @@ const FETCH_TEXT: Record<DialogLang, {
 		noIds: "Keine Identifier angegeben -- nichts wurde heruntergeladen.",
 	},
 	en: {
-		header: "/lit-fetch -- download papers (Esc cancels)",
+		header: "/lit-selection -- download papers (Esc cancels)",
 		idTab: "Papers",
 		idTitle: "Which papers to download? DOIs / arXiv IDs separated by spaces or commas -- "
 			+ "or paste the \"Download these papers: ...\" line from the search page.",
@@ -116,7 +116,7 @@ async function mailtoDialog(
 	signal: AbortSignal | undefined,
 ): Promise<string | null> {
 	const savePath = configPath();
-	ctx.ui.setWidget(FETCH_WIDGET, [
+	ctx.ui.setWidget(SELECTION_WIDGET, [
 		"Unpaywall setup (one question, only while no email is configured)",
 		"",
 		"Unpaywall (unpaywall.org, by the non-profit OurResearch) indexes legal",
@@ -166,14 +166,14 @@ async function mailtoDialog(
 		}
 		return trimmed;
 	} finally {
-		ctx.ui.setWidget(FETCH_WIDGET, undefined);
+		ctx.ui.setWidget(SELECTION_WIDGET, undefined);
 	}
 }
 
 /**
  * Code-enforced consent: list exactly what would be downloaded -- titles come
  * from the saved searches on disk, not from the model -- and ask before any
- * network request fires. Shared by the tool and the /lit-fetch command.
+ * network request fires. Shared by the tool and the /lit-selection command.
  * Returns false when the user cancels (Esc or "Cancel").
  */
 async function fetchConsentDialog(
@@ -194,14 +194,14 @@ async function fetchConsentDialog(
 	if (lines.length > shown.length) {
 		shown.push(`  ... and ${lines.length - shown.length} more (all listed in the report afterwards)`);
 	}
-	ctx.ui.setWidget(FETCH_WIDGET, [
+	ctx.ui.setWidget(SELECTION_WIDGET, [
 		`Download ${identifiers.length} paper(s) as PDF`,
 		`Library:  ${root}/papers`,
 		"Sources:  record link, Unpaywall, arXiv (legal open access only)",
 		...shown,
 	]);
 	try {
-		const choice = await ctx.ui.select("pi-literature-fetch: download these PDFs?", [
+		const choice = await ctx.ui.select("pi-literature-selection: download these PDFs?", [
 			"Download",
 			"Cancel",
 		], { signal });
@@ -212,19 +212,19 @@ async function fetchConsentDialog(
 		diagnostics.push("fetch dialog: confirmed by the user");
 		return true;
 	} finally {
-		ctx.ui.setWidget(FETCH_WIDGET, undefined);
+		ctx.ui.setWidget(SELECTION_WIDGET, undefined);
 	}
 }
 
-export default function literatureFetch(pi: ExtensionAPI) {
+export default function literatureSelection(pi: ExtensionAPI) {
 	// Shared chat-language observer (dialogs.ts): the identifier dialog
 	// opens in the language of the user's recent plain chat input.
 	installChatLangObserver(pi);
 	pi.registerTool({
-		name: "pi-literature-fetch",
+		name: "pi-literature-selection",
 		label: "Literature Fetch",
 		description:
-			"Download papers as PDFs into the local papers/ library. Use this tool WHENEVER the user asks to " +
+			"Download papers as PDFs into the local lit-selection/ library. Use this tool WHENEVER the user asks to " +
 			"download, fetch or save papers or PDFs -- including the pasted sentence \"Download these papers: ...\" " +
 			"from the search result page. Never use generic web tools or shell commands for paper downloads. " +
 			"Pass the identifiers (DOIs / arXiv IDs) EXACTLY as they appear in the user's message, in digest " +
@@ -238,7 +238,7 @@ export default function literatureFetch(pi: ExtensionAPI) {
 			"download those another way) / not freely available (with the publisher link for authorized access). " +
 			"When referring to report lines, copy them EXACTLY; never re-type titles or identifiers from memory.",
 		promptSnippet:
-			"Download selected papers as verified PDFs into the papers/ library; returns a short per-paper report",
+			"Download selected papers as verified PDFs into the lit-selection/ library; returns a short per-paper report",
 		parameters: Type.Object({
 			identifiers: Type.Array(Type.String(), {
 				minItems: 1,
@@ -305,7 +305,7 @@ export default function literatureFetch(pi: ExtensionAPI) {
 				};
 			}
 
-			const { results, papersDir } = await runFetch({
+			const { results, papersDir } = await runSelection({
 				identifiers,
 				mailto: runMailto,
 				onWarn: report,
@@ -318,15 +318,15 @@ export default function literatureFetch(pi: ExtensionAPI) {
 		},
 	});
 
-	// /lit-fetch -- the agent-free path. The user pastes identifiers, or the
+	// /lit-selection -- the agent-free path. The user pastes identifiers, or the
 	// whole "Download these papers: ..." sentence copied from the search
-	// page; bare /lit-fetch opens the identifier dialog DIRECTLY (v29.1:
+	// page; bare /lit-selection opens the identifier dialog DIRECTLY (v29.1:
 	// the command owns the dialog, the v22 agent handoff is gone). The SAME
 	// Unpaywall-email and consent dialogs gate the download.
-	pi.registerCommand("lit-fetch", {
+	pi.registerCommand("lit-selection", {
 		description:
-			"Download papers as PDFs: /lit-fetch [DOIs / arXiv IDs] runs agent-free (or paste the "
-			+ "\"Download these papers: ...\" line from the search page); bare /lit-fetch asks for the "
+			"Download papers as PDFs: /lit-selection [DOIs / arXiv IDs] runs agent-free (or paste the "
+			+ "\"Download these papers: ...\" line from the search page); bare /lit-selection asks for the "
 			+ "identifiers in a dialog.",
 		handler: async (args, ctx) => {
 			if (!ctx.hasUI) return;
@@ -358,7 +358,7 @@ export default function literatureFetch(pi: ExtensionAPI) {
 			}
 			if (ctx.signal?.aborted) return;
 			try {
-				const { results, papersDir } = await runFetch({
+				const { results, papersDir } = await runSelection({
 					identifiers,
 					mailto: runMailto,
 					onWarn: progress,
@@ -368,7 +368,7 @@ export default function literatureFetch(pi: ExtensionAPI) {
 				// (sendMessage with deliverAs:"nextTurn" only queues it for the next
 				// prompt, so it never rendered.)
 				const reportLines = renderFetchReport(results, papersDir).split("\n");
-				ctx.ui.setWidget(FETCH_WIDGET, reportLines.length > 16
+				ctx.ui.setWidget(SELECTION_WIDGET, reportLines.length > 16
 					? [...reportLines.slice(0, 15), `... (${reportLines.length - 15} more lines)`]
 					: reportLines);
 			} catch (error) {

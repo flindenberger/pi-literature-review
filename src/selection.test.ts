@@ -17,7 +17,7 @@ import {
 	type PaperMeta,
 	parseIdentifier,
 	renderFetchReport,
-} from "./fetch.ts";
+} from "./selection.ts";
 
 /* ---------------- parseIdentifier ---------------- */
 {

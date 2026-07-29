@@ -124,7 +124,7 @@ export function llmConfig(
 }
 
 /**
- * Generator model for the paper-chat stage (pi-literature-chat). Its own
+ * Generator model for the paper-chat mode (pi-literature-synthesis). Its own
  * slot because the two stages want different tones: OpenScholar-8B is
  * tuned for terse synthesis prose, while the chat wants an explanatory
  * instruct model (e.g. "llama3.1:8b-instruct" via `"llm": {"chatModel":

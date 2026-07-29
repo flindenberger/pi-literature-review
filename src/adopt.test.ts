@@ -5,7 +5,7 @@
 
 import assert from "node:assert/strict";
 import { type AdoptDeps, adoptUnmatched, findIdentifier } from "./adopt.ts";
-import type { SidecarEntry } from "./fetch.ts";
+import type { SidecarEntry } from "./selection.ts";
 
 /* ---------------- findIdentifier ---------------- */
 {

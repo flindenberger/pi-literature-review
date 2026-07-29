@@ -1,5 +1,5 @@
 /**
- * Deterministic PDF retrieval -- the Phase 3 engine behind pi-literature-fetch.
+ * Deterministic PDF retrieval -- the Phase 3 engine behind pi-literature-selection.
  *
  * Input is a list of identifiers (DOIs / arXiv IDs); the model only ever
  * transports them, it never chooses, produces or repairs a download link.
@@ -7,7 +7,7 @@
  * saved search records (JSON sidecars), then Unpaywall (OurResearch's index
  * of legal open-access copies; requires PI_LITERATURE_REVIEW_MAILTO), then
  * the arXiv PDF endpoint -- and the first source that answers with real PDF
- * bytes (%PDF magic check) is saved to the shared papers/ library, one file
+ * bytes (%PDF magic check) is saved to the shared lit-selection/ library, one file
  * per paper, keyed like dedupe so the same paper is never stored twice.
  * Whatever has no free copy is reported with its publisher link ("obtain via
  * authorized access"), never fetched from gray sources. Honest per-paper
@@ -175,10 +175,10 @@ export function buildSidecarIndex(payloads: unknown[]): Map<string, SidecarEntry
 	return index;
 }
 
-/** Read every queries/*.json sidecar under the root. Unreadable files are
+/** Read every lit-search/*.json sidecar under the root. Unreadable files are
  * warned about and skipped -- they never abort a fetch run. */
 export function loadSidecarIndex(root: string, onWarn: (message: string) => void): Map<string, SidecarEntry> {
-	const dir = join(root, "queries");
+	const dir = join(root, "lit-search");
 	const payloads: unknown[] = [];
 	let names: string[] = [];
 	try {
@@ -201,11 +201,11 @@ export function loadSidecarIndex(root: string, onWarn: (message: string) => void
  * ------------------------------------------------------------------ */
 
 /**
- * Written as papers/<basename>.json next to every downloaded PDF. All
+ * Written as lit-selection/<basename>.json next to every downloaded PDF. All
  * bibliographic fields are copied VERBATIM from the saved search records
  * (API-sourced); fetched/via describe the download event. The synthesis
  * stage reads this twin first and only falls back to recomputing filenames
- * against queries/*.json for PDFs downloaded before this existed.
+ * against lit-search/*.json for PDFs downloaded before this existed.
  */
 export interface PaperMeta {
 	title: string;
@@ -469,9 +469,9 @@ async function unpaywallPdfUrlReal(
 	}
 }
 
-export interface FetchRunOptions {
+export interface SelectionRunOptions {
 	identifiers: string[];
-	/** Data root; defaults to outputRoot() (papers/ lands next to queries/). */
+	/** Data root; defaults to outputRoot() (lit-selection/ lands next to lit-search/). */
 	root?: string;
 	/** Contact email for Unpaywall, valid for THIS run only (the fetch
 	 * dialog's "this run only" answer). Default: the configured email
@@ -483,12 +483,12 @@ export interface FetchRunOptions {
 	signal?: AbortSignal;
 }
 
-export async function runFetch(
-	options: FetchRunOptions,
+export async function runSelection(
+	options: SelectionRunOptions,
 ): Promise<{ results: FetchResult[]; papersDir: string }> {
 	const warnTo = options.onWarn ?? (() => {});
 	const root = options.root ?? outputRoot();
-	const papersDir = join(root, "papers");
+	const papersDir = join(root, "lit-selection");
 	mkdirSync(papersDir, { recursive: true });
 	const index = loadSidecarIndex(root, warnTo);
 	const mailto = options.mailto?.trim() || contactMailto();

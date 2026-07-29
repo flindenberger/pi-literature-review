@@ -21,7 +21,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { buildPaperMeta, parseIdentifier, type PaperMeta, type SidecarEntry } from "./fetch.ts";
+import { buildPaperMeta, parseIdentifier, type PaperMeta, type SidecarEntry } from "./selection.ts";
 import { extractPdfPages } from "./extract.ts";
 import { lookupArxivIds } from "./sources/arxiv.ts";
 import { contactMailto, userAgent } from "./types.ts";

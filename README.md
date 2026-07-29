@@ -4,17 +4,28 @@ Local, open, login-free literature review tooling for the
 [Pi coding agent](https://pi.dev). One package, one shared data folder, one tool
 per pipeline stage:
 
-- **`pi-literature-search`** (this release) -- deterministic literature discovery:
-  searches arXiv, CrossRef and OpenAlex, then filters, deduplicates, HTTP-verifies,
-  enriches and groups the results into clean JSON, and renders them as a sortable,
-  self-contained HTML table.
-- **`pi-literature-fetch`** -- deterministic PDF retrieval for selected records
-  into the shared `papers/` library: resolver chain record link -> Unpaywall ->
-  arXiv, legal open access only, %PDF check before anything is saved, honest
-  per-paper report (see Fetching PDFs).
-- **`pi-literature-synthesize`** (planned) -- synthesis over the retrieved papers;
-  citations will be inserted by fixed code from the verified records, never typed
-  by a model.
+- **`pi-literature-search`** (`/lit-search`, folder `lit-search/`) --
+  deterministic literature discovery: searches arXiv, CrossRef and OpenAlex,
+  then filters, deduplicates, HTTP-verifies, enriches and groups the results
+  into clean JSON, and renders them as a sortable, self-contained HTML table.
+- **`pi-literature-selection`** (`/lit-selection`, folder `lit-selection/`) --
+  deterministic PDF retrieval for the records you selected on the search page:
+  resolver chain record link -> Unpaywall -> arXiv, legal open access only,
+  %PDF check before anything is saved, honest per-paper report (see Fetching
+  PDFs).
+- **`pi-literature-synthesis`** (`/lit-synthesis`, folder `lit-synthesis/`) --
+  grounded chat and composable reports over the local PDF library with
+  page-exact citations; citations are inserted by fixed code from the verified
+  records, never typed by a model.
+
+Each stage owns the folder named after its command, so the data directory
+sorts in pipeline order: `lit-search/` (result pages), `lit-selection/`
+(the PDF library), `lit-synthesis/` (reports, with the machine-readable chat
+protocols under `lit-synthesis/protocols/` and the derived embedding index
+under `lit-synthesis/index/`). The synthesis corpus is the UNION of the
+`lit-selection/` library and loose PDFs in the folder pi was started in --
+an existing library never hides other PDFs; on a duplicate filename the
+library wins and the shadowed file is reported.
 
 Transparency: the package talks only to the public arXiv, CrossRef and OpenAlex
 APIs, doi.org/arxiv.org for verification and api.unpaywall.org for open-access
@@ -157,8 +168,8 @@ Every run writes a deterministic, self-contained HTML rendering of the result
 full JSON payload as a sidecar with the same basename to
 
 ```
-<working directory>/pi-literature-review/queries/<YYYY-MM-DD>_<query>.html
-<working directory>/pi-literature-review/queries/<YYYY-MM-DD>_<query>.json
+<working directory>/pi-literature-review/lit-search/<YYYY-MM-DD>_<query>.html
+<working directory>/pi-literature-review/lit-search/<YYYY-MM-DD>_<query>.json
 ```
 
 Table columns sort on click, Excel-style: the first clicked column is the
@@ -177,11 +188,11 @@ The result table has a checkbox per row and a selection bar that floats at the
 bottom of the window while you scroll: tick papers (or "Select all on_target"),
 click "Copy download request", and paste the copied sentence
 (`Download these papers: <id>, <id>, ...`) into the Pi chat -- that sentence is
-the handover to the fetch tool. The page itself never downloads anything: a
+the handover to the selection tool. The page itself never downloads anything: a
 local file:// page can neither write files nor call other servers; it only
 assembles identifiers that are already printed on it.
 
-## Fetching PDFs (pi-literature-fetch)
+## Fetching PDFs (pi-literature-selection)
 
 Two equivalent ways in: paste the copied sentence, or just ask in plain words
 ("download the three on_target papers"). The model only transports DOIs/arXiv
@@ -199,7 +210,7 @@ automated clients with HTTP 403 -- the report then gives the direct link to
 open in your browser, which works fine) / `not freely available -- obtain via
 authorized access` (with the publisher link) / `invalid identifier`.
 
-Library naming: `papers/<year>_<FirstAuthor>[_et_al]_<Title_words>.pdf`
+Library naming: `lit-selection/<year>_<FirstAuthor>[_et_al]_<Title_words>.pdf`
 (capped at 80 characters, umlauts transliterated), built only from saved
 API records; if year, author or title is unknown the identifier slug
 (`10.3390_rs13081505`) is used instead. A paper already in the library is
@@ -247,10 +258,10 @@ the JSON sidecar; `--digest` prints the agent-facing digest instead of the JSON.
 All flags are optional. The downloader runs standalone too (no Pi, no LLM):
 
 ```
-node src/cli.ts fetch 10.3390/rs13081505 arXiv:2401.16393
+node src/cli.ts selection 10.3390/rs13081505 arXiv:2401.16393
 ```
 
-## Chat, reports and synthesis (pi-literature-synthesize, /lit-synth)
+## Chat, reports and synthesis (pi-literature-synthesis, /lit-synthesis)
 
 ONE fused stage answers from the LOCAL PDF library with LOCAL generator
 models (Ollama or any OpenAI-compatible local server; nothing leaves the
@@ -276,9 +287,9 @@ Loose PDFs are adopted automatically when their own DOI/arXiv ID can be
 extracted from the PDF text and verified by an API lookup; whatever stays
 unverified is still usable -- cited honestly by filename and page.
 
-**Dialog policy (v29).** The wizard belongs to the `/lit-synth` COMMAND;
+**Dialog policy (v29).** The wizard belongs to the `/lit-synthesis` COMMAND;
 the agent-called TOOL runs dialog-free. The rule fits in one sentence:
-chat freely, build reports with `/lit-synth`. The one dialog that can
+chat freely, build reports with `/lit-synthesis`. The one dialog that can
 still open from an agent turn is the HTML-write gate (below), which asks
 before the agent hand-writes a file.
 
@@ -291,10 +302,10 @@ fresh session speaks English until the first German chat input flips
 it). The report page chrome (`ui_language`) follows the same resolution.
 
 **Scope.** Everything runs over a document SCOPE: one paper, a selection,
-or the whole library. The scope is picked in the `/lit-synth` wizard
+or the whole library. The scope is picked in the `/lit-synthesis` wizard
 (checkbox list with a select-all row; selecting everything means the
 library) or passed by the agent as EXACT filenames, and is sticky WITHIN
-one pi session (`chats/current-scope.json`, stamped with the session id)
+one pi session (`lit-synthesis/protocols/current-scope.json`, stamped with the session id)
 -- follow-up calls need only the question. A new pi session starts blank;
 `/resume` keeps the scope. With an EMPTY library the tool is deactivated
 entirely (`setActiveTools`), so it cannot interfere with unrelated chats.
@@ -309,20 +320,20 @@ renders as a full transcript card whose first line shows the VERBATIM
 question the engine ran ("Frage, so ausgeführt: ...") -- field tests
 showed agents systematically rephrase the user's words, which measurably
 degrades retrieval; without a gate the rephrasing is at least VISIBLE,
-and `/lit-synth <question>` is the verbatim fallback. With the card on
+and `/lit-synthesis <question>` is the verbatim fallback. With the card on
 screen the tool result carries `terminate`, so the agent cannot retell
 the answer -- the card has the last word (headless runs keep the verbatim
 digest relay between explicit delimiters). Every validated round is
-appended to a protocol file under `chats/` (multi-paper and library
+appended to a protocol file under `lit-synthesis/protocols/` (multi-paper and library
 rounds under a scope identity); corrupt or foreign files are quarantined,
 never overwritten. No chat memory in the generator: each call is
 stateless; the pi conversation carries the thread.
 
-**Report mode (`/lit-synth` only, v29)** builds the composable report
-from three building blocks, written to `reports/`. Reports cost many
+**Report mode (`/lit-synthesis` only, v29)** builds the composable report
+from three building blocks, written to `lit-synthesis/`. Reports cost many
 model calls, so they never start from a dialog-free tool call: a
 report-flavoured tool call (or a summary/export wish in chat) is handed
-back with the instruction to run `/lit-synth`; the wizard is the consent,
+back with the instruction to run `/lit-synthesis`; the wizard is the consent,
 its questions tab prefilled with this session's chat questions ("fasse
 das zusammen" needs no invented questions). The finished
 report also renders as a full transcript card (answers + reference lines
@@ -385,19 +396,19 @@ off); mode B and review synthesis run on the configured local generator
 (`openscholar-8b` by default). A `model` parameter overrides everything.
 Embeddings always stay on the configured local embedding server.
 
-- **Slash commands.** `/lit-search`, `/lit-fetch` and `/lit-synth` are
+- **Slash commands.** `/lit-search`, `/lit-selection` and `/lit-synthesis` are
   checked by pi BEFORE the agent, and every BARE command opens its own
   dialog directly (v29.1 -- no agent handoff asking in chat first):
-  `/lit-search` starts the intake wizard on the query tab, `/lit-fetch`
+  `/lit-search` starts the intake wizard on the query tab, `/lit-selection`
   asks for the DOIs/arXiv IDs in a one-step dialog (the pasted "Download
-  these papers: ..." line works there too), and `/lit-synth` runs the ONE
+  these papers: ..." line works there too), and `/lit-synthesis` runs the ONE
   wizard (documents preselected with the sticky scope, questions typed
   inline and separated by semicolons, summary/mode/review/HTML tabs --
   tabs that do not apply stay VISIBLE but greyed out with a one-line
   reason, so the dialog never changes shape while navigating -- and a
   submit page showing the expected model-call count); the submitted
   answers decide between chat round, report and agent handoff.
-  `/lit-synth <question>` with a remembered scope answers once,
+  `/lit-synthesis <question>` with a remembered scope answers once,
   agent-free and dialog-free. Long engine calls show an elapsed-seconds
   ticker plus per-unit progress ("Unit 3/9: ...").
 - **HTML-write gate.** "Make me an HTML of that" must produce the
@@ -411,10 +422,10 @@ Embeddings always stay on the configured local embedding server.
 Standalone CLI (no Pi):
 
 ```
-node src/cli.ts synth "Welche Kameras werden verwendet?" --paper 2026_Blanch_Water_Level.pdf --digest
-node src/cli.ts synth --report --papers "a.pdf,b.pdf" --questions "q1;q2" --summary bullets --detail-mode per-paper
-node src/cli.ts synth --report --all --review
-node src/cli.ts synth --session-report --paper a.pdf     # the classic session summary
+node src/cli.ts synthesis "Welche Kameras werden verwendet?" --paper 2026_Blanch_Water_Level.pdf --digest
+node src/cli.ts synthesis --report --papers "a.pdf,b.pdf" --questions "q1;q2" --summary bullets --detail-mode per-paper
+node src/cli.ts synthesis --report --all --review
+node src/cli.ts synthesis --session-report --paper a.pdf     # the classic session summary
 node src/cli.ts llm-check     # verifies the local backend (embed + generate)
 ```
 

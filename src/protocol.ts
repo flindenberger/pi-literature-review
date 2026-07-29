@@ -17,7 +17,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
-import type { ReferenceEntry } from "./synthesize.ts";
+import type { ReferenceEntry } from "./synthesis.ts";
 
 /** Schema 2 (v25): rounds MAY carry a scope and citation sites. Files
  * written under schema 1 are still read; the fields are additive. */
@@ -127,7 +127,7 @@ export function realProtocolDeps(): ProtocolDeps {
  * of the round's timestamp), matching writeRunOutputs' date handling. */
 export function protocolLogPath(root: string, dateIso10: string, base: string, suffix = 0): string {
 	const name = suffix > 1 ? `${dateIso10}_${base}_${suffix}.json` : `${dateIso10}_${base}.json`;
-	return join(root, "chats", name);
+	return join(root, "lit-synthesis", "protocols", name);
 }
 
 /* ------------------------------------------------------------------ *
@@ -137,12 +137,12 @@ export function protocolLogPath(root: string, dateIso10: string, base: string, s
 /** Marker file remembering the session's current scope. The date-anchored
  * protocol filename pattern never matches it. */
 export function currentScopePath(root: string): string {
-	return join(root, "chats", "current-scope.json");
+	return join(root, "lit-synthesis", "protocols", "current-scope.json");
 }
 
 /** The pre-v25 single-paper marker; read as a fallback for one release. */
 export function legacyCurrentPaperPath(root: string): string {
-	return join(root, "chats", "current-paper.json");
+	return join(root, "lit-synthesis", "protocols", "current-paper.json");
 }
 
 export interface CurrentScope {
@@ -312,7 +312,7 @@ export function loadRounds(
 	onWarn: (message: string) => void,
 ): { rounds: Round[]; files: string[] } {
 	if (!session) return { rounds: [], files: [] };
-	const dir = join(root, "chats");
+	const dir = join(root, "lit-synthesis", "protocols");
 	const pattern = new RegExp(`^\\d{4}-\\d{2}-\\d{2}_${escapeRegExp(base)}(_\\d+)?\\.json$`);
 	const names = deps.list(dir).filter((name) => pattern.test(name)).sort();
 	const rounds: Round[] = [];
