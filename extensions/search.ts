@@ -24,7 +24,6 @@
  * between them and the search.
  */
 
-import { basename } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { detectDialogLang, type DialogLang, type WizardAnswers, type WizardStepDef } from "../src/dialog-state.ts";
@@ -1045,25 +1044,27 @@ export default function literatureSearch(pi: ExtensionAPI) {
 						? [...digestLines.slice(0, 15), `... (${digestLines.length - 15} more lines -- full results in the HTML)`]
 						: digestLines);
 					// Web clients render neither widgets nor entry cards, and
-					// their notify toasts vanish after seconds (field find
-					// 2026-07-30: after a run the chat showed ONLY the typed
-					// command). A result dialog the user closes deliberately is
-					// the one channel every RPC client shows. ONE short line
-					// only (second field round: the full absolute path wrapped
-					// into an ugly wall of text) -- the full path lives in the
-					// notify above and in the file browser. Timeout so a
-					// scripted client never hangs on it; fire and forget.
-					const onTarget = payload.results.filter((r) => r.group === "on_target").length;
-					const groupedPart = payload.grouping !== null && payload.grouping !== undefined
-						? `, ${onTarget} on_target` : "";
-					void ctx.ui.select(
-						`Search finished: ${payload.results.length} record(s)${groupedPart} -- `
-							+ (htmlPath
-								? `HTML: ${basename(htmlPath)} (in pi-literature-review/lit-search/)`
-								: "writing the HTML failed"),
-						["OK"],
-						{ signal: ctx.signal, timeout: 600_000 },
-					).catch(() => {});
+					// their notify toasts vanish after seconds -- but an AGENT
+					// answer is a real session message that every client shows
+					// and replays (fourth field round, the rpiv comparison:
+					// its results reach the chat because they flow through an
+					// agent TURN as tool results). So outside the TUI the
+					// deterministic run ends by handing the finished digest to
+					// the agent as its display layer. The SEARCH stays
+					// agent-free; the agent only presents the result. (An OK
+					// dialog tried before was rejected in the field as ugly.)
+					// This deliberately does NOT run in TUI mode -- the entry
+					// card is the display there, no LLM involved (v29.1).
+					pi.sendMessage({
+						customType: "pi-literature-search-command-result",
+						content:
+							"A deterministic /lit-search run just finished (agent-free; the user already "
+							+ "confirmed every parameter in the dialog). Present this digest to the user as "
+							+ "your answer NOW. Copy the reference lines EXACTLY as written -- never re-type, "
+							+ "complete, reorder or invent titles, years or identifiers -- and tell the user "
+							+ "the HTML path for review. Do not call any tools.\n\n" + digest,
+						display: false,
+					}, { triggerTurn: true });
 				}
 			} catch (error) {
 				ctx.ui.notify(`Search failed: ${error instanceof Error ? error.message : error}`, "error");

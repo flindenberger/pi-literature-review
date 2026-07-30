@@ -470,12 +470,14 @@ Notes for that mode:
   the two. The dialog chain therefore never treats an editor cancel as a
   run abort: empty stays a legal answer, and cancelling the run is the
   Cancel button of any select step or the review page's Cancel row.
-- Result cards (transcript entries) are a TUI feature. In RPC mode the
-  outcome of a /lit-search run arrives as a notification ("Search
-  finished: N record(s). Results written to ...") plus a closing result
-  dialog (counts, on_target, HTML path; OK to dismiss, auto-dismisses
-  after 10 minutes); the HTML/JSON files land on disk either way (open
-  the HTML from the file browser).
+- Result cards (transcript entries) are a TUI feature. In RPC mode a
+  finished /lit-search command hands its digest to the AGENT for one
+  visible chat answer (web clients only render agent messages
+  persistently; the search itself stays agent-free -- the model only
+  presents the finished digest, instructed to copy reference lines
+  verbatim). The HTML/JSON files land on disk either way (open the HTML
+  from the file browser); a "Search finished" notification carries the
+  full path.
 - Progress ("working -- Ns elapsed") uses widgets and is invisible in
   clients that do not render `setWidget` requests.
 - pi-tau-web-server additionally removes every notification after 5
