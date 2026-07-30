@@ -63,9 +63,10 @@ floodplains, 10 per source, group by floodplain vs. drone terms."
 **Every** tool call opens an intake wizard in your terminal before anything is
 searched -- enforced by code, not by an instruction the model could skip (field
 tests showed models reliably skip "ask the user first" instructions). Since
-v29.1 it is the same one-overlay, tabbed wizard the synthesis stage uses,
-opened directly ON its review page: one Enter runs the proposal, arrow keys
-walk into the tabs to adjust, Escape (or Ctrl+C) cancels the whole run -- no
+v29.1 it is the same one-overlay, tabbed wizard the synthesis stage uses. It
+always starts on the query tab: the agent's proposal arrives as prefill (your
+edits win), you walk the tabs to the review page and submit there; Escape (or
+Ctrl+C) cancels the whole run -- no
 search fires -- and the agent is told to ask you what to change. The tabs:
 the QUERY itself (editable -- your wording wins over the agent's), the
 grouping as a CHOICE OF VARIANTS derived live from the query (v30.2-.4):

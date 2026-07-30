@@ -16,12 +16,13 @@
  *
  * Parameter confirmation is likewise code, not instruction: every call opens
  * a blocking intake wizard with the user (see intakeWizard below; since
- * v29.1 the same rpiv-style one-overlay dialog as /lit-synthesis, opened on its
- * submit page so one Enter runs the proposal; a BARE /lit-search opens the
- * same wizard on its empty query tab instead -- the command owns the
- * dialog, no agent handoff) -- models reliably skip "ask the user first"
- * instructions, but they cannot skip a dialog that the tool itself puts
- * between them and the search.
+ * v29.1 the same rpiv-style one-overlay dialog as /lit-synthesis; since
+ * 2026-07-30 it ALWAYS starts on the query tab -- a proposal arrives as
+ * prefill and the user walks the tabs; a BARE /lit-search starts there
+ * with an empty query -- the command owns the dialog, no agent handoff)
+ * -- models reliably skip "ask the user first" instructions, but they
+ * cannot skip a dialog that the tool itself puts between them and the
+ * search.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -311,12 +312,12 @@ function periodToRange(raw: unknown): { yearFrom?: number; yearTo?: number } | n
  * Three field tests (2x Granite, 1x Gemini, 2026-07-10) proved that a
  * description-level instruction to ask intake questions gets ignored or
  * rationalized away; this gate runs on EVERY call (user decision). Since
- * v29.1 it is the ONE rpiv-style wizard (same look as /lit-synthesis): with a
- * proposed query it opens ON its submit page -- the review lists query,
- * grouping, years, result count and optional filters, one Enter runs the
- * proposal (the old "Run as proposed" ergonomics), arrow keys walk into
- * the tabs to adjust, the QUERY itself is editable there too. WITHOUT a
- * query (bare /lit-search) it opens on the empty query tab. Esc cancels
+ * v29.1 it is the ONE rpiv-style wizard (same look as /lit-synthesis). It
+ * ALWAYS starts on the query tab (user decision 2026-07-30, revising the
+ * v29.1 review-page-first ergonomics: the jump to the submit page
+ * confused the first-time flow): a proposed query arrives as PREFILL,
+ * the user walks the tabs to the submit page; bare /lit-search starts
+ * the same way with an empty query. Esc cancels
  * the run before any network call. Values are WYSIWYG: what a tab shows
  * at submit time is what runs -- clearing the grouping means ungrouped,
  * clearing the years means all years, and an empty query at submit
@@ -498,9 +499,10 @@ async function intakeWizard(
 	const result = await runWizard(ctx, steps, signal, {
 		lang,
 		header: text.header,
-		// A proposed query is CONFIRMED (review page first, one Enter runs
-		// it); a bare call has nothing to confirm and starts on the query tab.
-		...(query.trim() ? { startTab: "submit" as const } : {}),
+		// The wizard ALWAYS starts on the query tab, proposal or not (user
+		// decision 2026-07-30, revising v29.1's review-page-first: jumping
+		// straight to the submit page confused the first-time flow; the
+		// proposal stays as PREFILL, the user walks the tabs to submit).
 		submitNote: () => text.note(sources, queryVariants?.length ?? 0),
 		// The journal list loads when the tab is reached, keyed on the LIVE
 		// query text (v30.7) -- one OpenAlex facet request plus one batched
@@ -932,10 +934,9 @@ export default function literatureSearch(pi: ExtensionAPI) {
 
 	// /lit-search -- the agent-free path. Runs the SAME intake wizard and
 	// deterministic pipeline as the tool, with no agent model deciding
-	// whether or how to search. Bare /lit-search opens the wizard on its
-	// empty query tab (v29.1 user decision: the command owns the dialog --
-	// the earlier agent handoff is gone); with a query it opens on the
-	// review page, one Enter runs.
+	// whether or how to search. The wizard always opens on the query tab
+	// (v29.1: the command owns the dialog, no agent handoff; 2026-07-30:
+	// a passed query is prefill, not a review-page jump).
 	pi.registerCommand("lit-search", {
 		description:
 			"Discover literature online: /lit-search [query] opens the intake wizard (query, grouping, "
