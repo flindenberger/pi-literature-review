@@ -141,12 +141,12 @@ async function mailtoDialog(
 			diagnostics.push("unpaywall email: skipped for this run (not remembered)");
 			return "";
 		}
+		// Cancel/empty input falls through to the "continue without
+		// Unpaywall" path below (webui-compat: RPC web clients report an
+		// empty submit as cancelled; aborting the whole download over the
+		// optional email would be out of proportion either way).
 		const email = await ctx.ui.input("Contact email (e.g. name@example.org)", undefined, { signal });
-		if (email === undefined) {
-			diagnostics.push("unpaywall email dialog: cancelled by the user");
-			return null;
-		}
-		const trimmed = email.trim();
+		const trimmed = (email ?? "").trim();
 		if (!trimmed || !isPlausibleMailto(trimmed)) {
 			ctx.ui.notify(
 				trimmed

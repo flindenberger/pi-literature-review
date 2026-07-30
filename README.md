@@ -459,6 +459,25 @@ no session, pass the scope explicitly.
 - `SEMANTIC_SCHOLAR_API_KEY` -- reserved for future Semantic Scholar support (the
   free tier rate-limits without a key; not implemented yet).
 
+## Web / RPC clients (e.g. pi-tau-web-server)
+
+pi web frontends drive pi in RPC mode; there the wizards run as a chain of
+modal dialogs (one select or editor per step) instead of the TUI overlay.
+Notes for that mode:
+
+- An editor/input "Save" with EMPTY content is reported as *cancelled* by
+  some clients (pi-tau-web-server does) -- the protocol cannot distinguish
+  the two. The dialog chain therefore never treats an editor cancel as a
+  run abort: empty stays a legal answer, and cancelling the run is the
+  Cancel button of any select step or the review page's Cancel row.
+- Result cards (transcript entries) are a TUI feature. In RPC mode the
+  outcome arrives as a notification ("Search finished: N record(s).
+  Results written to ...") plus a widget; clients that render neither
+  still get the HTML/JSON files on disk (open the HTML from the file
+  browser).
+- Progress ("working -- Ns elapsed") uses widgets and is invisible in
+  clients that do not render `setWidget` requests.
+
 ## What this tool does NOT do
 
 - It does not use an LLM anywhere inside the pipeline.

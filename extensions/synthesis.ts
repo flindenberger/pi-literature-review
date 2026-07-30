@@ -157,7 +157,10 @@ function scopeLabelOf(answer: ChatAnswer): string {
  * paraphrase ground truth; not in the LLM context), else the capped widget. */
 function showAnswer(pi: ExtensionAPI, ctx: ExtensionContext, answer: ChatAnswer): void {
 	const label = scopeLabelOf(answer);
-	if (answerEntryReady) {
+	// Entry cards need the TUI entry renderer; RPC clients (web UIs) never
+	// paint custom entries -- there the widget is the visible answer
+	// (webui-compat, 2026-07-30).
+	if (answerEntryReady && ctx.mode === "tui") {
 		pi.appendEntry(ANSWER_ENTRY, {
 			paper: label,
 			grounded: answer.grounded,
@@ -180,7 +183,7 @@ function showReport(pi: ExtensionAPI, ctx: ExtensionContext, report: SynthReport
 			? `${report.scope.papers[0]}.pdf`
 			: `${report.scope.papers.length} Dokumente`;
 	const text = formatReportText(report, htmlPath);
-	if (answerEntryReady) {
+	if (answerEntryReady && ctx.mode === "tui") {
 		pi.appendEntry(ANSWER_ENTRY, {
 			paper: label,
 			grounded: report.grounded,

@@ -1003,7 +1003,12 @@ export default function literatureSearch(pi: ExtensionAPI) {
 						"warning",
 					);
 				}
-				if (htmlPath) ctx.ui.notify(`Results written to ${htmlPath}`, "info");
+				if (htmlPath) {
+					ctx.ui.notify(
+						`Search finished: ${payload.results.length} record(s). Results written to ${htmlPath}`,
+						"info",
+					);
+				}
 				// Show the digest as a FULL transcript card (v30.3: the capped
 				// widget truncated real result lists -- "widget truncated" was
 				// a field complaint, not a policy; nothing is blocked). The
@@ -1015,7 +1020,11 @@ export default function literatureSearch(pi: ExtensionAPI) {
 				// agent instructions "Tell the user to open the HTML ..." --
 				// those belong in the tool result, not in front of the user).
 				const digest = renderDigest(payload, htmlPath, "user");
-				if (digestEntryReady) {
+				// The entry card renders via a pi-tui entry renderer -- that
+				// exists only in TUI mode. RPC clients (web UIs) never paint
+				// custom entries, so there the capped widget + the notify above
+				// are the visible result (webui-compat, 2026-07-30).
+				if (digestEntryReady && ctx.mode === "tui") {
 					pi.appendEntry(DIGEST_ENTRY, {
 						heading: `Literature search -- ${confirmed.query}`,
 						text: digest,

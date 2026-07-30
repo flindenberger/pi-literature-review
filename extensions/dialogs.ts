@@ -50,6 +50,8 @@ const ADAPTER_TEXT: Record<DialogLang, {
 	backRow: string;
 	nothingSelected: string;
 	firstOf: (shown: number, total: number) => string;
+	formDoneRow: string;
+	formOff: string;
 }> = {
 	de: {
 		checkboxHint: "Space auswählen · Enter übernehmen · Esc abbrechen · ↑/↓ navigieren",
@@ -57,6 +59,8 @@ const ADAPTER_TEXT: Record<DialogLang, {
 		backRow: "← Zurück",
 		nothingSelected: "Nichts ausgewählt -- mindestens einen Eintrag wählen oder mit Esc abbrechen.",
 		firstOf: (shown, total) => `(erste ${shown} von ${total})`,
+		formDoneRow: "Weiter -- Eingaben übernehmen",
+		formOff: "(aus)",
 	},
 	en: {
 		checkboxHint: "Space selects · Enter confirms · Esc cancels · ↑/↓ navigate",
@@ -64,6 +68,8 @@ const ADAPTER_TEXT: Record<DialogLang, {
 		backRow: "← Back",
 		nothingSelected: "Nothing selected -- pick at least one entry or cancel with Esc.",
 		firstOf: (shown, total) => `(first ${shown} of ${total})`,
+		formDoneRow: "Continue -- apply entries",
+		formOff: "(off)",
 	},
 };
 
@@ -387,7 +393,16 @@ async function wizardOverlay(
 /** Mandatory non-TUI path: one select (or editor, for text steps) per
  * step, with an explicit back row (answers are kept across steps,
  * mirroring the overlay's tab navigation). Steps whose enabledIf fails
- * over the current answers are skipped in the direction of travel. */
+ * over the current answers are skipped in the direction of travel.
+ *
+ * Editor-cancel semantics (webui-compat, 2026-07-30): RPC web clients
+ * (pi-tau-web-server) report an EMPTY editor Save as cancelled -- the
+ * protocol cannot distinguish "saved nothing" from "cancel", and empty
+ * IS a legal answer for text steps and optional form fields. So in THIS
+ * loop an editor cancel never aborts the wizard; it keeps/clears the
+ * step value and moves on. Cancelling the run stays one click away on
+ * every select (Cancel) and on the review page's cancel row. The TUI
+ * overlay (Esc = abort) is untouched. */
 async function wizardSelectLoop(
 	ctx: ExtensionContext,
 	steps: WizardStepDef[],
@@ -482,8 +497,13 @@ async function wizardSelectLoop(
 					return `${step.tab}: ${set.length ? set.join(" · ") : text.noQuestions}`;
 				}
 				const option = step.options.find((entry) => entry.value === value);
+				// Labels can be functions over the live answers (v30.5); the
+				// review must resolve them like the step rows do (webui-compat
+				// field find: the raw function source leaked into the title).
+				const optionLabel = option === undefined ? undefined
+					: typeof option.label === "function" ? option.label(liveAnswers()) : option.label;
 				// A free-entry answer matches no option: show the typed value.
-				return `${step.tab}: ${option ? option.label : typeof value === "string" ? value : text.unanswered}`;
+				return `${step.tab}: ${optionLabel ?? (typeof value === "string" ? value : text.unanswered)}`;
 			});
 			const note = options?.submitNote?.(liveAnswers()) ?? null;
 			const picked = await ctx.ui.select(
@@ -554,19 +574,51 @@ async function wizardSelectLoop(
 		}
 		if (step.kind === "text") {
 			const edited = await ctx.ui.editor(stepTitle, textCurrent(step), { signal });
-			if (edited === undefined) return null; // editor cancel = wizard cancel
-			answers[step.id] = edited;
+			// Cancel/empty-save: an empty text answer is legal (empty query
+			// cancels honestly at submit; empty questions mean chat handback),
+			// so record it and continue instead of aborting the wizard.
+			answers[step.id] = edited !== undefined ? edited
+				: typeof answers[step.id] === "string" ? answers[step.id] : "";
 			index++;
 			direction = 1;
 			continue;
 		}
 		if (step.kind === "form") {
-			// One editor per field, in order; empty keeps a field off.
-			for (const field of step.fields) {
+			// One MENU per form step (webui-compat: the earlier editor chain
+			// -- one editor per field, in order -- made the wizard die on the
+			// EMPTY-save-is-cancelled web quirk, and empty fields are the
+			// NORMAL case for optional filters). Rows show the live values;
+			// picking a row edits that one field, the done row advances.
+			let formResult: "advance" | "back" | null = null;
+			for (;;) {
+				const rows = step.fields.map((field) => {
+					const value = typeof answers[field.id] === "string" ? (answers[field.id] as string).trim() : "";
+					return `${field.label}: ${value !== "" ? value : adapterText.formOff}`;
+				});
+				rows.push(adapterText.formDoneRow);
+				if (index > 0) rows.push(backRow);
+				const picked = await ctx.ui.select(stepTitle, rows, { signal });
+				if (picked === undefined) return null; // select cancel stays a wizard cancel
+				if (picked === backRow) {
+					formResult = "back";
+					break;
+				}
+				if (picked === adapterText.formDoneRow) {
+					formResult = "advance";
+					break;
+				}
+				const field = step.fields[rows.indexOf(picked)];
+				if (!field) continue;
 				const current = typeof answers[field.id] === "string" ? (answers[field.id] as string) : field.initial ?? "";
 				const edited = await ctx.ui.editor(`${stepTitle} -- ${field.label}`, current, { signal });
-				if (edited === undefined) return null; // editor cancel = wizard cancel
-				answers[field.id] = edited;
+				// Cancel/empty-save keeps the previous value (clearing a set
+				// field: save whitespace -- consumers trim before parsing).
+				if (edited !== undefined) answers[field.id] = edited;
+			}
+			if (formResult === "back") {
+				index--;
+				direction = -1;
+				continue;
 			}
 			index++;
 			direction = 1;
@@ -608,8 +660,9 @@ async function wizardSelectLoop(
 				: step.customSeed ? step.customSeed(liveAnswers())
 				: "";
 			const typed = await ctx.ui.editor(stepTitle, seed, { signal });
-			if (typed === undefined) return null;
-			if (!typed.trim()) continue; // empty custom value answers nothing
+			// Cancel/empty-save answers nothing -- stay on the step (webui-
+			// compat: an editor cancel no longer aborts the whole wizard).
+			if (typed === undefined || !typed.trim()) continue;
 			answers[step.id] = typed.trim();
 		} else {
 			answers[step.id] = option.value;
