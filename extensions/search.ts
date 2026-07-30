@@ -1035,6 +1035,21 @@ export default function literatureSearch(pi: ExtensionAPI) {
 					ctx.ui.setWidget(INTAKE_WIDGET, digestLines.length > 16
 						? [...digestLines.slice(0, 15), `... (${digestLines.length - 15} more lines -- full results in the HTML)`]
 						: digestLines);
+					// Web clients render neither widgets nor entry cards, and
+					// their notify toasts vanish after seconds (field find
+					// 2026-07-30: after a run the chat showed ONLY the typed
+					// command). A result dialog the user closes deliberately is
+					// the one channel every RPC client shows. Timeout so a
+					// scripted client never hangs on it; fire and forget.
+					const onTarget = payload.results.filter((r) => r.group === "on_target").length;
+					const groupedPart = payload.grouping !== null && payload.grouping !== undefined
+						? ` (${onTarget} on_target)` : "";
+					void ctx.ui.select(
+						`Search finished: ${payload.results.length} record(s)${groupedPart}. `
+							+ `Full sortable table: ${htmlPath ?? "(writing the HTML failed)"}`,
+						["OK"],
+						{ signal: ctx.signal, timeout: 600_000 },
+					).catch(() => {});
 				}
 			} catch (error) {
 				ctx.ui.notify(`Search failed: ${error instanceof Error ? error.message : error}`, "error");

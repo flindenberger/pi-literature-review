@@ -471,12 +471,21 @@ Notes for that mode:
   run abort: empty stays a legal answer, and cancelling the run is the
   Cancel button of any select step or the review page's Cancel row.
 - Result cards (transcript entries) are a TUI feature. In RPC mode the
-  outcome arrives as a notification ("Search finished: N record(s).
-  Results written to ...") plus a widget; clients that render neither
-  still get the HTML/JSON files on disk (open the HTML from the file
-  browser).
+  outcome of a /lit-search run arrives as a notification ("Search
+  finished: N record(s). Results written to ...") plus a closing result
+  dialog (counts, on_target, HTML path; OK to dismiss, auto-dismisses
+  after 10 minutes); the HTML/JSON files land on disk either way (open
+  the HTML from the file browser).
 - Progress ("working -- Ns elapsed") uses widgets and is invisible in
   clients that do not render `setWidget` requests.
+- pi-tau-web-server additionally removes every notification after 5
+  seconds and reports an EMPTY editor/input Save as cancelled. The
+  package stays usable regardless (see above), but
+  `design/webserver-patch/dialogs.js` in this repository is a patched
+  copy of that client's dialog handler fixing both (notifications stay
+  in the transcript, empty save answers ""); copy it over the installed
+  `pi-tau-web-server/public/dialogs.js` to apply (an npm update
+  overwrites it again).
 
 ## What this tool does NOT do
 
