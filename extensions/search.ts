@@ -945,7 +945,15 @@ export default function literatureSearch(pi: ExtensionAPI) {
 			if (!ctx.hasUI) return;
 			const query = (args ?? "").trim();
 			const diagnostics: string[] = [];
-			const progress = (message: string) => ctx.ui.notify(message, "info");
+			// Non-TUI (web) clients render notifications as chat lines; the
+			// per-record detail (dropped/enriched/filtered ...) would flood
+			// the transcript there and is all in the HTML's dropped list
+			// anyway -- only the summary milestones get through (webui-compat
+			// round 3). The TUI keeps every line (transient status area).
+			const progress = (message: string) => {
+				if (ctx.mode !== "tui" && /^(dropped \[|enriched "|filtered: )/.test(message)) return;
+				ctx.ui.notify(message, "info");
+			};
 			const sources = Object.keys(SEARCHERS);
 			const confirmed = await intakeWizard(
 				ctx,
