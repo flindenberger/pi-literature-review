@@ -70,10 +70,14 @@ function splitIdentifiers(raw: string): string[] {
 }
 
 /** One-step wizard asking for the identifiers (same look as every other
- * intake since v29.1; skipSubmit -- one Enter finishes). Null on cancel. */
+ * intake since v29.1; skipSubmit -- one Enter finishes). Since 2026-07-30
+ * (user decision, search-wizard precedent) it opens on EVERY interactive
+ * run: passed identifiers arrive as PREFILL, editable, never silently
+ * skipped past the user. Null on cancel. */
 async function identifiersDialog(
 	ctx: ExtensionContext,
 	signal: AbortSignal | undefined,
+	prefill?: string,
 ): Promise<string[] | null> {
 	const lang = chatLangDefault();
 	const text = FETCH_TEXT[lang];
@@ -83,6 +87,7 @@ async function identifiersDialog(
 		tab: text.idTab,
 		title: text.idTitle,
 		placeholder: text.idPlaceholder,
+		...(prefill?.trim() ? { initial: prefill.trim() } : {}),
 		// v30: identifiers are no questions -- no "N question(s)" counter.
 		plain: true,
 	}];
@@ -229,8 +234,9 @@ export default function literatureSelection(pi: ExtensionAPI) {
 			"from the search result page. Never use generic web tools or shell commands for paper downloads. " +
 			"Pass the identifiers (DOIs / arXiv IDs) EXACTLY as they appear in the user's message, in digest " +
 			"reference lines or in the JSON sidecar; never invent, complete or correct an identifier. " +
-			"Call directly; do not ask for confirmation in chat -- on every call the tool itself shows the user " +
-			"a terminal dialog listing what would be downloaded, and nothing is fetched before they confirm. " +
+			"Call directly; do not ask for confirmation in chat -- on every call the tool itself first shows the " +
+			"user the identifiers in an editable dialog (your list is only the prefill; the user's edits win), " +
+			"then a terminal dialog listing what would be downloaded, and nothing is fetched before they confirm. " +
 			"If the result says the user cancelled, ask what they want to change; do not retry unchanged. " +
 			"Resolution is deterministic code over legal open-access sources only (the record's own PDF link, " +
 			"Unpaywall, arXiv); no gray sources. The result is a short per-paper report: downloaded / already in " +
@@ -254,7 +260,28 @@ export default function literatureSelection(pi: ExtensionAPI) {
 				diagnostics.push(message);
 				onUpdate?.({ content: [{ type: "text", text: message }] });
 			};
-			const identifiers = params.identifiers.map((s) => s.trim()).filter(Boolean);
+			let identifiers = params.identifiers.map((s) => s.trim()).filter(Boolean);
+			// The identifier dialog opens on EVERY interactive run (user
+			// decision 2026-07-30, search-wizard precedent: proposals are
+			// prefill, never a silent jump past the user); headless callers
+			// keep the parameter-only path.
+			if (ctx.hasUI) {
+				const typed = await identifiersDialog(ctx, signal, identifiers.join(" "));
+				if (typed === null) {
+					diagnostics.push("identifier dialog: cancelled by the user");
+					return {
+						content: [{
+							type: "text",
+							text:
+								"The user cancelled this fetch run in the identifier dialog. Nothing was " +
+								"downloaded. Ask the user what they want to change before fetching again.",
+						}],
+						details: { diagnostics },
+					};
+				}
+				identifiers = typed;
+				diagnostics.push(`identifier dialog: confirmed (${identifiers.length} identifier(s))`);
+			}
 			if (!identifiers.length) {
 				return {
 					content: [{ type: "text", text: "No identifiers were given; nothing to download." }],
@@ -320,26 +347,26 @@ export default function literatureSelection(pi: ExtensionAPI) {
 
 	// /lit-selection -- the agent-free path. The user pastes identifiers, or the
 	// whole "Download these papers: ..." sentence copied from the search
-	// page; bare /lit-selection opens the identifier dialog DIRECTLY (v29.1:
-	// the command owns the dialog, the v22 agent handoff is gone). The SAME
-	// Unpaywall-email and consent dialogs gate the download.
+	// page; the identifier dialog opens on EVERY run, pasted identifiers
+	// prefilled (v29.1: the command owns the dialog; 2026-07-30: args are
+	// prefill, never a skip). The SAME Unpaywall-email and consent dialogs
+	// gate the download.
 	pi.registerCommand("lit-selection", {
 		description:
 			"Download papers as PDFs: /lit-selection [DOIs / arXiv IDs] runs agent-free (or paste the "
-			+ "\"Download these papers: ...\" line from the search page); bare /lit-selection asks for the "
-			+ "identifiers in a dialog.",
+			+ "\"Download these papers: ...\" line from the search page); the identifier dialog opens "
+			+ "either way, with passed identifiers prefilled.",
 		handler: async (args, ctx) => {
 			if (!ctx.hasUI) return;
-			let identifiers = splitIdentifiers(args ?? "");
-			if (!identifiers.length) {
-				const typed = await identifiersDialog(ctx, ctx.signal);
-				if (typed === null) return; // cancelled
-				if (!typed.length) {
-					ctx.ui.notify(FETCH_TEXT[chatLangDefault()].noIds, "warning");
-					return;
-				}
-				identifiers = typed;
+			// The dialog opens with or without args (user decision 2026-07-30):
+			// pasted identifiers arrive as prefill, editable before anything runs.
+			const typed = await identifiersDialog(ctx, ctx.signal, splitIdentifiers(args ?? "").join(" "));
+			if (typed === null) return; // cancelled
+			if (!typed.length) {
+				ctx.ui.notify(FETCH_TEXT[chatLangDefault()].noIds, "warning");
+				return;
 			}
+			const identifiers = typed;
 			const diagnostics: string[] = [];
 			const progress = (message: string) => ctx.ui.notify(message, "info");
 			// Unpaywall email: ask (with explanation) while none is configured.

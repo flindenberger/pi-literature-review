@@ -197,9 +197,11 @@ assembles identifiers that are already printed on it.
 
 Two equivalent ways in: paste the copied sentence, or just ask in plain words
 ("download the three on_target papers"). The model only transports DOIs/arXiv
-IDs to the tool; before ANY network request the tool shows a terminal dialog
-listing every identifier with its title from the saved searches (titles never
-come from the model) -- confirm or cancel there. Escape cancels the whole run.
+IDs to the tool; the tool first shows the identifiers in an editable dialog
+(passed identifiers are only the prefill -- your edits win), then, before ANY
+network request, a terminal dialog listing every identifier with its title
+from the saved searches (titles never come from the model) -- confirm or
+cancel there. Escape cancels the whole run.
 
 Resolution per identifier is a fixed chain, first source with real PDF bytes
 wins: the record's own `pdf_url` -> Unpaywall (legal open-access index by the
