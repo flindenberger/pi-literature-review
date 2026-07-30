@@ -24,6 +24,7 @@
  * between them and the search.
  */
 
+import { basename } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { detectDialogLang, type DialogLang, type WizardAnswers, type WizardStepDef } from "../src/dialog-state.ts";
@@ -1039,14 +1040,19 @@ export default function literatureSearch(pi: ExtensionAPI) {
 					// their notify toasts vanish after seconds (field find
 					// 2026-07-30: after a run the chat showed ONLY the typed
 					// command). A result dialog the user closes deliberately is
-					// the one channel every RPC client shows. Timeout so a
+					// the one channel every RPC client shows. ONE short line
+					// only (second field round: the full absolute path wrapped
+					// into an ugly wall of text) -- the full path lives in the
+					// notify above and in the file browser. Timeout so a
 					// scripted client never hangs on it; fire and forget.
 					const onTarget = payload.results.filter((r) => r.group === "on_target").length;
 					const groupedPart = payload.grouping !== null && payload.grouping !== undefined
-						? ` (${onTarget} on_target)` : "";
+						? `, ${onTarget} on_target` : "";
 					void ctx.ui.select(
-						`Search finished: ${payload.results.length} record(s)${groupedPart}. `
-							+ `Full sortable table: ${htmlPath ?? "(writing the HTML failed)"}`,
+						`Search finished: ${payload.results.length} record(s)${groupedPart} -- `
+							+ (htmlPath
+								? `HTML: ${basename(htmlPath)} (in pi-literature-review/lit-search/)`
+								: "writing the HTML failed"),
 						["OK"],
 						{ signal: ctx.signal, timeout: 600_000 },
 					).catch(() => {});
