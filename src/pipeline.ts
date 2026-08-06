@@ -304,16 +304,30 @@ function escapeRegExp(value: string): string {
  * "s2" hit "S2GIS" and "bar" hit "sandbar"; a term now only matches a whole
  * word: no word character may touch it on either side (explicit lookarounds
  * instead of \b, which flips at non-word term edges like "sentinel-2").
- * Exactly two tolerances, both user decisions: separators inside a term
+ * Exactly three tolerances, all user decisions: separators inside a term
  * match hyphen or whitespace interchangeably ("sentinel-2" finds
- * "Sentinel 2"), and an optional plural-s ("sandbar" finds "sandbars" but
- * not "sandbarrier"). No stemming, no synonyms -- those belong in the term
- * groups, visible and editable in the intake dialog.
+ * "Sentinel 2"), an optional plural-s ("sandbar" finds "sandbars" but not
+ * "sandbarrier"), and the English y->ies plural on consonant+y endings
+ * ("body" finds "bodies", "study" finds "studies"; 2026-08-06 field
+ * evidence: "Semantic segmentation of water bodies" -- one of the user's
+ * most relevant finds -- was labeled adjacent because "body" missed
+ * "bodies"). No stemming, no synonyms -- those belong in the term groups,
+ * visible and editable in the intake dialog.
  */
 export function termMatches(text: string, term: string): boolean {
-	const parts = term.split(/[-\s]+/).filter(Boolean).map(escapeRegExp);
-	if (!parts.length) return false;
-	const pattern = new RegExp(`(?<!\\w)${parts.join("[-\\s]+")}s?(?!\\w)`);
+	const rawParts = term.split(/[-\s]+/).filter(Boolean);
+	if (!rawParts.length) return false;
+	const parts = rawParts.map((part, index) => {
+		const escaped = escapeRegExp(part);
+		if (index < rawParts.length - 1) return escaped;
+		// Plural tolerance on the LAST word only: consonant+y -> y|ies,
+		// everything else keeps the optional trailing s ("survey" ->
+		// "surveys" stays on the s-path; vowel+y never takes ies).
+		return /[^aeiou\s]y$/i.test(part)
+			? `${escaped.slice(0, -1)}(?:y|ies)`
+			: `${escaped}s?`;
+	});
+	const pattern = new RegExp(`(?<!\\w)${parts.join("[-\\s]+")}(?!\\w)`);
 	return pattern.test(text);
 }
 
@@ -352,5 +366,58 @@ export function groupAll<T extends { title: string; abstract: string }>(
 	return [
 		...grouped.filter((r) => r.group === "on_target"),
 		...grouped.filter((r) => r.group === "adjacent"),
+	];
+}
+
+/**
+ * Multi-query labeling (2026-08-06; revised the same day on user decision
+ * "38 und 39 sind fast die wichtigsten Funde und werden als adjacent
+ * betitelt"): every record is checked against the blocks of ALL confirmed
+ * queries -- on_target means "full match for at least one of the questions
+ * you confirmed", REGARDLESS of which query happened to surface the record
+ * (found_by stays pure provenance). The first version judged only against
+ * the finder's blocks, which let chance decide the label: a review found
+ * only by the strict base query stayed adjacent although a variant's
+ * blocks matched it fully. Accepted cost (user): a loose variant's blocks
+ * now bless every record they match, whoever found it -- block quality
+ * carries the precision. With no blocks anywhere records stay honestly
+ * ungrouped. Ordering: on_target first, everything else in incoming order.
+ */
+export function groupAcrossQueries<T extends { title: string; abstract: string }>(
+	records: T[],
+	blockSets: TermGroups[],
+	minGroups?: number,
+): Array<T & { group?: "on_target" | "adjacent"; group_matched?: { query: number; terms: string[] } }> {
+	const sets = blockSets
+		.map((blocks, index) => ({ blocks, query: index + 1 }))
+		.filter((set) => set.blocks.length);
+	if (!sets.length) return records;
+	const grouped = records.map((record) => {
+		const text = `${record.title} ${record.abstract}`.toLowerCase();
+		for (const set of sets) {
+			// Same decision as group(), but KEEPING which term hit per block:
+			// the label's evidence line must show WHY a record is on_target
+			// (2026-08-06 field lesson: homonyms like "stream" -- two-stream
+			// CNNs -- earned labels invisibly; the culprit term has to be
+			// readable on the page, not reconstructed by hand).
+			const hits: string[] = [];
+			for (const groupTerms of set.blocks) {
+				const hit = groupTerms.find((term) => termMatches(text, term));
+				if (hit !== undefined) hits.push(hit);
+			}
+			const required = Math.min(minGroups ?? set.blocks.length, set.blocks.length);
+			if (required > 0 && hits.length >= required) {
+				return {
+					...record,
+					group: "on_target" as const,
+					group_matched: { query: set.query, terms: hits },
+				};
+			}
+		}
+		return { ...record, group: "adjacent" as const };
+	});
+	return [
+		...grouped.filter((r) => r.group === "on_target"),
+		...grouped.filter((r) => r.group !== "on_target"),
 	];
 }

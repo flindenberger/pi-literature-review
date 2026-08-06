@@ -27,16 +27,21 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { detectDialogLang, type DialogLang, type WizardAnswers, type WizardStepDef } from "../src/dialog-state.ts";
+import {
+	type CheckboxItem,
+	detectDialogLang,
+	type DialogLang,
+	type WizardAnswers,
+	type WizardStepDef,
+} from "../src/dialog-state.ts";
 import { renderDigest } from "../src/digest.ts";
 import { DEFAULT_PER_SOURCE, MAX_PER_SOURCE, runSearch, SEARCHERS } from "../src/search.ts";
 import {
-	deriveCoreGroupsFromQuery,
-	deriveGroupsFromQuery,
 	formatGroupExpression,
-	parseGroupSpec,
 	parsePerSource,
+	parseVariantLines,
 	parseYearRange,
+	queryBlocks,
 	yearRangeToSpec,
 } from "../src/intake.ts";
 import { writeRunOutputs } from "../src/output.ts";
@@ -44,6 +49,7 @@ import { renderHtml } from "../src/render.ts";
 import { fetchAuthorMetrics, fetchJournalScores } from "../src/enrich.ts";
 import { authorFacets, type FacetScope, journalFacets } from "../src/sources/openalex.ts";
 import { chatLangDefault, installChatLangObserver, runWizard } from "./dialogs.ts";
+import { completeWithPiModel } from "./pi-model.ts";
 
 const THOROUGH_PER_SOURCE = 15;
 /** How many journals the in-tab list shows (the facet query returns up to
@@ -58,6 +64,54 @@ const JOURNAL_OTHER_ID = "__other_journals__";
  * for this query, with a catch-all row underneath. */
 const AUTHOR_PICK_LIMIT = 12;
 const AUTHOR_OTHER_ID = "__other_authors__";
+/** Sentinel id of the LOCKED base-query row in the variants tab
+ * (2026-08-06); variant ids are the query strings themselves, so this
+ * cannot collide with one. */
+const VARIANT_BASE_ID = "__base_query__";
+/** How many LLM suggestions the variants tab asks for per generation
+ * (block expressions are wide rows -- six keep the tab readable). */
+const VARIANT_SUGGESTION_LIMIT = 6;
+/** The variant generator only SHAPES queries (the one allowed LLM
+ * contribution besides word lists) -- prompts pinned here, English like
+ * all model-facing chrome. Since the block search (2026-08-06) the
+ * suggestions are CONCEPT-BLOCK boolean queries (the systematic-review
+ * building-blocks method): OR-synonyms per concept, AND between concepts
+ * -- sent as real boolean queries to arXiv/OpenAlex and labeling their
+ * own finds. */
+const VARIANT_SYSTEM_PROMPT =
+	"You build concept-block search queries for academic literature databases (the systematic-review "
+	+ "building-blocks method). You only shape search queries; you never produce citations, paper "
+	+ "titles, authors or any bibliographic data.";
+function variantPrompt(query: string, hint: string, count: number): string {
+	return [
+		`Base query: ${query}`,
+		hint ? `User steering hint (follow it): ${hint}` : "",
+		"",
+		`Suggest ${count} alternative searches for the same information need, each as a CONCEPT-BLOCK boolean query.`,
+		"Format per line: 2-4 concept blocks joined with AND; each block is 1-4 synonyms joined with OR, in parentheses.",
+		"Example: (river OR fluvial OR river channel) AND (water extraction OR water mapping) AND (satellite OR remote sensing)",
+		"Identify the core concepts of the base query; per suggestion vary the synonym choices and how broad or "
+		+ "narrow the concepts are (subtopics, established domain terms, method names).",
+		// Field lessons 2026-08-06, both directions: broad homonym blocks
+		// ("channel"/"stream") both FETCH noise and LABEL it on_target, but
+		// anchoring EVERYTHING into phrases starved the blocks ("satellite
+		// imagery" no longer matched "satellite-based") and the model
+		// drifted from image-based water extraction to water withdrawal.
+		"Keep the base query's technical SENSE: infer what ambiguous terms mean from the other concepts "
+		+ "and stay in that sense in every suggestion (e.g. next to 'water body' and 'satellite', "
+		+ "'extraction' means extracting water surfaces from imagery, NOT water withdrawal or pumping).",
+		"Silently correct obvious typos in the base query instead of copying them.",
+		"Mix breadth and precision WITHIN a block: broad words that are unambiguous in this domain may "
+		+ "stand alone (satellite, river, water body); words with other technical meanings (channel, "
+		+ "stream, band, body alone) appear only as anchored phrases (river channel, stream network, "
+		+ "water body). One block may hold the task words (extraction OR mapping OR segmentation), but "
+		+ "every OTHER block must pin the topic unambiguously.",
+		"Prefer English terms (the databases index English metadata); if the base query is in another language, "
+		+ "translate the concepts to English.",
+		"Multi-word terms as plain words, NO quotation marks, no field prefixes.",
+		"Output exactly one suggestion per line. No numbering, no bullets, no explanations.",
+	].filter(Boolean).join("\n");
+}
 const INTAKE_WIDGET = "pi-literature-review-intake";
 /** Transcript entry type for the /lit-search digest card (v30.3: the
  * 16-line widget truncated real result lists in the field -- the same
@@ -68,6 +122,9 @@ let digestEntryReady = false;
 /** The user-adjustable subset of a discovery call. */
 interface IntakeValues {
 	query: string;
+	/** Additional query phrasings searched in the same run (2026-08-06: the
+	 * variants tab -- checked rows minus the locked base row). */
+	queryVariants?: string[] | undefined;
 	groupTerms: string[][] | undefined;
 	/** on_target needs only this many groups (undefined: all) -- the wide
 	 * "concept pairs" variant (v30.3). */
@@ -100,15 +157,24 @@ const SEARCH_TEXT: Record<DialogLang, {
 	queryTab: string;
 	queryTitle: string;
 	queryPlaceholder: string;
-	groupTab: string;
-	groupTitle: string;
-	groupStrict: string;
-	groupCore: string;
-	groupPairs: string;
-	groupPairsPrefix: string;
-	groupAgent: string;
-	groupCustom: string;
-	groupEmpty: string;
+	/** Query-variants tab (2026-08-06, replacing the grouping tab): locked
+	 * base query on top, LLM suggestions as checkable rows, a steering
+	 * input row at the bottom. */
+	variantsTab: string;
+	variantsTitle: string;
+	variantsSelectAll: string;
+	/** Suffix after the locked base row's query text. */
+	variantsBaseSuffix: string;
+	/** Label of the steering input row. */
+	variantsSteerLabel: string;
+	variantsLoading: string;
+	variantsIdle: string;
+	/** Dim note under the base row when the model returned no usable
+	 * suggestions / no model is selected / the call failed -- the tab keeps
+	 * working with the base query alone. */
+	variantsNoneFound: string;
+	variantsFailed: (message: string) => string;
+	variantsNoModel: string;
 	periodTab: string;
 	periodTitle: string;
 	periodLast: (n: number) => string;
@@ -160,16 +226,22 @@ const SEARCH_TEXT: Record<DialogLang, {
 		queryTab: "Suchanfrage",
 		queryTitle: "Bitte formuliere eine Suchanfrage.",
 		queryPlaceholder: "z. B. sandbar detection rivers Sentinel-2",
-		groupTab: "Gruppierung",
-		groupTitle: "Thematische Etikettierung der Treffer (on_target/adjacent) -- sie schränkt die Suche nicht ein. "
-			+ "Gruppen sind AND-verknüpft, Synonyme innerhalb einer Gruppe mit OR.",
-		groupStrict: "Volle Übereinstimmung (streng)",
-		groupCore: "Kern-Übereinstimmung (breiter)",
-		groupPairs: "Teil-Übereinstimmung (weit)",
-		groupPairsPrefix: "mind. 2 gemeinsam von: ",
-		groupAgent: "Vorschlag des Agenten",
-		groupCustom: "Eigene Übereinstimmung:",
-		groupEmpty: "(keine Begriffe ableitbar)",
+		variantsTab: "Query-Varianten",
+		variantsTitle: "Query-Varianten (optional): Konzeptblock-Suchen, vorgeschlagen vom in pi gewählten "
+			+ "Modell -- Synonyme mit OR innerhalb eines Konzepts, AND dazwischen (die Blockbau-Methode "
+			+ "systematischer Reviews). Angehakte Zeilen laufen als ZUSÄTZLICHE Suchen im selben Lauf; "
+			+ "arXiv/OpenAlex erhalten sie als echte Boolesche Anfrage, Dubletten werden entfernt, und "
+			+ "jeder Treffer wird gegen die Blöcke der Variante etikettiert, die ihn fand (Q1/Q2 ...). "
+			+ "Die Hauptanfrage läuft immer. Steuerzeile unten: Richtung eintippen, Enter erzeugt neue "
+			+ "Vorschläge (angehakte Zeilen bleiben erhalten).",
+		variantsSelectAll: "Alle auswählen",
+		variantsBaseSuffix: "(Hauptanfrage, läuft immer)",
+		variantsSteerLabel: "Richtung für neue Vorschläge (Enter erzeugt)",
+		variantsLoading: "(hole Vorschläge vom Modell ...)",
+		variantsIdle: "(wartet auf eine Suchanfrage)",
+		variantsNoneFound: "(keine brauchbaren Vorschläge -- Hauptanfrage läuft trotzdem)",
+		variantsFailed: (message) => `(Vorschläge nicht abrufbar: ${message})`,
+		variantsNoModel: "(kein Modell in pi gewählt -- Vorschläge nicht verfügbar)",
 		periodTab: "Suchzeitraum",
 		periodTitle: "Erscheinungszeitraum?",
 		periodLast: (n) => `Letzte ${n} Jahre`,
@@ -212,7 +284,7 @@ const SEARCH_TEXT: Record<DialogLang, {
 		minCitesLabel: "Mindestzitationen",
 		authorsLabel: "Autor (Name enthält)",
 		note: (sources, variants) =>
-			`Quellen: ${sources.join(", ")}${variants ? ` · +${variants} Suchvariante(n) des Agenten` : ""}`,
+			`Quellen: ${sources.join(", ")}${variants ? ` · +${variants} Query-Variante(n)` : ""}`,
 		badYears: (spec) => `Jahresangabe "${spec}" nicht verstanden -- Vorschlag bleibt`,
 		badCount: (spec) => `Anzahl "${spec}" nicht verstanden -- Vorschlag bleibt`,
 		badNumber: (label, spec) => `${label}: "${spec}" nicht verstanden -- Filter bleibt aus`,
@@ -224,16 +296,21 @@ const SEARCH_TEXT: Record<DialogLang, {
 		queryTab: "Query",
 		queryTitle: "Please formulate a search query.",
 		queryPlaceholder: "e.g. sandbar detection rivers Sentinel-2",
-		groupTab: "Grouping",
-		groupTitle: "Thematic labeling of the results (on_target/adjacent) -- it does not narrow the search. "
-			+ "Groups are AND-linked, synonyms within a group OR-linked.",
-		groupStrict: "Full match (strict)",
-		groupCore: "Core match (broader)",
-		groupPairs: "Partial match (wide)",
-		groupPairsPrefix: "any 2 together of: ",
-		groupAgent: "Agent proposal",
-		groupCustom: "Custom match:",
-		groupEmpty: "(no terms derivable)",
+		variantsTab: "Query variants",
+		variantsTitle: "Query variants (optional): concept-block searches suggested by the model selected "
+			+ "in pi -- OR synonyms within a concept, AND between concepts (the building-blocks method of "
+			+ "systematic reviews). Checked rows run as ADDITIONAL searches in the same run; arXiv/OpenAlex "
+			+ "receive them as real boolean queries, duplicates are removed, and each record is labeled "
+			+ "against the blocks of the variant that found it (Q1/Q2 ...). The main query always runs. "
+			+ "Steering row below: type a direction, Enter generates new suggestions (checked rows survive).",
+		variantsSelectAll: "Select all",
+		variantsBaseSuffix: "(main query, always searched)",
+		variantsSteerLabel: "Steer new suggestions (Enter generates)",
+		variantsLoading: "(fetching suggestions from the model ...)",
+		variantsIdle: "(waiting for a search query)",
+		variantsNoneFound: "(no usable suggestions -- the main query still runs)",
+		variantsFailed: (message) => `(suggestions not available: ${message})`,
+		variantsNoModel: "(no model selected in pi -- suggestions not available)",
 		periodTab: "Search Period",
 		periodTitle: "Publication period?",
 		periodLast: (n) => `Last ${n} years`,
@@ -276,7 +353,7 @@ const SEARCH_TEXT: Record<DialogLang, {
 		minCitesLabel: "Min. citations",
 		authorsLabel: "Author name (substring)",
 		note: (sources, variants) =>
-			`Sources: ${sources.join(", ")}${variants ? ` · +${variants} agent query variant(s)` : ""}`,
+			`Sources: ${sources.join(", ")}${variants ? ` · +${variants} query variant(s)` : ""}`,
 		badYears: (spec) => `Year range "${spec}" not understood -- keeping the proposal`,
 		badCount: (spec) => `Count "${spec}" not understood -- keeping the proposal`,
 		badNumber: (label, spec) => `${label}: "${spec}" not understood -- filter stays off`,
@@ -319,13 +396,17 @@ function periodToRange(raw: unknown): { yearFrom?: number; yearTo?: number } | n
  * the user walks the tabs to the submit page; bare /lit-search starts
  * the same way with an empty query. Esc cancels
  * the run before any network call. Values are WYSIWYG: what a tab shows
- * at submit time is what runs -- clearing the grouping means ungrouped,
- * clearing the years means all years, and an empty query at submit
- * cancels honestly on EVERY path (v30; the silent fallback to the
- * proposal is gone). The grouping tab derives its expression live from
- * the query (deriveGroupsFromQuery) until the user edits it; the count
- * tab carries the presets plus an inline custom row; the filter tab
- * (min citations, min journal score, journal names) is strictly opt-in.
+ * at submit time is what runs -- clearing the years means all years, and
+ * an empty query at submit cancels honestly on EVERY path (v30; the
+ * silent fallback to the proposal is gone). The query-variants tab
+ * (2026-08-06, replacing the grouping tab) pins the base query as a
+ * locked row, loads LLM concept-block suggestions when reached and lets
+ * a steering row regenerate them; checked rows run as additional
+ * queries. Blocks (2026-08-06 block search) drive the boolean fetch AND
+ * the labeling, derived per query by the ENGINE (agent group_terms
+ * override the base query's blocks). The count tab carries the presets
+ * plus an inline custom row; the filter tab (min citations, author
+ * names) is strictly opt-in.
  */
 async function intakeWizard(
 	ctx: ExtensionContext,
@@ -340,27 +421,18 @@ async function intakeWizard(
 	const text = SEARCH_TEXT[lang];
 	const proposedDepth = proposed.perSource ?? DEFAULT_PER_SOURCE;
 	const yearInitial = yearRangeToSpec(proposed.yearFrom, proposed.yearTo);
-	// Grouping variant expressions, derived from the LIVE query text (the
-	// option descriptions and the custom seed re-render as the user types).
-	const strictExpression = (answers: WizardAnswers): string =>
-		formatGroupExpression(deriveGroupsFromQuery(String(answers.query ?? "")));
-	const coreExpression = (answers: WizardAnswers): string =>
-		formatGroupExpression(deriveCoreGroupsFromQuery(String(answers.query ?? "")));
-	// The wide variant: on_target when any TWO core concepts co-occur.
-	// Up to three concepts the description spells out the OR-of-pairs form
-	// the user asked for; beyond that it stays readable as "any 2 of".
-	const pairsExpression = (answers: WizardAnswers): string => {
-		const names = deriveCoreGroupsFromQuery(String(answers.query ?? "")).map((group) => group[0]);
-		if (names.length < 2) return "";
-		if (names.length <= 3) {
-			const pairs: string[] = [];
-			for (let i = 0; i < names.length; i++) {
-				for (let j = i + 1; j < names.length; j++) pairs.push(`(${names[i]} AND ${names[j]})`);
-			}
-			return pairs.join(" OR ");
+	// Agent-proposed query variants (tool param, 2026-08-06): they become
+	// visible PREchecked rows in the variants tab (v30.8 preselect
+	// semantics) -- the user-confirmed checked list is what runs, raw
+	// params no longer bypass the dialog. Deduplicated case-insensitively.
+	const agentVariants: string[] = [];
+	for (const variant of queryVariants ?? []) {
+		const trimmed = variant.trim();
+		if (!trimmed) continue;
+		if (!agentVariants.some((seen) => seen.toLowerCase() === trimmed.toLowerCase())) {
+			agentVariants.push(trimmed);
 		}
-		return `${text.groupPairsPrefix}${names.join(" · ")}`;
-	};
+	}
 	const thisYear = new Date().getFullYear();
 	// Filled by the journal itemLoader below; the submit mapping needs to
 	// know which journals the list actually showed (v30.11), and the author
@@ -391,43 +463,17 @@ async function intakeWizard(
 			...(query.trim() ? { initial: query } : {}),
 		},
 		{
-			// Grouping VARIANTS to pick from (v30.2 user wish), all derived
-			// deterministically from the LIVE query text; the last row is a
-			// custom expression, seeded with the strict derivation and owned
-			// by the user from the first keystroke. An agent proposal joins
-			// as its own option and is preselected.
-			kind: "choice", id: "groups", tab: text.groupTab, title: text.groupTitle,
-			// The EXPRESSION is the main (white) row, the variant name the
-			// dim line below it (v30.5 user decision -- the expression is
-			// what one actually picks between).
-			options: [
-				{
-					value: "strict",
-					label: (answers) => strictExpression(answers) || text.groupEmpty,
-					description: text.groupStrict,
-				},
-				{
-					value: "core",
-					label: (answers) => coreExpression(answers) || text.groupEmpty,
-					description: text.groupCore,
-				},
-				{
-					value: "pairs",
-					label: (answers) => pairsExpression(answers) || text.groupEmpty,
-					description: text.groupPairs,
-				},
-				...(proposed.groupTerms?.length
-					? [{
-						value: "agent",
-						label: formatGroupExpression(proposed.groupTerms),
-						description: text.groupAgent,
-					}]
-					: []),
-				{ value: "custom", label: text.groupCustom, freeText: true },
-			],
-			customSeed: (answers) => strictExpression(answers),
-			initial: proposed.groupTerms?.length ? "agent" : "strict",
-			...(query.trim() ? { initialIsAnswer: true } : {}),
+			// Query-variants tab (2026-08-06 user decision, REPLACING the
+			// grouping tab of v30.2-.5): the locked base query on top, LLM
+			// phrasing suggestions as checkable rows (loaded when the tab is
+			// reached -- see the variants itemLoader below), agent-proposed
+			// variants prechecked, and a steering input row at the bottom
+			// whose Enter regenerates the suggestions (checked rows survive
+			// via keepSelected). Grouping is auto-derived at submit since.
+			kind: "checkbox", id: "variants", tab: text.variantsTab, title: text.variantsTitle,
+			items: [], selectAllLabel: text.variantsSelectAll, nextLabel: text.journalNext,
+			optional: true, emptyNote: text.variantsIdle, keepSelected: true, cursorStart: "next",
+			input: { id: "variants_hint", label: text.variantsSteerLabel },
 		},
 		{
 			// Search period as a menu (v30.3 user wish): last 5/10/20 years
@@ -503,12 +549,80 @@ async function intakeWizard(
 		// decision 2026-07-30, revising v29.1's review-page-first: jumping
 		// straight to the submit page confused the first-time flow; the
 		// proposal stays as PREFILL, the user walks the tabs to submit).
-		submitNote: () => text.note(sources, queryVariants?.length ?? 0),
+		// Live variant count on the review page: checked rows minus the
+		// locked base row (2026-08-06).
+		submitNote: (answers) => text.note(sources, Array.isArray(answers.variants)
+			? (answers.variants as string[]).filter((id) => id !== VARIANT_BASE_ID).length
+			: 0),
 		// The journal list loads when the tab is reached, keyed on the LIVE
 		// query text (v30.7) -- one OpenAlex facet request plus one batched
 		// score lookup (v30.8: hit count AND 2-yr citedness per entry),
 		// adapter-driven. An agent venues proposal prechecks matching rows.
 		itemLoaders: [{
+			// Query-variant suggestions (2026-08-06): ONE call to the model
+			// selected in pi when the tab is reached; the key carries the
+			// COMMITTED steering text plus its commit counter, so Enter on
+			// the steering row regenerates and typing never fires a call.
+			// load() never throws -- every failure degrades to the locked
+			// base row with an explaining dim line, and the tab stays
+			// passable with one Enter.
+			step: "variants",
+			key: (answers) => {
+				const live = String(answers.query ?? "").trim().toLowerCase();
+				if (!live) return "";
+				return `${live}|${String(answers.variants_hint ?? "")}|${String(answers.variants_hint_seq ?? "0")}`;
+			},
+			load: async (answers) => {
+				const liveQuery = String(answers.query ?? "").trim();
+				const hint = String(answers.variants_hint ?? "").trim();
+				const agentItems: CheckboxItem[] = agentVariants
+					.filter((variant) => variant.toLowerCase() !== liveQuery.toLowerCase())
+					.map((variant) => ({ id: variant, label: variant }));
+				// The base row's dim line shows its concept blocks -- exactly what
+				// the boolean sources receive and what labels its finds (block
+				// search 2026-08-06); a failure/none note takes the line instead.
+				const baseChain = formatGroupExpression(queryBlocks(liveQuery));
+				const base = (note?: string): CheckboxItem => ({
+					id: VARIANT_BASE_ID,
+					label: `${liveQuery} ${text.variantsBaseSuffix}`,
+					locked: true,
+					...(note !== undefined ? { description: note }
+						: baseChain ? { description: baseChain } : {}),
+				});
+				if (!ctx.model) return [base(text.variantsNoModel), ...agentItems];
+				try {
+					const raw = await completeWithPiModel(ctx, {
+						system: VARIANT_SYSTEM_PROMPT,
+						user: variantPrompt(liveQuery, hint, VARIANT_SUGGESTION_LIMIT),
+						maxTokens: 500,
+						...(signal ? { signal } : {}),
+					});
+					const suggestions = parseVariantLines(raw, liveQuery, VARIANT_SUGGESTION_LIMIT)
+						.filter((line) => !agentVariants.some((seen) => seen.toLowerCase() === line.toLowerCase()));
+					return [
+						base(suggestions.length ? undefined : text.variantsNoneFound),
+						...agentItems,
+						...suggestions.map((line) => ({ id: line, label: line })),
+					];
+				} catch (error) {
+					return [
+						base(text.variantsFailed(error instanceof Error ? error.message : String(error))),
+						...agentItems,
+					];
+				}
+			},
+			...(agentVariants.length
+				? {
+					preselect: (items: { id: string }[]) => items
+						.filter((item) => agentVariants.some((seen) => seen.toLowerCase() === item.id.toLowerCase()))
+						.map((item) => item.id),
+				}
+				: {}),
+			loadingNote: text.variantsLoading,
+			idleNote: text.variantsIdle,
+			emptyNote: text.variantsNoneFound,
+			failedNote: text.variantsFailed,
+		}, {
 			step: "journals",
 			key: (answers) => `${String(answers.query ?? "").trim().toLowerCase()}|${scopeKey(liveYearScope(answers))}`,
 			load: async (answers) => {
@@ -607,19 +721,20 @@ async function intakeWizard(
 		diagnostics.push("intake dialog: submitted without a query");
 		return null;
 	}
-	// The grouping step answers with a variant key or a custom expression
-	// (v30.2). Variants are re-derived from the FINAL query text -- exactly
-	// what the option description showed at submit time (WYSIWYG). "pairs"
-	// (v30.3) keeps the core concepts but marks on_target when any TWO of
-	// them co-occur (groupRequire).
-	const groupSpec = typeof result.groups === "string" ? result.groups.trim() : "";
-	const groups = groupSpec === "strict" ? deriveGroupsFromQuery(values.query)
-		: groupSpec === "core" || groupSpec === "pairs" ? deriveCoreGroupsFromQuery(values.query)
-		: groupSpec === "agent" ? proposed.groupTerms ?? []
-		: !groupSpec || groupSpec.toLowerCase() === "none" ? []
-		: parseGroupSpec(groupSpec);
-	values.groupTerms = groups.length ? groups : undefined;
-	values.groupRequire = groupSpec === "pairs" && groups.length > 2 ? 2 : undefined;
+	// Query variants (2026-08-06): exactly the checked rows minus the
+	// locked base row -- WYSIWYG, the run searches base + checked variants.
+	// The engine dedupes against the base query again (belt and braces).
+	const pickedVariantRows = Array.isArray(result.variants) ? (result.variants as string[]) : [];
+	const pickedVariants = pickedVariantRows.filter((id) =>
+		id !== VARIANT_BASE_ID && id.trim().toLowerCase() !== values.query.toLowerCase());
+	values.queryVariants = pickedVariants.length ? pickedVariants : undefined;
+	// Blocks/grouping: since the block search (2026-08-06) the ENGINE
+	// derives every query's concept blocks itself (expression parsed, plain
+	// keywords word-per-block) -- they drive the boolean fetch AND the
+	// labeling. Only an agent group_terms proposal overrides the BASE
+	// query's blocks.
+	values.groupTerms = proposed.groupTerms?.length ? proposed.groupTerms : undefined;
+	values.groupRequire = undefined;
 	// The period step answers with a preset key or a custom range spec; an
 	// unparseable custom range keeps the proposal, loudly. Same resolution
 	// the facet loaders used live (periodToRange), so the pickers and the
@@ -755,8 +870,8 @@ export default function literatureSearch(pi: ExtensionAPI) {
 			"pi-literature-synthesis; for downloading found papers, use pi-literature-selection. " +
 			"Call this tool DIRECTLY; do NOT ask intake or clarification questions in chat first. On every call the " +
 			"tool itself shows the user a terminal wizard summarizing the proposed query (editable there -- the " +
-			"user's wording wins), grouping logic, year range, result count and optional filters (min citations, " +
-			"min journal score, journal names), where the user confirms or adjusts everything before the search " +
+			"user's wording wins), query variants, year range, result count and optional filters (min citations, " +
+			"journal picks, author names), where the user confirms or adjusts everything before the search " +
 			"runs. Your job is only to propose sensible parameters. If the result says " +
 			"the user cancelled the dialog, ask what they want to change; do not retry unchanged. " +
 			"The tool result is a short digest only: counts, the HTML file path, and one reference line per record " +
@@ -772,8 +887,11 @@ export default function literatureSearch(pi: ExtensionAPI) {
 			"group_terms sort results into on_target/adjacent by deterministic word rules: a record is on_target when " +
 			"at least one term from EVERY group appears in its title or abstract. PROPOSE group_terms on every call: " +
 			"derive one group per required concept from the user's research question, each with OR synonyms, e.g. for " +
-			'river sandbars via Sentinel: [["river","fluvial"],["sandbar","bar"],["sentinel","s-1","s-2"]]. The wizard ' +
-			"shows your proposal as one selectable variant next to code-derived ones; the user picks. " +
+			'river sandbars via Sentinel: [["river","fluvial"],["sandbar","bar"],["sentinel","s-1","s-2"]]. Your ' +
+			"proposal is used as passed and becomes the BASE query's concept blocks: it labels on_target/adjacent " +
+			"AND is sent as a boolean block search to sources that support it (arXiv, OpenAlex; CrossRef gets the " +
+			"flat terms). Without one the blocks derive deterministically from the confirmed query. There is no " +
+			"grouping dialog step. " +
 			"If results disappoint, refine group_terms or filters in a new call; NEVER pad the list with loosely " +
 			"related papers to reach a count.",
 		promptSnippet:
@@ -783,7 +901,7 @@ export default function literatureSearch(pi: ExtensionAPI) {
 				description: "Literature search query (topic keywords)",
 			}),
 			query_variants: Type.Optional(Type.Array(Type.String(), {
-				description: "Alternative phrasings of the SAME question (synonyms, domain jargon like index names, broader/narrower wording), searched in the same run. Results are deduplicated across all variants by fixed code and each record notes which variants found it (found_by). Use for exhaustive sweeps instead of separate tool calls.",
+				description: "Alternative searches for the SAME information need, searched in the same run. Each variant may be a concept-block boolean expression like '(river OR stream) AND (water extraction OR water mapping)' -- boolean-capable sources (arXiv, OpenAlex) then receive it as a real boolean query and each record is labeled against the blocks of the variant that found it (found_by). Plain keyword variants work too. Results are deduplicated across all variants by fixed code. On interactive calls your variants appear as PREchecked rows in the wizard's query-variants tab and the user-confirmed list is what runs; headless calls use them directly. Use for exhaustive sweeps instead of separate tool calls.",
 			})),
 			per_source: Type.Optional(Type.Integer({
 				minimum: 1,
@@ -842,6 +960,7 @@ export default function literatureSearch(pi: ExtensionAPI) {
 			};
 			let confirmed: IntakeValues = {
 				query: params.query,
+				queryVariants: params.query_variants,
 				groupTerms: params.group_terms,
 				yearFrom: params.year_from,
 				yearTo: params.year_to,
@@ -888,8 +1007,11 @@ export default function literatureSearch(pi: ExtensionAPI) {
 				};
 			}
 			const payload = await runSearch({
+				// The wizard-confirmed variant list runs -- not the raw agent
+				// param (2026-08-06: the variants tab shows and edits them);
+				// headless calls keep the params via the confirmed seed above.
 				query: confirmed.query,
-				queryVariants: params.query_variants,
+				queryVariants: confirmed.queryVariants,
 				perSource: confirmed.perSource,
 				sources: params.sources,
 				groupTerms: confirmed.groupTerms,
@@ -983,6 +1105,7 @@ export default function literatureSearch(pi: ExtensionAPI) {
 			try {
 				const payload = await runSearch({
 					query: confirmed.query,
+					queryVariants: confirmed.queryVariants,
 					perSource: confirmed.perSource,
 					groupTerms: confirmed.groupTerms,
 					groupRequire: confirmed.groupRequire,

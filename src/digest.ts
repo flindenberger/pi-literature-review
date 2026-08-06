@@ -73,8 +73,16 @@ export function renderDigest(
 	}
 	// What was actually asked for (v30.13 field wish: the digest must log
 	// the dialog inputs, not just the query) -- same wording as the HTML
-	// meta block, from the same functions.
-	lines.push(`Grouping: ${describeGrouping(payload.grouping, payload.grouping_require)}`);
+	// meta block, from the same functions. Multi-query runs label per query
+	// since the block search (2026-08-06).
+	const groupingByQuery = payload.grouping_by_query ?? [];
+	if (groupingByQuery.length) {
+		groupingByQuery.forEach((entry, index) => lines.push(`Grouping Q${index + 1}: ${entry.groups?.length
+			? describeGrouping(entry.groups, index === 0 ? payload.grouping_require : null)
+			: "(no blocks -- query passed through unchanged)"}`));
+	} else {
+		lines.push(`Grouping: ${describeGrouping(payload.grouping, payload.grouping_require)}`);
+	}
 	lines.push(`Filters: ${describeFilters(payload.filters)}`);
 	if (payload.per_source) lines.push(`Records per source: ${payload.per_source}`);
 	// The HTML pointer: on the user card it moves BELOW the record list
@@ -245,8 +253,13 @@ function paperLine(paper: ChatAnswer["paper"]): string {
  * explicit delimiters with the instruction to relay it unchanged. The
  * protocol file on disk always keeps the validated ground truth, so even
  * a paraphrasing agent cannot corrupt the record the report is built from.
+ *
+ * audience "card" (2026-08-04): the answer is ALREADY on screen as a
+ * transcript card -- the instruction flips from relay-verbatim to a
+ * BRIEF direct answer (the card stays the ground truth; a full repeat
+ * would double the text on screen).
  */
-export function renderChatDigest(answer: ChatAnswer): string {
+export function renderChatDigest(answer: ChatAnswer, audience: "relay" | "card" = "relay"): string {
 	const lines: string[] = [];
 	if (answer.grounded) {
 		lines.push(
@@ -270,9 +283,13 @@ export function renderChatDigest(answer: ChatAnswer): string {
 		lines.push(`Pass paper: "${answer.paper.base}.pdf" on every follow-up call about this paper.`);
 	}
 	pushRetrievalLines(lines, answer);
-	const label = answer.grounded
-		? "answer (relay to the user EXACTLY as written, including [n] markers)"
-		: "ungrounded draft (present ONLY together with the warning above)";
+	const label = !answer.grounded
+		? "ungrounded draft (present ONLY together with the warning above)"
+		: audience === "card"
+			? "validated answer -- the user ALREADY SEES it in full as a card. Reply with a BRIEF direct "
+				+ "answer (2-4 sentences) drawn ONLY from this answer; do NOT repeat it in full; do NOT "
+				+ "mention file paths; copy a reference line verbatim if you cite"
+			: "answer (relay to the user EXACTLY as written, including [n] markers)";
 	lines.push(`--- ${label} ---`);
 	lines.push(answer.prose);
 	lines.push("--- end answer ---");

@@ -131,4 +131,29 @@ import { buildSearchQuery, retryDelayMs } from "./arxiv.ts";
 	assert.equal(retryDelayMs(2, "7"), null); // header never revives used-up attempts
 }
 
+// Concept blocks (2026-08-06 block search): OR clauses per block, AND
+// between blocks, phrases quoted; authors compose; blocks win over the
+// token derivation.
+{
+	assert.equal(
+		buildSearchQuery("ignored text", undefined, [["river", "stream"], ["water extraction"], ["satellite"]]),
+		'(all:river OR all:stream) AND all:"water extraction" AND all:satellite',
+	);
+	// Author clause composes around the block expression (v30.14 form).
+	assert.equal(
+		buildSearchQuery("x", ["Kuenzer"], [["river"], ["mask"]]),
+		'(all:river AND all:mask) AND (au:"Kuenzer")',
+	);
+	// Embedded quotes are stripped, terms lowercased; empty groups drop.
+	assert.equal(
+		buildSearchQuery("x", undefined, [['"Water Mask"'], [], ["  "]]),
+		'all:"water mask"',
+	);
+	// No blocks -> the old paths are untouched.
+	assert.equal(
+		buildSearchQuery("sentinel 2 sandbar", undefined, []),
+		'all:"sentinel 2" AND all:sandbar',
+	);
+}
+
 console.log("arxiv.test.ts: all assertions passed");

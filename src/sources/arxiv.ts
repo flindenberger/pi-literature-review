@@ -71,7 +71,7 @@ function extractDoi(entry: Record<string, any>): string {
  * Both sides are parenthesized so the clause composes with every query
  * form, including the legacy pass-throughs.
  */
-export function buildSearchQuery(query: string, authors?: string[]): string {
+export function buildSearchQuery(query: string, authors?: string[], blocks?: string[][]): string {
 	const trimmed = query.trim().replace(/\s+/g, " ");
 	const hasOperators = /(^|\s)(AND|OR|NOT|ANDNOT)(\s|$)/.test(trimmed) || trimmed.includes('"');
 	const tokens = trimmed.toLowerCase().split(" ").filter(Boolean);
@@ -82,6 +82,22 @@ export function buildSearchQuery(query: string, authors?: string[]): string {
 		if (!names.length) return expression;
 		return `(${expression}) AND (${names.map((name) => `au:"${name}"`).join(" OR ")})`;
 	};
+	// Concept blocks (2026-08-06 block search): OR-synonyms per block become
+	// a parenthesized OR clause, blocks join with AND -- the same structure
+	// that labels on_target. Multi-word terms stay quoted phrases. Blocks
+	// win over the token derivation below; the field-syntax/quote escape
+	// hatch never gets blocks (queryBlocks hands off there).
+	const groups = (blocks ?? [])
+		.map((group) => group.map((term) => term.replace(/"/g, "").trim().toLowerCase()).filter(Boolean))
+		.filter((group) => group.length);
+	if (groups.length) {
+		return withAuthors(groups
+			.map((group) => {
+				const terms = group.map((term) => (term.includes(" ") ? `all:"${term}"` : `all:${term}`));
+				return terms.length > 1 ? `(${terms.join(" OR ")})` : terms[0];
+			})
+			.join(" AND "));
+	}
 	if (hasOperators || !tokens.some((token) => token.length > 1)) return withAuthors(`all:${trimmed}`);
 
 	const units: string[][] = [];
@@ -194,7 +210,7 @@ async function fetchFeed(params: URLSearchParams): Promise<SourceRecord[]> {
 
 export async function searchArxiv(query: string, rows: number, scope?: SourceScope): Promise<SourceRecord[]> {
 	return fetchFeed(new URLSearchParams({
-		search_query: buildSearchQuery(query, scope?.authors),
+		search_query: buildSearchQuery(query, scope?.authors, scope?.blocks),
 		max_results: String(rows),
 		sortBy: "relevance",
 		sortOrder: "descending",

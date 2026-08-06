@@ -30,6 +30,10 @@ interface RenderRecord {
 	verified?: boolean;
 	verify_note?: string;
 	group?: "on_target" | "adjacent";
+	/** Which query's blocks earned the on_target label, with the exact term
+	 * that hit per block (2026-08-06 evidence line) -- absent on adjacent
+	 * records and pre-evidence sidecars. */
+	group_matched?: { query: number; terms: string[] } | null;
 	/** Fields filled by the deterministic identifier lookup: field -> provider. */
 	enriched?: Record<string, string>;
 	/** Query variants that found this record (multi-query runs only). */
@@ -59,7 +63,16 @@ export interface RenderPayload {
 	source_failures?: Array<{ source: string; error: string }> | null;
 	/** Boolean expression actually sent to arXiv per query (null: arXiv unused). */
 	arxiv_queries?: string[] | null;
+	/** Boolean block search actually sent to OpenAlex per query (2026-08-06;
+	 * null/absent: OpenAlex unused or a pre-block sidecar). */
+	openalex_queries?: string[] | null;
+	/** Flattened block terms actually sent to CrossRef per query (2026-08-06:
+	 * CrossRef has no boolean search). */
+	crossref_queries?: string[] | null;
 	grouping: string[][] | null;
+	/** Per-query concept blocks of a multi-query run (2026-08-06); a record
+	 * is on_target when it fully matches ANY of these sets. */
+	grouping_by_query?: Array<{ query: string; groups: string[][] | null }> | null;
 	/** on_target needs only this many groups (null: all groups; v30.3). */
 	grouping_require?: number | null;
 	filters: Record<string, unknown> | null;
@@ -229,7 +242,13 @@ function resultRow(record: RenderRecord, index: number, queryLabels: Map<string,
 		cell(cites, cites ? cites + citesStar : "&mdash;"),
 		cell((record.doi || record.arxiv_id).toLowerCase(), doiCell(record)),
 		cell(sourcesOf(record).join(", "), (esc(sourcesOf(record).join(", ")) || "&mdash;") + foundBy),
-		cell(groupKey, record.group ? esc(record.group) : "&mdash;"),
+		// The evidence line (2026-08-06): which query's blocks earned the
+		// label, and the exact term that hit per block -- a homonym like
+		// "stream" (two-stream CNNs) is then readable right at the label.
+		cell(groupKey, (record.group ? esc(record.group) : "&mdash;")
+			+ (record.group_matched?.terms?.length
+				? `<br><span class="note">via Q${record.group_matched.query}: ${esc(record.group_matched.terms.join(" · "))}</span>`
+				: "")),
 	];
 	return `<tr${rowClass}>${cells.join("")}</tr>`;
 }
@@ -461,14 +480,47 @@ export function renderHtml(payload: RenderPayload): string {
 		? `\n<dt>Variants</dt>${variants.map((v, i) => `<dd>Q${i + 2}: ${esc(v)}</dd>`).join("")}`
 		: "";
 	const queryLabel = variants.length ? `Q1: ${payload.query}` : payload.query;
-	// Transparency: the boolean expression actually sent to arXiv (v18) --
-	// what was asked stays verifiable, same line as grouping and dropped list.
+	// Per-source transparency (v18 arXiv; all three since the 2026-08-06
+	// block search, PRISMA-S habit: document the strategy per database):
+	// the expression each source actually received, per query.
+	const sentRows = (label: string, values: string[] | null | undefined, note?: string): string => {
+		const list = values ?? [];
+		if (!list.length) return "";
+		return `\n<dt>${label}</dt>${list
+			.map((q, i) => `<dd>${list.length > 1 ? `Q${i + 1}: ` : ""}${esc(q)}</dd>`)
+			.join("")}${note ? `<dd><span class="note">${esc(note)}</span></dd>` : ""}`;
+	};
 	const arxivQueries = payload.arxiv_queries ?? [];
-	const arxivQueryRows = arxivQueries.length
-		? `\n<dt>Sent to arXiv</dt>${arxivQueries
-			.map((q, i) => `<dd>${arxivQueries.length > 1 ? `Q${i + 1}: ` : ""}${esc(q)}</dd>`)
-			.join("")}`
-		: "";
+	// Old sidecars carry only arxiv_queries; without the other rows this one
+	// read as "only arXiv was searched" in the field (2026-08-06) -- the
+	// legacy note keeps those pages honest.
+	const legacySidecar = arxivQueries.length && !payload.openalex_queries?.length
+		&& !payload.crossref_queries?.length;
+	const arxivQueryRows = sentRows(
+		"Sent to arXiv",
+		payload.arxiv_queries,
+		legacySidecar
+			? "arXiv is the only source needing this boolean syntax; CrossRef and OpenAlex received the query text unchanged (keyword relevance search)."
+			: undefined,
+	);
+	const openalexQueryRows = sentRows("Sent to OpenAlex", payload.openalex_queries);
+	const crossrefQueryRows = sentRows(
+		"Sent to CrossRef",
+		payload.crossref_queries,
+		"CrossRef offers no boolean search; it receives the block terms as plain relevance keywords.",
+	);
+	// Grouping: per query since the block search; a record is on_target when
+	// it fully matches ANY confirmed query's blocks (2026-08-06 revision --
+	// the finder no longer decides the label). Single-query runs and old
+	// sidecars keep the one-line form.
+	const groupingByQuery = payload.grouping_by_query ?? [];
+	const groupingRows = groupingByQuery.length
+		? `\n<dt>Grouping</dt>${groupingByQuery
+			.map((entry, i) => `<dd>Q${i + 1}: ${esc(entry.groups?.length
+				? describeGrouping(entry.groups, i === 0 ? payload.grouping_require : null)
+				: "(no blocks -- query passed through unchanged)")}</dd>`)
+			.join("")}<dd><span class="note">on_target = full match of at least one of these block sets, regardless of which query found the record.</span></dd>`
+		: `\n<dt>Grouping</dt><dd>${esc(describeGrouping(payload.grouping, payload.grouping_require))}</dd>`;
 	// Honest degradation stays visible (v30.1): a source that errored is
 	// listed with its reason -- the results may be incomplete and the page
 	// must say so, not just a transient status line during the run.
@@ -527,9 +579,8 @@ ${payload.dropped.map(droppedRow).join("\n")}
 <dl class="meta">
 <dt>Query</dt><dd>${esc(queryLabel)}</dd>${variantRows}
 <dt>Generated</dt><dd>${esc(payload.generated)} (UTC)</dd>
-<dt>Sources</dt><dd>${esc(payload.sources_used.join(", ")) || "none reachable"}</dd>${sourceFailureRows}${arxivQueryRows}${
-	payload.per_source ? `\n<dt>Records per source</dt><dd>${esc(payload.per_source)}</dd>` : ""}
-<dt>Grouping</dt><dd>${esc(describeGrouping(payload.grouping, payload.grouping_require))}</dd>
+<dt>Sources</dt><dd>${esc(payload.sources_used.join(", ")) || "none reachable"}</dd>${sourceFailureRows}${arxivQueryRows}${openalexQueryRows}${crossrefQueryRows}${
+	payload.per_source ? `\n<dt>Records per source</dt><dd>${esc(payload.per_source)}</dd>` : ""}${groupingRows}
 <dt>Filters</dt><dd>${esc(describeFilters(payload.filters))}</dd>
 <dt>Sort</dt><dd>${esc(payload.sort ?? "source order")}</dd>
 <dt>Results</dt><dd>${results.length}${groupSummary}; ${verifiedCount}/${results.length} identifiers verified; ${payload.dropped.length} dropped</dd>

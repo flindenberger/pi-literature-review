@@ -98,6 +98,20 @@ function payload(overrides: Partial<RenderPayload>): RenderPayload {
 	assert.ok(!user.includes("never re-type titles"));
 	// the record lines themselves stay identical for both audiences
 	assert.ok(user.includes("1. [adjacent] 2021 | 10.1234/example | A Paper"));
+
+	// Per-query grouping lines on multi-query runs (2026-08-06 block search).
+	const perQuery = renderDigest(payload({
+		query_variants: ["(cnn OR deep learning) AND (river)"],
+		grouping: [["water"], ["mask"]],
+		grouping_by_query: [
+			{ query: "water mask", groups: [["water"], ["mask"]] },
+			{ query: "(cnn OR deep learning) AND (river)", groups: [["cnn", "deep learning"], ["river"]] },
+		],
+	}), "/x.html");
+	assert.ok(perQuery.includes("Grouping Q1: (water) AND (mask)"));
+	assert.ok(perQuery.includes("Grouping Q2: (cnn OR deep learning) AND (river)"));
+	assert.ok(!perQuery.includes("labeled against Q1")); // 2026-08-06 revision: any set labels
+	assert.ok(!perQuery.includes("\nGrouping: ")); // the single line yields to the per-query form
 	// v30.15: on the user card the HTML pointer sits BELOW the record list
 	// (a 40-record run drowned it in the middle) and is a clickable file://
 	// URL; the agent keeps the plain path ABOVE its record lines.
@@ -301,6 +315,22 @@ const chatAnswer: ChatAnswer = {
 	assert.ok(!digest.includes("report: true"));
 	assert.ok(!digest.includes(".html"));
 	assert.ok(!digest.includes("FAILED"));
+}
+
+{
+	// Card audience (2026-08-04): the answer is already on screen as a
+	// transcript card -- the instruction flips to a BRIEF direct answer.
+	const digest = renderChatDigest(chatAnswer, "card");
+	assert.ok(digest.includes("the user ALREADY SEES it in full as a card"));
+	assert.ok(digest.includes("BRIEF direct answer"));
+	assert.ok(digest.includes("do NOT repeat it in full"));
+	assert.ok(!digest.includes("relay to the user EXACTLY"));
+	// The verbatim prose and references still travel (context ground truth).
+	assert.ok(digest.includes("Die Methode nutzt einen adaptiven Schwellwert [1]."));
+	assert.ok(digest.includes("[1] 2021 | 10.1234/abc | River sandbar dynamics (S. 2, 5)"));
+	// Ungrounded drafts never get the card instruction, whatever the audience.
+	const draft = renderChatDigest({ ...chatAnswer, grounded: false, references: [], protocol_path: null, round: 0 }, "card");
+	assert.ok(draft.includes("--- ungrounded draft (present ONLY together with the warning above) ---"));
 }
 
 {

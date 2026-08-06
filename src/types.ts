@@ -36,6 +36,13 @@ export interface SourceRecord {
  */
 export interface SourceScope {
 	authors?: string[];
+	/** Concept blocks of THIS query (2026-08-06 block search): OR-linked
+	 * synonyms per block, AND between blocks. Boolean-capable sources
+	 * (arXiv, OpenAlex) send them as a real boolean expression; CrossRef
+	 * (no boolean support) flattens the terms into its relevance keyword
+	 * search. The same blocks label the results on_target/adjacent, so the
+	 * search and the label can never disagree. Absent: legacy behavior. */
+	blocks?: string[][];
 }
 
 export const VERSION = "0.1.0";

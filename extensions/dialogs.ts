@@ -164,7 +164,12 @@ async function checkboxSelectLoop(
 ): Promise<string[] | "back" | null> {
 	const shown = options.items.slice(0, FALLBACK_MAX_ITEMS);
 	const known = new Set(shown.map((item) => item.id));
-	const selected = new Set((options.preselected ?? []).filter((id) => known.has(id)));
+	// Locked rows (2026-08-06, the variants tab's base query) are always
+	// selected -- seeded here, never removable below.
+	const selected = new Set([
+		...(options.preselected ?? []).filter((id) => known.has(id)),
+		...shown.filter((item) => item.locked).map((item) => item.id),
+	]);
 	const adapterText = ADAPTER_TEXT[options.lang ?? "en"];
 	const doneRow = adapterText.doneRow;
 	const backRow = adapterText.backRow;
@@ -187,8 +192,12 @@ async function checkboxSelectLoop(
 		if (picked === backRow) return "back";
 		const index = rows.indexOf(picked);
 		if (index === 0) {
-			if (all) selected.clear();
-			else for (const item of shown) selected.add(item.id);
+			// Select-all "off" keeps locked rows -- they are not optional.
+			if (all) {
+				for (const item of shown) {
+					if (!item.locked) selected.delete(item.id);
+				}
+			} else for (const item of shown) selected.add(item.id);
 			continue;
 		}
 		if (picked === doneRow) {
@@ -201,6 +210,7 @@ async function checkboxSelectLoop(
 			return shown.filter((item) => selected.has(item.id)).map((item) => item.id);
 		}
 		const item = shown[index - 1];
+		if (item.locked) continue; // always selected, not toggleable
 		if (selected.has(item.id)) selected.delete(item.id);
 		else selected.add(item.id);
 	}
@@ -356,7 +366,12 @@ async function wizardOverlay(
 					// is ignored.
 					const active = state.tab < state.steps.length ? state.steps[state.tab] : undefined;
 					const onText = active !== undefined && (active.kind === "text" || active.kind === "form"
-						|| (active.kind === "choice" && active.options[state.cursors[state.tab]]?.freeText === true));
+						|| (active.kind === "choice" && active.options[state.cursors[state.tab]]?.freeText === true)
+						// Checkbox steering row (2026-08-06): Space must TYPE
+						// there, not toggle -- the input row sits right after
+						// the items (empty list: row 1).
+						|| (active.kind === "checkbox" && active.input !== undefined
+							&& state.cursors[state.tab] === active.items.length + 1));
 					const event: WizardEvent | null = matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c")) ? "cancel"
 						: matchesKey(data, Key.enter) ? "confirm"
 						: matchesKey(data, Key.left) || matchesKey(data, Key.shift("tab")) ? "left"
@@ -452,6 +467,9 @@ async function wizardSelectLoop(
 		return step.initial ?? "";
 	};
 	const enabled = (i: number): boolean => steps[i].enabledIf?.(liveAnswers()) ?? true;
+	// Loader results per step id, keyed like the overlay's loadedKeys
+	// (2026-08-06): a revisit with the same key must not re-fetch.
+	const loadedCache = new Map<string, { key: string; items: CheckboxItem[] }>();
 	let index = options?.startTab === "submit" ? steps.length : 0;
 	let direction: 1 | -1 = 1;
 	for (;;) {
@@ -527,19 +545,27 @@ async function wizardSelectLoop(
 		if (step.kind === "checkbox") {
 			// Lazily loaded items (v30.7): fetch here, right before the step
 			// shows; failures/empty lists skip an optional step honestly.
+			// Per-run cache (2026-08-06): revisiting a tab with an unchanged
+			// key reuses the fetched list -- the variants loader makes an LLM
+			// call, which must not repeat on every visit.
 			let items = step.items;
 			const loader = options?.itemLoaders?.find((entry) => entry.step === step.id);
 			if (loader) {
 				const live = liveAnswers();
 				const key = loader.key(live);
-				if (key) {
+				const cached = loadedCache.get(step.id);
+				if (cached && cached.key === key) {
+					items = cached.items;
+				} else if (key) {
 					try {
 						items = await loader.load(live);
 					} catch {
 						items = [];
 					}
+					loadedCache.set(step.id, { key, items });
 				} else {
 					items = [];
+					loadedCache.set(step.id, { key, items });
 				}
 				if (!items.length && step.optional) {
 					answers[step.id] = [];

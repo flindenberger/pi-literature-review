@@ -159,6 +159,59 @@ export function yearRangeToSpec(yearFrom?: number, yearTo?: number): string {
 }
 
 /**
+ * Whether a query text is a concept-block EXPRESSION (hand- or LLM-written
+ * boolean structure) rather than plain keywords (2026-08-06 block search):
+ * parentheses, semicolons (the legacy a,b;c,d spec) or UPPERCASE boolean
+ * operators mark it. Lowercase and/or are everyday words and stay plain.
+ */
+export function isBlockExpression(text: string): boolean {
+	return /[();]/.test(text) || /(^|\s)(AND|OR)(\s|$)/.test(text);
+}
+
+/**
+ * The concept blocks of one query (2026-08-06): the single structure that
+ * BOTH drives the boolean source search (arXiv, OpenAlex) AND labels the
+ * results on_target/adjacent -- search and label can no longer disagree.
+ * An expression parses via parseGroupSpec ("(river OR stream) AND (mask)"),
+ * plain keywords derive one block per content word (the v18/v30 rule,
+ * "sentinel 2" bindings included). Queries carrying quotes or explicit
+ * arXiv field syntax (all:/ti:/abs:/au:/cat:) are the user's own source
+ * syntax -- hands off, no blocks (the sources then use their legacy
+ * pass-through paths).
+ */
+export function queryBlocks(text: string): string[][] {
+	if (/"|(?:^|\s)(?:all|ti|abs|au|cat):/i.test(text)) return [];
+	return isBlockExpression(text) ? parseGroupSpec(text) : deriveGroupsFromQuery(text);
+}
+
+/**
+ * Parse LLM-generated query-variant suggestions (2026-08-06): one query per
+ * line; leading list bullets/numbering and surrounding quotes are stripped
+ * (models habitually add both despite instructions); empties vanish;
+ * duplicates of the base query and of earlier lines drop case-insensitively;
+ * the list is capped. Pure -- the LLM only ever SHAPES queries here, the
+ * user checks each one in the dialog before it runs.
+ */
+export function parseVariantLines(raw: string, baseQuery: string, cap = 8): string[] {
+	const seen = new Set([baseQuery.trim().toLowerCase()]);
+	const variants: string[] = [];
+	for (const line of raw.split("\n")) {
+		const cleaned = line
+			.trim()
+			.replace(/^(?:[-*•]|\d{1,2}[.)])(?:\s+|$)/, "")
+			.replace(/^["'„“`]+|["'“”`]+$/g, "")
+			.trim();
+		if (!cleaned) continue;
+		const key = cleaned.toLowerCase();
+		if (seen.has(key)) continue;
+		seen.add(key);
+		variants.push(cleaned);
+		if (variants.length >= cap) break;
+	}
+	return variants;
+}
+
+/**
  * Parse a free-text results-per-source count from the intake dialog.
  * Returns the number clamped to [1, max] (max = politeness cap towards the
  * free APIs), or null when the input is not a whole number, so the dialog

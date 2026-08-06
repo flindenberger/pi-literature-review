@@ -12,6 +12,7 @@ import {
 	dedupe,
 	filterRecords,
 	group,
+	groupAcrossQueries,
 	groupAll,
 	sanitizeTermGroups,
 	sortRecords,
@@ -173,6 +174,71 @@ function record(overrides: Partial<SourceRecord>): SourceRecord {
 	assert.deepEqual(grouped.map((r) => r.group), ["on_target", "adjacent"]);
 	const ungrouped = groupAll([record({ title: "anything" })], sanitizeTermGroups(undefined));
 	assert.equal("group" in ungrouped[0], false);
+}
+
+// groupAcrossQueries (2026-08-06, revised same day on user decision): a
+// record is on_target when it fully matches ANY confirmed query's blocks,
+// regardless of which query found it -- the field case: a surface-water
+// review found only by the strict base query must not stay adjacent when
+// a variant's blocks match it fully.
+{
+	const blockSets = [
+		sanitizeTermGroups([["water"], ["mask"]]),
+		sanitizeTermGroups([["surface water", "water body"], ["satellite", "remote sensing"]]),
+		[], // a quoted/field-syntax query carries no blocks; ignored
+	];
+	const records = [
+		// The Wieland case: misses the strict base blocks (no "mask") but
+		// fully matches the variant's blocks -> on_target now.
+		record({ title: "Semantic segmentation of water bodies in satellite images", abstract: "" }),
+		// Matches the base blocks only -> on_target too (any set counts).
+		record({ title: "a water mask paper", abstract: "" }),
+		// Matches no set fully -> adjacent.
+		record({ title: "water levels from gauges", abstract: "" }),
+	] as SourceRecord[];
+	const grouped = groupAcrossQueries(records, blockSets);
+	const byTitle = new Map(grouped.map((r) => [r.title, r.group]));
+	assert.equal(byTitle.get("Semantic segmentation of water bodies in satellite images"), "on_target");
+	assert.equal(byTitle.get("a water mask paper"), "on_target");
+	assert.equal(byTitle.get("water levels from gauges"), "adjacent");
+	// on_target rows sort first.
+	assert.equal(grouped[grouped.length - 1].title, "water levels from gauges");
+	// Evidence (2026-08-06): the winning set's number and the exact term
+	// that hit per block travel with the record; adjacent records carry
+	// nothing. The Wieland record wins via set 2 (1-based query numbers).
+	const wieland = grouped.find((r) => r.title.startsWith("Semantic segmentation"));
+	assert.deepEqual(wieland?.group_matched, { query: 2, terms: ["water body", "satellite"] });
+	assert.equal(grouped.find((r) => r.title === "water levels from gauges")?.group_matched, undefined);
+	// The field case that motivated the evidence line: a pedestrian-
+	// detection CNN paper earns on_target through the homonym "stream"
+	// (two-stream networks) plus generic terms -- the evidence names them.
+	const pedestrian = groupAcrossQueries(
+		[record({
+			title: "Multispectral pedestrian detection via a two-stream network",
+			abstract: "We improve feature extraction for pedestrians.",
+		})],
+		[sanitizeTermGroups([["satellite", "multispectral"], ["fluvial", "stream"], ["boundary detection", "feature extraction"]])],
+	);
+	assert.equal(pedestrian[0].group, "on_target");
+	assert.deepEqual(pedestrian[0].group_matched, {
+		query: 1,
+		terms: ["multispectral", "stream", "feature extraction"],
+	});
+	// No blocks anywhere: records pass through ungrouped.
+	const untouched = groupAcrossQueries([record({ title: "anything" })], [[], []]);
+	assert.equal("group" in untouched[0], false);
+}
+
+// termMatches third tolerance (2026-08-06 user decision): consonant+y
+// takes the English ies-plural; vowel+y stays on the s-path; the old
+// guarantees hold.
+{
+	assert.equal(termMatches("semantic segmentation of water bodies", "water body"), true);
+	assert.equal(termMatches("two case studies", "study"), true);
+	assert.equal(termMatches("several surveys", "survey"), true); // vowel+y -> s
+	assert.equal(termMatches("the body of work", "body"), true); // singular still matches
+	assert.equal(termMatches("nobody expects it", "body"), false); // whole word only
+	assert.equal(termMatches("sandbarrier", "sandbar"), false); // no stemming beyond plurals
 }
 
 // sanitizeTermGroups: trims, lowercases, drops empty terms/groups/garbage

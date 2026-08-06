@@ -21,6 +21,7 @@ import {
 	selection,
 	type WizardState,
 	type WizardStepDef,
+	wizardAnswers,
 	wizardResult,
 	wizardSummaryLines,
 	wizardView,
@@ -767,6 +768,168 @@ function drive(
 	assert.equal(walked.state.cursors[0], 1);
 	const skipped = drive(walked.state, ["confirm"]); // field 2 empty -> out
 	assert.equal(skipped.state.tab, 1);
+}
+
+/* -------- locked rows (2026-08-06, the variants tab's base query) -------- */
+{
+	const lockedItems = [
+		{ id: "base", label: "water mask (main query)", locked: true },
+		{ id: "v1", label: "surface water extraction" },
+	];
+	// Standalone checkbox: locked ids are selected from init, toggle on them
+	// is a no-op, select-all "off" keeps them.
+	let state = initCheckbox(lockedItems);
+	assert.deepEqual(selection(state), ["base"]);
+	state = reduceCheckbox(state, "down").state; // cursor on the locked row
+	state = reduceCheckbox(state, "toggle").state;
+	assert.deepEqual(selection(state), ["base"]); // still selected
+	state = reduceCheckbox(state, "up").state; // select-all row
+	state = reduceCheckbox(state, "toggle").state; // all on
+	assert.deepEqual(selection(state), ["base", "v1"]);
+	state = reduceCheckbox(state, "toggle").state; // all "off" keeps locked
+	assert.deepEqual(selection(state), ["base"]);
+	// The locked row renders checked.
+	assert.ok(checkboxLines(state, "All")[1].text.includes("[✔] water mask"));
+}
+
+/* ---- checkbox cursor vs description lines (2026-08-06 bugfix pin) ---- */
+{
+	// rowCount counts dim description lines for the overlay HEIGHT, but the
+	// cursor must not walk them: before the fix, items with descriptions
+	// created dead cursor rows and Enter beyond the list crashed on
+	// items[cursor-1]. Nav layout: select-all(0), items(1..n), Next(n+1).
+	const steps: WizardStepDef[] = [{
+		kind: "checkbox", id: "docs", tab: "Docs", title: "?",
+		items: [
+			{ id: "a", label: "a.pdf", description: "2021 - Kryniecka - Vistula" },
+			{ id: "b", label: "b.pdf", description: "2026 - Blanch - Water level" },
+		],
+		selectAllLabel: "All", nextLabel: "Next",
+	}];
+	let { state } = drive(initWizard(steps), ["down", "down"]); // -> item b
+	({ state } = drive(state, ["confirm"])); // Enter toggles item b, no crash
+	assert.deepEqual([...state.selected[0]], ["b"]);
+	({ state } = drive(state, ["down"])); // -> Next row (row 3, not a dead row)
+	const committed = drive(state, ["confirm", "confirm"]);
+	assert.equal(committed.done, "confirmed");
+	assert.deepEqual(wizardResult(committed.state).docs, ["b"]);
+	// Down from Next wraps straight back to select-all -- no dead rows.
+	assert.equal(drive(state, ["down"]).state.cursors[0], 0);
+}
+
+/* -------- steering input row + keepSelected + cursorStart (2026-08-06) -------- */
+{
+	const variantsStep: WizardStepDef = {
+		kind: "checkbox", id: "variants", tab: "Variants", title: "?",
+		items: [], selectAllLabel: "All", nextLabel: "Next",
+		optional: true, emptyNote: "(waiting)", keepSelected: true, cursorStart: "next",
+		input: { id: "variants_hint", label: "Steer" },
+	};
+	const steps: WizardStepDef[] = [
+		{ kind: "text", id: "query", tab: "Query", title: "?", plain: true },
+		variantsStep,
+	];
+	// cursorStart "next": the empty tab starts on the Next row (emptyNote 0,
+	// input row 1, Next 2) -- Enter-through never toggles select-all.
+	let { state } = drive(initWizard(steps), [{ kind: "input", chars: "water" }, "confirm"]);
+	assert.equal(state.tab, 1);
+	assert.equal(state.cursors[1], 2);
+	// The input row renders between the note and Next; the answers export
+	// the COMMITTED steering value (empty) plus the commit counter.
+	let view = wizardView(state);
+	assert.ok(view.rows[1].text.includes("Steer: "));
+	assert.equal(wizardAnswers(state).variants_hint, "");
+	assert.equal(wizardAnswers(state).variants_hint_seq, "0");
+	// Enter-through while empty+optional still passes with one stroke.
+	const through = drive(state, ["confirm", "confirm"]);
+	assert.equal(through.done, "confirmed");
+	// setItems: the locked base row auto-selects; cursor stays on Next
+	// (role-follow: old Next -> new Next, not a mid-list clamp).
+	({ state } = drive(state, [
+		{ kind: "setItems", step: "variants", items: [
+			{ id: "__base__", label: "water (main query)", locked: true },
+			{ id: "v1", label: "surface water extraction" },
+			{ id: "v2", label: "water body segmentation" },
+		], emptyNote: "" },
+	] as never));
+	assert.deepEqual([...state.selected[1]], ["__base__"]);
+	assert.equal(state.cursors[1], 5); // 0 all, 1-3 items, 4 input, 5 Next
+	// Toggle on the locked row is a no-op; select-all "off" keeps it.
+	({ state } = drive(state, ["up", "up", "up", "up"])); // -> row 1 (base)
+	({ state } = drive(state, ["toggle"]));
+	assert.deepEqual([...state.selected[1]], ["__base__"]);
+	({ state } = drive(state, ["up", "toggle"])); // select-all: all on
+	assert.deepEqual([...state.selected[1]].sort(), ["__base__", "v1", "v2"]);
+	({ state } = drive(state, ["toggle"])); // all "off" -> locked stays
+	assert.deepEqual([...state.selected[1]], ["__base__"]);
+	// Check v2, then type on the steering row: the draft edits, the ANSWERS
+	// stay stable (no per-keystroke reload key changes) until Enter commits.
+	({ state } = drive(state, ["down", "down", "down", "toggle"])); // row 3 = v2
+	({ state } = drive(state, ["down"])); // row 4 = input row
+	({ state } = drive(state, [{ kind: "input", chars: "focus deep learning" }]));
+	assert.ok(wizardView(state).rows.some((row) => row.text.includes("Steer: focus deep learning_")));
+	assert.equal(wizardAnswers(state).variants_hint, "");
+	({ state } = drive(state, ["confirm"])); // commit: value + seq, stays put
+	assert.equal(state.tab, 1);
+	assert.equal(state.cursors[1], 4);
+	assert.equal(wizardAnswers(state).variants_hint, "focus deep learning");
+	assert.equal(wizardAnswers(state).variants_hint_seq, "1");
+	({ state } = drive(state, ["confirm"])); // same text again = explicit re-roll
+	assert.equal(wizardAnswers(state).variants_hint_seq, "2");
+	// Regeneration dispatch: first the loading swap (empty items) -- checked
+	// and locked rows survive as appended orphans (keepSelected)...
+	({ state } = drive(state, [
+		{ kind: "setItems", step: "variants", items: [], emptyNote: "(loading)" },
+	] as never));
+	assert.deepEqual([...state.selected[1]].sort(), ["__base__", "v2"]);
+	assert.ok(state.steps[1].kind === "checkbox" && state.steps[1].items.some((item) => item.id === "v2"));
+	// ...then the new list arrives: v2 is not in it but stays, appended.
+	({ state } = drive(state, [
+		{ kind: "setItems", step: "variants", items: [
+			{ id: "__base__", label: "water (main query)", locked: true },
+			{ id: "v3", label: "open water mapping" },
+		], emptyNote: "" },
+	] as never));
+	assert.deepEqual([...state.selected[1]].sort(), ["__base__", "v2"]);
+	const labels = (state.steps[1] as WizardStepDef & { kind: "checkbox" }).items.map((item) => item.id);
+	assert.deepEqual(labels, ["__base__", "v3", "v2"]);
+	// The cursor followed its role onto the input row across both swaps.
+	assert.equal(state.cursors[1], 3 + 1); // 0 all, 1-3 items, 4 input
+	// Result: checked ids plus the committed steering text.
+	({ state } = drive(state, ["down", "confirm"])); // Next -> submit tab
+	const finished = drive(state, ["confirm"]);
+	assert.equal(finished.done, "confirmed");
+	assert.deepEqual(finished.state.selected[1].size, 2);
+	assert.deepEqual(wizardResult(finished.state).variants, ["__base__", "v2"]);
+	assert.equal(wizardResult(finished.state).variants_hint, "focus deep learning");
+	// The overlay height budget counts the input row.
+	assert.ok(maxWizardRows(state) >= 7);
+}
+
+/* -------- setItems preselect vs locked ordering (2026-08-06) -------- */
+{
+	const steps: WizardStepDef[] = [{
+		kind: "checkbox", id: "variants", tab: "V", title: "?",
+		items: [], selectAllLabel: "All", nextLabel: "Next", optional: true, keepSelected: true,
+	}];
+	// First load: the selection is empty BEFORE the locked union, so an
+	// agent preselect seeds -- locked joins afterwards.
+	let { state } = drive(initWizard(steps), [
+		{ kind: "setItems", step: "variants", items: [
+			{ id: "__base__", label: "base", locked: true },
+			{ id: "agent1", label: "agent variant" },
+		], preselect: ["agent1"] },
+	] as never);
+	assert.deepEqual([...state.selected[0]].sort(), ["__base__", "agent1"]);
+	// Second load: selection is non-empty -- a new preselect must NOT seed.
+	({ state } = drive(state, [
+		{ kind: "setItems", step: "variants", items: [
+			{ id: "__base__", label: "base", locked: true },
+			{ id: "agent1", label: "agent variant" },
+			{ id: "b2", label: "other" },
+		], preselect: ["b2"] },
+	] as never));
+	assert.deepEqual([...state.selected[0]].sort(), ["__base__", "agent1"]);
 }
 
 console.log("dialog-state tests passed");

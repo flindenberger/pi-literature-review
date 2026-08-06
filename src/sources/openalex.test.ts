@@ -5,7 +5,7 @@
  */
 
 import assert from "node:assert/strict";
-import { buildAuthorSearchFilter, buildFacetFilter, parseFacetPage, parseFacets } from "./openalex.ts";
+import { buildAuthorSearchFilter, buildBlockSearch, buildFacetFilter, parseFacetPage, parseFacets } from "./openalex.ts";
 
 /** v30.11: journals and authors share the facet parser. */
 const parseJournalFacets = parseFacets;
@@ -93,6 +93,20 @@ const parseJournalFacetPage = parseFacetPage;
 	assert.equal(buildAuthorSearchFilter([]), "");
 	assert.equal(buildAuthorSearchFilter(undefined), "");
 	assert.equal(buildAuthorSearchFilter(["  ", "|"]), "");
+}
+
+// buildBlockSearch (2026-08-06 block search): UPPERCASE boolean operators,
+// parentheses only around real OR groups, multi-word terms quoted.
+{
+	assert.equal(
+		buildBlockSearch([["river", "stream"], ["water extraction", "water mapping"], ["satellite"]]),
+		'(river OR stream) AND ("water extraction" OR "water mapping") AND satellite',
+	);
+	assert.equal(buildBlockSearch([["mask"]]), "mask");
+	assert.equal(buildBlockSearch([]), "");
+	assert.equal(buildBlockSearch(undefined), "");
+	// Embedded quotes in terms are stripped, empty groups drop.
+	assert.equal(buildBlockSearch([['"sentinel 2"'], [""]]), '"sentinel 2"');
 }
 
 console.log("openalex.test.ts: all assertions passed");

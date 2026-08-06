@@ -10,16 +10,18 @@ import {
 	applyFilters,
 	dedupe,
 	filterRecords,
-	groupAll,
+	groupAcrossQueries,
 	type ResultFilters,
 	sanitizeTermGroups,
 	type SortKey,
 	sortRecords,
+	type TermGroups,
 } from "./pipeline.ts";
 import { addJournalScores, enrichAll } from "./enrich.ts";
+import { queryBlocks } from "./intake.ts";
 import { buildSearchQuery, searchArxiv } from "./sources/arxiv.ts";
-import { searchCrossref } from "./sources/crossref.ts";
-import { searchOpenalex } from "./sources/openalex.ts";
+import { flattenBlockTerms, searchCrossref } from "./sources/crossref.ts";
+import { buildBlockSearch, searchOpenalex } from "./sources/openalex.ts";
 import type { SourceRecord, SourceScope } from "./types.ts";
 import { verifyAll } from "./verify.ts";
 
@@ -44,7 +46,11 @@ export interface SearchOptions {
 	queryVariants?: string[];
 	perSource?: number;
 	sources?: string[];
-	/** Grouping rules (term groups); see pipeline.ts. Optional. */
+	/** Grouping rules (term groups); see pipeline.ts. Optional. Since the
+	 * block search (2026-08-06) these are the BASE query's concept blocks:
+	 * they label on_target/adjacent AND go out as the boolean source query
+	 * (arXiv, OpenAlex; CrossRef gets the flattened terms). Without them
+	 * every query derives its own blocks (queryBlocks). */
 	groupTerms?: unknown;
 	/** on_target needs only this many groups to match (default: all) --
 	 * the wide "any two concepts" variant (v30.3). */
@@ -82,6 +88,15 @@ export async function runSearch(options: SearchOptions) {
 	}
 	const multiQuery = queries.length > 1;
 
+	// Concept blocks per query (2026-08-06 block search): agent group_terms
+	// override the BASE query's blocks; every other query derives its own
+	// (an expression like "(river OR stream) AND (mask)" parses, plain
+	// keywords become one block per content word; quoted/field-syntax
+	// queries get none -- legacy pass-through). ONE structure per query
+	// drives the boolean source search AND the on_target labeling.
+	const blocksByQuery: TermGroups[] = queries.map((query, index) =>
+		(index === 0 && termGroups.length ? termGroups : sanitizeTermGroups(queryBlocks(query))));
+
 	const aborted = () => {
 		if (options.signal?.aborted) throw new Error("search aborted by the user");
 	};
@@ -97,7 +112,6 @@ export async function runSearch(options: SearchOptions) {
 	const scopeAuthors = options.filters?.authors?.length && !options.filters.authorsOther
 		? options.filters.authors
 		: undefined;
-	const sourceScope: SourceScope = scopeAuthors ? { authors: scopeAuthors } : {};
 
 	const records: SourceRecord[] = [];
 	const sourcesUsed: string[] = [];
@@ -116,8 +130,14 @@ export async function runSearch(options: SearchOptions) {
 		for (const [index, query] of queries.entries()) {
 			aborted();
 			const label = multiQuery ? `source '${source}' (Q${index + 1})` : `source '${source}'`;
+			// Scope per query: the picked authors are run-wide, the concept
+			// blocks belong to THIS query (2026-08-06 block search).
+			const scope: SourceScope = {
+				...(scopeAuthors ? { authors: scopeAuthors } : {}),
+				...(blocksByQuery[index].length ? { blocks: blocksByQuery[index] } : {}),
+			};
 			try {
-				const found = await search(query, perSource, sourceScope);
+				const found = await search(query, perSource, scope);
 				warn(`${label}: ${found.length} record(s)`);
 				records.push(...(multiQuery ? found.map((r) => ({ ...r, found_by: [query] })) : found));
 				succeeded = true;
@@ -162,11 +182,16 @@ export async function runSearch(options: SearchOptions) {
 	}
 
 	const sorted = options.sort ? sortRecords(filterResult.kept, options.sort) : filterResult.kept;
-	const groupRequire = options.groupRequire !== undefined && termGroups.length
-		? Math.max(1, Math.min(Math.trunc(options.groupRequire), termGroups.length))
+	const groupRequire = options.groupRequire !== undefined && blocksByQuery[0].length
+		? Math.max(1, Math.min(Math.trunc(options.groupRequire), blocksByQuery[0].length))
 		: undefined;
-	const grouped = groupAll(sorted, termGroups, groupRequire);
-	if (termGroups.length) {
+	// Labeling across ALL confirmed queries (2026-08-06, revised same day):
+	// on_target = full match of at least one confirmed query's blocks,
+	// regardless of which query surfaced the record (found_by stays pure
+	// provenance). Single-query runs behave exactly as before.
+	const anyBlocks = blocksByQuery.some((blocks) => blocks.length);
+	const grouped = groupAcrossQueries(sorted, blocksByQuery, groupRequire);
+	if (anyBlocks) {
 		const onTarget = grouped.filter((r) => r.group === "on_target").length;
 		warn(`grouped: ${onTarget} on_target, ${grouped.length - onTarget} adjacent`);
 	} else {
@@ -189,16 +214,32 @@ export async function runSearch(options: SearchOptions) {
 		// the requested depth is one of them).
 		per_source: perSource,
 		source_failures: sourceFailures.length ? sourceFailures : null,
-		// Transparency (design/2026-07-14_v18): the boolean expression actually
-		// sent to arXiv per query, so every reader can verify what was asked --
-		// including the au: author clause when authors scoped the fetch
-		// (v30.14). CrossRef/OpenAlex receive the query text unchanged (their
-		// author scope rides in a separate request field).
+		// Per-source transparency (v18 arXiv; extended 2026-08-06 for the
+		// block search, PRISMA-S habit: document the strategy per database):
+		// the expression each source ACTUALLY received, per query. arXiv =
+		// boolean all:-syntax incl. the au: author clause (v30.14); OpenAlex
+		// = the boolean block search (or the plain text without blocks);
+		// CrossRef = the flattened block terms (no boolean support there).
 		arxiv_queries: sourcesUsed.includes("arxiv")
-			? queries.map((query) => buildSearchQuery(query, scopeAuthors))
+			? queries.map((query, index) => buildSearchQuery(query, scopeAuthors, blocksByQuery[index]))
 			: null,
-		grouping: termGroups.length ? termGroups : null,
-		grouping_require: groupRequire !== undefined && groupRequire < termGroups.length ? groupRequire : null,
+		openalex_queries: sourcesUsed.includes("openalex")
+			? queries.map((query, index) => buildBlockSearch(blocksByQuery[index]) || query)
+			: null,
+		crossref_queries: sourcesUsed.includes("crossref")
+			? queries.map((query, index) => flattenBlockTerms(blocksByQuery[index]) || query)
+			: null,
+		grouping: blocksByQuery[0].length ? blocksByQuery[0] : null,
+		// Per-query blocks (2026-08-06): what labeled each query's finds --
+		// null entries mean that query carried no blocks (quoted/field
+		// syntax) and fell back to the primary blocks.
+		grouping_by_query: multiQuery
+			? queries.map((query, index) => ({
+				query,
+				groups: blocksByQuery[index].length ? blocksByQuery[index] : null,
+			}))
+			: null,
+		grouping_require: groupRequire !== undefined && groupRequire < blocksByQuery[0].length ? groupRequire : null,
 		filters: filtersActive ? filters : null,
 		sort: options.sort ?? null,
 		results: grouped,

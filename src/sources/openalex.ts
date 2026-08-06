@@ -42,9 +42,33 @@ export function buildAuthorSearchFilter(authors: string[] | undefined): string {
 	return names.length ? `raw_author_name.search:${names.join("|")}` : "";
 }
 
+/**
+ * Concept blocks as an OpenAlex boolean search string (2026-08-06 block
+ * search). OpenAlex supports full boolean queries in its search parameter:
+ * UPPERCASE AND/OR/NOT, parentheses, quoted phrases (stemming and stopword
+ * removal still apply on their side). Multi-word terms are quoted so they
+ * match as phrases. Pure; exported for offline tests. Empty result = no
+ * blocks, caller falls back to the plain query text.
+ */
+export function buildBlockSearch(blocks: string[][] | undefined): string {
+	const groups = (blocks ?? [])
+		.map((group) => group.map((term) => term.replace(/"/g, "").trim()).filter(Boolean))
+		.filter((group) => group.length);
+	if (!groups.length) return "";
+	return groups
+		.map((group) => {
+			const terms = group.map((term) => (term.includes(" ") ? `"${term}"` : term));
+			return terms.length > 1 ? `(${terms.join(" OR ")})` : terms[0];
+		})
+		.join(" AND ");
+}
+
 export async function searchOpenalex(query: string, rows: number, scope?: SourceScope): Promise<SourceRecord[]> {
 	const params = new URLSearchParams({
-		search: query,
+		// Blocks (OR synonyms, AND between concepts) go out as a REAL boolean
+		// search; without blocks the plain text keeps the legacy behavior
+		// (OpenAlex ANDs plain words by itself).
+		search: buildBlockSearch(scope?.blocks) || query,
 		"per-page": String(Math.min(rows, 200)),
 	});
 	// Picked authors narrow the fetch itself (v30.14): OpenAlex then returns

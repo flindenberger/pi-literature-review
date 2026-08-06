@@ -42,6 +42,7 @@ const payload: RenderPayload = {
 			verified: true,
 			verify_note: "",
 			group: "on_target",
+			group_matched: { query: 2, terms: ["sandbar", "river"] },
 			journal_2yr_citedness: 4.422208,
 		},
 		{
@@ -199,7 +200,51 @@ const html = renderHtml(payload);
 	});
 	assert.ok(multi.includes("<dd>Q1: all:river AND all:sandbar</dd>"));
 	assert.ok(multi.includes("<dd>Q2: all:fluvial AND all:sandbar</dd>"));
+	// The row alone read as "only arXiv was searched" in the field
+	// (2026-08-06) -- the closing note names the other sources' plain-text
+	// treatment, on single- and multi-query runs alike.
+	assert.ok(single.includes("CrossRef and OpenAlex received the query text unchanged"));
+	assert.ok(multi.includes("CrossRef and OpenAlex received the query text unchanged"));
 	assert.ok(!html.includes("Sent to arXiv")); // no arXiv in the run, no row
+	assert.ok(!html.includes("received the query text unchanged")); // note rides with the row
+}
+
+// Per-source transparency + per-query grouping (2026-08-06 block search)
+{
+	const blockRun = renderHtml({
+		...payload,
+		query_variants: ["(cnn OR deep learning) AND (river)"],
+		arxiv_queries: ["all:water AND all:mask", "(all:cnn OR all:\"deep learning\") AND all:river"],
+		openalex_queries: ["water AND mask", "(cnn OR \"deep learning\") AND river"],
+		crossref_queries: ["water mask", "cnn deep learning river"],
+		grouping_by_query: [
+			{ query: "water mask", groups: [["water"], ["mask"]] },
+			{ query: "(cnn OR deep learning) AND (river)", groups: [["cnn", "deep learning"], ["river"]] },
+		],
+	});
+	assert.ok(blockRun.includes("<dt>Sent to OpenAlex</dt>"));
+	assert.ok(blockRun.includes("<dd>Q2: (cnn OR &quot;deep learning&quot;) AND river</dd>"));
+	assert.ok(blockRun.includes("<dt>Sent to CrossRef</dt>"));
+	assert.ok(blockRun.includes("CrossRef offers no boolean search"));
+	// Per-query grouping rows replace the single line.
+	assert.ok(blockRun.includes("<dd>Q1: (water) AND (mask)</dd>"));
+	assert.ok(blockRun.includes("<dd>Q2: (cnn OR deep learning) AND (river)</dd>"));
+	// The legacy "unchanged" note is for OLD sidecars only -- with the
+	// per-source rows present it would contradict them.
+	assert.ok(!blockRun.includes("received the query text unchanged"));
+	// A query without blocks says where its labels came from.
+	const fallback = renderHtml({
+		...payload,
+		query_variants: ['"quoted"'],
+		grouping_by_query: [
+			{ query: "water mask", groups: [["water"], ["mask"]] },
+			{ query: '"quoted"', groups: null },
+		],
+	});
+	assert.ok(fallback.includes("<dd>Q2: (no blocks -- query passed through unchanged)</dd>"));
+	// The label semantics ride with the per-query grouping block (2026-08-06
+	// revision: ANY confirmed query's blocks may label a record on_target).
+	assert.ok(fallback.includes("full match of at least one of these block sets"));
 }
 
 // journal score: rounded display, raw sort key, footnote, label sort keys
@@ -208,6 +253,9 @@ const html = renderHtml(payload);
 	assert.ok(html.includes("&sup1; Journal score = the journal's 2-year mean citedness"));
 	assert.ok(html.includes("sort-clear")); // per-column clear control in the sorter
 	assert.ok(html.includes('data-sort="0_on_target"'));
+	// Evidence line at the label (2026-08-06): the winning query and the
+	// exact term that hit per block; adjacent rows carry none.
+	assert.ok(html.includes("via Q2: sandbar · river"));
 	assert.ok(html.includes('data-sort="1_adjacent"'));
 	const bare = renderHtml({ ...payload, results: [], dropped: [] });
 	assert.ok(!bare.includes("2-year mean citedness")); // no scores, no footnote

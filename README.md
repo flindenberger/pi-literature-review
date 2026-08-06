@@ -68,20 +68,48 @@ always starts on the query tab: the agent's proposal arrives as prefill (your
 edits win), you walk the tabs to the review page and submit there; Escape (or
 Ctrl+C) cancels the whole run -- no
 search fires -- and the agent is told to ask you what to change. The tabs:
-the QUERY itself (editable -- your wording wins over the agent's), the
-grouping as a CHOICE OF VARIANTS derived live from the query (v30.2-.4):
-"Full match (strict)" -- every content word one AND group, "Sentinel 2"
-style number bindings stay one concept; "Core match (broader)" -- the
-same minus generic task words like detection/extraction; "Partial match
-(wide)" -- on_target when any TWO core concepts co-occur (shown as
-`(a AND b) OR (a AND c) OR ...`); the agent's proposal when it sent one;
-and a "Custom match" row seeded with the strict derivation, editable in
-place (groups AND-linked, synonyms within a group OR-linked -- e.g.
-`(river OR fluvial) AND (sandbar OR bar)`; the compact `a,b; c,d` syntax
-also works; typing `none` means ungrouped). Each variant shows its
-EXPRESSION as the main row with the variant name dimmed below it
-(v30.5). Grouping only labels results as on_target/adjacent, it does
-not narrow the search. Then the SEARCH
+the QUERY itself (editable -- your wording wins over the agent's), a
+QUERY VARIANTS tab (2026-08-06, replacing the earlier grouping tab):
+reaching it fires ONE call to the model currently selected in pi, which
+suggests up to 6 alternative searches as CONCEPT-BLOCK boolean queries
+-- the building-blocks method of systematic reviews: OR-linked synonyms
+within each concept, AND between concepts, e.g.
+`(river OR stream) AND (water extraction OR water mapping) AND
+(satellite OR remote sensing)`. The top row is your main query --
+locked, it always runs -- with its own derived block chain shown dimly
+below it. Checked rows run as ADDITIONAL searches in the same run;
+results are deduplicated across all variants by fixed code and the HTML
+table labels each record with the variant that found it (Q1, Q2, ...).
+Agent-proposed `query_variants` appear as prechecked rows; the list you
+confirm is what runs. The bottom row is a steering line -- type a
+direction ("more deep learning", "auf Deutsch", ...) and Enter
+regenerates the suggestions; rows you checked survive the regeneration.
+No model selected or the call fails? The tab degrades honestly to the
+locked main query plus a note, and the run works as before. The LLM
+here only SHAPES queries -- the citation-path rule is untouched.
+
+**Block search (2026-08-06).** The concept blocks of each query are ONE
+structure with two jobs. They ARE the search: arXiv and OpenAlex support
+real boolean queries and receive the blocks as such (`(all:river OR
+all:stream) AND ...` / `(river OR stream) AND ...`); CrossRef has no
+boolean syntax and receives the block terms as flat relevance keywords.
+And they ARE the label: a record is marked on_target when it fully
+matches the blocks of ANY confirmed query -- regardless of which query
+happened to surface it (`found_by` stays pure provenance) -- so the
+search and the label can never disagree, and chance no longer decides
+a label. Every on_target row carries an EVIDENCE line ("via Q2:
+multispectral · stream · feature extraction") naming the winning query
+and the exact term that hit per block -- a mislabeling homonym is
+readable at a glance instead of reconstructed by hand. Term matching
+carries exactly three tolerances (all user decisions): hyphen/space
+interchange, plural-s, and the consonant+y ->
+ies plural ("body" finds "bodies"). Plain keyword queries
+derive one block per content word (the former "strict" rule); an agent
+`group_terms` proposal overrides the base query's blocks; queries
+carrying quotes or arXiv field syntax are passed through untouched. The
+HTML meta documents the exact expression each source received, per
+query ("Sent to arXiv / OpenAlex / CrossRef") -- the raw material for a
+PRISMA-style methods section. Then the SEARCH
 PERIOD as a menu (last 5 / 10 / 20 years with the resolved range shown
 -- computed from today's date, so the ranges roll over with the calendar
 year -- all years, or a custom range `2015-2024`,
@@ -116,19 +144,26 @@ yet). Headless runs (no interactive UI) skip the dialog. On the
 agent calls the `pi-literature-search` tool with:
 
 - `query` -- the search string (required)
-- `query_variants` -- alternative phrasings of the same question (synonyms,
-  domain jargon, broader/narrower wording), searched in the same run. Results
-  are deduplicated across all variants by fixed code; each record notes which
-  variants found it (`found_by`), and the HTML table labels them Q1, Q2, ...
-  Use this for exhaustive sweeps instead of separate calls.
+- `query_variants` -- alternative searches for the same information need,
+  searched in the same run. Each variant may be a concept-block boolean
+  expression like `(river OR stream) AND (water extraction)` -- capable
+  sources receive it as a real boolean query and its finds are labeled
+  against its own blocks. Results are deduplicated across all variants by
+  fixed code; each record notes which variants found it (`found_by`), and
+  the HTML table labels them Q1, Q2, ... On interactive calls they arrive
+  as prechecked rows in the wizard's query variants tab (the confirmed
+  list runs); headless calls use them directly.
 - `per_source` -- results per source (default 5, capped at 50 out of politeness
   towards the free APIs)
 - `sources` -- subset of `arxiv`, `crossref`, `openalex` (default: all)
-- `group_terms` -- deterministic grouping rules: an array of term groups. A record
-  is `on_target` when at least one term from every group appears in its
-  title+abstract (case-insensitive); everything else is `adjacent`. Example:
-  `[["river","fluvial"],["sandbar","bar"],["sentinel","s-1","s-2"]]`. Omit for
-  ungrouped results. The matching is fixed code; only the word lists vary.
+- `group_terms` -- the BASE query's concept blocks: an array of term groups.
+  A record is `on_target` when at least one term from every group appears in
+  its title+abstract (case-insensitive); everything else is `adjacent`.
+  Example: `[["river","fluvial"],["sandbar","bar"],["sentinel","s-1","s-2"]]`.
+  Since the block search (2026-08-06) they also DRIVE the boolean fetch at
+  arXiv/OpenAlex. Omitted, the blocks derive automatically from the confirmed
+  query (there is no grouping dialog step). The matching is fixed code; only
+  the word lists vary.
 - `min_cites` -- keep only records with at least this many citations. Records
   with an unknown count (arXiv preprints; `cites: null`) still pass. Beware:
   citation thresholds penalize very recent papers.
@@ -324,9 +359,31 @@ question the engine ran ("Frage, so ausgeführt: ...") -- field tests
 showed agents systematically rephrase the user's words, which measurably
 degrades retrieval; without a gate the rephrasing is at least VISIBLE,
 and `/lit-synthesis <question>` is the verbatim fallback. With the card on
-screen the tool result carries `terminate`, so the agent cannot retell
-the answer -- the card has the last word (headless runs keep the verbatim
-digest relay between explicit delimiters). Every validated round is
+screen the tool result tells the agent the answer is ALREADY displayed
+and demands a BRIEF direct answer in chat (2-4 sentences, no full
+repeat, no file paths) -- the card stays the ground truth and any
+repeat is checkable against it (headless and RPC runs keep the verbatim
+digest relay between explicit delimiters). Under its reference lines the
+card lists page-precise `file://...pdf#page=N` links (right-click opens
+the PDF on the cited page; links are card-display only -- passage
+HIGHLIGHTING needs the long v28 links that break in terminals and stays
+the HTML report's feature).
+
+**Paper-chat mode.** Every grounded round arms an interception mode: a
+persistent yellow hint line names the scope, and from then on every
+plain input runs DIRECTLY as a lit-synthesis question -- engine plus
+citation gate, no agent in the answer path (commands, `!bash` and Esc
+work as usual). Typing `exit` (or `quit`) returns to the normal chat.
+This guarantees that follow-up questions get validated answers instead
+of the agent improvising from context; the next grounded round (however
+routed) re-arms the mode. On the `/lit-synthesis`
+COMMAND path (TUI) the answer travels as a custom message instead: the
+same card look, but the verbatim text also enters the LLM context and
+persists across `/resume`, and the message prompts ONE agent turn that
+answers the question BRIEFLY in chat (2-4 sentences drawn only from the
+validated answer; the note forbids repeating it -- the card stays the
+ground truth, follow-up chat is informed without any model having
+touched the card's wording). Every validated round is
 appended to a protocol file under `lit-synthesis/protocols/` (multi-paper and library
 rounds under a scope identity); corrupt or foreign files are quarantined,
 never overwritten. No chat memory in the generator: each call is
@@ -474,13 +531,14 @@ Notes for that mode:
   run abort: empty stays a legal answer, and cancelling the run is the
   Cancel button of any select step or the review page's Cancel row.
 - Result cards (transcript entries) are a TUI feature. In RPC mode a
-  finished /lit-search command hands its digest to the AGENT for one
-  visible chat answer (web clients only render agent messages
-  persistently; the search itself stays agent-free -- the model only
-  presents the finished digest, instructed to copy reference lines
-  verbatim). The HTML/JSON files land on disk either way (open the HTML
-  from the file browser); a "Search finished" notification carries the
-  full path.
+  finished /lit-search or /lit-synthesis command run hands its result to
+  the AGENT for one visible chat answer (web clients only render agent
+  messages persistently; the run itself stays agent-free -- the model
+  only presents the finished text, instructed to copy it verbatim
+  including reference lines). Either way the verbatim result also lands
+  in the LLM context, so follow-up chat is informed. The HTML/JSON files
+  land on disk (open the HTML from the file browser); a "Search
+  finished" notification carries the full path.
 - Progress ("working -- Ns elapsed") uses widgets and is invisible in
   clients that do not render `setWidget` requests.
 - pi-tau-web-server additionally removes every notification after 5

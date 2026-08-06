@@ -8,10 +8,13 @@ import {
 	deriveCoreGroupsFromQuery,
 	deriveGroupsFromQuery,
 	formatGroupExpression,
+	isBlockExpression,
 	parseGroupSpec,
 	parseGroupTerms,
 	parsePerSource,
+	parseVariantLines,
 	parseYearRange,
+	queryBlocks,
 	yearRangeToSpec,
 } from "./intake.ts";
 
@@ -159,6 +162,52 @@ import {
 	assert.deepEqual(deriveCoreGroupsFromQuery("detection and classification methods"), []);
 	// User syntax still derives nothing.
 	assert.deepEqual(deriveCoreGroupsFromQuery("(a OR b) AND c"), []);
+}
+
+// parseVariantLines (2026-08-06): LLM suggestion output -> clean variant
+// list. Models habitually number, bullet and quote despite instructions.
+{
+	assert.deepEqual(
+		parseVariantLines(
+			'1. "river water segmentation"\n- surface water mapping satellite\n* Water Mask Extraction\n\n2) river extraction remote sensing',
+			"water mask extraction",
+		),
+		["river water segmentation", "surface water mapping satellite", "river extraction remote sensing"],
+	);
+	// Case-insensitive dedupe against the base query AND among the lines.
+	assert.deepEqual(
+		parseVariantLines("Water Mask\nwater mask\nsurface water", "Water Mask"),
+		["surface water"],
+	);
+	// The cap holds.
+	assert.deepEqual(
+		parseVariantLines("a1\na2\na3", "base", 2),
+		["a1", "a2"],
+	);
+	// Junk/empty input -> empty list, never a throw.
+	assert.deepEqual(parseVariantLines("", "base"), []);
+	assert.deepEqual(parseVariantLines("\n- \n\"\"\n", "base"), []);
+	// German quotes strip too.
+	assert.deepEqual(parseVariantLines("„Wassermaske Sentinel-2“", "base"), ["Wassermaske Sentinel-2"]);
+}
+
+// isBlockExpression / queryBlocks (2026-08-06 block search): ONE structure
+// per query drives the boolean fetch and the labeling.
+{
+	// Plain keywords derive one block per content word (v18/v30 rules).
+	assert.equal(isBlockExpression("water mask sentinel 2"), false);
+	assert.deepEqual(queryBlocks("Water Mask Sentinel 2"), [["water"], ["mask"], ["sentinel 2"]]);
+	// UPPERCASE operators / parentheses / the legacy a,b;c spec parse.
+	assert.equal(isBlockExpression("(river OR stream) AND (mask)"), true);
+	assert.deepEqual(queryBlocks("(river OR stream) AND (mask)"), [["river", "stream"], ["mask"]]);
+	assert.equal(isBlockExpression("river,stream;mask"), true);
+	// Lowercase and/or are everyday words, not operators.
+	assert.equal(isBlockExpression("rivers and streams"), false);
+	// Quotes and arXiv field syntax are the user's own source syntax: no
+	// blocks, the sources keep their legacy pass-through paths.
+	assert.deepEqual(queryBlocks('"water mask" sentinel'), []);
+	assert.deepEqual(queryBlocks("all:water AND cat:eess.IV"), []);
+	assert.deepEqual(queryBlocks("ti:flood mapping"), []);
 }
 
 console.log("intake.test.ts: all assertions passed");
