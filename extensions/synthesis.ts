@@ -11,7 +11,9 @@
  * Dialog policy (v29, user decision 2026-07-28): the wizard belongs to the
  * /lit-synthesis COMMAND; the agent-called TOOL runs dialog-free. A chat call
  * with a settled scope answers immediately (the card shows the verbatim
- * executed question and, via terminate, has the last word); an unsettled
+ * executed question; since 2026-08-04 the agent follows up with a BRIEF
+ * answer in chat instead of being terminated -- the card and the tool
+ * result both carry the verbatim text, so a repeat is checkable); an unsettled
  * scope hands a REAL file list back to the agent (single-PDF libraries
  * resolve themselves); report-flavoured calls hand back to /lit-synthesis --
  * dialog-free AND expensive don't mix. The one dialog that can still open
@@ -22,6 +24,7 @@
 import { pathToFileURL } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { cardLine } from "../src/cardtext.ts";
 import { llmConfig } from "../src/config.ts";
 import {
 	type CheckboxItem,
@@ -37,7 +40,7 @@ import { renderChatDigest, renderReportDigest } from "../src/digest.ts";
 import { createBackend, type LlmBackend } from "../src/llm.ts";
 import { outputRoot, writeRunOutputs } from "../src/output.ts";
 import { loadRounds, readCurrentScope, realProtocolDeps, writeCurrentScope } from "../src/protocol.ts";
-import { renderSynthReportHtml } from "../src/render.ts";
+import { localPdfHref, renderSynthReportHtml } from "../src/render.ts";
 import {
 	type ChatAnswer,
 	type ChatDeps,
@@ -64,6 +67,54 @@ export const UNIT_WARN_THRESHOLD = 15;
 /** True once the pi-tui entry renderer is registered (see the default
  * export); validated answers then render as full transcript entries. */
 let answerEntryReady = false;
+
+const CHAT_MODE_WIDGET = "pi-literature-review-chat-mode";
+
+/** pi-tui Text constructor, captured by the renderer bootstrap below so
+ * the mode-hint widget can paint the theme's warning color (setWidget's
+ * factory overload provides the theme). */
+let tuiText: (new (text: string) => object) | null = null;
+
+/** Paper-chat mode (2026-08-04, user decision -- the v21 idea reborn now
+ * that cards + brief agent turns solve the display and liveness problems
+ * that killed it in v22): armed after every GROUNDED round; while armed,
+ * every plain input runs as a lit-synthesis question and the agent never
+ * sees it ("exit" leaves). In-memory and session-scoped. */
+let chatMode: { session: string | null; label: string } | null = null;
+
+function chatModeHint(label: string): string {
+	return chatLangDefault() === "en"
+		? `Paper chat mode: ${label} -- plain inputs run as lit-synthesis questions; type 'exit' to leave`
+		: `Paper-Chat-Modus: ${label} -- Eingaben laufen als lit-synthesis-Fragen; 'exit' beendet den Modus`;
+}
+
+/** Arm the mode + show the persistent YELLOW hint line (user condition
+ * 2026-08-04: the mode is fine "wenn der Infotext gelb ist" and names the
+ * way out). Warning color via the theme, plain fallback. */
+function armChatMode(ctx: ExtensionContext, label: string): void {
+	if (!ctx.hasUI) return;
+	chatMode = { session: sessionId(ctx), label };
+	const hint = chatModeHint(label);
+	const TextComponent = tuiText;
+	if (TextComponent && ctx.mode === "tui") {
+		ctx.ui.setWidget(CHAT_MODE_WIDGET, (_tui, theme) => {
+			let painted = hint;
+			try {
+				painted = (theme as { fg(color: string, text: string): string }).fg("warning", hint);
+			} catch {
+				// unknown color key in a custom theme -> plain text
+			}
+			return new TextComponent(painted) as never;
+		});
+	} else {
+		ctx.ui.setWidget(CHAT_MODE_WIDGET, [hint]);
+	}
+}
+
+function disarmChatMode(ctx: ExtensionContext): void {
+	chatMode = null;
+	if (ctx.hasUI) ctx.ui.setWidget(CHAT_MODE_WIDGET, undefined);
+}
 
 const MAX_LINE = 110;
 
@@ -95,6 +146,23 @@ const WIDGET_MAX_LINES = 15;
 function referenceLine(reference: ReferenceEntry): string {
 	const id = reference.doi || (reference.arxiv_id ? `arXiv:${reference.arxiv_id}` : reference.key);
 	return `[${reference.n}] ${reference.year ?? "n.d."} | ${id} | ${reference.title} (S. ${reference.pages.join(", ")})`;
+}
+
+/** Page-precise file:// links under the reference lines -- CARD display
+ * ONLY, never in digests or the LLM context (agents re-type paths into
+ * fabricated locations, field-proven twice on 2026-08-04). Short #page
+ * fragments only: the ~900-char passage-highlight links (v28) break in
+ * terminal wrapping, so highlighting stays the HTML report's job.
+ * References without a local pdf_path yield no link, honestly. */
+function pageLinkLines(references: ReferenceEntry[]): string[] {
+	const lines: string[] = [];
+	for (const reference of references) {
+		if (!reference.pdf_path) continue;
+		for (const page of [...new Set(reference.pages)].sort((a, b) => a - b)) {
+			lines.push(`  [${reference.n}] S. ${page}: ${localPdfHref(reference.pdf_path, page)}`);
+		}
+	}
+	return lines;
 }
 
 function answerWidgetLines(answer: ChatAnswer, scopeLabel: string): string[] {
@@ -129,7 +197,7 @@ function executedQuestionLine(question: string): string {
  * then the GLOBAL reference lines and the HTML path when one was written.
  * The card is the durable answer in the chat (v27 field fix: the report
  * lived only in a truncated, transient widget). */
-function formatReportText(report: SynthReport, htmlPath: string | null): string {
+function formatReportText(report: SynthReport, htmlPath: string | null, withPageLinks = false): string {
 	const german = report.ui_language !== "en";
 	const parts = report.units.map((unit) => {
 		const heading = unit.kind === "summary" ? `${german ? "Zusammenfassung" : "Summary"} ${unit.paper_base}.pdf`
@@ -138,9 +206,15 @@ function formatReportText(report: SynthReport, htmlPath: string | null): string 
 			: unit.question ?? "";
 		return `${heading}\n\n${unit.prose}`;
 	});
+	// Page links only on the CARD variant (withPageLinks) -- the context/
+	// relay variant stays path-free.
+	const referenceBlock = [
+		...report.references.map(referenceLine),
+		...(withPageLinks ? pageLinkLines(report.references) : []),
+	].join("\n");
 	return [
 		parts.join("\n\n----\n\n"),
-		report.references.map(referenceLine).join("\n"),
+		referenceBlock,
 		// file:// URL (v31.5, same as the search card): terminals linkify
 		// it, so right-click -> open lands in the browser.
 		htmlPath ? `HTML-Report: ${pathToFileURL(htmlPath).href}` : "",
@@ -153,10 +227,94 @@ function scopeLabelOf(answer: ChatAnswer): string {
 	return answer.papers.length === 1 ? `${answer.paper.base}.pdf` : `${answer.papers.length} Dokumente`;
 }
 
-/** Show the validated answer as a scrollable transcript entry (anti-
- * paraphrase ground truth; not in the LLM context), else the capped widget. */
-function showAnswer(pi: ExtensionAPI, ctx: ExtensionContext, answer: ChatAnswer): void {
+/** Agent-facing framing on TUI command-path messages: the card above the
+ * agent's reply IS the full validated result; the agent adds a BRIEF
+ * conversational answer on top (user decision 2026-08-04: "kurz nochmal
+ * die Frage beantwortet ... die Zusammenfassung der validierten
+ * Antwort"). The verbatim text below the note is the ground truth in the
+ * LLM context either way. */
+function answerTurnNote(question: string): string {
+	return "[/lit-synthesis result -- validated, code-checked; the user already sees it IN FULL as a card "
+		+ `above your reply. Reply NOW with a BRIEF direct answer (2-4 sentences) to the question "${question}", `
+		+ "drawn ONLY from the validated answer below -- no other knowledge, no tools. Do NOT repeat the full "
+		+ "answer; point to the card above for the details. If you cite the paper, copy a reference line "
+		+ "verbatim; never re-type titles or identifiers. Reply in the language of the question.]";
+}
+/** Report variant: enumerate the detail questions explicitly and demand a
+ * brief answer to EACH -- the first field test showed that a bare
+ * "overview" instruction makes the agent summarize and skip the
+ * questions. Mentioning the HTML export is FORBIDDEN outright: two field
+ * tests showed the agent re-typing the path into fabricated locations
+ * even when told to copy it verbatim -- the card already carries the
+ * clickable file:// link deterministically (v31.5), so the path is not
+ * the agent's job (code over instructions). */
+function reportTurnNote(questions: string[]): string {
+	const ask = questions.length
+		? `First answer each of these question(s) briefly (1-2 sentences each), using the report's answer `
+			+ `sections: ${questions.map((q) => `"${q}"`).join("; ")}. Then add ONE sentence on what else `
+			+ "the report covers. "
+		: "Give a BRIEF overview (2-4 sentences) of what the report covers. ";
+	return "[/lit-synthesis report -- validated, code-checked; the user already sees it IN FULL as a card "
+		+ "above your reply. Reply NOW, drawn ONLY from the report below -- no other knowledge, no tools. "
+		+ ask
+		+ "Do NOT repeat the report; point to the card above for the details. Do NOT mention the HTML "
+		+ "file or any file path or URL -- the card above already shows the clickable link. If you cite "
+		+ "a paper, copy a reference line verbatim; never re-type titles or identifiers. Reply in the "
+		+ "report's language.]";
+}
+
+/** Relay instruction for RPC/web command runs, where the agent is the
+ * display layer (the round-4 search pattern). */
+const RELAY_NOTE =
+	"A deterministic /lit-synthesis run just finished (agent-free). Present the following validated "
+	+ "result to the user NOW, EXACTLY as written -- including the [n] markers and reference lines; "
+	+ "never re-type, complete or reorder titles, years or identifiers. Do not call any tools.";
+
+/** Show the validated answer. Tool path (mid-turn): scrollable transcript
+ * entry (anti-paraphrase ground truth; not in the LLM context), else the
+ * capped widget. Command path (asMessage, outside any agent turn): ONE
+ * custom message is display, LLM context AND session persistence at once
+ * -- proven in pi's agent-session.js: role "custom" reaches the model
+ * VERBATIM as a user message (convertToLlm), lands in the session file
+ * and renders through the registered message renderer. With triggerTurn
+ * the same message also prompts one agent turn (TUI: a brief answer
+ * under the card; RPC/web: the agent IS the display). Never use
+ * asMessage mid-turn: while the agent streams, sendMessage steers. */
+function showAnswer(pi: ExtensionAPI, ctx: ExtensionContext, answer: ChatAnswer, asMessage = false): void {
 	const label = scopeLabelOf(answer);
+	const text = `${executedQuestionLine(answer.question)}\n\n${formatAnswerText(answer)}`;
+	// Page links are DISPLAY-only (card); the LLM context gets `text`.
+	const links = pageLinkLines(answer.references);
+	const displayText = links.length ? `${text}\n${links.join("\n")}` : text;
+	// Every grounded round arms the paper-chat mode: follow-up inputs go
+	// straight to the engine until the user types "exit".
+	if (answer.grounded) armChatMode(ctx, label);
+	if (asMessage && ctx.mode === "tui") {
+		// triggerTurn: the message renders as the card AND prompts one
+		// agent turn -- a brief conversational answer under the card
+		// (the note forbids repeating; the verbatim text is in context).
+		pi.sendMessage({
+			customType: ANSWER_ENTRY,
+			content: `${answerTurnNote(answer.question)}\n\n${text}`,
+			display: true,
+			details: { paper: label, grounded: answer.grounded, text: displayText },
+		}, { triggerTurn: true });
+		if (ctx.hasUI) ctx.ui.setWidget(SYNTHESIS_WIDGET, undefined);
+		return;
+	}
+	if (asMessage && ctx.hasUI) {
+		// RPC/web: custom messages are invisible there (those clients render
+		// only user/assistant/toolResult roles, live AND in history replay)
+		// -- the agent presents the answer; the message still lands verbatim
+		// in the LLM context. The widget stays as the RPC fallback display.
+		ctx.ui.setWidget(SYNTHESIS_WIDGET, answerWidgetLines(answer, label));
+		pi.sendMessage({
+			customType: ANSWER_ENTRY,
+			content: `${RELAY_NOTE}\n\n${text}`,
+			display: false,
+		}, { triggerTurn: true });
+		return;
+	}
 	// Entry cards need the TUI entry renderer; RPC clients (web UIs) never
 	// paint custom entries -- there the widget is the visible answer
 	// (webui-compat, 2026-07-30).
@@ -164,7 +322,7 @@ function showAnswer(pi: ExtensionAPI, ctx: ExtensionContext, answer: ChatAnswer)
 		pi.appendEntry(ANSWER_ENTRY, {
 			paper: label,
 			grounded: answer.grounded,
-			text: `${executedQuestionLine(answer.question)}\n\n${formatAnswerText(answer)}`,
+			text: displayText,
 		});
 		if (ctx.hasUI) ctx.ui.setWidget(SYNTHESIS_WIDGET, undefined);
 	} else if (ctx.hasUI) {
@@ -176,21 +334,38 @@ function showAnswer(pi: ExtensionAPI, ctx: ExtensionContext, answer: ChatAnswer)
  * answer in the chat, HTML export or not), else the capped widget. Returns
  * true when the fallback WIDGET carries the report (caller must not clear
  * it). */
-function showReport(pi: ExtensionAPI, ctx: ExtensionContext, report: SynthReport, htmlPath: string | null): boolean {
+function showReport(pi: ExtensionAPI, ctx: ExtensionContext, report: SynthReport, htmlPath: string | null, asMessage = false): boolean {
 	const label = report.scope.library
 		? `Bibliothek (${report.scope.papers.length} PDFs)`
 		: report.scope.papers.length === 1
 			? `${report.scope.papers[0]}.pdf`
 			: `${report.scope.papers.length} Dokumente`;
 	const text = formatReportText(report, htmlPath);
-	if (answerEntryReady && ctx.mode === "tui") {
+	// Card variant with page links (display-only; context stays path-free).
+	const displayText = formatReportText(report, htmlPath, true);
+	const heading = report.grounded
+		? `Report -- ${label} (code-validated)`
+		: `Report -- ${label} (UNGROUNDED DRAFT)`;
+	// Command path: custom message = display + verbatim LLM context +
+	// session persistence (see showAnswer). Mid-turn callers never set it.
+	if (asMessage && ctx.mode === "tui") {
+		const questions = [...new Set(report.units
+			.filter((unit) => unit.kind !== "summary" && unit.kind !== "review" && unit.question)
+			.map((unit) => unit.question as string))];
+		pi.sendMessage({
+			customType: ANSWER_ENTRY,
+			content: `${reportTurnNote(questions)}\n\n${heading}\n\n${text}`,
+			display: true,
+			details: { paper: label, grounded: report.grounded, heading, text: displayText },
+		}, { triggerTurn: true });
+		return false;
+	}
+	if (!asMessage && answerEntryReady && ctx.mode === "tui") {
 		pi.appendEntry(ANSWER_ENTRY, {
 			paper: label,
 			grounded: report.grounded,
-			heading: report.grounded
-				? `Report -- ${label} (code-validated)`
-				: `Report -- ${label} (UNGROUNDED DRAFT)`,
-			text,
+			heading,
+			text: displayText,
 		});
 		return false;
 	}
@@ -199,6 +374,15 @@ function showReport(pi: ExtensionAPI, ctx: ExtensionContext, report: SynthReport
 		ctx.ui.setWidget(SYNTHESIS_WIDGET, lines.length > WIDGET_MAX_LINES
 			? [...lines.slice(0, WIDGET_MAX_LINES - 1), "... (full report in the HTML / JSON sidecar)"]
 			: lines);
+		// RPC/web command path: the agent presents the report (custom
+		// messages are invisible there); context gets the verbatim text.
+		if (asMessage) {
+			pi.sendMessage({
+				customType: ANSWER_ENTRY,
+				content: `${RELAY_NOTE}\n\n${heading}\n\n${text}`,
+				display: false,
+			}, { triggerTurn: true });
+		}
 		return true;
 	}
 	return false;
@@ -733,6 +917,9 @@ async function runRoundWithUi(
 		reindex?: boolean;
 		onWarn: (message: string) => void;
 		signal?: AbortSignal;
+		/** Command path only (outside any agent turn): deliver the answer
+		 * as a custom message (display + LLM context + persistence). */
+		asMessage?: boolean;
 	},
 ): Promise<{ answer: ChatAnswer } | { error: string }> {
 	const wiring = wireEngine(ctx, options.model);
@@ -761,7 +948,7 @@ async function runRoundWithUi(
 			signal: options.signal,
 		}, wiring.deps);
 		if (ctx.hasUI) {
-			showAnswer(pi, ctx, answer);
+			showAnswer(pi, ctx, answer, options.asMessage);
 			keepWidget = true;
 		}
 		return { answer };
@@ -783,6 +970,7 @@ async function runReportWithUi(
 	onWarn: (message: string) => void,
 	diagnostics: string[],
 	signal: AbortSignal | undefined,
+	asMessage = false,
 ): Promise<{ digest: string } | { error: string }> {
 	const wiring = wireEngine(ctx, options.model);
 	let stopTicker = () => {};
@@ -820,7 +1008,7 @@ async function runReportWithUi(
 			}
 		}
 		// The durable answer in the chat -- with or without an HTML export.
-		if (ctx.hasUI) keepWidget = showReport(pi, ctx, result, htmlPath);
+		if (ctx.hasUI) keepWidget = showReport(pi, ctx, result, htmlPath, asMessage);
 		return { digest: renderReportDigest(result, htmlPath, !saveHtml) };
 	} catch (error) {
 		return { error: error instanceof Error ? error.message : String(error) };
@@ -923,10 +1111,9 @@ export default async function literatureSynthesis(pi: ExtensionAPI) {
 				diagnostics.push(message);
 				onUpdate?.({ content: [{ type: "text", text: message }] });
 			};
-			const reply = (text: string, terminate = false) => ({
+			const reply = (text: string) => ({
 				content: [{ type: "text" as const, text }],
 				details: { diagnostics },
-				...(terminate ? { terminate: true } : {}),
 			});
 			const question = params.question?.trim() ?? "";
 			const wantsReport = params.report === true
@@ -1031,10 +1218,16 @@ export default async function literatureSynthesis(pi: ExtensionAPI) {
 					+ "user can verify the backend with: node src/cli.ts llm-check",
 				);
 			}
-			// v29: with the answer card on screen the agent has nothing to
-			// add -- terminate makes the card the last word (no retelling).
-			// Headless has no card, so the digest must still be relayed.
-			return reply(renderChatDigest(outcome.answer), ctx.hasUI);
+			// v29's terminate ("the card is the last word") is REVISED
+			// 2026-08-04, user decision: with the verbatim answer in the
+			// card AND in this tool result, the agent now answers BRIEFLY
+			// in chat (card audience) -- a full repeat stays forbidden.
+			// Without a card (RPC/web, headless, ungrounded) the digest
+			// keeps its relay instructions as the display path.
+			return reply(renderChatDigest(
+				outcome.answer,
+				answerEntryReady && ctx.mode === "tui" && outcome.answer.grounded ? "card" : "relay",
+			));
 		},
 	});
 
@@ -1063,6 +1256,7 @@ export default async function literatureSynthesis(pi: ExtensionAPI) {
 					papers: sticky.papers,
 					onWarn: progress,
 					signal: ctx.signal,
+					asMessage: true,
 				});
 				if ("error" in outcome) ctx.ui.notify(`chat failed: ${outcome.error}`, "error");
 				return;
@@ -1115,6 +1309,7 @@ export default async function literatureSynthesis(pi: ExtensionAPI) {
 					papers: scope,
 					onWarn: progress,
 					signal: ctx.signal,
+					asMessage: true,
 				});
 				if ("error" in outcome) ctx.ui.notify(`chat failed: ${outcome.error}`, "error");
 				return;
@@ -1142,7 +1337,7 @@ export default async function literatureSynthesis(pi: ExtensionAPI) {
 				// ONE language for the whole report, following the chat.
 				language: reportLang === "en" ? "English" : "German",
 				uiLanguage: reportLang,
-			}, choices.saveHtml, progress, diagnostics, ctx.signal);
+			}, choices.saveHtml, progress, diagnostics, ctx.signal, true);
 			if ("error" in outcome) {
 				ctx.ui.notify(`report failed: ${outcome.error}`, "error");
 			}
@@ -1189,6 +1384,47 @@ export default async function literatureSynthesis(pi: ExtensionAPI) {
 		} catch {
 			// same best-effort rule as above
 		}
+	});
+
+	// Paper-chat mode interception (2026-08-04, user decision): while
+	// armed, a plain input IS a lit-synthesis question -- the agent never
+	// sees it, the engine + citation gate answer it (the v21 pattern
+	// reborn; commands, !bash and extension-injected inputs pass through).
+	pi.on("input", async (event, ctx) => {
+		if (!chatMode) return;
+		if (event.source === "extension") return;
+		const text = event.text.trim();
+		if (!text || text.startsWith("/") || text.startsWith("!")) return;
+		if (chatMode.session !== sessionId(ctx)) {
+			// /new or a session switch: the mode never crosses sessions.
+			disarmChatMode(ctx);
+			return;
+		}
+		if (/^(exit|quit)$/i.test(text)) {
+			disarmChatMode(ctx);
+			if (ctx.hasUI) {
+				ctx.ui.notify(chatLangDefault() === "en"
+					? "Paper chat mode ended -- back to the normal chat."
+					: "Paper-Chat-Modus beendet -- zurück im normalen Chat.", "info");
+			}
+			return { action: "handled" as const };
+		}
+		const sticky = readCurrentScope(outputRoot(), sessionId(ctx));
+		if (!sticky) {
+			// The scope vanished (files moved, foreign write): back to the
+			// normal chat rather than failing every input.
+			disarmChatMode(ctx);
+			return;
+		}
+		const outcome = await runRoundWithUi(pi, ctx, {
+			question: text,
+			papers: sticky.papers,
+			onWarn: (message) => { if (ctx.hasUI) ctx.ui.notify(message, "info"); },
+			signal: ctx.signal,
+			asMessage: true,
+		});
+		if ("error" in outcome && ctx.hasUI) ctx.ui.notify(`chat failed: ${outcome.error}`, "error");
+		return { action: "handled" as const };
 	});
 
 	// HTML-write gate (v23 field failure, REPURPOSED in v29): while any
@@ -1292,20 +1528,35 @@ export default async function literatureSynthesis(pi: ExtensionAPI) {
 		};
 	});
 
-	// Rich transcript rendering for validated answers (appendEntry cards).
-	// pi-tui exists only at pi runtime; fall back to the capped widget.
+	// Rich transcript rendering for validated answers: the SAME card for
+	// appendEntry cards (tool path) and custom messages (command path --
+	// their details carry the card data, their content the agent-facing
+	// text). pi-tui exists only at pi runtime; fall back to the capped
+	// widget (and, for messages, to pi's default markdown rendering).
 	try {
 		const { Box, Text } = await import("@earendil-works/pi-tui");
-		pi.registerEntryRenderer(ANSWER_ENTRY, (entry, _state, theme) => {
-			const data = entry.data as { paper: string; text: string; grounded: boolean; heading?: string };
+		type CardData = { paper: string; text: string; grounded: boolean; heading?: string };
+		type CardTheme = { bg(key: string, text: string): string; bold(text: string): string };
+		const buildCard = (data: CardData, theme: CardTheme) => {
 			const box = new Box(1, 1, (text: string) => theme.bg("customMessageBg", text));
 			const heading = data.heading ?? (data.grounded
 				? `Paper chat -- ${data.paper} (code-validated)`
 				: `Paper chat -- ${data.paper} (UNGROUNDED DRAFT)`);
 			box.addChild(new Text(theme.bold(heading)));
-			for (const line of data.text.split("\n")) box.addChild(new Text(line));
+			// Deterministic **bold** / bullet formatting (cardtext.ts) --
+			// theme.bold closes with bold-off only (chalk), so the card's
+			// background wrapper survives mid-line styling.
+			for (const line of data.text.split("\n")) {
+				const { prefix, segments } = cardLine(line);
+				box.addChild(new Text(prefix + segments.map((s) => (s.bold ? theme.bold(s.text) : s.text)).join("")));
+			}
 			return box;
-		});
+		};
+		pi.registerEntryRenderer(ANSWER_ENTRY, (entry, _state, theme) =>
+			buildCard(entry.data as CardData, theme));
+		pi.registerMessageRenderer(ANSWER_ENTRY, (message, _options, theme) =>
+			message.details ? buildCard(message.details as CardData, theme) : undefined);
+		tuiText = Text as never; // mode-hint widget paints via the theme
 		answerEntryReady = true;
 	} catch {
 		// pi-tui unavailable -> the capped widget fallback stays in effect.
