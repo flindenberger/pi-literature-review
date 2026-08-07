@@ -17,7 +17,7 @@ import {
 	sortRecords,
 	type TermGroups,
 } from "./pipeline.ts";
-import { addJournalScores, enrichAll } from "./enrich.ts";
+import { addCodeLinks, addJournalScores, enrichAll } from "./enrich.ts";
 import { queryBlocks } from "./intake.ts";
 import { buildSearchQuery, searchArxiv } from "./sources/arxiv.ts";
 import { flattenBlockTerms, searchCrossref } from "./sources/crossref.ts";
@@ -198,6 +198,13 @@ export async function runSearch(options: SearchOptions) {
 		warn("no grouping rules supplied; results are ungrouped");
 	}
 
+	// Code-link stage (2026-08-07): one GitHub repo search per arXiv record
+	// attaches code_url -- AFTER filters and grouping, so no lookup is spent
+	// on a dropped record and the per-run cap prefers on_target ones. Rides
+	// the enrich switch like every lookup beyond the search itself.
+	aborted();
+	const results = options.enrich === false ? grouped : await addCodeLinks(grouped, warn, options.signal);
+
 	// Dropped records stay inspectable: nothing disappears silently --
 	// junk drops and user-filter drops alike ship with full record and
 	// reason. Grouping rules and filters used are part of the payload, so
@@ -242,7 +249,7 @@ export async function runSearch(options: SearchOptions) {
 		grouping_require: groupRequire !== undefined && groupRequire < blocksByQuery[0].length ? groupRequire : null,
 		filters: filtersActive ? filters : null,
 		sort: options.sort ?? null,
-		results: grouped,
+		results,
 		dropped: [
 			...dropped.map(({ reason, record }) => ({ reason, record })),
 			...filterResult.dropped.map(({ reason, record }) => ({ reason, record })),

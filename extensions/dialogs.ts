@@ -29,6 +29,7 @@ import {
 	initWizard,
 	maxWizardRows,
 	parseQuestionLines,
+	pasteText,
 	reduceCheckbox,
 	reduceWizard,
 	selection,
@@ -372,7 +373,17 @@ async function wizardOverlay(
 						// the items (empty list: row 1).
 						|| (active.kind === "checkbox" && active.input !== undefined
 							&& state.cursors[state.tab] === active.items.length + 1));
-					const event: WizardEvent | null = matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c")) ? "cancel"
+					// Bracketed paste (2026-08-07): a paste arrives as ONE chunk
+					// wrapped in \x1b[200~...\x1b[201~ (proven from the installed
+					// pi-tui: stdin-buffer.js aggregates split chunks, terminal.js
+					// re-wraps the complete paste before handleInput) -- the
+					// leading-ESC guard below discarded every paste wholesale.
+					// Where typing types, the inner text feeds the reducer
+					// (sanitizeInput handles pasted newlines per step kind);
+					// everywhere else a paste stays ignored like unmatched input.
+					const pasted = onText ? pasteText(data) : null;
+					const event: WizardEvent | null = pasted !== null ? { kind: "input", chars: pasted }
+						: matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c")) ? "cancel"
 						: matchesKey(data, Key.enter) ? "confirm"
 						: matchesKey(data, Key.left) || matchesKey(data, Key.shift("tab")) ? "left"
 						: matchesKey(data, Key.right) || matchesKey(data, Key.tab) ? "right"

@@ -5,6 +5,8 @@
 
 import assert from "node:assert/strict";
 import {
+	alignBlocksToBase,
+	alignVariantExpression,
 	deriveCoreGroupsFromQuery,
 	deriveGroupsFromQuery,
 	formatGroupExpression,
@@ -189,6 +191,56 @@ import {
 	assert.deepEqual(parseVariantLines("\n- \n\"\"\n", "base"), []);
 	// German quotes strip too.
 	assert.deepEqual(parseVariantLines("„Wassermaske Sentinel-2“", "base"), ["Wassermaske Sentinel-2"]);
+}
+
+// alignBlocksToBase / alignVariantExpression (2026-08-07): suggestions
+// mirror the base query's concept order, so all variant rows share one
+// parallel structure. AND blocks are commutative -- display order only.
+{
+	// The user's example: base "Sentinel Water Detection in Rivers" wants
+	// sensor block first, then water/river, then task -- whatever order
+	// the model produced.
+	assert.equal(
+		alignVariantExpression(
+			"(water body OR water surface OR river) AND (sentinel OR satellite) AND (detection OR classification OR segmentation)",
+			queryBlocks("Sentinel Water Detection in Rivers"),
+		),
+		"(sentinel OR satellite) AND (water body OR water surface OR river) AND (detection OR classification OR segmentation)",
+	);
+	// Word tolerances carry over from termMatches: base "rivers" anchors
+	// "river channel" (plural-s, phrase words).
+	assert.equal(
+		alignVariantExpression(
+			"(change detection OR mapping) AND (river channel OR stream network)",
+			queryBlocks("Rivers Detection"),
+		),
+		"(river channel OR stream network) AND (change detection OR mapping)",
+	);
+	// A block matching no base concept KEEPS its position -- the model may
+	// have placed a pure synonym block correctly; only anchored blocks
+	// reorder among themselves.
+	assert.deepEqual(
+		alignBlocksToBase(
+			[["river", "stream"], ["radar"], ["sentinel"]],
+			[["sentinel"], ["river"]],
+		),
+		[["sentinel"], ["radar"], ["river", "stream"]],
+	);
+	// Plain-keyword suggestions and hands-off syntax pass through untouched.
+	assert.equal(
+		alignVariantExpression("surface water mapping satellite", queryBlocks("water mask")),
+		"surface water mapping satellite",
+	);
+	assert.equal(
+		alignVariantExpression('(a OR b) AND "water mask"', queryBlocks("water mask")),
+		'(a OR b) AND "water mask"',
+	);
+	// parseVariantLines aligns before dedupe: the emitted line is the
+	// canonical reordered expression.
+	assert.deepEqual(
+		parseVariantLines("(water OR river) AND (sentinel OR landsat)", "sentinel water"),
+		["(sentinel OR landsat) AND (water OR river)"],
+	);
 }
 
 // isBlockExpression / queryBlocks (2026-08-06 block search): ONE structure

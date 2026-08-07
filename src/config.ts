@@ -42,6 +42,9 @@ export function isPlausibleMailto(value: string): boolean {
 
 interface StoredConfig {
 	mailto?: string;
+	/** Optional GitHub token for the code-link lookup (2026-08-07): raises
+	 * the search rate limit from 10 to 30 requests/min. Never required. */
+	githubToken?: string;
 	/** Local LLM backend for the synthesis/chat stages; unset fields use
 	 * defaults. chatModel is the paper-chat generator (see chatModel()). */
 	llm?: Partial<LlmConfig> & { chatModel?: string };
@@ -73,6 +76,19 @@ export function storeMailto(mailto: string): string {
 	writeFileSync(path, JSON.stringify(config, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
 	cache = config;
 	return path;
+}
+
+/**
+ * GitHub token for the code-link enrichment (2026-08-07), optional: the
+ * lookup works unauthenticated (10 searches/min); a token raises that to
+ * 30/min. Environment variable wins, then config.json {"githubToken":
+ * ...}; empty string = unauthenticated. Same precedence as the mailto.
+ */
+export function githubToken(
+	env: Record<string, string | undefined> = process.env,
+	stored: StoredConfig = loadStoredConfig(),
+): string {
+	return pick(env.PI_LITERATURE_REVIEW_GITHUB_TOKEN, stored.githubToken);
 }
 
 /* ---------------- LLM backend (synthesis stage) ---------------- */

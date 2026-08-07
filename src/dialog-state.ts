@@ -733,6 +733,24 @@ function finish(state: WizardState): WizardStep {
 /** Control characters never enter a text value. Single-line inputs turn
  * pasted newlines into the question separator; MULTILINE question steps
  * (v31.4) keep them -- one question per line. */
+/**
+ * Unwrap a bracketed-paste chunk (2026-08-07 field fix: pastes never
+ * reached the dialogs). Terminals wrap pastes as \x1b[200~<text>\x1b[201~;
+ * the installed pi-tui aggregates split stdin chunks upstream
+ * (stdin-buffer.js) and re-wraps the COMPLETE paste into ONE handleInput
+ * call (terminal.js), so both markers always arrive together here.
+ * Returns the inner text with tabs as spaces (the control strip in
+ * sanitizeInput would delete tabs and glue the words together); \r
+ * newlines need no handling here -- sanitizeInput normalizes them per
+ * step kind. Null when the chunk is not a paste or the paste is empty.
+ */
+export function pasteText(data: string): string | null {
+	if (!data.startsWith("\x1b[200~")) return null;
+	const end = data.indexOf("\x1b[201~");
+	const inner = (end === -1 ? data.slice(6) : data.slice(6, end)).replace(/\t/g, " ");
+	return inner.length ? inner : null;
+}
+
 function sanitizeInput(chars: string, multiline = false): string {
 	const normalized = chars.replace(/\r\n?|\n/g, multiline ? "\n" : ";");
 	// \n itself is a control character -- the multiline strip must keep it.

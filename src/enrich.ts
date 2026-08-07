@@ -10,6 +10,8 @@
  * both the JSON and the HTML rendering can mark the provenance.
  */
 
+import { githubToken } from "./config.ts";
+import { retryDelayMs } from "./sources/arxiv.ts";
 import { contactMailto, userAgent, warn as defaultWarn } from "./types.ts";
 
 const BASE_URL = "https://api.openalex.org/works";
@@ -69,7 +71,13 @@ export function applyEnrichment<T extends EnrichableRecord>(
 		result.venue_id = venueId.replace("https://openalex.org/", "").trim();
 	}
 	if (filled.length) {
-		result.enriched = Object.fromEntries(filled.map((field) => [field, "openalex"]));
+		// MERGE with what earlier stages recorded -- overwriting the map
+		// would silently erase their provenance (design-doc find 2026-08-06,
+		// fixed 2026-08-07 with the second enrichment stage).
+		result.enriched = {
+			...(record as Enriched<T>).enriched,
+			...Object.fromEntries(filled.map((field) => [field, "openalex"])),
+		};
 	}
 	return { record: result, filled };
 }
@@ -279,4 +287,178 @@ export async function addJournalScores<T extends EnrichableRecord>(
 		warn(`journal scores: ${count}/${records.length} record(s) scored across ${venueIds.length} distinct journal(s)`);
 	}
 	return scored;
+}
+
+/* ---------------- Code links (GitHub heuristic, 2026-08-07) ---------------- */
+
+/**
+ * Code-link stage: for records carrying an arXiv id, ONE GitHub repository
+ * search per record (q = "<id>" in:name,description,readme) attaches the
+ * best-matching repository as code_url -- the interim replacement for
+ * Papers with Code (the .com site died 2025-07; the official .co revival
+ * has no public API and blocks bots -- watch it, an API would replace
+ * this heuristic). A HEURISTIC, disclosed as such in the HTML: the repo
+ * mentions the paper, nothing here verifies it IS the paper's code.
+ * Only records with an arxiv_id are looked up -- DOI-only journal papers
+ * have no comparably precise search key (title search would guess;
+ * doctrine forbids guessing).
+ */
+const GITHUB_SEARCH_URL = "https://api.github.com/search/repositories";
+const GITHUB_TIMEOUT_MS = 30_000;
+/** GitHub's search rate limit is 10 requests/min unauthenticated, 30/min
+ * with a token (measured live 2026-08-07: x-ratelimit-limit 10, resource
+ * "search"). Module-wide pacing, spanning back-to-back runs (the arXiv
+ * v30.13 pattern); 429/403 rate answers retry via the shared pure
+ * retryDelayMs. */
+const GITHUB_SPACING_MS = 6_500;
+const GITHUB_SPACING_AUTH_MS = 2_100;
+/** Per-run lookup cap: keeps the stage's worst case around a minute
+ * (cap x 6.5s unauthenticated). Capped-out records honestly stay
+ * unmarked, with a warn line naming the count. */
+export const CODE_LOOKUP_CAP = 12;
+let nextGithubRequestAt = 0;
+
+function githubSleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Aggregator repositories (daily arXiv digests, awesome lists, survey
+ * collections) mention THOUSANDS of arXiv ids in their READMEs and are
+ * never the paper's code -- measured live 2026-08-07: the only hit for a
+ * SAR water paper was "Robust_arXiv_daily". Matched on the repo NAME;
+ * precision over recall, a skipped legitimate repo just means no link. */
+const LIST_REPO_NAME = /awesome|daily|weekly|digest|arxiv|papers?([_-]|\b)|reading|survey|collection|curated/i;
+
+/** Pick the repository URL from a GitHub search answer: the first item
+ * (GitHub's best-match ranking) with a usable html_url whose name does
+ * not look like an aggregator/reading-list repo. Pure. */
+export function pickCodeRepo(data: Record<string, any>): string | null {
+	const item = ((data?.items ?? []) as Array<Record<string, any>>)
+		.find((entry) => typeof entry?.html_url === "string" && entry.html_url.startsWith("https://")
+			&& !LIST_REPO_NAME.test(String(entry?.name ?? "")));
+	return item ? (item.html_url as string) : null;
+}
+
+/**
+ * A GitHub repository the paper's own ABSTRACT names (many papers write
+ * "code available at https://github.com/...") -- the most precise code
+ * signal there is, straight from the search API's record, zero requests.
+ * Trailing .git and punctuation stripped. Pure.
+ */
+export function codeUrlFromAbstract(abstract: string | undefined): string | null {
+	const match = /https?:\/\/(?:www\.)?github\.com\/([\w.-]+)\/([\w.-]+)/i.exec(abstract ?? "");
+	if (!match) return null;
+	const repo = match[2].replace(/\.git$/i, "").replace(/[.,;:!?]+$/, "");
+	return repo ? `https://github.com/${match[1]}/${repo}` : null;
+}
+
+/** Which records get a lookup: arxiv_id holders, on_target ones first
+ * (the cap should spend its budget on the labeled hits), capped. Pure;
+ * stable within each priority class. */
+export function codeLookupCandidates<T extends { arxiv_id: string; group?: string }>(
+	records: T[],
+	cap: number = CODE_LOOKUP_CAP,
+): T[] {
+	const withId = records.filter((record) => record.arxiv_id);
+	return [
+		...withId.filter((record) => record.group === "on_target"),
+		...withId.filter((record) => record.group !== "on_target"),
+	].slice(0, Math.max(0, cap));
+}
+
+async function fetchCodeLink(arxivId: string, token: string): Promise<string | null> {
+	const spacing = token ? GITHUB_SPACING_AUTH_MS : GITHUB_SPACING_MS;
+	const bareId = arxivId.replace(/v\d+$/i, "");
+	const params = new URLSearchParams({
+		q: `"${bareId}" in:name,description,readme`,
+		per_page: "3",
+	});
+	for (let attempt = 0; ; attempt++) {
+		const wait = nextGithubRequestAt - Date.now();
+		if (wait > 0) await githubSleep(wait);
+		nextGithubRequestAt = Date.now() + spacing;
+		const response = await fetch(`${GITHUB_SEARCH_URL}?${params}`, {
+			headers: {
+				"User-Agent": userAgent(),
+				Accept: "application/vnd.github+json",
+				...(token ? { Authorization: `Bearer ${token}` } : {}),
+			},
+			signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
+		});
+		if (response.ok) return pickCodeRepo((await response.json()) as Record<string, any>);
+		// GitHub answers rate-limit violations with 403 or 429.
+		const rateLimited = response.status === 403 || response.status === 429;
+		const delay = rateLimited ? retryDelayMs(attempt, response.headers.get("retry-after")) : null;
+		if (delay === null) throw new Error(`GitHub answered HTTP ${response.status}`);
+		await githubSleep(delay);
+	}
+}
+
+/**
+ * Attach code_url to records. Two deterministic signals, in order of
+ * precision: (1) a GitHub URL the paper's own abstract names (any record,
+ * zero requests, provider "abstract"); (2) a GitHub repository search per
+ * arXiv id (provider "github"). Runs AFTER filters/grouping so no lookup
+ * is spent on a dropped record and the cap prefers on_target ones.
+ * Failures degrade per record, loudly; order and everything else ship
+ * unchanged.
+ */
+export async function addCodeLinks<T extends EnrichableRecord & { group?: string; abstract?: string }>(
+	records: T[],
+	warn: (message: string) => void = defaultWarn,
+	signal?: AbortSignal,
+): Promise<Array<Enriched<T> & { code_url?: string }>> {
+	// Pass 1: the abstract names the repository -- the record is done and
+	// spends no search budget.
+	const abstractUrl = new Map<T, string>();
+	for (const record of records) {
+		const url = codeUrlFromAbstract(record.abstract);
+		if (url !== null) abstractUrl.set(record, url);
+	}
+	// Pass 2 candidates: arXiv records still without a link.
+	const searchable = records.filter((record) => !abstractUrl.has(record));
+	const candidates = new Set<T>(codeLookupCandidates(searchable));
+	const eligible = searchable.filter((record) => record.arxiv_id).length;
+	if (eligible > candidates.size) {
+		warn(`code links: lookup capped at ${candidates.size} of ${eligible} arXiv record(s); the rest stays unmarked`);
+	}
+	const token = githubToken();
+	let found = 0;
+	const out: Array<Enriched<T> & { code_url?: string }> = [];
+	for (const record of records) {
+		const fromAbstract = abstractUrl.get(record);
+		if (fromAbstract !== undefined) {
+			out.push({
+				...record,
+				code_url: fromAbstract,
+				enriched: { ...(record as Enriched<T>).enriched, code_url: "abstract" },
+			});
+			continue;
+		}
+		if (!candidates.has(record)) {
+			out.push(record);
+			continue;
+		}
+		if (signal?.aborted) throw new Error("search aborted by the user");
+		try {
+			const codeUrl = await fetchCodeLink(record.arxiv_id, token);
+			if (codeUrl === null) {
+				out.push(record);
+				continue;
+			}
+			found++;
+			out.push({
+				...record,
+				code_url: codeUrl,
+				enriched: { ...(record as Enriched<T>).enriched, code_url: "github" },
+			});
+		} catch (error) {
+			warn(`code lookup for "${record.title}" failed: ${error instanceof Error ? error.message : error}; record kept as delivered`);
+			out.push(record);
+		}
+	}
+	if (abstractUrl.size || candidates.size) {
+		warn(`code links: ${abstractUrl.size} from abstract(s), ${found}/${candidates.size} from GitHub lookup(s)`);
+	}
+	return out;
 }

@@ -84,6 +84,12 @@ Agent-proposed `query_variants` appear as prechecked rows; the list you
 confirm is what runs. The bottom row is a steering line -- type a
 direction ("more deep learning", "auf Deutsch", ...) and Enter
 regenerates the suggestions; rows you checked survive the regeneration.
+Suggestions keep the BASE query's concept order (2026-08-07): for
+"Sentinel Water Detection in Rivers" every row starts with the sensor
+block, then the water/river block, then the task block -- the prompt asks
+for that order and fixed code re-sorts any block that shares a word with
+a base concept (AND blocks are commutative, so only the display order
+changes), which makes the rows comparable at a glance.
 No model selected or the call fails? The tab degrades honestly to the
 locked main query plus a note, and the run works as before. The LLM
 here only SHAPES queries -- the citation-path rule is untouched.
@@ -192,6 +198,18 @@ agent calls the `pi-literature-search` tool with:
   `journal_2yr_citedness` (shown as the "Journal score" column) -- the open
   analog of the proprietary impact factor; it rates the journal, not the paper,
   and is fetched in batches (a handful of extra API calls per run). Default: true.
+  It also drives the CODE column (2026-08-07): each record gets a GitHub
+  repository link (`code_url`) from two deterministic signals, in order of
+  precision -- a repository URL the paper's own abstract names (any record,
+  zero extra requests), else one GitHub repository search per arXiv id
+  (aggregator/reading-list repos are skipped; paced to GitHub's 10 searches/min,
+  capped per run with on_target records first; an optional token in
+  `config.json` `githubToken` or `PI_LITERATURE_REVIEW_GITHUB_TOKEN` raises
+  the limit to 30/min). The search path is a disclosed heuristic -- the HTML
+  footnote says so -- and replaces the dead Papers-with-Code API for now;
+  provenance per record in `enriched` (`abstract` | `github`). Journal papers
+  whose abstract names no repository are not looked up (no comparably precise
+  search key; guessing by title is against the rules).
 - `html_file` -- override for the HTML output path (see below).
 
 All filters act on metadata the source APIs delivered -- pure deterministic

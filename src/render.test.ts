@@ -153,7 +153,7 @@ const html = renderHtml(payload);
 
 // table: expected column order, sortable markup, on_target highlighting
 {
-	assert.ok(html.includes("</th><th>#</th><th>Article</th><th>Authors</th><th>Year</th><th>Journal</th><th>Journal score&sup1;</th><th>Citations</th><th>DOI</th><th>Data source</th><th>Label</th>"));
+	assert.ok(html.includes("</th><th>#</th><th>Article</th><th>Authors</th><th>Year</th><th>Journal</th><th>Journal score&sup1;</th><th>Citations</th><th>DOI</th><th>Code&sup2;</th><th>Data source</th><th>Label</th>"));
 	assert.ok(html.includes('<th class="no-sort"')); // checkbox column is not sortable
 	assert.ok(html.includes('<table class="sortable">'));
 	assert.ok(html.includes('<tr class="on-target">'));
@@ -167,6 +167,19 @@ const html = renderHtml(payload);
 	assert.ok(html.includes(">3*<") || html.includes("3*</td>"));
 	assert.ok(html.includes("OpenAlex (api.openalex.org)"));
 	assert.ok(html.includes('data-sort="3"')); // sort key stays the bare value
+}
+
+// code column (2026-08-07): GitHub link plus the heuristic footnote; a page
+// without any code_url shows dashes and keeps the footnote away
+{
+	const withCode = renderHtml({
+		...payload,
+		results: [{ ...payload.results[0], code_url: "https://github.com/acme/sandbar-net" }],
+		dropped: [],
+	});
+	assert.ok(withCode.includes('<a href="https://github.com/acme/sandbar-net">GitHub</a>'));
+	assert.ok(withCode.includes("&sup2; Code = "));
+	assert.ok(!html.includes("&sup2; Code = "));
 }
 
 // query variants: header lists Q1/Q2, data-source cell notes which found it

@@ -184,15 +184,76 @@ export function queryBlocks(text: string): string[][] {
 	return isBlockExpression(text) ? parseGroupSpec(text) : deriveGroupsFromQuery(text);
 }
 
+/** All words of a block's terms, lowercased, hyphens as spaces -- the
+ * word-level view alignBlocksToBase matches on. */
+function blockWords(block: string[]): string[] {
+	return block.flatMap((term) => term.toLowerCase().replace(/-/g, " ").split(/\s+/).filter(Boolean));
+}
+
+/** Word-level mirror of the termMatches tolerances (plural-s and
+ * consonant+y -> ies; hyphens are normalized away by blockWords): "river"
+ * matches "rivers", "body" matches "bodies", nothing else fuzzes. */
+function wordMatches(a: string, b: string): boolean {
+	const canon = (word: string): string =>
+		word.length > 3 && word.endsWith("ies") ? `${word.slice(0, -3)}y` : word;
+	const ca = canon(a);
+	const cb = canon(b);
+	return ca === cb || `${ca}s` === cb || ca === `${cb}s`;
+}
+
+/**
+ * Reorder a variant's concept blocks to the BASE query's concept order
+ * (2026-08-07, user wish: parallel structure -- "Sentinel Water Detection"
+ * should always yield sensor block first, then water block, then task
+ * block, so what the model built is comparable at a glance). AND blocks
+ * are commutative, so this is display order only -- fetch and labeling are
+ * unchanged. A block is anchored to the FIRST base concept it shares a
+ * word with (tolerances above); anchored blocks sort by that anchor among
+ * themselves, blocks matching no base concept KEEP their position (pure
+ * synonym blocks like "optical sensor OR multispectral" carry no base
+ * word -- the model may have placed them correctly, never demote them).
+ */
+export function alignBlocksToBase(blocks: string[][], baseBlocks: string[][]): string[][] {
+	const baseWords = baseBlocks.map(blockWords);
+	const anchored = blocks
+		.map((block, position) => ({
+			position,
+			anchor: baseWords.findIndex((base) =>
+				base.some((baseWord) => blockWords(block).some((word) => wordMatches(word, baseWord)))),
+		}))
+		.filter((entry) => entry.anchor !== -1);
+	const order = [...anchored].sort((a, b) => a.anchor - b.anchor || a.position - b.position);
+	const result = blocks.slice();
+	anchored.forEach((slot, rank) => { result[slot.position] = blocks[order[rank].position]; });
+	return result;
+}
+
+/**
+ * Canonical form of one variant suggestion: block expressions are parsed,
+ * aligned to the base concept order and reprinted uniformly via
+ * formatGroupExpression; plain-keyword lines and hands-off syntax
+ * (quotes, field prefixes -- queryBlocks returns []) pass through
+ * untouched.
+ */
+export function alignVariantExpression(line: string, baseBlocks: string[][]): string {
+	if (!isBlockExpression(line)) return line;
+	const blocks = queryBlocks(line);
+	if (blocks.length < 2) return line;
+	return formatGroupExpression(alignBlocksToBase(blocks, baseBlocks));
+}
+
 /**
  * Parse LLM-generated query-variant suggestions (2026-08-06): one query per
  * line; leading list bullets/numbering and surrounding quotes are stripped
  * (models habitually add both despite instructions); empties vanish;
- * duplicates of the base query and of earlier lines drop case-insensitively;
- * the list is capped. Pure -- the LLM only ever SHAPES queries here, the
- * user checks each one in the dialog before it runs.
+ * block expressions are aligned to the base query's concept order
+ * (2026-08-07) and reprinted canonically; duplicates of the base query and
+ * of earlier lines drop case-insensitively; the list is capped. Pure --
+ * the LLM only ever SHAPES queries here, the user checks each one in the
+ * dialog before it runs.
  */
 export function parseVariantLines(raw: string, baseQuery: string, cap = 8): string[] {
+	const baseBlocks = queryBlocks(baseQuery.trim());
 	const seen = new Set([baseQuery.trim().toLowerCase()]);
 	const variants: string[] = [];
 	for (const line of raw.split("\n")) {
@@ -202,10 +263,11 @@ export function parseVariantLines(raw: string, baseQuery: string, cap = 8): stri
 			.replace(/^["'„“`]+|["'“”`]+$/g, "")
 			.trim();
 		if (!cleaned) continue;
-		const key = cleaned.toLowerCase();
+		const aligned = alignVariantExpression(cleaned, baseBlocks);
+		const key = aligned.toLowerCase();
 		if (seen.has(key)) continue;
 		seen.add(key);
-		variants.push(cleaned);
+		variants.push(aligned);
 		if (variants.length >= cap) break;
 	}
 	return variants;

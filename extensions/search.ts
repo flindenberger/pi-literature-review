@@ -92,6 +92,14 @@ function variantPrompt(query: string, hint: string, count: number): string {
 		"Example: (river OR fluvial OR river channel) AND (water extraction OR water mapping) AND (satellite OR remote sensing)",
 		"Identify the core concepts of the base query; per suggestion vary the synonym choices and how broad or "
 		+ "narrow the concepts are (subtopics, established domain terms, method names).",
+		// 2026-08-07 user wish: parallel block order across all suggestions,
+		// so what the model built is comparable at a glance. parseVariantLines
+		// enforces it afterwards wherever a block shares a word with a base
+		// concept (alignBlocksToBase); this rule covers pure-synonym blocks
+		// that carry no base word.
+		"Order the blocks by the base query's concept order in EVERY suggestion: the block covering the base "
+		+ "query's first concept comes first, and so on (base 'Sentinel Water Detection': sensor block, then "
+		+ "water block, then task block).",
 		// Field lessons 2026-08-06, both directions: broad homonym blocks
 		// ("channel"/"stream") both FETCH noise and LABEL it on_target, but
 		// anchoring EVERYTHING into phrases starved the blocks ("satellite

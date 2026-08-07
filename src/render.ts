@@ -40,6 +40,9 @@ interface RenderRecord {
 	found_by?: string[];
 	/** Journal-level 2-yr mean citedness from OpenAlex (open JIF analog). */
 	journal_2yr_citedness?: number | null;
+	/** GitHub repository mentioning the record's arXiv id (2026-08-07 code
+	 * column) -- a disclosed heuristic, not a verified artifact link. */
+	code_url?: string;
 }
 
 import type { ChatReport } from "./synthesis.ts";
@@ -241,6 +244,10 @@ function resultRow(record: RenderRecord, index: number, queryLabels: Map<string,
 		cell(score === null ? "" : String(score), score === null ? "&mdash;" : score.toFixed(1)),
 		cell(cites, cites ? cites + citesStar : "&mdash;"),
 		cell((record.doi || record.arxiv_id).toLowerCase(), doiCell(record)),
+		// Code column (2026-08-07): sort key 0/1 so the first header click
+		// puts the records WITH code on top.
+		cell(record.code_url ? "0" : "1",
+			record.code_url ? link(safeHref(record.code_url), "GitHub") : "&mdash;"),
 		cell(sourcesOf(record).join(", "), (esc(sourcesOf(record).join(", ")) || "&mdash;") + foundBy),
 		// The evidence line (2026-08-06): which query's blocks earned the
 		// label, and the exact term that hit per block -- a homonym like
@@ -391,7 +398,7 @@ for (const table of document.querySelectorAll("table.sortable")) {
 }
 `;
 
-const RESULT_HEADERS = "<tr><th class=\"no-sort\" title=\"Select rows, then copy the download request below\"></th><th>#</th><th>Article</th><th>Authors</th><th>Year</th><th>Journal</th><th>Journal score&sup1;</th><th>Citations</th><th>DOI</th><th>Data source</th><th>Label</th></tr>";
+const RESULT_HEADERS = "<tr><th class=\"no-sort\" title=\"Select rows, then copy the download request below\"></th><th>#</th><th>Article</th><th>Authors</th><th>Year</th><th>Journal</th><th>Journal score&sup1;</th><th>Citations</th><th>DOI</th><th>Code&sup2;</th><th>Data source</th><th>Label</th></tr>";
 
 /**
  * Selection layer: checkboxes feed a ready-made chat sentence ("Download
@@ -463,13 +470,20 @@ export function renderHtml(payload: RenderPayload): string {
 		: "";
 
 	const PROVIDER_LABELS: Record<string, string> = { openalex: "OpenAlex (api.openalex.org)" };
-	const enrichedProviders = [...new Set(results.flatMap((r) => Object.values(r.enriched ?? {})))]
+	// The code column has its own footnote (&sup2;) -- its provenance entry
+	// must not pull "github" into the asterisk note, which describes FILLED
+	// metadata fields.
+	const enrichedProviders = [...new Set(results.flatMap((r) =>
+		Object.entries(r.enriched ?? {}).filter(([field]) => field !== "code_url").map(([, provider]) => provider)))]
 		.map((provider) => PROVIDER_LABELS[provider] ?? provider);
 	const enrichmentFootnote = enrichedProviders.length
 		? `\n<p class="meta">* Value filled in by a deterministic identifier lookup at ${esc(enrichedProviders.join(", "))} because the original search source did not deliver this field (arXiv, for example, carries no citation counts or journal names). Looked up from an open API, never generated; each record's <code>enriched</code> field in the JSON names the filled fields.</p>`
 		: "";
 	const scoreFootnote = results.some((r) => typeof r.journal_2yr_citedness === "number")
 		? `\n<p class="meta">&sup1; Journal score = the journal's 2-year mean citedness from OpenAlex (api.openalex.org): average citations received in the last two years by works the journal published in the two years before. It is the open analog of the proprietary journal impact factor; values are computed over the OpenAlex citation graph and differ somewhat from Clarivate's JIF. It rates the journal, not the paper.</p>`
+		: "";
+	const codeFootnote = results.some((r) => r.code_url)
+		? `\n<p class="meta">&sup2; Code = a GitHub repository found deterministically: preferably the URL the paper's own abstract names, else the best-matching repository from one GitHub search per arXiv id (the repository mentions the id in its name, description or README; aggregator/reading-list repositories are skipped). The search path is a heuristic pointer to likely code, not a verified artifact link -- follow it and judge; journal papers whose abstract names no repository are not looked up. Recorded in the JSON as <code>code_url</code>, provenance in <code>enriched</code> (abstract | github).</p>`
 		: "";
 
 	const variants = payload.query_variants ?? [];
@@ -552,7 +566,7 @@ downloads the PDFs into the lit-selection/ library after you confirm the termina
 <tbody>
 ${results.map((record, index) => resultRow(record, index, queryLabels)).join("\n")}
 </tbody>
-</table>${selectBar}${enrichmentFootnote}${scoreFootnote}`
+</table>${selectBar}${enrichmentFootnote}${scoreFootnote}${codeFootnote}`
 		: "<p>No results.</p>";
 
 	const droppedSection = payload.dropped.length

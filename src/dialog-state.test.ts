@@ -16,6 +16,7 @@ import {
 	langFromName,
 	maxWizardRows,
 	parseQuestionLines,
+	pasteText,
 	reduceCheckbox,
 	reduceWizard,
 	selection,
@@ -930,6 +931,25 @@ function drive(
 		], preselect: ["b2"] },
 	] as never));
 	assert.deepEqual([...state.selected[0]].sort(), ["__base__", "agent1"]);
+}
+
+// pasteText (2026-08-07): bracketed-paste chunks unwrap to their inner
+// text; anything else is null, so the adapter's key matching proceeds.
+{
+	// The normal case: one complete wrapped chunk (pi-tui's terminal.js
+	// re-wraps aggregated pastes exactly like this).
+	assert.equal(pasteText("\x1b[200~water mask sentinel\x1b[201~"), "water mask sentinel");
+	// Pasted newlines survive -- sanitizeInput decides per step kind
+	// whether they become semicolons or stay lines.
+	assert.equal(pasteText("\x1b[200~q1\rq2\x1b[201~"), "q1\rq2");
+	// Tabs become spaces (the control strip would glue the words).
+	assert.equal(pasteText("\x1b[200~water\tmask\x1b[201~"), "water mask");
+	// A defensive half: missing end marker still yields the inner text.
+	assert.equal(pasteText("\x1b[200~doi:10.1234/x"), "doi:10.1234/x");
+	// Not a paste: typed chars, escape sequences, empty paste -> null.
+	assert.equal(pasteText("a"), null);
+	assert.equal(pasteText("\x1b[A"), null);
+	assert.equal(pasteText("\x1b[200~\x1b[201~"), null);
 }
 
 console.log("dialog-state tests passed");

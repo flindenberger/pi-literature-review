@@ -6,7 +6,7 @@
  */
 
 import assert from "node:assert/strict";
-import { applyEnrichment, applyJournalScores, lookupDoi } from "./enrich.ts";
+import { applyEnrichment, applyJournalScores, codeLookupCandidates, codeUrlFromAbstract, lookupDoi, pickCodeRepo } from "./enrich.ts";
 
 const base = {
 	title: "A Title",
@@ -87,6 +87,78 @@ const base = {
 	assert.equal(scored[0].journal_2yr_citedness, 4.42);
 	assert.equal("journal_2yr_citedness" in scored[1], false);
 	assert.equal("journal_2yr_citedness" in scored[2], false);
+}
+
+// applyEnrichment MERGES into an existing enriched map (2026-08-07 fix:
+// overwriting would erase another stage's provenance, e.g. code_url).
+{
+	const { record } = applyEnrichment(
+		{ ...base, doi: "10.1/x", enriched: { code_url: "github" } } as typeof base & { enriched: Record<string, string> },
+		{ cited_by_count: 7 },
+	);
+	assert.deepEqual(record.enriched, { code_url: "github", cites: "openalex" });
+}
+
+// pickCodeRepo (2026-08-07): first best-match repo with a usable URL; junk
+// and empty answers yield null; aggregator/list repos are skipped (live
+// find: "Robust_arXiv_daily" was the only hit for a SAR water paper)
+{
+	assert.equal(
+		pickCodeRepo({ items: [
+			{ name: "b", html_url: "https://github.com/a/b" },
+			{ name: "d", html_url: "https://github.com/c/d" },
+		] }),
+		"https://github.com/a/b",
+	);
+	assert.equal(
+		pickCodeRepo({ items: [
+			{ name: "Robust_arXiv_daily", html_url: "https://github.com/x/Robust_arXiv_daily" },
+			{ name: "awesome-water-segmentation", html_url: "https://github.com/x/awesome-water-segmentation" },
+			{ name: "IWSeg-SAR-Poison", html_url: "https://github.com/GVCL/IWSeg-SAR-Poison" },
+		] }),
+		"https://github.com/GVCL/IWSeg-SAR-Poison",
+	);
+	assert.equal(pickCodeRepo({ items: [{ name: "cv-papers", html_url: "https://github.com/x/cv-papers" }] }), null);
+	assert.equal(pickCodeRepo({ items: [{ html_url: "" }, { name: "x" }] }), null);
+	assert.equal(pickCodeRepo({ total_count: 0, items: [] }), null);
+	assert.equal(pickCodeRepo({}), null);
+}
+
+// codeUrlFromAbstract (2026-08-07): the paper's own abstract naming its
+// repository is the most precise signal -- live find: the SAR paper's
+// GitHub search hit was only an aggregator, while the abstract carried
+// "(GitHub link - https://github.com/GVCL/IWSeg-SAR-Poison.git)"
+{
+	assert.equal(
+		codeUrlFromAbstract("... are publicly available. (GitHub link - https://github.com/GVCL/IWSeg-SAR-Poison.git)"),
+		"https://github.com/GVCL/IWSeg-SAR-Poison",
+	);
+	assert.equal(
+		codeUrlFromAbstract("Code at https://github.com/acme/sandbar-net."),
+		"https://github.com/acme/sandbar-net",
+	);
+	assert.equal(codeUrlFromAbstract("No code mentioned here."), null);
+	assert.equal(codeUrlFromAbstract(undefined), null);
+	// A bare profile link (no repo path) is not a code link.
+	assert.equal(codeUrlFromAbstract("See https://github.com/acme for our work"), null);
+}
+
+// codeLookupCandidates: arXiv records only, on_target first, capped
+{
+	const records = [
+		{ arxiv_id: "", group: "on_target" },
+		{ arxiv_id: "2401.00001", group: "adjacent" },
+		{ arxiv_id: "2401.00002", group: "on_target" },
+		{ arxiv_id: "2401.00003" },
+	];
+	assert.deepEqual(
+		codeLookupCandidates(records).map((r) => r.arxiv_id),
+		["2401.00002", "2401.00001", "2401.00003"],
+	);
+	assert.deepEqual(
+		codeLookupCandidates(records, 2).map((r) => r.arxiv_id),
+		["2401.00002", "2401.00001"],
+	);
 }
 
 console.log("enrich.test.ts: all assertions passed");
