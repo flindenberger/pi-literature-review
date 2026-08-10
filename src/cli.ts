@@ -64,13 +64,13 @@ function usage(): never {
 	warn("       [--min-cites N] [--year-from YYYY] [--year-to YYYY] [--venues \"a,b\"]");
 	warn("       [--require-pdf] [--verified-only] [--sort cites|year] [--html [FILE]] [--no-enrich]");
 	warn("       [--variant \"...\" (repeatable)] [--digest]");
-	warn("       --html without FILE writes to pi-literature-review/lit-search/<date>_<query>.html");
+	warn("       --html without FILE writes to lit-search/<date>_<query>.html in the working directory");
 	warn("       (the full JSON payload is always written next to the HTML, same basename)");
 	warn("       --variant adds an alternative phrasing; results are deduplicated across variants");
 	warn("       --digest prints the agent-facing digest instead of JSON (combine with --html for real paths)");
 	warn(`available sources: ${Object.keys(SEARCHERS).join(", ")}`);
 	warn("or:    node src/cli.ts selection <DOI-or-arXiv-ID> [more ...]");
-	warn("       downloads legal open-access PDFs into pi-literature-review/lit-selection/");
+	warn("       downloads legal open-access PDFs into lit-selection/ in the working directory");
 	warn("or:    node src/cli.ts llm-check");
 	warn("       resolves the LLM backend config and round-trips embed + generate");
 	warn("or:    node src/cli.ts extract <file.pdf>");

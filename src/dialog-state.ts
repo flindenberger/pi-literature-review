@@ -202,6 +202,14 @@ export type WizardStepDef =
 		 * "fetching...", "no journals found", ...); replaced together with
 		 * the items via the setItems event. */
 		emptyNote?: string;
+		/** 2026-08-10 (user wish "zu Beginn nur die Ladezeile"): while a
+		 * loader is in flight the tab renders ONLY the pulsing emptyNote --
+		 * no select-all, no items, no input rows -- so the load is
+		 * unmistakable. Set/cleared exclusively via the setItems event
+		 * (every dispatch without the flag clears it). Enter still advances
+		 * (the tab never blocks on the model); cursor math is untouched so
+		 * the cursor role survives the loading phase. */
+		loading?: boolean;
 		/** 2026-08-06 (query-variants tab): setItems APPENDS checked rows that
 		 * the new item list no longer carries (with their old label/flags)
 		 * instead of pruning them -- picked suggestions survive a
@@ -214,6 +222,14 @@ export type WizardStepDef =
 		 * `<id>` plus `<id>_seq`), so an itemLoader keyed on it reloads once
 		 * per Enter, never per keystroke. */
 		input?: { id: string; label: string };
+		/** 2026-08-10 (query-variants tab, user wish "Type your own query
+		 * variant"): an inline free-text row between the items and the
+		 * steering row. Enter ADDS the trimmed draft as a CHECKED item
+		 * (case-insensitive dedupe against existing ids just checks the
+		 * existing row) and clears the draft; with keepSelected the added
+		 * row survives regenerations like any checked pick. The draft lives
+		 * in addTexts[tab]. */
+		addInput?: { id: string; label: string };
 		/** 2026-08-06: start (and re-anchor after setItems) the cursor on the
 		 * Next row -- Enter-through must not toggle select-all on a list of
 		 * generated suggestions. */
@@ -308,6 +324,9 @@ export interface WizardState {
 	/** Per-step COMMITTED inline-input value of a checkbox step's steering
 	 * row (2026-08-06); the draft stays in texts[] until Enter commits. */
 	committedTexts: string[];
+	/** Per-step draft of a checkbox step's ADD row (2026-08-10, "type your
+	 * own query variant"); Enter turns it into a checked item and clears. */
+	addTexts: string[];
 	/** Per-step commit counter of the steering row -- exported to the
 	 * answers as `<id>_seq`, so re-committing the SAME text still changes
 	 * the loader key (explicit re-roll of the suggestions). */
@@ -497,7 +516,7 @@ export type WizardEvent =
 	 * not in the new items are pruned; the cursor is clamped. preselect
 	 * (v30.8) seeds the selection ONLY while it is empty (an agent venues
 	 * proposal becomes visible check marks, never overriding the user). */
-	| { kind: "setItems"; step: string; items: CheckboxItem[]; emptyNote?: string; preselect?: string[] };
+	| { kind: "setItems"; step: string; items: CheckboxItem[]; emptyNote?: string; preselect?: string[]; loading?: boolean };
 
 export interface WizardStep {
 	state: WizardState;
@@ -542,6 +561,7 @@ export function initWizard(steps: WizardStepDef[], options?: WizardOptions): Wiz
 		formTexts: steps.map((step) =>
 			(step.kind === "form" ? step.fields.map((field) => field.initial ?? "") : [])),
 		committedTexts: steps.map(() => ""),
+		addTexts: steps.map(() => ""),
 		inputSeq: steps.map(() => 0),
 		dirty: steps.map((step) => (step.kind === "text" && step.initial !== undefined)
 			// A non-preset choice initial seeds the freeText row as the
@@ -563,7 +583,11 @@ export const MAX_TEXT_ROWS = 8;
 function rowCount(step: WizardStepDef): number {
 	return step.kind === "checkbox"
 		? step.items.length + step.items.filter((item) => item.description !== undefined).length
-			+ (step.input ? 1 : 0) + 2
+			+ (step.input ? 1 : 0) + (step.addInput ? 1 : 0) + 2
+			// A non-empty status note is an EXTRA dim line while items are
+			// present (2026-08-10 reload visibility); on an empty list it
+			// replaces the select-all row instead -- no extra height there.
+			+ (step.items.length && step.emptyNote ? 1 : 0)
 		// Plain: input + placeholder line. Multiline questions (v31.4): the
 		// line window, a possible overflow note and the count line.
 		: step.kind === "text" ? (step.plain ? 2 : MAX_TEXT_ROWS + 2)
@@ -576,17 +600,33 @@ function rowCount(step: WizardStepDef): number {
  * RENDERED lines (incl. dim description lines) for the overlay height.
  * Using rowCount as the cursor range was a latent bug (2026-08-06): items
  * with description lines produced dead cursor rows and an out-of-range
- * items[cursor-1] on Enter. Layout: select-all, items, optional steering
- * input row, Next. While items is EMPTY the select-all row is skipped in
- * the view but keeps cursor slot 0 (the view renders the emptyNote there);
- * input/Next follow at 1/2. */
+ * items[cursor-1] on Enter. Layout: select-all, items, optional ADD row
+ * (2026-08-10), optional steering input row, Next. While items is EMPTY
+ * the select-all row is skipped in the view but keeps cursor slot 0 (the
+ * view renders the emptyNote there); the remaining rows follow. */
 function checkboxNavRows(step: WizardStepDef & { kind: "checkbox" }): number {
-	return 1 + step.items.length + (step.input ? 1 : 0) + 1;
+	return 1 + step.items.length + (step.addInput ? 1 : 0) + (step.input ? 1 : 0) + 1;
 }
 
 /** Cursor row of the steering input row, -1 without one. */
 function checkboxInputRow(step: WizardStepDef & { kind: "checkbox" }): number {
 	return step.input ? checkboxNavRows(step) - 2 : -1;
+}
+
+/** Cursor row of the ADD row ("type your own variant"), -1 without one.
+ * Sits between the items and the steering row. */
+export function checkboxAddRow(step: WizardStepDef & { kind: "checkbox" }): number {
+	return step.addInput ? checkboxNavRows(step) - 2 - (step.input ? 1 : 0) : -1;
+}
+
+/** Whether the cursor sits on a TYPING row of a checkbox step (steering or
+ * add row) -- the adapter routes printable input there instead of treating
+ * Space as toggle (exported: the adapter must not re-derive row indexes,
+ * that broke once when the add row shifted the steering row -- 2026-08-10). */
+export function checkboxTypingRow(step: WizardStepDef, cursor: number): boolean {
+	if (step.kind !== "checkbox" || step.loading) return false;
+	return (step.input !== undefined && cursor === checkboxInputRow(step))
+		|| (step.addInput !== undefined && cursor === checkboxAddRow(step));
 }
 
 /** Rendered body rows of the submit tab (v30.2 rpiv layout): two lines per
@@ -751,6 +791,18 @@ export function pasteText(data: string): string | null {
 	return inner.length ? inner : null;
 }
 
+/**
+ * Animated ellipsis for loading notes (2026-08-10 user wish: a running
+ * fetch should LOOK alive): the note's final "..." becomes 1-2-3 dots
+ * cycling with the tick. Notes without an ellipsis return unchanged.
+ * Pure -- the adapter owns the timer and re-renders.
+ */
+export function animateEllipsis(note: string, tick: number): string {
+	const at = note.lastIndexOf("...");
+	if (at === -1) return note;
+	return note.slice(0, at) + ".".repeat(1 + (tick % 3)) + note.slice(at + 3);
+}
+
 function sanitizeInput(chars: string, multiline = false): string {
 	const normalized = chars.replace(/\r\n?|\n/g, multiline ? "\n" : ";");
 	// \n itself is a control character -- the multiline strip must keep it.
@@ -775,8 +827,12 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 	const onFreeText = current?.kind === "choice" && current.options[cursor]?.freeText === true;
 	// Checkbox step with the cursor on the steering input row (2026-08-06):
 	// typing edits the DRAFT in texts[tab]; Enter commits it.
-	const onCheckboxInput = current?.kind === "checkbox" && current.input !== undefined
-		&& cursor === checkboxInputRow(current);
+	const onCheckboxInput = current?.kind === "checkbox" && !current.loading
+		&& current.input !== undefined && cursor === checkboxInputRow(current);
+	// Checkbox step with the cursor on the ADD row (2026-08-10): typing
+	// edits the draft in addTexts[tab]; Enter adds it as a checked item.
+	const onCheckboxAdd = current?.kind === "checkbox" && !current.loading
+		&& current.addInput !== undefined && cursor === checkboxAddRow(current);
 	// Editing a derive step (or a seeded freeText row) takes ownership: from
 	// the first keystroke on (backspace included) the user's text wins over
 	// the derived/seeded value.
@@ -790,9 +846,14 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 		formTexts: state.formTexts.map((fields, i) =>
 			(i === state.tab ? fields.map((prev, f) => (f === cursor ? value : prev)) : fields)),
 	});
+	const withAddText = (value: string): WizardState => ({
+		...state,
+		addTexts: state.addTexts.map((prev, i) => (i === state.tab ? value : prev)),
+	});
 	const editedValue = onText ? effectiveText(state, state.tab)
 		: onForm ? state.formTexts[state.tab][cursor] ?? ""
 		: onFreeText ? effectiveChoiceText(state, state.tab)
+		: onCheckboxAdd ? state.addTexts[state.tab]
 		: onCheckboxInput ? state.texts[state.tab]
 		: null;
 	// Runtime item replacement (v30.7, lazily loaded checkbox lists):
@@ -816,6 +877,9 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 			? {
 				...other,
 				items,
+				// Any dispatch without the flag CLEARS loading -- the
+				// resolved/failed swaps need no extra bookkeeping.
+				loading: event.loading === true,
 				...(event.emptyNote !== undefined ? { emptyNote: event.emptyNote } : {}),
 			}
 			: other));
@@ -834,6 +898,7 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 		const oldCursor = state.cursors[index];
 		const cursorRow = oldCursor === checkboxNavRows(target) - 1 ? checkboxNavRows(next) - 1
 			: target.input && oldCursor === checkboxInputRow(target) ? checkboxInputRow(next)
+			: target.addInput && oldCursor === checkboxAddRow(target) ? checkboxAddRow(next)
 			: Math.min(oldCursor, Math.max(0, checkboxNavRows(next) - 1));
 		return {
 			state: {
@@ -851,12 +916,12 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 		const chars = sanitizeInput(event.chars, onText && current?.kind === "text" && !current.plain);
 		if (!chars) return { state };
 		const value = editedValue + chars;
-		return { state: onForm ? withFormText(value) : withText(value) };
+		return { state: onForm ? withFormText(value) : onCheckboxAdd ? withAddText(value) : withText(value) };
 	}
 	if (event === "backspace") {
 		if (editedValue === null) return { state };
 		const value = editedValue.slice(0, -1);
-		return { state: onForm ? withFormText(value) : withText(value) };
+		return { state: onForm ? withFormText(value) : onCheckboxAdd ? withAddText(value) : withText(value) };
 	}
 	// The synthetic submit tab: two actionable rows, Enter decides.
 	if (state.tab === state.steps.length) {
@@ -899,8 +964,9 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 	const withCursor = withCursorAt;
 	const toggled = (): WizardState => {
 		// Only the select-all row and real item rows carry check state --
-		// the steering input row and the Next row do not.
-		if (step.kind !== "checkbox" || cursor > step.items.length) return state;
+		// the steering input row and the Next row do not. While loading,
+		// nothing toggles (only the note is visible -- 2026-08-10).
+		if (step.kind !== "checkbox" || step.loading || cursor > step.items.length) return state;
 		const selected = new Set(state.selected[state.tab]);
 		if (cursor === 0) {
 			if (step.items.every((item) => selected.has(item.id)) && step.items.length) {
@@ -932,6 +998,10 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 			return { state: toggled() };
 		case "confirm": {
 			if (step.kind === "checkbox") {
+				// While loading, the only visible row is the note -- Enter
+				// advances so the Enter-through flow never waits on the
+				// model (2026-08-10).
+				if (step.loading) return advance(state);
 				// Enter on the steering row COMMITS the draft and stays
 				// (2026-08-06): the committed value + bumped counter reach the
 				// answers, the itemLoader's changed key fires the regeneration
@@ -946,6 +1016,34 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 							committedTexts: state.committedTexts.map((prev, i) =>
 								(i === state.tab ? committed : prev)),
 							inputSeq: state.inputSeq.map((prev, i) => (i === state.tab ? prev + 1 : prev)),
+						},
+					};
+				}
+				// Enter on the ADD row (2026-08-10): the trimmed draft becomes
+				// a CHECKED item (an existing id just gets checked -- case-
+				// insensitive) and the draft clears; empty draft = no-op. With
+				// keepSelected the added row survives regenerations.
+				if (onCheckboxAdd) {
+					const draft = state.addTexts[state.tab].trim();
+					if (!draft) return { state };
+					const existing = step.items.find((item) => item.id.toLowerCase() === draft.toLowerCase());
+					const items = existing ? step.items : [...step.items, { id: draft, label: draft }];
+					const id = existing ? existing.id : draft;
+					const steps = state.steps.map((other, i) => (i === state.tab && other.kind === "checkbox"
+						? { ...other, items }
+						: other));
+					const grown = steps[state.tab] as WizardStepDef & { kind: "checkbox" };
+					return {
+						state: {
+							...state,
+							steps,
+							selected: state.selected.map((set, i) =>
+								(i === state.tab ? new Set([...set, id]) : set)),
+							addTexts: state.addTexts.map((prev, i) => (i === state.tab ? "" : prev)),
+							// The list grew by one row -- the cursor FOLLOWS the
+							// add row so the next variant can be typed directly.
+							cursors: state.cursors.map((value, i) =>
+								(i === state.tab ? checkboxAddRow(grown) : value)),
 						},
 					};
 				}
@@ -1164,20 +1262,47 @@ export function wizardView(state: WizardState): WizardView {
 				active,
 			});
 		};
+		const pushAddRow = (): void => {
+			// The add row (2026-08-10): type an own entry, Enter checks it in.
+			if (!step.addInput) return;
+			const active = cursor === checkboxAddRow(step);
+			const draft = state.addTexts[state.tab];
+			rows.push({
+				text: `${active ? "❯ " : "  "}   ${step.addInput.label}: ${draft}${active ? "_" : ""}`,
+				active,
+			});
+		};
 		const nextActive = cursor === checkboxNavRows(step) - 1;
-		if (step.items.length === 0) {
+		if (step.loading) {
+			// Loading (2026-08-10 user wish): ONLY the pulsing note -- no
+			// select-all, no rows, no inputs -- so the load is unmistakable.
+			// Enter still advances (see the confirm guard); items/selection
+			// live on untouched underneath and reappear with the swap.
+			rows.push({ text: `     ${step.emptyNote ?? ""}`, active: false, dim: true });
+		} else if (step.items.length === 0) {
 			// Lazily loaded list before/without items (v30.7): the note says
 			// why it is empty; the next-row keeps Enter-through working.
 			rows.push({ text: `     ${step.emptyNote ?? ""}`, active: false, dim: true });
+			pushAddRow();
 			pushInputRow();
 			rows.push({ text: `${nextActive ? "❯ " : "  "}   ${step.nextLabel}`, active: nextActive });
 		} else {
+			// Reload status (2026-08-10 field find: a re-load after a query
+			// edit was INVISIBLE -- kept checked rows fill the list and the
+			// note only rendered on an empty one, so the user stared at stale
+			// suggestions with no sign of work). A non-empty note now renders
+			// as a dim status line with items present too -- ABOVE the list,
+			// the same top position the empty-list note has (user wish, same
+			// day: "ganz nach oben ... so wie vorher"); the resolved setItems
+			// clears it ("" on success).
+			if (step.emptyNote) rows.push({ text: `     ${step.emptyNote}`, active: false, dim: true });
 			const checkboxState: CheckboxState = {
 				items: step.items,
 				cursor,
 				selected: state.selected[state.tab],
 			};
 			rows.push(...checkboxLines(checkboxState, step.selectAllLabel));
+			pushAddRow();
 			pushInputRow();
 			rows.push({ text: `${nextActive ? "❯ " : "  "}   ${step.nextLabel}`, active: nextActive });
 		}

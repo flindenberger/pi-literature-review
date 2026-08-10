@@ -72,6 +72,26 @@ export interface RenderPayload {
 	/** Flattened block terms actually sent to CrossRef per query (2026-08-06:
 	 * CrossRef has no boolean search). */
 	crossref_queries?: string[] | null;
+	/** Boolean bulk-endpoint query actually sent to Semantic Scholar per
+	 * query (2026-08-10, 4th source; +/| syntax, citation-sorted). */
+	semanticscholar_queries?: string[] | null;
+	/** Raw per-source×query hit counts before any processing (2026-08-10,
+	 * PRISMA-S "records identified"; absent in older sidecars). */
+	source_counts?: Array<{ source: string; query: string; count: number }> | null;
+	/** PRISMA flow numbers of the run (2026-08-10; absent in older
+	 * sidecars). Every value is the plain length of a list the run
+	 * actually produced. */
+	flow?: {
+		identified: number;
+		junk_removed: number;
+		duplicates_removed: number;
+		screened: number;
+		/** Records still without an abstract after enrichment (2026-08-10
+		 * abstract gate; absent in older sidecars). */
+		no_abstract_removed?: number;
+		excluded_by_filters: number;
+		included: number;
+	} | null;
 	grouping: string[][] | null;
 	/** Per-query concept blocks of a multi-query run (2026-08-06); a record
 	 * is on_target when it fully matches ANY of these sets. */
@@ -97,9 +117,11 @@ function safeHref(url: string): string | null {
 	return /^https?:\/\//i.test(url) ? url : null;
 }
 
+// target=_blank (2026-08-10 user wish): every link opens a new tab, like
+// the synthesis report links since v20.
 function link(href: string | null, text: string): string {
 	if (href === null) return esc(text);
-	return `<a href="${esc(href)}">${esc(text)}</a>`;
+	return `<a href="${esc(href)}" target="_blank" rel="noopener">${esc(text)}</a>`;
 }
 
 /** A table cell with a data-sort key for the client-side column sorter. */
@@ -192,8 +214,10 @@ function articleCell(record: RenderRecord, withAuthors = false): string {
 	const authors = withAuthors && record.authors.length
 		? `<br><span class="authors">${esc(record.authors.join("; "))}</span>`
 		: "";
+	// A looked-up abstract carries the enrichment star like any filled
+	// field (2026-08-10; the footnote under the table explains it).
 	const abstract = record.abstract
-		? `<details><summary>Abstract</summary><p>${esc(record.abstract)}</p></details>`
+		? `<details><summary>Abstract${record.enriched?.abstract ? "*" : ""}</summary><p>${esc(record.abstract)}</p></details>`
 		: "";
 	return `${title}${authors}${abstract}`;
 }
@@ -212,31 +236,22 @@ function fetchIdOf(record: RenderRecord): string {
 	return "";
 }
 
-function resultRow(record: RenderRecord, index: number, queryLabels: Map<string, string>): string {
-	const rowClass = record.group === "on_target" ? ' class="on-target"' : "";
+/** The metadata cells the results table and the dropped table share
+ * (2026-08-10 user wish: dropped records show the same columns, so source
+ * lists, scores and citations stay comparable across both tables):
+ * Article / Authors / Year / Journal / Journal score / Citations / DOI. */
+function metadataCells(record: RenderRecord): string[] {
 	const year = record.year !== null && /^\d{4}$/.test(record.year) ? record.year : "";
 	const cites = record.cites === null || record.cites === undefined ? "" : String(record.cites);
 	const venueStar = record.enriched?.venue ? "*" : "";
 	const citesStar = record.enriched?.cites ? "*" : "";
-	const foundBy = queryLabels.size > 1 && record.found_by?.length
-		? `<br><span class="note">${esc(record.found_by.map((q) => queryLabels.get(q) ?? q).join(", "))}</span>`
-		: "";
 	const score = typeof record.journal_2yr_citedness === "number"
 		? record.journal_2yr_citedness
 		: null;
-	// Label sort keys are prefixed so that the FIRST click puts on_target on
-	// top (matching the initial page order), not alphabetical "adjacent".
-	const groupKey = record.group === "on_target" ? "0_on_target" : record.group ? "1_adjacent" : "";
-	const fetchId = fetchIdOf(record);
-	const pickBox = fetchId
-		? `<input type="checkbox" class="pick" data-id="${esc(fetchId)}" aria-label="Select for PDF download">`
-		: "";
 	// Sort key of the Authors column: last name of the FIRST author,
 	// lowercased -- a header click orders by exactly that.
 	const authorKey = firstAuthorLastName(record.authors).toLowerCase();
-	const cells = [
-		cell("", pickBox, "pickcell"),
-		cell(String(index + 1), String(index + 1)),
+	return [
 		cell(record.title.toLowerCase(), articleCell(record), "paper"),
 		cell(authorKey, record.authors.length ? esc(record.authors.join("; ")) : "&mdash;", "authorscol"),
 		cell(year, esc(record.year ?? "") || "&mdash;"),
@@ -244,6 +259,25 @@ function resultRow(record: RenderRecord, index: number, queryLabels: Map<string,
 		cell(score === null ? "" : String(score), score === null ? "&mdash;" : score.toFixed(1)),
 		cell(cites, cites ? cites + citesStar : "&mdash;"),
 		cell((record.doi || record.arxiv_id).toLowerCase(), doiCell(record)),
+	];
+}
+
+function resultRow(record: RenderRecord, index: number, queryLabels: Map<string, string>): string {
+	const rowClass = record.group === "on_target" ? ' class="on-target"' : "";
+	const foundBy = queryLabels.size > 1 && record.found_by?.length
+		? `<br><span class="note">${esc(record.found_by.map((q) => queryLabels.get(q) ?? q).join(", "))}</span>`
+		: "";
+	// Label sort keys are prefixed so that the FIRST click puts on_target on
+	// top (matching the initial page order), not alphabetical "adjacent".
+	const groupKey = record.group === "on_target" ? "0_on_target" : record.group ? "1_adjacent" : "";
+	const fetchId = fetchIdOf(record);
+	const pickBox = fetchId
+		? `<input type="checkbox" class="pick" data-id="${esc(fetchId)}" aria-label="Select for PDF download">`
+		: "";
+	const cells = [
+		cell("", pickBox, "pickcell"),
+		cell(String(index + 1), String(index + 1)),
+		...metadataCells(record),
 		// Code column (2026-08-07): sort key 0/1 so the first header click
 		// puts the records WITH code on top.
 		cell(record.code_url ? "0" : "1",
@@ -260,14 +294,35 @@ function resultRow(record: RenderRecord, index: number, queryLabels: Map<string,
 	return `<tr${rowClass}>${cells.join("")}</tr>`;
 }
 
-function droppedRow(entry: { reason: string; record: RenderRecord }): string {
+/** Dropped rows mirror the results table column for column (2026-08-10
+ * user wish: interesting papers keep landing in the dropped list, so they
+ * are selectable for download exactly like kept ones -- checkbox, #, the
+ * shared metadata cells, Code, Data source). The Label column reads
+ * "dropped" with the exclusion reason as its dim note; its sort key is
+ * the reason, so a header click clusters equal reasons. The Code cell is
+ * honestly empty -- the code lookup deliberately never runs for dropped
+ * records (disclosed in the section intro). */
+function droppedRow(
+	entry: { reason: string; record: RenderRecord },
+	index: number,
+	queryLabels: Map<string, string>,
+): string {
 	const { record, reason } = entry;
-	const year = record.year !== null && /^\d{4}$/.test(record.year) ? record.year : "";
+	const fetchId = fetchIdOf(record);
+	const pickBox = fetchId
+		? `<input type="checkbox" class="pick" data-id="${esc(fetchId)}" aria-label="Select for PDF download">`
+		: "";
+	const foundBy = queryLabels.size > 1 && record.found_by?.length
+		? `<br><span class="note">${esc(record.found_by.map((q) => queryLabels.get(q) ?? q).join(", "))}</span>`
+		: "";
 	return `<tr>${[
-		cell(record.title.toLowerCase(), articleCell(record, true), "paper"),
-		cell(year, esc(record.year ?? "") || "&mdash;"),
-		cell((record.doi || record.arxiv_id).toLowerCase(), doiCell(record)),
-		cell(reason.toLowerCase(), esc(reason)),
+		cell("", pickBox, "pickcell"),
+		cell(String(index + 1), String(index + 1)),
+		...metadataCells(record),
+		cell(record.code_url ? "0" : "1",
+			record.code_url ? link(safeHref(record.code_url), "GitHub") : "&mdash;"),
+		cell(sourcesOf(record).join(", "), (esc(sourcesOf(record).join(", ")) || "&mdash;") + foundBy),
+		cell(reason.toLowerCase(), `dropped<br><span class="note">reason: ${esc(reason)}</span>`),
 	].join("")}</tr>`;
 }
 
@@ -294,6 +349,8 @@ const STYLE = `
 	.unverified { color: #8a1f11; font-weight: 600; }
 	details { margin-top: 0.3rem; }
 	details summary { cursor: pointer; color: #44506b; font-size: 0.78rem; }
+	details.prisma { margin: 0.6rem 0 0; }
+	details.prisma > summary { font-size: 0.88rem; font-weight: 600; }
 	details p { margin: 0.3rem 0 0; color: #2c2c2c; }
 	a { color: #2b4a6f; }
 	td.paper { min-width: 18rem; }
@@ -458,7 +515,9 @@ const SELECT_SCRIPT = `
 	}
 }
 `;
-const DROPPED_HEADERS = "<tr><th>Article</th><th>Year</th><th>DOI</th><th>Reason</th></tr>";
+// The dropped table shares RESULT_HEADERS since 2026-08-10 (user wish:
+// identical columns incl. the selection checkbox; the Label column holds
+// "dropped" + reason there) -- see droppedRow.
 
 /** Render the full discovery payload as a standalone HTML document. */
 export function renderHtml(payload: RenderPayload): string {
@@ -470,19 +529,23 @@ export function renderHtml(payload: RenderPayload): string {
 		: "";
 
 	const PROVIDER_LABELS: Record<string, string> = { openalex: "OpenAlex (api.openalex.org)" };
+	// Footnote gates look at BOTH tables since the dropped table carries
+	// the full columns (2026-08-10): a star or score appearing only on a
+	// dropped row still needs its explanation.
+	const allRecords = [...results, ...payload.dropped.map((entry) => entry.record)];
 	// The code column has its own footnote (&sup2;) -- its provenance entry
 	// must not pull "github" into the asterisk note, which describes FILLED
 	// metadata fields.
-	const enrichedProviders = [...new Set(results.flatMap((r) =>
+	const enrichedProviders = [...new Set(allRecords.flatMap((r) =>
 		Object.entries(r.enriched ?? {}).filter(([field]) => field !== "code_url").map(([, provider]) => provider)))]
 		.map((provider) => PROVIDER_LABELS[provider] ?? provider);
 	const enrichmentFootnote = enrichedProviders.length
 		? `\n<p class="meta">* Value filled in by a deterministic identifier lookup at ${esc(enrichedProviders.join(", "))} because the original search source did not deliver this field (arXiv, for example, carries no citation counts or journal names). Looked up from an open API, never generated; each record's <code>enriched</code> field in the JSON names the filled fields.</p>`
 		: "";
-	const scoreFootnote = results.some((r) => typeof r.journal_2yr_citedness === "number")
+	const scoreFootnote = allRecords.some((r) => typeof r.journal_2yr_citedness === "number")
 		? `\n<p class="meta">&sup1; Journal score = the journal's 2-year mean citedness from OpenAlex (api.openalex.org): average citations received in the last two years by works the journal published in the two years before. It is the open analog of the proprietary journal impact factor; values are computed over the OpenAlex citation graph and differ somewhat from Clarivate's JIF. It rates the journal, not the paper.</p>`
 		: "";
-	const codeFootnote = results.some((r) => r.code_url)
+	const codeFootnote = allRecords.some((r) => r.code_url)
 		? `\n<p class="meta">&sup2; Code = a GitHub repository found deterministically: preferably the URL the paper's own abstract names, else the best-matching repository from one GitHub search per arXiv id (the repository mentions the id in its name, description or README; aggregator/reading-list repositories are skipped). The search path is a heuristic pointer to likely code, not a verified artifact link -- follow it and judge; journal papers whose abstract names no repository are not looked up. Recorded in the JSON as <code>code_url</code>, provenance in <code>enriched</code> (abstract | github).</p>`
 		: "";
 
@@ -523,6 +586,11 @@ export function renderHtml(payload: RenderPayload): string {
 		payload.crossref_queries,
 		"CrossRef offers no boolean search; it receives the block terms as plain relevance keywords.",
 	);
+	const semanticscholarQueryRows = sentRows(
+		"Sent to Semantic Scholar",
+		payload.semanticscholar_queries,
+		"Bulk-endpoint boolean syntax (+ = required block, | = OR); the bulk endpoint has no relevance ranking, results arrive sorted by citation count.",
+	);
 	// Grouping: per query since the block search; a record is on_target when
 	// it fully matches ANY confirmed query's blocks (2026-08-06 revision --
 	// the finder no longer decides the label). Single-query runs and old
@@ -535,6 +603,26 @@ export function renderHtml(payload: RenderPayload): string {
 				: "(no blocks -- query passed through unchanged)")}</dd>`)
 			.join("")}<dd><span class="note">on_target = full match of at least one of these block sets, regardless of which query found the record.</span></dd>`
 		: `\n<dt>Grouping</dt><dd>${esc(describeGrouping(payload.grouping, payload.grouping_require))}</dd>`;
+	// PRISMA-S documentation, collapsed at the END of the meta block
+	// (2026-08-10 user wish: the per-database strategies, raw counts, flow
+	// chain and labeling rule are expert info -- out of the skim path, one
+	// click away). Old sidecars without counts/flow show whatever rows
+	// they carry.
+	const identifiedRows = payload.source_counts?.length
+		? `\n<dt>Records identified</dt>${payload.source_counts
+			.map((entry) => `<dd>${queryLabels.size > 1 ? `${queryLabels.get(entry.query) ?? "?"} ` : ""}${esc(entry.source)}: ${entry.count}</dd>`)
+			.join("")}<dd><span class="note">raw hits per source and query, before deduplication and filtering.</span></dd>`
+		: "";
+	// The chain's last step names its destination (2026-08-10 field
+	// reading: a bare "3 included" was read as "included into the dropped
+	// list"; the user chose this wording over an explaining note line).
+	const flow = payload.flow;
+	const flowRow = flow
+		? `\n<dt>Flow</dt><dd>${flow.identified} record(s) identified &rarr; ${flow.junk_removed} removed as uncitable (no title or no authors) &rarr; ${flow.duplicates_removed} duplicate(s) merged &rarr; ${flow.screened} screened${
+			typeof flow.no_abstract_removed === "number"
+				? ` &rarr; ${flow.no_abstract_removed} removed without abstract`
+				: ""} &rarr; ${flow.excluded_by_filters} excluded by the requested filters &rarr; ${flow.included} included to the final literature list, awaiting manual selection</dd>`
+		: "";
 	// Honest degradation stays visible (v30.1): a source that errored is
 	// listed with its reason -- the results may be incomplete and the page
 	// must say so, not just a transient status line during the run.
@@ -545,18 +633,23 @@ export function renderHtml(payload: RenderPayload): string {
 			.join("")}`
 		: "";
 
-	const fetchable = results.some((record) => fetchIdOf(record));
+	// The selection bar sits BELOW both tables and covers them both
+	// (2026-08-10 user wish: interesting papers keep landing in the dropped
+	// list -- their checkboxes join the same download request; the select
+	// script collects every input.pick on the page).
+	const fetchable = [...results, ...payload.dropped.map((entry) => entry.record)]
+		.some((record) => fetchIdOf(record));
 	// Plain "Select all" (v30.15 user decision): the earlier on_target-only
 	// button was useless on runs without any on_target hit.
-	const selectBar = results.length && fetchable
+	const selectBar = fetchable
 		? `\n<div class="selectbar">
 <span class="selectcount">0 selected</span>
 <button type="button" class="select-all">Select all</button>
 <button type="button" class="select-clear">Clear</button>
 <button type="button" class="copy-selection" disabled>Copy download request</button>
 <span class="copy-feedback copied"></span>
-<span class="hint">Tick papers above, copy the request, then paste it into the Pi chat -- the selection tool
-downloads the PDFs into the lit-selection/ library after you confirm the terminal dialog.</span>
+<span class="hint">Tick papers above (results AND dropped), copy the request, then paste it into the Pi chat --
+the selection tool downloads the PDFs into the lit-selection/ library after you confirm the terminal dialog.</span>
 </div>`
 		: "";
 
@@ -566,16 +659,18 @@ downloads the PDFs into the lit-selection/ library after you confirm the termina
 <tbody>
 ${results.map((record, index) => resultRow(record, index, queryLabels)).join("\n")}
 </tbody>
-</table>${selectBar}${enrichmentFootnote}${scoreFootnote}${codeFootnote}`
+</table>${enrichmentFootnote}${scoreFootnote}${codeFootnote}`
 		: "<p>No results.</p>";
 
 	const droppedSection = payload.dropped.length
 		? `<h2>Dropped records (${payload.dropped.length})</h2>
-<p class="meta">Removed by the junk filter or by the requested metadata filters. Nothing disappears silently; every exclusion carries its reason.</p>
+<p class="meta">Removed by the junk filter or by the requested metadata filters -- nothing disappears silently,
+the Label column carries each reason. Same columns as the results table; tick dropped papers too, the download
+request below includes them. The Code lookup deliberately never runs for dropped records.</p>
 <table class="sortable">
-<thead>${DROPPED_HEADERS}</thead>
+<thead>${RESULT_HEADERS}</thead>
 <tbody>
-${payload.dropped.map(droppedRow).join("\n")}
+${payload.dropped.map((entry, index) => droppedRow(entry, index, queryLabels)).join("\n")}
 </tbody>
 </table>`
 		: "";
@@ -593,14 +688,20 @@ ${payload.dropped.map(droppedRow).join("\n")}
 <dl class="meta">
 <dt>Query</dt><dd>${esc(queryLabel)}</dd>${variantRows}
 <dt>Generated</dt><dd>${esc(payload.generated)} (UTC)</dd>
-<dt>Sources</dt><dd>${esc(payload.sources_used.join(", ")) || "none reachable"}</dd>${sourceFailureRows}${arxivQueryRows}${openalexQueryRows}${crossrefQueryRows}${
-	payload.per_source ? `\n<dt>Records per source</dt><dd>${esc(payload.per_source)}</dd>` : ""}${groupingRows}
+<dt>Sources</dt><dd>${esc(payload.sources_used.join(", ")) || "none reachable"}</dd>${sourceFailureRows}${
+	payload.per_source ? `\n<dt>Records per source</dt><dd>${esc(payload.per_source)}</dd>` : ""}
 <dt>Filters</dt><dd>${esc(describeFilters(payload.filters))}</dd>
 <dt>Sort</dt><dd>${esc(payload.sort ?? "source order")}</dd>
 <dt>Results</dt><dd>${results.length}${groupSummary}; ${verifiedCount}/${results.length} identifiers verified; ${payload.dropped.length} dropped</dd>
 </dl>
+<details class="prisma"><summary>Search documentation</summary>
+<dl class="meta">${arxivQueryRows}${openalexQueryRows}${crossrefQueryRows}${semanticscholarQueryRows}${identifiedRows}${flowRow}${groupingRows}
+</dl>
+<p class="meta">The exact search strategy per database (as sent, per query), the raw hit counts, the
+selection flow and the labeling rule -- the material a PRISMA-2020/PRISMA-S methods section documents.</p>
+</details>
 ${resultsTable}
-${droppedSection}
+${droppedSection}${selectBar}
 <footer>Rendered deterministically from the pi-literature-review JSON payload. Every field on this page
 originates from a search-API response; an identifier counts as verified when it resolved via HTTP at
 doi.org / arxiv.org. Column sorting only reorders the rows above. No language model produced or

@@ -99,14 +99,14 @@ const html = renderHtml(payload);
 
 // links: http(s) URLs are linked; javascript: URLs are rendered as text only
 {
-	assert.ok(html.includes('<a href="https://doi.org/10.1234/abc">10.1234/abc</a>'));
-	assert.ok(html.includes('<a href="https://example.org/paper.pdf">PDF</a>'));
+	assert.ok(html.includes('<a href="https://doi.org/10.1234/abc" target="_blank" rel="noopener">10.1234/abc</a>'));
+	assert.ok(html.includes('<a href="https://example.org/paper.pdf" target="_blank" rel="noopener">PDF</a>'));
 	assert.ok(!html.includes('href="javascript:'));
 }
 
 // DOI column: arXiv ID fallback for preprints; failed trust gate is flagged
 {
-	assert.ok(html.includes('<a href="https://arxiv.org/abs/2401.16393v1">arXiv:2401.16393v1</a>'));
+	assert.ok(html.includes('<a href="https://arxiv.org/abs/2401.16393v1" target="_blank" rel="noopener">arXiv:2401.16393v1</a>'));
 	assert.ok(html.includes('<span class="unverified">did not verify</span>'));
 	assert.ok(html.includes("arxiv.org answered HTTP 404"));
 }
@@ -167,6 +167,18 @@ const html = renderHtml(payload);
 	assert.ok(html.includes(">3*<") || html.includes("3*</td>"));
 	assert.ok(html.includes("OpenAlex (api.openalex.org)"));
 	assert.ok(html.includes('data-sort="3"')); // sort key stays the bare value
+	// A looked-up abstract stars its summary too (2026-08-10).
+	const enrichedAbstract = renderHtml({
+		...payload,
+		results: [{
+			...payload.results[0],
+			abstract: "Looked-up text.",
+			enriched: { abstract: "openalex" },
+		}],
+		dropped: [],
+	});
+	assert.ok(enrichedAbstract.includes("<summary>Abstract*</summary>"));
+	assert.ok(html.includes("<summary>Abstract</summary>")); // own abstracts stay unstarred
 }
 
 // code column (2026-08-07): GitHub link plus the heuristic footnote; a page
@@ -177,7 +189,7 @@ const html = renderHtml(payload);
 		results: [{ ...payload.results[0], code_url: "https://github.com/acme/sandbar-net" }],
 		dropped: [],
 	});
-	assert.ok(withCode.includes('<a href="https://github.com/acme/sandbar-net">GitHub</a>'));
+	assert.ok(withCode.includes('<a href="https://github.com/acme/sandbar-net" target="_blank" rel="noopener">GitHub</a>'));
 	assert.ok(withCode.includes("&sup2; Code = "));
 	assert.ok(!html.includes("&sup2; Code = "));
 }
@@ -230,6 +242,7 @@ const html = renderHtml(payload);
 		arxiv_queries: ["all:water AND all:mask", "(all:cnn OR all:\"deep learning\") AND all:river"],
 		openalex_queries: ["water AND mask", "(cnn OR \"deep learning\") AND river"],
 		crossref_queries: ["water mask", "cnn deep learning river"],
+		semanticscholar_queries: ["+water +mask", '+(cnn | "deep learning") +river'],
 		grouping_by_query: [
 			{ query: "water mask", groups: [["water"], ["mask"]] },
 			{ query: "(cnn OR deep learning) AND (river)", groups: [["cnn", "deep learning"], ["river"]] },
@@ -239,12 +252,75 @@ const html = renderHtml(payload);
 	assert.ok(blockRun.includes("<dd>Q2: (cnn OR &quot;deep learning&quot;) AND river</dd>"));
 	assert.ok(blockRun.includes("<dt>Sent to CrossRef</dt>"));
 	assert.ok(blockRun.includes("CrossRef offers no boolean search"));
+	// 4th source (2026-08-10): the bulk boolean expression per query plus
+	// the citation-sort disclosure.
+	assert.ok(blockRun.includes("<dt>Sent to Semantic Scholar</dt>"));
+	assert.ok(blockRun.includes("<dd>Q2: +(cnn | &quot;deep learning&quot;) +river</dd>"));
+	assert.ok(blockRun.includes("sorted by citation count"));
+	// PRISMA-S section (2026-08-10 user wish): the per-database rows live
+	// in a COLLAPSED details block at the end of the meta block, not in
+	// the skim path; the main dl no longer carries them.
+	assert.ok(blockRun.includes('<details class="prisma"><summary>Search documentation</summary>'));
+	const mainMeta = blockRun.slice(0, blockRun.indexOf('<details class="prisma">'));
+	assert.ok(!mainMeta.includes("Sent to arXiv"));
+	assert.ok(!mainMeta.includes("<dt>Grouping</dt>"));
 	// Per-query grouping rows replace the single line.
 	assert.ok(blockRun.includes("<dd>Q1: (water) AND (mask)</dd>"));
 	assert.ok(blockRun.includes("<dd>Q2: (cnn OR deep learning) AND (river)</dd>"));
 	// The legacy "unchanged" note is for OLD sidecars only -- with the
 	// per-source rows present it would contradict them.
 	assert.ok(!blockRun.includes("received the query text unchanged"));
+}
+
+// PRISMA counts and flow (2026-08-10): raw per-source×query hits and the
+// selection chain render inside the collapsed section; old sidecars
+// without the fields keep the section with strategies/grouping only.
+{
+	const withFlow = renderHtml({
+		...payload,
+		query_variants: ["water body mapping"],
+		source_counts: [
+			{ source: "arxiv", query: 'sandbars & "Sentinel" <test>', count: 3 },
+			{ source: "arxiv", query: "water body mapping", count: 2 },
+			{ source: "crossref", query: 'sandbars & "Sentinel" <test>', count: 5 },
+		],
+		flow: {
+			identified: 10, junk_removed: 2, duplicates_removed: 3,
+			screened: 5, excluded_by_filters: 3, included: 2,
+		},
+	});
+	assert.ok(withFlow.includes("<dt>Records identified</dt>"));
+	assert.ok(withFlow.includes("<dd>Q1 arxiv: 3</dd>"));
+	assert.ok(withFlow.includes("<dd>Q2 arxiv: 2</dd>"));
+	assert.ok(withFlow.includes("raw hits per source and query, before deduplication and filtering."));
+	// The chain names its destination (user wording 2026-08-10); the
+	// earlier explaining note line is gone by user decision. A sidecar
+	// without the abstract-gate field renders the chain without that step.
+	assert.ok(withFlow.includes(
+		"10 record(s) identified &rarr; 2 removed as uncitable (no title or no authors) &rarr; "
+		+ "3 duplicate(s) merged &rarr; 5 screened &rarr; 3 excluded by the requested filters "
+		+ "&rarr; 2 included to the final literature list, awaiting manual selection"));
+	assert.ok(!withFlow.includes("row(s) of the dropped table"));
+	// With the abstract gate (2026-08-10) the chain carries its step.
+	const withGate = renderHtml({
+		...payload,
+		flow: {
+			identified: 10, junk_removed: 2, duplicates_removed: 3,
+			screened: 5, no_abstract_removed: 1, excluded_by_filters: 2, included: 2,
+		},
+	});
+	assert.ok(withGate.includes("5 screened &rarr; 1 removed without abstract &rarr; 2 excluded"));
+	// Single-query runs drop the Q labels on the identified rows.
+	const singleQuery = renderHtml({
+		...payload,
+		source_counts: [{ source: "openalex", query: payload.query, count: 4 }],
+	});
+	assert.ok(singleQuery.includes("<dd>openalex: 4</dd>"));
+	// Old sidecar without counts/flow: the section still holds the
+	// strategy and grouping rows, no identified/flow rows.
+	assert.ok(html.includes('<details class="prisma">'));
+	assert.ok(!html.includes("<dt>Records identified</dt>"));
+	assert.ok(!html.includes("<dt>Flow</dt>"));
 	// A query without blocks says where its labels came from.
 	const fallback = renderHtml({
 		...payload,
@@ -284,13 +360,31 @@ const html = renderHtml(payload);
 		dropped: [],
 	});
 	assert.ok(commaStyle.includes('data-sort="kryniecka"')); // "Last, F." spelling
-	// dropped table: authors stay inside the article cell (no own column there)
-	const droppedWithAuthors = renderHtml({
+	// dropped table (2026-08-10, second round: FULL parity with the results
+	// table -- same headers incl. checkbox/#/Code/Label; the Label cell
+	// reads "dropped" with the reason as its dim note, keyed on the reason).
+	const droppedFull = renderHtml({
 		...payload,
 		results: [],
 		dropped: [{ reason: "year out of range", record: payload.results[0] }],
 	});
-	assert.ok(droppedWithAuthors.includes('<span class="authors">A. Author; B. Author</span>'));
+	assert.ok(droppedFull.includes('<td class="authorscol" data-sort="author">A. Author; B. Author</td>'));
+	assert.ok(!droppedFull.includes('<span class="authors">')); // never doubled into the article cell
+	// Both tables share RESULT_HEADERS (two occurrences on a page with rows
+	// in each; here results is empty, so exactly one).
+	assert.ok(droppedFull.includes("<th>Code&sup2;</th><th>Data source</th><th>Label</th>"));
+	assert.ok(droppedFull.includes(
+		'<td data-sort="year out of range">dropped<br><span class="note">reason: year out of range</span></td>'));
+	assert.ok(droppedFull.includes("Remote Sensing")); // venue survives the drop
+	assert.ok(droppedFull.includes('data-sort="4.422208"')); // journal score too
+	assert.ok(droppedFull.includes("crossref, openalex")); // sources stay visible
+	// Dropped rows are selectable for download: checkbox with the fetch id,
+	// and the selection bar renders although results is EMPTY -- it sits
+	// below both tables and covers them together.
+	assert.ok(droppedFull.includes('<input type="checkbox" class="pick" data-id="10.1234/abc"'));
+	assert.ok(droppedFull.includes('<div class="selectbar">'));
+	assert.ok(droppedFull.indexOf('<div class="selectbar">') > droppedFull.indexOf("Dropped records (1)"));
+	assert.ok(droppedFull.includes("results AND dropped"));
 	// sticky selection bar styling is present
 	assert.ok(html.includes("position: sticky; bottom: 0;"));
 }

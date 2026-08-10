@@ -9,6 +9,7 @@
 import {
 	applyFilters,
 	dedupe,
+	dropWithoutAbstract,
 	filterRecords,
 	groupAcrossQueries,
 	type ResultFilters,
@@ -22,6 +23,7 @@ import { queryBlocks } from "./intake.ts";
 import { buildSearchQuery, searchArxiv } from "./sources/arxiv.ts";
 import { flattenBlockTerms, searchCrossref } from "./sources/crossref.ts";
 import { buildBlockSearch, searchOpenalex } from "./sources/openalex.ts";
+import { buildBulkQuery, searchSemanticScholar } from "./sources/semanticscholar.ts";
 import type { SourceRecord, SourceScope } from "./types.ts";
 import { verifyAll } from "./verify.ts";
 
@@ -31,6 +33,9 @@ export const SEARCHERS: Record<string, Searcher> = {
 	arxiv: searchArxiv,
 	crossref: searchCrossref,
 	openalex: searchOpenalex,
+	// 4th source (2026-08-10): boolean via the bulk endpoint, citation-
+	// sorted; degrades loudly without an API key (see the module header).
+	semanticscholar: searchSemanticScholar,
 };
 
 export const DEFAULT_PER_SOURCE = 5;
@@ -120,6 +125,10 @@ export async function runSearch(options: SearchOptions) {
 	// trace in digest, HTML or payload, so the user could not tell a failed
 	// source from one that honestly found nothing).
 	const sourceFailures: Array<{ source: string; error: string }> = [];
+	// Raw per-source×query hit counts BEFORE any processing (2026-08-10,
+	// PRISMA-S: "records identified per database" is the first number of
+	// the flow diagram and was not recoverable from the sidecar before).
+	const sourceCounts: Array<{ source: string; query: string; count: number }> = [];
 	for (const source of sources) {
 		const search = SEARCHERS[source];
 		if (!search) {
@@ -139,6 +148,7 @@ export async function runSearch(options: SearchOptions) {
 			try {
 				const found = await search(query, perSource, scope);
 				warn(`${label}: ${found.length} record(s)`);
+				sourceCounts.push({ source, query, count: found.length });
 				records.push(...(multiQuery ? found.map((r) => ({ ...r, found_by: [query] })) : found));
 				succeeded = true;
 			} catch (error) {
@@ -172,8 +182,25 @@ export async function runSearch(options: SearchOptions) {
 	aborted();
 	const scored = options.enrich === false ? enriched : await addJournalScores(enriched, warn);
 
+	// Abstract gate (2026-08-10 user decision): a record still without an
+	// abstract AFTER enrichment cannot be judged by the block labeling
+	// (title-only matching under-matches systematically) and moves to the
+	// dropped table -- visible and selectable there, never silently gone.
+	const abstractGate = dropWithoutAbstract(
+		scored,
+		options.enrich === false
+			? "no abstract (sources delivered none; enrichment disabled)"
+			: "no abstract (sources and the OpenAlex lookup delivered none)",
+	);
+	for (const { record, reason } of abstractGate.dropped) {
+		warn(`dropped "${record.title}": ${reason}`);
+	}
+	if (abstractGate.dropped.length) {
+		warn(`abstract gate removed ${abstractGate.dropped.length} record(s), kept ${abstractGate.kept.length}`);
+	}
+
 	const filters = options.filters ?? {};
-	const filterResult = applyFilters(scored, filters);
+	const filterResult = applyFilters(abstractGate.kept, filters);
 	for (const { record, reason } of filterResult.dropped) {
 		warn(`${reason}: "${record.title}"`);
 	}
@@ -236,6 +263,11 @@ export async function runSearch(options: SearchOptions) {
 		crossref_queries: sourcesUsed.includes("crossref")
 			? queries.map((query, index) => flattenBlockTerms(blocksByQuery[index]) || query)
 			: null,
+		// Semantic Scholar = the bulk endpoint's boolean syntax (+/|), see
+		// sources/semanticscholar.ts (2026-08-10).
+		semanticscholar_queries: sourcesUsed.includes("semanticscholar")
+			? queries.map((query, index) => buildBulkQuery(query, blocksByQuery[index]))
+			: null,
 		grouping: blocksByQuery[0].length ? blocksByQuery[0] : null,
 		// Per-query blocks (2026-08-06): what labeled each query's finds --
 		// null entries mean that query carried no blocks (quoted/field
@@ -247,11 +279,28 @@ export async function runSearch(options: SearchOptions) {
 			}))
 			: null,
 		grouping_require: groupRequire !== undefined && groupRequire < blocksByQuery[0].length ? groupRequire : null,
+		// PRISMA flow numbers (2026-08-10): every count is a plain length of
+		// a list this run actually produced -- identified (raw per-source
+		// hits, pre-dedupe), removed as uncitable by the junk filter,
+		// duplicates merged, screened (= post-dedupe), excluded by the
+		// requested metadata filters (reasons ship in `dropped`), included.
+		// Verification/enrichment/grouping never change the count.
+		source_counts: sourceCounts.length ? sourceCounts : null,
+		flow: {
+			identified: records.length,
+			junk_removed: dropped.length,
+			duplicates_removed: kept.length - deduped.length,
+			screened: deduped.length,
+			no_abstract_removed: abstractGate.dropped.length,
+			excluded_by_filters: filterResult.dropped.length,
+			included: results.length,
+		},
 		filters: filtersActive ? filters : null,
 		sort: options.sort ?? null,
 		results,
 		dropped: [
 			...dropped.map(({ reason, record }) => ({ reason, record })),
+			...abstractGate.dropped.map(({ reason, record }) => ({ reason, record })),
 			...filterResult.dropped.map(({ reason, record }) => ({ reason, record })),
 		],
 	};

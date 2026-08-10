@@ -243,14 +243,41 @@ export function alignVariantExpression(line: string, baseBlocks: string[][]): st
 }
 
 /**
+ * Deterministic narrow-to-broad ordering of variant suggestions
+ * (2026-08-10 user wish: the first rows stay close to the base query with
+ * few synonyms, later rows grow freer). The prompt asks the model for this
+ * staggering; this sort GUARANTEES the order regardless of what the model
+ * emitted (code over instructions). Primary key: total term count across
+ * the variant's blocks (fewer synonyms = narrower); secondary: number of
+ * terms sharing no word with the base query (foreign terms = freer);
+ * ties keep the model's order (stable). Hands-off lines (quotes / field
+ * syntax -- queryBlocks returns []) score by their word count.
+ */
+export function sortVariantsByBreadth(variants: string[], baseBlocks: string[][]): string[] {
+	const baseWords = baseBlocks.flatMap(blockWords);
+	const scored = variants.map((variant, position) => {
+		const blocks = queryBlocks(variant);
+		const terms = blocks.length ? blocks.flat() : variant.split(/\s+/).filter(Boolean);
+		const foreign = terms.filter((term) =>
+			!term.toLowerCase().replace(/-/g, " ").split(/\s+/).filter(Boolean)
+				.some((word) => baseWords.some((baseWord) => wordMatches(word, baseWord)))).length;
+		return { variant, position, terms: terms.length, foreign };
+	});
+	return scored
+		.sort((a, b) => a.terms - b.terms || a.foreign - b.foreign || a.position - b.position)
+		.map((entry) => entry.variant);
+}
+
+/**
  * Parse LLM-generated query-variant suggestions (2026-08-06): one query per
  * line; leading list bullets/numbering and surrounding quotes are stripped
  * (models habitually add both despite instructions); empties vanish;
  * block expressions are aligned to the base query's concept order
  * (2026-08-07) and reprinted canonically; duplicates of the base query and
- * of earlier lines drop case-insensitively; the list is capped. Pure --
- * the LLM only ever SHAPES queries here, the user checks each one in the
- * dialog before it runs.
+ * of earlier lines drop case-insensitively; the list is capped and ordered
+ * narrow-to-broad (2026-08-10, sortVariantsByBreadth). Pure -- the LLM
+ * only ever SHAPES queries here, the user checks each one in the dialog
+ * before it runs.
  */
 export function parseVariantLines(raw: string, baseQuery: string, cap = 8): string[] {
 	const baseBlocks = queryBlocks(baseQuery.trim());
@@ -270,7 +297,7 @@ export function parseVariantLines(raw: string, baseQuery: string, cap = 8): stri
 		variants.push(aligned);
 		if (variants.length >= cap) break;
 	}
-	return variants;
+	return sortVariantsByBreadth(variants, baseBlocks);
 }
 
 /**

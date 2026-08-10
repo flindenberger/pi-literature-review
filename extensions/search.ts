@@ -2,7 +2,7 @@
  * pi-literature-review Pi extension.
  *
  * Registers the pi-literature-search tool: deterministic literature discovery
- * (search -> filter -> dedupe -> verify -> group) over arXiv, CrossRef and
+ * (search -> filter -> dedupe -> verify -> group) over arXiv, CrossRef,
  * OpenAlex. Contains no LLM call of any kind: the agent may shape the query
  * and propose grouping word lists, but every record field traces to a
  * search-API response, and every DOI/arXiv ID is HTTP-verified before it is
@@ -90,8 +90,14 @@ function variantPrompt(query: string, hint: string, count: number): string {
 		`Suggest ${count} alternative searches for the same information need, each as a CONCEPT-BLOCK boolean query.`,
 		"Format per line: 2-4 concept blocks joined with AND; each block is 1-4 synonyms joined with OR, in parentheses.",
 		"Example: (river OR fluvial OR river channel) AND (water extraction OR water mapping) AND (satellite OR remote sensing)",
-		"Identify the core concepts of the base query; per suggestion vary the synonym choices and how broad or "
-		+ "narrow the concepts are (subtopics, established domain terms, method names).",
+		// 2026-08-10 user wish: staggered breadth -- the first rows stay
+		// close to the base query, later rows grow freer. Code enforces the
+		// ordering afterwards (sortVariantsByBreadth in parseVariantLines);
+		// this rule makes the model GENERATE across the whole range.
+		"Identify the core concepts of the base query. Stagger the suggestions from narrow to broad: the "
+		+ "first two stay CLOSE to the base query's own words with at most 1-2 synonyms per block; later "
+		+ "suggestions widen the synonym sets and may explore subtopics, established domain terms and "
+		+ "method names.",
 		// 2026-08-07 user wish: parallel block order across all suggestions,
 		// so what the model built is comparable at a glance. parseVariantLines
 		// enforces it afterwards wherever a block shares a word with a base
@@ -120,12 +126,48 @@ function variantPrompt(query: string, hint: string, count: number): string {
 		"Output exactly one suggestion per line. No numbering, no bullets, no explanations.",
 	].filter(Boolean).join("\n");
 }
+/** The locked base-query row of the variants tab, built from the LIVE
+ * query text: label + suffix, the derived concept-block chain (or an
+ * explicit status note) as the dim line. */
+function variantBaseRow(
+	liveQuery: string,
+	text: (typeof SEARCH_TEXT)[DialogLang],
+	note?: string,
+): CheckboxItem {
+	const baseChain = formatGroupExpression(queryBlocks(liveQuery));
+	return {
+		id: VARIANT_BASE_ID,
+		label: `${liveQuery} ${text.variantsBaseSuffix}`,
+		locked: true,
+		...(note !== undefined ? { description: note }
+			: baseChain ? { description: baseChain } : {}),
+	};
+}
+
 const INTAKE_WIDGET = "pi-literature-review-intake";
 /** Transcript entry type for the /lit-search digest card (v30.3: the
  * 16-line widget truncated real result lists in the field -- the same
  * lesson as the v27 report cards; entries scroll, widgets do not). */
 const DIGEST_ENTRY = "pi-literature-search-digest";
 let digestEntryReady = false;
+
+/** Agent-facing framing on the TUI command-path digest message
+ * (2026-08-10, the synthesis pattern: card + brief chat answer). The card
+ * above the agent's reply IS the full result; the agent adds a short
+ * conversational summary so the run also leaves a real chat answer.
+ * Titles, identifiers and paths are FORBIDDEN in the reply -- agents
+ * re-typed and fabricated both in earlier field tests (2026-08-04); the
+ * card already carries the reference lines and the clickable HTML link
+ * deterministically. Costs one LLM call per TUI command run (explicit
+ * user decision 2026-08-10). */
+function searchTurnNote(): string {
+	return "[/lit-search result -- deterministic, agent-free; the user already sees it IN FULL as a card "
+		+ "above your reply, including every reference line and the clickable HTML link. Reply NOW with a "
+		+ "BRIEF summary (2-4 sentences): how many records, how many on_target, and anything notable about "
+		+ "sources, filters or dropped records -- drawn ONLY from the digest below, no other knowledge, no "
+		+ "tools. Do NOT list, re-type or complete titles, authors or identifiers; do NOT mention any file "
+		+ "path or URL. Reply in the language of the user's conversation.]";
+}
 
 /** The user-adjustable subset of a discovery call. */
 interface IntakeValues {
@@ -175,6 +217,7 @@ const SEARCH_TEXT: Record<DialogLang, {
 	variantsBaseSuffix: string;
 	/** Label of the steering input row. */
 	variantsSteerLabel: string;
+	variantsOwnLabel: string;
 	variantsLoading: string;
 	variantsIdle: string;
 	/** Dim note under the base row when the model returned no usable
@@ -209,7 +252,7 @@ const SEARCH_TEXT: Record<DialogLang, {
 	authorSelectAll: string;
 	/** List entry suffix: hits for THIS query plus the author's OpenAlex
 	 * totals (citations, h-index) where the API has them (v30.11). */
-	authorItem: (count: number, metrics: { cites?: number; hIndex?: number }) => string;
+	authorItem: (count: number, metrics: { cites?: number; hIndex?: number; topics?: string[] }) => string;
 	authorOther: string;
 	authorLoading: string;
 	authorNoneFound: string;
@@ -244,19 +287,20 @@ const SEARCH_TEXT: Record<DialogLang, {
 			+ "Vorschläge (angehakte Zeilen bleiben erhalten).",
 		variantsSelectAll: "Alle auswählen",
 		variantsBaseSuffix: "(Hauptanfrage, läuft immer)",
-		variantsSteerLabel: "Richtung für neue Vorschläge (Enter erzeugt)",
-		variantsLoading: "(hole Vorschläge vom Modell ...)",
-		variantsIdle: "(wartet auf eine Suchanfrage)",
-		variantsNoneFound: "(keine brauchbaren Vorschläge -- Hauptanfrage läuft trotzdem)",
-		variantsFailed: (message) => `(Vorschläge nicht abrufbar: ${message})`,
-		variantsNoModel: "(kein Modell in pi gewählt -- Vorschläge nicht verfügbar)",
+		variantsSteerLabel: "Neue Query-Varianten generieren (Enter drücken; optional Richtung eintippen)",
+		variantsOwnLabel: "Eigene Query-Variante eintippen (Enter fügt hinzu)",
+		variantsLoading: "generiere Suchvorschläge ...",
+		variantsIdle: "wartet auf eine Suchanfrage",
+		variantsNoneFound: "keine brauchbaren Vorschläge -- Hauptanfrage läuft trotzdem",
+		variantsFailed: (message) => `Vorschläge nicht abrufbar: ${message}`,
+		variantsNoModel: "kein Modell in pi gewählt -- Vorschläge nicht verfügbar",
 		periodTab: "Suchzeitraum",
 		periodTitle: "Erscheinungszeitraum?",
 		periodLast: (n) => `Letzte ${n} Jahre`,
 		periodAll: "Alle Jahre",
 		periodCustom: "Eigener Zeitraum:",
 		countTab: "Treffer",
-		countTitle: "Wie viele Treffer je Quelle (arXiv, CrossRef, OpenAlex)?",
+		countTitle: "Wie viele Treffer je Quelle (arXiv, CrossRef, OpenAlex, Semantic Scholar)?",
 		countDefault: `${DEFAULT_PER_SOURCE} (Standard)`,
 		countMax: `${MAX_PER_SOURCE} (Limit)`,
 		countCustom: "Eigene Anzahl:",
@@ -272,21 +316,22 @@ const SEARCH_TEXT: Record<DialogLang, {
 		authorTab: "Autoren",
 		authorTitle: `Autorenfilter (optional): die Top-${AUTHOR_PICK_LIMIT}-Autoren zu Suchanfrage, Zeitraum `
 			+ "und Journal-Auswahl (OpenAlex), darunter alle übrigen als eine Zeile. Ausgewählte Namen fließen "
-			+ "direkt in die Quellen-Suche ein (die Suche holt dann Papers DIESER Personen zum Thema). Zitationen "
-			+ "und h-Index gelten für das GESAMTE Werk der Person, nicht für diese Treffer. Nichts oder alles "
-			+ "ausgewählt = kein Filter.",
+			+ "direkt in die Quellen-Suche ein (die Suche holt dann Papers DIESER Personen zum Thema). Zitationen, "
+			+ "h-Index und Schwerpunkte gelten für das GESAMTE Werk der Person, nicht für diese Treffer. Nichts "
+			+ "oder alles ausgewählt = kein Filter.",
 		authorSelectAll: "Alle auswählen (kein Filter)",
 		authorItem: (count, metrics) =>
 			`(${count} Treffer${metrics.cites !== undefined ? ` · ${metrics.cites} Zitationen` : ""}`
-			+ `${metrics.hIndex !== undefined ? ` · h-Index ${metrics.hIndex}` : ""})`,
+			+ `${metrics.hIndex !== undefined ? ` · h-Index ${metrics.hIndex}` : ""}`
+			+ `${metrics.topics?.length ? ` · ${metrics.topics.join(", ")}` : ""})`,
 		authorOther: "Andere Autorinnen und Autoren (hier nicht gelistet)",
-		authorLoading: "(hole Autorenliste von OpenAlex ...)",
-		authorNoneFound: "(keine Autoren zu dieser Suchanfrage gefunden)",
-		authorFetchFailed: (message) => `(Autorenliste nicht abrufbar: ${message})`,
-		journalLoading: "(hole Journal-Liste von OpenAlex ...)",
-		journalIdle: "(wartet auf eine Suchanfrage)",
-		journalNoneFound: "(keine Journals zu dieser Suchanfrage gefunden)",
-		journalFetchFailed: (message) => `(Journal-Liste nicht abrufbar: ${message})`,
+		authorLoading: "hole Autorenliste von OpenAlex ...",
+		authorNoneFound: "keine Autoren zu dieser Suchanfrage gefunden",
+		authorFetchFailed: (message) => `Autorenliste nicht abrufbar: ${message}`,
+		journalLoading: "hole Journal-Liste von OpenAlex ...",
+		journalIdle: "wartet auf eine Suchanfrage",
+		journalNoneFound: "keine Journals zu dieser Suchanfrage gefunden",
+		journalFetchFailed: (message) => `Journal-Liste nicht abrufbar: ${message}`,
 		filterTab: "Filter",
 		filterTitle: "Optionale Filter (leer = aus).",
 		minCitesLabel: "Mindestzitationen",
@@ -313,19 +358,20 @@ const SEARCH_TEXT: Record<DialogLang, {
 			+ "Steering row below: type a direction, Enter generates new suggestions (checked rows survive).",
 		variantsSelectAll: "Select all",
 		variantsBaseSuffix: "(main query, always searched)",
-		variantsSteerLabel: "Steer new suggestions (Enter generates)",
-		variantsLoading: "(fetching suggestions from the model ...)",
-		variantsIdle: "(waiting for a search query)",
-		variantsNoneFound: "(no usable suggestions -- the main query still runs)",
-		variantsFailed: (message) => `(suggestions not available: ${message})`,
-		variantsNoModel: "(no model selected in pi -- suggestions not available)",
+		variantsSteerLabel: "Generate new query variants (press Enter; optionally type a direction)",
+		variantsOwnLabel: "Type your own query variant (Enter adds)",
+		variantsLoading: "generating search suggestions ...",
+		variantsIdle: "waiting for a search query",
+		variantsNoneFound: "no usable suggestions -- the main query still runs",
+		variantsFailed: (message) => `suggestions not available: ${message}`,
+		variantsNoModel: "no model selected in pi -- suggestions not available",
 		periodTab: "Search Period",
 		periodTitle: "Publication period?",
 		periodLast: (n) => `Last ${n} years`,
 		periodAll: "All years",
 		periodCustom: "Custom range:",
 		countTab: "Records",
-		countTitle: "How many records per source (arXiv, CrossRef, OpenAlex)?",
+		countTitle: "How many records per source (arXiv, CrossRef, OpenAlex, Semantic Scholar)?",
 		countDefault: `${DEFAULT_PER_SOURCE} (default)`,
 		countMax: `${MAX_PER_SOURCE} (limit)`,
 		countCustom: "Custom count:",
@@ -342,20 +388,21 @@ const SEARCH_TEXT: Record<DialogLang, {
 		authorTitle: `Author filter (optional): the top ${AUTHOR_PICK_LIMIT} authors for this query, period `
 			+ "and journal selection (OpenAlex), with everyone else as one row below them. Picked names feed "
 			+ "directly into the source queries (the search then fetches THESE authors' papers on the topic). "
-			+ "Citations and h-index cover the author's ENTIRE work, not these records. Nothing or everything "
-			+ "selected = no filter.",
+			+ "Citations, h-index and focus areas cover the author's ENTIRE work, not these records. Nothing "
+			+ "or everything selected = no filter.",
 		authorSelectAll: "Select all (no filter)",
 		authorItem: (count, metrics) =>
 			`(${count} hits${metrics.cites !== undefined ? ` · ${metrics.cites} citations` : ""}`
-			+ `${metrics.hIndex !== undefined ? ` · h-index ${metrics.hIndex}` : ""})`,
+			+ `${metrics.hIndex !== undefined ? ` · h-index ${metrics.hIndex}` : ""}`
+			+ `${metrics.topics?.length ? ` · ${metrics.topics.join(", ")}` : ""})`,
 		authorOther: "Other authors (not listed here)",
-		authorLoading: "(fetching author list from OpenAlex ...)",
-		authorNoneFound: "(no authors found for this query)",
-		authorFetchFailed: (message) => `(author list not reachable: ${message})`,
-		journalLoading: "(fetching journal list from OpenAlex ...)",
-		journalIdle: "(waiting for a search query)",
-		journalNoneFound: "(no journals found for this query)",
-		journalFetchFailed: (message) => `(journal list not reachable: ${message})`,
+		authorLoading: "fetching author list from OpenAlex ...",
+		authorNoneFound: "no authors found for this query",
+		authorFetchFailed: (message) => `author list not reachable: ${message}`,
+		journalLoading: "fetching journal list from OpenAlex ...",
+		journalIdle: "waiting for a search query",
+		journalNoneFound: "no journals found for this query",
+		journalFetchFailed: (message) => `journal list not reachable: ${message}`,
 		filterTab: "Filters",
 		filterTitle: "Optional filters (empty = off).",
 		minCitesLabel: "Min. citations",
@@ -481,6 +528,9 @@ async function intakeWizard(
 			kind: "checkbox", id: "variants", tab: text.variantsTab, title: text.variantsTitle,
 			items: [], selectAllLabel: text.variantsSelectAll, nextLabel: text.journalNext,
 			optional: true, emptyNote: text.variantsIdle, keepSelected: true, cursorStart: "next",
+			// Own-variant row (2026-08-10 user wish): typed text + Enter joins
+			// the list as a checked row and runs like any confirmed variant.
+			addInput: { id: "variants_own", label: text.variantsOwnLabel },
 			input: { id: "variants_hint", label: text.variantsSteerLabel },
 		},
 		{
@@ -580,23 +630,16 @@ async function intakeWizard(
 				if (!live) return "";
 				return `${live}|${String(answers.variants_hint ?? "")}|${String(answers.variants_hint_seq ?? "0")}`;
 			},
+			// The base row's dim line shows its concept blocks -- exactly what
+			// the boolean sources receive and what labels its finds (block
+			// search 2026-08-06); a failure/none note takes the line instead.
 			load: async (answers) => {
 				const liveQuery = String(answers.query ?? "").trim();
 				const hint = String(answers.variants_hint ?? "").trim();
 				const agentItems: CheckboxItem[] = agentVariants
 					.filter((variant) => variant.toLowerCase() !== liveQuery.toLowerCase())
 					.map((variant) => ({ id: variant, label: variant }));
-				// The base row's dim line shows its concept blocks -- exactly what
-				// the boolean sources receive and what labels its finds (block
-				// search 2026-08-06); a failure/none note takes the line instead.
-				const baseChain = formatGroupExpression(queryBlocks(liveQuery));
-				const base = (note?: string): CheckboxItem => ({
-					id: VARIANT_BASE_ID,
-					label: `${liveQuery} ${text.variantsBaseSuffix}`,
-					locked: true,
-					...(note !== undefined ? { description: note }
-						: baseChain ? { description: baseChain } : {}),
-				});
+				const base = (note?: string): CheckboxItem => variantBaseRow(liveQuery, text, note);
 				if (!ctx.model) return [base(text.variantsNoModel), ...agentItems];
 				try {
 					const raw = await completeWithPiModel(ctx, {
@@ -691,6 +734,7 @@ async function intakeWizard(
 						label: `${facet.name} ${text.authorItem(facet.count, {
 							...(found.cites !== undefined ? { cites: found.cites } : {}),
 							...(found.hIndex !== undefined ? { hIndex: found.hIndex } : {}),
+							...(found.topics?.length ? { topics: found.topics } : {}),
 						})}`,
 					};
 				});
@@ -854,13 +898,43 @@ export default function literatureSearch(pi: ExtensionAPI) {
 	void (async () => {
 		try {
 			const { Box, Text } = await import("@earendil-works/pi-tui");
-			pi.registerEntryRenderer(DIGEST_ENTRY, (entry, _state, theme) => {
-				const data = entry.data as { heading: string; text: string };
+			// A raw file:// URL WRAPS across card lines in narrow terminals and
+			// the click target breaks (2026-08-10 field find). Display-only
+			// fix: the card renders the URL as an OSC 8 hyperlink with the
+			// short basename as its text -- short text never wraps. OSC 8 is
+			// NOT the forbidden raw-ANSI styling of v30.3: the installed
+			// pi-tui explicitly supports it (dist/utils.js: visibleWidth
+			// strips OSC hyperlinks, the wrap tracker re-opens them per line;
+			// BEL terminator because some terminals only click BEL-terminated
+			// links -- pi-tui's own comment). The digest STRING stays a plain
+			// URL (LLM context, widget fallback, protocol).
+			const linkified = (line: string): string => {
+				const match = line.match(/file:\/\/\S+/);
+				if (!match) return line;
+				const url = match[0];
+				let label = url.split("/").pop() || url;
+				try {
+					label = decodeURIComponent(label);
+				} catch {
+					// keep the raw basename
+				}
+				return line.replace(url, `\x1b]8;;${url}\x07${label}\x1b]8;;\x07`);
+			};
+			const buildCard = (data: { heading: string; text: string }, theme: { bg(color: string, line: string): string; bold(text: string): string }) => {
 				const box = new Box(1, 1, (line: string) => theme.bg("customMessageBg", line));
 				box.addChild(new Text(theme.bold(data.heading)));
-				for (const line of data.text.split("\n")) box.addChild(new Text(line));
+				for (const line of data.text.split("\n")) box.addChild(new Text(linkified(line)));
 				return box;
-			});
+			};
+			pi.registerEntryRenderer(DIGEST_ENTRY, (entry, _state, theme) =>
+				buildCard(entry.data as { heading: string; text: string }, theme));
+			// The command-path digest travels as a custom MESSAGE since
+			// 2026-08-10 (the synthesis pattern: display, LLM context and
+			// /resume persistence in one call); this renderer draws the SAME
+			// card from message.details, so the user never sees the
+			// agent-facing turn note in `content`.
+			pi.registerMessageRenderer(DIGEST_ENTRY, (message, _options, theme) =>
+				message.details ? buildCard(message.details as { heading: string; text: string }, theme) : undefined);
 			digestEntryReady = true;
 		} catch {
 			// pi-tui unavailable -> the capped widget fallback stays.
@@ -870,7 +944,7 @@ export default function literatureSearch(pi: ExtensionAPI) {
 		name: "pi-literature-search",
 		label: "Literature Search",
 		description:
-			"Search academic literature (arXiv, CrossRef, OpenAlex): clean, deduplicated, HTTP-verified results, " +
+			"Search academic literature (arXiv, CrossRef, OpenAlex, Semantic Scholar): clean, deduplicated, HTTP-verified results, " +
 			"written to disk by fixed code. " +
 			"This tool DISCOVERS NEW papers in online databases. It is NOT for papers already on disk: when the " +
 			"user wants to chat about, ask about or understand ONE local PDF ('zu einem Paper chatten', 'Frage zum " +
@@ -885,7 +959,7 @@ export default function literatureSearch(pi: ExtensionAPI) {
 			"The tool result is a short digest only: counts, the HTML file path, and one reference line per record " +
 			"(group flag, year, DOI/arXiv ID, title). Lines marked UNVERIFIED did not resolve at doi.org/arxiv.org; " +
 			"treat them with suspicion and say so. Every run writes a deterministic HTML rendering (sortable table, " +
-			"abstracts, links, dropped list) to pi-literature-review/lit-search/<date>_<query>.html in the working directory " +
+			"abstracts, links, dropped list) to lit-search/<date>_<query>.html in the working directory " +
 			"(root overridable via PI_LITERATURE_REVIEW_HOME; exact path via html_file), plus a machine-readable .json " +
 			"copy of the full results with the same basename - read that file for structured follow-up steps, but do " +
 			"not mention its path to the user. The HTML file is where the user reviews and selects papers: tell them " +
@@ -952,7 +1026,7 @@ export default function literatureSearch(pi: ExtensionAPI) {
 				description: 'Sort results descending: "cites" (citation count, a rough impact proxy) or "year" (newest first). Unknown values sort last. Default: source order.',
 			})),
 			html_file: Type.Optional(Type.String({
-				description: "Override for the HTML output path. Default (recommended): omit, and the deterministic location pi-literature-review/lit-search/<date>_<query>.html in the working directory is used. The page is generated from the JSON payload by fixed code, never by a model.",
+				description: "Override for the HTML output path. Default (recommended): omit, and the deterministic location lit-search/<date>_<query>.html in the working directory is used. The page is generated from the JSON payload by fixed code, never by a model.",
 			})),
 			enrich: Type.Optional(Type.Boolean({
 				description: "Fill missing citation counts / journal names via a deterministic OpenAlex identifier lookup (open API, no scraping). Filled fields are listed per record under 'enriched' and marked with * in the HTML. Default: true.",
@@ -1106,10 +1180,14 @@ export default function literatureSearch(pi: ExtensionAPI) {
 			// exists only while the AGENT streams (v22) -- the agent-free
 			// command path shows an elapsed line in the widget instead.
 			const startedAt = Date.now();
+			// 1s tick with dots building up 1-2-3 (2026-08-10 user wish: the
+			// line should visibly pulse while the non-streaming run works).
 			const ticker = setInterval(() => {
 				const seconds = Math.round((Date.now() - startedAt) / 1000);
-				ctx.ui.setWidget(INTAKE_WIDGET, [`working -- ${seconds}s elapsed (searching, verifying, enriching)`]);
-			}, 3000);
+				// Dots END the line (2026-08-10 user wish: nothing after the pulse).
+				const dots = ".".repeat(1 + (seconds % 3));
+				ctx.ui.setWidget(INTAKE_WIDGET, [`working -- ${seconds}s elapsed -- searching, verifying, enriching${dots}`]);
+			}, 1000);
 			try {
 				const payload = await runSearch({
 					query: confirmed.query,
@@ -1165,10 +1243,22 @@ export default function literatureSearch(pi: ExtensionAPI) {
 				// custom entries, so there the capped widget + the notify above
 				// are the visible result (webui-compat, 2026-07-30).
 				if (digestEntryReady && ctx.mode === "tui") {
-					pi.appendEntry(DIGEST_ENTRY, {
-						heading: `Literature search -- ${confirmed.query}`,
-						text: digest,
-					});
+					// Custom message instead of a bare transcript entry
+					// (2026-08-10 user wish: a short answer should also stand
+					// in the chat): ONE message is display (the card renderer
+					// draws details), verbatim LLM context and /resume
+					// persistence at once, and triggerTurn prompts ONE brief
+					// agent summary under the card -- the 2026-08-04 synthesis
+					// pattern. The note forbids re-typing identifiers/paths.
+					pi.sendMessage({
+						customType: DIGEST_ENTRY,
+						content: `${searchTurnNote()}\n\n${digest}`,
+						display: true,
+						details: {
+							heading: `Literature search -- ${confirmed.query}`,
+							text: digest,
+						},
+					}, { triggerTurn: true });
 					ctx.ui.setWidget(INTAKE_WIDGET, undefined);
 				} else {
 					const digestLines = digest.split("\n");

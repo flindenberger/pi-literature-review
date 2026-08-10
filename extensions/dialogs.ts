@@ -19,9 +19,11 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
+	animateEllipsis,
 	type CheckboxEvent,
 	type CheckboxItem,
 	checkboxLines,
+	checkboxTypingRow,
 	detectDialogLang,
 	DIALOG_TEXT,
 	type DialogLang,
@@ -275,6 +277,39 @@ async function wizardOverlay(
 			// changed key (edited query) re-fetches on the next visit. The
 			// reducer stays pure -- all IO lives here.
 			const loadedKeys = new Map<string, string>();
+			// Loading pulse (2026-08-10 user wish: a running fetch should look
+			// alive): while a loader is in flight, the note's trailing dots
+			// build up 1-2-3 on a timer. The timer lives HERE -- the reducer
+			// stays pure and only ever sees complete setItems events; it
+			// stops itself when nothing is loading or the overlay finished.
+			// The dispatches carry loading:true, so the view shows ONLY the
+			// pulsing note while a load runs (same-day user wish "zu Beginn
+			// nur die Ladezeile").
+			const loadingNotes = new Map<string, string>();
+			let loadTick = 0;
+			let loadTimer: ReturnType<typeof setInterval> | undefined;
+			const syncLoadTimer = (): void => {
+				if (loadingNotes.size && loadTimer === undefined) {
+					loadTimer = setInterval(() => {
+						if (finished || !loadingNotes.size) {
+							clearInterval(loadTimer);
+							loadTimer = undefined;
+							return;
+						}
+						loadTick += 1;
+						for (const [stepId, note] of loadingNotes) {
+							state = reduceWizard(state, {
+								kind: "setItems", step: stepId, items: [], loading: true,
+								emptyNote: animateEllipsis(note, loadTick),
+							}).state;
+						}
+						tui.requestRender();
+					}, 400);
+				} else if (!loadingNotes.size && loadTimer !== undefined) {
+					clearInterval(loadTimer);
+					loadTimer = undefined;
+				}
+			};
 			const maybeLoadItems = (): void => {
 				for (const loader of options?.itemLoaders ?? []) {
 					const index = state.steps.findIndex((step) => step.id === loader.step);
@@ -284,12 +319,24 @@ async function wizardOverlay(
 					if (key === loadedKeys.get(loader.step)) continue;
 					loadedKeys.set(loader.step, key);
 					if (!key) {
+						loadingNotes.delete(loader.step);
+						syncLoadTimer();
 						state = reduceWizard(state, { kind: "setItems", step: loader.step, items: [], emptyNote: loader.idleNote }).state;
 						continue;
 					}
-					state = reduceWizard(state, { kind: "setItems", step: loader.step, items: [], emptyNote: loader.loadingNote }).state;
+					state = reduceWizard(state, {
+						kind: "setItems", step: loader.step, items: [], loading: true,
+						emptyNote: animateEllipsis(loader.loadingNote, loadTick),
+					}).state;
+					loadingNotes.set(loader.step, loader.loadingNote);
+					syncLoadTimer();
 					loader.load(answers).then((items) => {
+						// The stale-guard also protects loadingNotes: an OLD
+						// promise resolving after a re-keyed load must not stop
+						// the pulse of the load still in flight.
 						if (finished || loadedKeys.get(loader.step) !== key) return;
+						loadingNotes.delete(loader.step);
+						syncLoadTimer();
 						state = reduceWizard(state, {
 							kind: "setItems", step: loader.step, items,
 							emptyNote: items.length ? "" : loader.emptyNote,
@@ -298,6 +345,8 @@ async function wizardOverlay(
 						tui.requestRender();
 					}).catch((error) => {
 						if (finished || loadedKeys.get(loader.step) !== key) return;
+						loadingNotes.delete(loader.step);
+						syncLoadTimer();
 						state = reduceWizard(state, {
 							kind: "setItems", step: loader.step, items: [],
 							emptyNote: loader.failedNote(error instanceof Error ? error.message : String(error)),
@@ -368,11 +417,12 @@ async function wizardOverlay(
 					const active = state.tab < state.steps.length ? state.steps[state.tab] : undefined;
 					const onText = active !== undefined && (active.kind === "text" || active.kind === "form"
 						|| (active.kind === "choice" && active.options[state.cursors[state.tab]]?.freeText === true)
-						// Checkbox steering row (2026-08-06): Space must TYPE
-						// there, not toggle -- the input row sits right after
-						// the items (empty list: row 1).
-						|| (active.kind === "checkbox" && active.input !== undefined
-							&& state.cursors[state.tab] === active.items.length + 1));
+						// Checkbox typing rows (2026-08-06 steering; 2026-08-10
+						// add row): Space must TYPE there, not toggle. The row
+						// indexes live in the pure layer -- re-deriving them
+						// here broke once when the add row shifted the
+						// steering row, hence the exported predicate.
+						|| checkboxTypingRow(active, state.cursors[state.tab]));
 					// Bracketed paste (2026-08-07): a paste arrives as ONE chunk
 					// wrapped in \x1b[200~...\x1b[201~ (proven from the installed
 					// pi-tui: stdin-buffer.js aggregates split chunks, terminal.js
@@ -398,9 +448,13 @@ async function wizardOverlay(
 					state = step.state;
 					if (step.done === "confirmed") {
 						finished = true;
+						loadingNotes.clear();
+						syncLoadTimer();
 						done(wizardResult(state));
 					} else if (step.done === "cancelled") {
 						finished = true;
+						loadingNotes.clear();
+						syncLoadTimer();
 						done(null);
 					} else {
 						maybeLoadItems();

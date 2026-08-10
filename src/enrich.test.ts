@@ -34,6 +34,23 @@ const base = {
 	assert.deepEqual(record.enriched, { cites: "openalex", venue: "openalex" });
 }
 
+// applyEnrichment: a missing abstract fills from the inverted index of
+// the SAME work object (2026-08-10; CrossRef ships most records without
+// one), marked like any filled field; an existing abstract never changes.
+{
+	const work = {
+		cited_by_count: 1,
+		abstract_inverted_index: { Water: [0], mapping: [1], works: [2] },
+	};
+	const { record, filled } = applyEnrichment({ ...base, doi: "10.1/x", abstract: "" }, work);
+	assert.equal(record.abstract, "Water mapping works");
+	assert.ok(filled.includes("abstract"));
+	assert.equal(record.enriched?.abstract, "openalex");
+	const kept = applyEnrichment({ ...base, doi: "10.1/x", cites: 1, venue: "V", abstract: "Own text." }, work);
+	assert.equal(kept.record.abstract, "Own text.");
+	assert.ok(!kept.filled.includes("abstract"));
+}
+
 // applyEnrichment: existing values are never overwritten
 {
 	const work = { cited_by_count: 999, primary_location: { source: { display_name: "Other Journal" } } };

@@ -2,16 +2,21 @@
  * Deterministic metadata enrichment (Phase 5, step 3).
  *
  * Some search sources cannot deliver certain fields at all: arXiv, a
- * preprint server, has no citation counts and no journal. For records that
- * still miss cites or venue after dedupe, one identifier lookup at OpenAlex
+ * preprint server, has no citation counts and no journal; CrossRef and
+ * Semantic Scholar ship MANY records without abstracts (publishers often
+ * do not deposit them / may not be relayed -- measured 2026-08-10: 65%
+ * of CrossRef records lacked one). For records that still miss cites,
+ * venue or abstract after dedupe, one identifier lookup at OpenAlex
  * (GET api.openalex.org/works/doi:<doi>) fills the gap -- an open API, not
  * scraping, and no LLM. Only empty fields are filled, never overwritten,
  * and every filled field is recorded in `enriched` (field -> provider) so
- * both the JSON and the HTML rendering can mark the provenance.
+ * both the JSON and the HTML rendering can mark the provenance. A filled
+ * abstract also feeds the block labeling, which matches title+abstract.
  */
 
 import { githubToken } from "./config.ts";
 import { retryDelayMs } from "./sources/arxiv.ts";
+import { reconstructAbstract } from "./sources/openalex.ts";
 import { contactMailto, userAgent, warn as defaultWarn } from "./types.ts";
 
 const BASE_URL = "https://api.openalex.org/works";
@@ -27,6 +32,9 @@ export interface EnrichableRecord {
 	arxiv_id: string;
 	cites: number | null;
 	venue: string;
+	/** Missing abstracts are filled too since 2026-08-10 (optional so
+	 * older minimal callers/fixtures stay valid). */
+	abstract?: string;
 	/** OpenAlex source (journal) ID; captured at search time or filled here. */
 	venue_id?: string;
 }
@@ -34,7 +42,7 @@ export interface EnrichableRecord {
 export type Enriched<T> = T & { enriched?: Record<string, string> };
 
 function needsEnrichment(record: EnrichableRecord): boolean {
-	return record.cites === null || !record.venue;
+	return record.cites === null || !record.venue || !record.abstract;
 }
 
 /**
@@ -63,6 +71,14 @@ export function applyEnrichment<T extends EnrichableRecord>(
 	if (!record.venue && typeof venue === "string" && venue.trim()) {
 		result.venue = venue.trim();
 		filled.push("venue");
+	}
+	// Missing abstract (2026-08-10): OpenAlex ships it as an inverted
+	// index in the SAME work object the cites/venue lookup already
+	// fetches; the reconstruction is pure string ops (openalex.ts).
+	const abstract = reconstructAbstract(work?.abstract_inverted_index);
+	if (!record.abstract && abstract) {
+		result.abstract = abstract;
+		filled.push("abstract");
 	}
 	// The journal ID is lookup plumbing for the journal-score stage, not
 	// user-facing metadata; filled quietly, visible in the JSON as venue_id.
@@ -156,6 +172,10 @@ export interface AuthorMetrics {
 	cites: number | undefined;
 	works: number | undefined;
 	hIndex: number | undefined;
+	/** The author's main research areas: top OpenAlex topics by work count
+	 * (2026-08-10 user wish -- shown behind the h-index in the author tab).
+	 * Plain API display names, nothing derived. */
+	topics: string[] | undefined;
 }
 
 /**
@@ -173,7 +193,7 @@ export async function fetchAuthorMetrics(
 		try {
 			const data = await fetchJson(`${AUTHORS_URL}${apiQuery({
 				filter: `ids.openalex:${batch.join("|")}`,
-				select: "id,cited_by_count,works_count,summary_stats",
+				select: "id,cited_by_count,works_count,summary_stats,topics",
 				"per-page": String(BATCH_SIZE),
 			})}`);
 			for (const author of (data.results ?? []) as Array<Record<string, any>>) {
@@ -181,10 +201,18 @@ export async function fetchAuthorMetrics(
 				if (!id) continue;
 				const number = (value: unknown): number | undefined =>
 					typeof value === "number" && Number.isFinite(value) ? value : undefined;
+				// OpenAlex orders an author's topics by work count already
+				// (verified live 2026-08-10); the top entries are the person's
+				// main research areas across their ENTIRE work.
+				const topics = (Array.isArray(author.topics) ? author.topics : [])
+					.map((topic: Record<string, unknown>) => typeof topic?.display_name === "string" ? topic.display_name : "")
+					.filter(Boolean)
+					.slice(0, 3);
 				byAuthorId.set(id, {
 					cites: number(author.cited_by_count),
 					works: number(author.works_count),
 					hIndex: number(author?.summary_stats?.h_index),
+					topics: topics.length ? topics : undefined,
 				});
 			}
 		} catch (error) {

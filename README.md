@@ -5,7 +5,8 @@ Local, open, login-free literature review tooling for the
 per pipeline stage:
 
 - **`pi-literature-search`** (`/lit-search`, folder `lit-search/`) --
-  deterministic literature discovery: searches arXiv, CrossRef and OpenAlex,
+  deterministic literature discovery: searches arXiv, CrossRef, OpenAlex and
+  Semantic Scholar,
   then filters, deduplicates, HTTP-verifies, enriches and groups the results
   into clean JSON, and renders them as a sortable, self-contained HTML table.
 - **`pi-literature-selection`** (`/lit-selection`, folder `lit-selection/`) --
@@ -27,10 +28,13 @@ under `lit-synthesis/index/`). The synthesis corpus is the UNION of the
 an existing library never hides other PDFs; on a duplicate filename the
 library wins and the shadowed file is reported.
 
-Transparency: the package talks only to the public arXiv, CrossRef and OpenAlex
-APIs, doi.org/arxiv.org for verification and api.unpaywall.org for open-access
-lookups, and writes its output files under
-`<working directory>/pi-literature-review/` (see Output). No accounts, no
+Transparency: the package talks only to the public arXiv, CrossRef, OpenAlex and
+Semantic Scholar APIs, doi.org/arxiv.org for verification and api.unpaywall.org for open-access
+lookups, and writes its output files into the `lit-search/`, `lit-selection/`
+and `lit-synthesis/` folders of the working directory (see Output; before
+2026-08-10 they were bundled under `pi-literature-review/` -- old folders stay
+in place, an old `pi-literature-review/lit-selection/` library remains
+readable). No accounts, no
 scraping, no telemetry; the only personal datum is an optional contact email for
 Unpaywall that you enter (and may store) yourself.
 
@@ -81,8 +85,10 @@ below it. Checked rows run as ADDITIONAL searches in the same run;
 results are deduplicated across all variants by fixed code and the HTML
 table labels each record with the variant that found it (Q1, Q2, ...).
 Agent-proposed `query_variants` appear as prechecked rows; the list you
-confirm is what runs. The bottom row is a steering line -- type a
-direction ("more deep learning", "auf Deutsch", ...) and Enter
+confirm is what runs. Above the steering line sits an add row (2026-08-10):
+type your own query variant and Enter joins it as a checked row that
+survives regenerations like any pick. The bottom row is a steering line --
+type a direction ("more deep learning", "auf Deutsch", ...) and Enter
 regenerates the suggestions; rows you checked survive the regeneration.
 Suggestions keep the BASE query's concept order (2026-08-07): for
 "Sentinel Water Detection in Rivers" every row starts with the sensor
@@ -90,6 +96,11 @@ block, then the water/river block, then the task block -- the prompt asks
 for that order and fixed code re-sorts any block that shares a word with
 a base concept (AND blocks are commutative, so only the display order
 changes), which makes the rows comparable at a glance.
+The list is also staggered narrow-to-broad (2026-08-10): the first rows
+stay close to the base query's own words with few synonyms, later rows
+grow freer (wider synonym sets, subtopics, method names) -- the prompt
+asks for the staggering and fixed code guarantees the order by sorting
+on term count, then on how many terms share no word with the base query.
 No model selected or the call fails? The tab degrades honestly to the
 locked main query plus a note, and the run works as before. The LLM
 here only SHAPES queries -- the citation-path rule is untouched.
@@ -114,8 +125,17 @@ derive one block per content word (the former "strict" rule); an agent
 `group_terms` proposal overrides the base query's blocks; queries
 carrying quotes or arXiv field syntax are passed through untouched. The
 HTML meta documents the exact expression each source received, per
-query ("Sent to arXiv / OpenAlex / CrossRef") -- the raw material for a
-PRISMA-style methods section. Then the SEARCH
+query ("Sent to arXiv / OpenAlex / CrossRef / Semantic Scholar").
+Since 2026-08-10 these rows live in a COLLAPSED "Search documentation"
+section at the end of the metadata block, together with the
+raw per-source-and-query hit counts (`source_counts`, recorded before
+deduplication) and the selection flow (`flow`: identified -> removed as
+uncitable -> duplicates merged -> screened -> removed without abstract ->
+excluded by filters (each with its reason in the dropped table) ->
+included to the final literature list, awaiting manual selection) --
+exactly the numbers
+a PRISMA-2020 flow diagram and a PRISMA-S methods section need, one
+click away instead of in the skim path. Then the SEARCH
 PERIOD as a menu (last 5 / 10 / 20 years with the resolved range shown
 -- computed from today's date, so the ranges roll over with the calendar
 year -- all years, or a custom range `2015-2024`,
@@ -145,9 +165,13 @@ for agent/headless calls). What a tab shows at submit time is what runs;
 submitting with an empty query cancels honestly. The dialog follows the
 chat's language (German/English; English when no chat has been observed
 yet). Headless runs (no interactive UI) skip the dialog. On the
-`/lit-search` command path the digest renders as a full transcript card
-(v30.3; the earlier capped widget truncated real result lists). The
-agent calls the `pi-literature-search` tool with:
+`/lit-search` command path the digest renders as a full card in the chat
+AND the agent adds a brief summary underneath (2026-08-10, the synthesis
+message pattern: one custom message is display, LLM context and /resume
+persistence at once; the brief reply costs one LLM call and never
+re-types identifiers or paths -- the card carries the reference lines
+and the clickable HTML link). The agent calls the `pi-literature-search`
+tool with:
 
 - `query` -- the search string (required)
 - `query_variants` -- alternative searches for the same information need,
@@ -190,10 +214,18 @@ agent calls the `pi-literature-search` tool with:
   first); unknown values sort last. Note: an official journal impact factor is
   proprietary and not available from open APIs; this tool does not pretend to
   have it.
-- `enrich` -- fill missing citation counts / journal names via a deterministic
-  OpenAlex identifier lookup (open API, no scraping; arXiv, for example, carries
-  neither). Only empty fields are filled, never overwritten; every filled field
-  is listed per record under `enriched` and marked with `*` in the HTML table.
+- `enrich` -- fill missing citation counts / journal names / ABSTRACTS via a
+  deterministic OpenAlex identifier lookup (open API, no scraping; arXiv, for
+  example, carries no cites or venue, and CrossRef/Semantic Scholar ship many
+  records without abstracts -- measured 2026-08-10: 65% of CrossRef records
+  lacked one). Only empty fields are filled, never overwritten; every filled
+  field is listed per record under `enriched` and marked with `*` in the HTML
+  table (a looked-up abstract stars its "Abstract*" summary). A filled
+  abstract also feeds the on_target labeling, which matches title+abstract.
+  Records STILL without an abstract after the lookup move to the dropped
+  table ("no abstract (sources and the OpenAlex lookup delivered none)" --
+  user decision 2026-08-10: title-only records cannot be judged fairly by
+  the block labeling; they stay visible and selectable there).
   The same switch attaches each journal's OpenAlex 2-year mean citedness as
   `journal_2yr_citedness` (shown as the "Journal score" column) -- the open
   analog of the proprietary impact factor; it rates the journal, not the paper,
@@ -215,15 +247,34 @@ agent calls the `pi-literature-search` tool with:
 All filters act on metadata the source APIs delivered -- pure deterministic
 checks. Whatever a filter removes appears in `dropped` with the exact reason.
 
+## Semantic Scholar (4th source, 2026-08-10)
+
+Semantic Scholar is queried through its bulk endpoint -- the only one with
+boolean syntax -- so the concept blocks run as a real boolean query there
+too (`+(river | stream) +"water extraction"`; `+` = required block, `|` =
+OR). The bulk endpoint has no relevance ranking; results arrive sorted by
+citation count, disclosed in the HTML meta ("Sent to Semantic Scholar").
+Picked authors are NOT pushed into this source's query (the endpoint has no
+author field); the deterministic post-filter still guarantees the scope.
+Rate limits: the anonymous shared pool is often saturated (the client
+paces, retries, then fails loudly and the run continues with the other
+sources). A FREE API key from semanticscholar.org/product/api gives a
+dedicated 1 request/second -- store it as `s2ApiKey` in `config.json` or
+via `PI_LITERATURE_REVIEW_S2_API_KEY`; no dialog will ever ask for it.
+
 ## Output
 
 Every run writes a deterministic, self-contained HTML rendering of the result
-(sortable table, expandable abstracts, dropped records with reasons) plus the
+(sortable table, expandable abstracts, and a dropped-records table with
+EXACTLY the results table's columns -- its Label column reads "dropped"
+with the exclusion reason as the dim note, and its rows are selectable
+for download like any result: interesting papers keep landing there)
+plus the
 full JSON payload as a sidecar with the same basename to
 
 ```
-<working directory>/pi-literature-review/lit-search/<YYYY-MM-DD>_<query>.html
-<working directory>/pi-literature-review/lit-search/<YYYY-MM-DD>_<query>.json
+<working directory>/lit-search/<YYYY-MM-DD>_<query>.html
+<working directory>/lit-search/<YYYY-MM-DD>_<query>.json
 ```
 
 Table columns sort on click, Excel-style: the first clicked column is the
@@ -238,9 +289,9 @@ via `PI_LITERATURE_REVIEW_HOME`, the exact HTML path via `html_file`. The page i
 generated from the JSON payload by fixed code -- never by a model -- and states
 so in its footer.
 
-The result table has a checkbox per row and a selection bar that floats at the
-bottom of the window while you scroll: tick papers (or "Select all on_target"),
-click "Copy download request", and paste the copied sentence
+Both tables (results AND dropped) have a checkbox per row; the selection bar
+sits below them and floats at the bottom of the window while you scroll: tick
+papers (or "Select all"), click "Copy download request", and paste the copied sentence
 (`Download these papers: <id>, <id>, ...`) into the Pi chat -- that sentence is
 the handover to the selection tool. The page itself never downloads anything: a
 local file:// page can neither write files nor call other servers; it only
@@ -519,8 +570,12 @@ no session, pass the scope explicitly.
   polite-pool parameters of API requests (CrossRef/OpenAlex etiquette) and required
   by Unpaywall. Overrides the email stored via the fetch dialog (config.json, see
   Fetching PDFs). Unset by default; no personal data ships in the code.
-- `PI_LITERATURE_REVIEW_HOME` -- optional root folder for query results (default:
-  `pi-literature-review/` inside the working directory).
+- `PI_LITERATURE_REVIEW_HOME` -- optional root folder for the `lit-*` output
+  folders (default: the working directory itself).
+- `PI_LITERATURE_REVIEW_S2_API_KEY` -- optional free Semantic Scholar API key
+  (see the Semantic Scholar section; also storable as `s2ApiKey` in
+  config.json). Without one the source degrades loudly when the anonymous
+  pool is saturated.
 - `PI_LITERATURE_REVIEW_LLM_URL` / `_LLM_API` / `_LLM_MODEL` / `_EMBED_MODEL` --
   the local LLM backend for synthesis and chat (defaults: Ollama at
   `http://127.0.0.1:11434`, generator `openscholar-8b`, embeddings
@@ -610,4 +665,4 @@ junk records with reasons, and a fabricated DOI must come out `verified: false`.
 MIT (see LICENSE). The multi-source search design follows
 [paper-search-mcp](https://github.com/openags/paper-search-mcp) (MIT, Copyright
 2025 OPENAGS), which served as the engine during prototyping; the sources here are
-implemented natively against the public arXiv, CrossRef and OpenAlex APIs.
+implemented natively against the public arXiv, CrossRef, OpenAlex and Semantic Scholar APIs.

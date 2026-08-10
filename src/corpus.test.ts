@@ -95,6 +95,13 @@ const amazon: SidecarEntry = {
 		["/root/lit-selection", "/cwd/lit-selection", "/cwd"],
 	);
 	assert.deepEqual(dirs(["/cwd"]), ["/cwd"]);
+	// A library fetched before 2026-08-10 (bundled under the old
+	// pi-literature-review/ folder) still contributes -- downloaded papers
+	// must stay selectable after the bundling folder was dropped.
+	assert.deepEqual(
+		dirs(["/cwd/pi-literature-review/lit-selection"]),
+		["/cwd/pi-literature-review/lit-selection"],
+	);
 	// Nothing anywhere: the canonical location alone (honest empty target).
 	assert.deepEqual(dirs([]), ["/root/lit-selection"]);
 

@@ -72,7 +72,11 @@ export function unmatchedGroups(match: LibraryMatch): Array<{ dir: string; files
  * starting pi in ANY folder of papers just works):
  *   1. <root>/lit-selection -- the canonical fetched library
  *   2. <cwd>/lit-selection  -- a library folder next to where pi runs
- *   3. <cwd> itself         -- loose PDFs right in the working directory
+ *   3. <cwd>/pi-literature-review/lit-selection -- a library fetched
+ *      before 2026-08-10, when every stage folder was bundled under
+ *      pi-literature-review/ (the bundling folder is gone, but downloaded
+ *      papers must stay selectable -- the v31.1 promise)
+ *   4. <cwd> itself         -- loose PDFs right in the working directory
  * Since v31.1 EVERY candidate that holds a PDF contributes to the corpus
  * (user decision 2026-07-29: an existing library must not hide loose PDFs
  * -- all documents stay selectable). When none holds one, the canonical
@@ -84,7 +88,12 @@ export function papersDirs(
 	cwd: string = process.cwd(),
 	hasPdfs: (dir: string) => boolean = hasPdfsReal,
 ): string[] {
-	const candidates = [...new Set([join(root, "lit-selection"), join(cwd, "lit-selection"), cwd])];
+	const candidates = [...new Set([
+		join(root, "lit-selection"),
+		join(cwd, "lit-selection"),
+		join(cwd, "pi-literature-review", "lit-selection"),
+		cwd,
+	])];
 	const withPdfs = candidates.filter((dir) => hasPdfs(dir));
 	return withPdfs.length ? withPdfs : [candidates[0]];
 }

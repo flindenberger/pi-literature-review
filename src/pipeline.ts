@@ -239,6 +239,28 @@ function filterReason(record: FilterableRecord, filters: ResultFilters): string 
 }
 
 /** Apply user filters; returns kept records and dropped ones with reasons. */
+/**
+ * Records still without an abstract AFTER enrichment move to the dropped
+ * list (2026-08-10 user decision "Quellen ohne Abstract sollten ohnehin
+ * zu den dropped records"): the block labeling matches title+abstract, so
+ * an abstract-less record cannot be judged fairly -- and since the
+ * dropped table carries the full columns and checkboxes, nothing is lost,
+ * only honestly set aside. The reason string is the caller's (it differs
+ * with enrichment on/off). Pure.
+ */
+export function dropWithoutAbstract<T extends { abstract: string }>(
+	records: T[],
+	reason: string,
+): { kept: T[]; dropped: Array<{ record: T; reason: string }> } {
+	const kept: T[] = [];
+	const dropped: Array<{ record: T; reason: string }> = [];
+	for (const record of records) {
+		if (record.abstract.trim()) kept.push(record);
+		else dropped.push({ record, reason });
+	}
+	return { kept, dropped };
+}
+
 export function applyFilters<T extends FilterableRecord>(
 	records: T[],
 	filters: ResultFilters,

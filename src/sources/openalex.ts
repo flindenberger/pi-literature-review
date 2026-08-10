@@ -14,8 +14,10 @@ import { contactMailto, type SourceRecord, type SourceScope, userAgent } from ".
 const BASE_URL = "https://api.openalex.org/works";
 const TIMEOUT_MS = 30_000;
 
-/** Rebuild the abstract text from OpenAlex's inverted index. String ops only. */
-function reconstructAbstract(invertedIndex: unknown): string {
+/** Rebuild the abstract text from OpenAlex's inverted index. String ops
+ * only. Exported since 2026-08-10: the enrichment stage fills missing
+ * abstracts from the same work objects. */
+export function reconstructAbstract(invertedIndex: unknown): string {
 	if (!invertedIndex || typeof invertedIndex !== "object") return "";
 	const positioned: Array<[number, string]> = [];
 	for (const [word, positions] of Object.entries(invertedIndex as Record<string, number[]>)) {

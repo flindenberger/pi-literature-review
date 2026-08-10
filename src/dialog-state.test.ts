@@ -7,8 +7,10 @@
 import assert from "node:assert/strict";
 import {
 	allSelected,
+	animateEllipsis,
 	type CheckboxState,
 	checkboxLines,
+	checkboxTypingRow,
 	detectDialogLang,
 	DIALOG_TEXT,
 	initCheckbox,
@@ -877,13 +879,20 @@ function drive(
 	assert.equal(wizardAnswers(state).variants_hint_seq, "1");
 	({ state } = drive(state, ["confirm"])); // same text again = explicit re-roll
 	assert.equal(wizardAnswers(state).variants_hint_seq, "2");
-	// Regeneration dispatch: first the loading swap (empty items) -- checked
-	// and locked rows survive as appended orphans (keepSelected)...
+	// Regeneration dispatch: first the loading swap (empty items,
+	// loading:true) -- checked and locked rows survive as appended orphans
+	// (keepSelected)...
 	({ state } = drive(state, [
-		{ kind: "setItems", step: "variants", items: [], emptyNote: "(loading)" },
+		{ kind: "setItems", step: "variants", items: [], emptyNote: "(loading)", loading: true },
 	] as never));
 	assert.deepEqual([...state.selected[1]].sort(), ["__base__", "v2"]);
 	assert.ok(state.steps[1].kind === "checkbox" && state.steps[1].items.some((item) => item.id === "v2"));
+	// While loading, the view shows ONLY the pulsing note (2026-08-10 user
+	// wish "zu Beginn nur die Ladezeile" -- no select-all, no rows, no
+	// inputs); the resolved swap below clears it and the rows return.
+	const loadingView = wizardView(state);
+	assert.equal(loadingView.rows.length, 1);
+	assert.ok(loadingView.rows[0].dim === true && loadingView.rows[0].text.includes("(loading)"));
 	// ...then the new list arrives: v2 is not in it but stays, appended.
 	({ state } = drive(state, [
 		{ kind: "setItems", step: "variants", items: [
@@ -892,6 +901,7 @@ function drive(
 		], emptyNote: "" },
 	] as never));
 	assert.deepEqual([...state.selected[1]].sort(), ["__base__", "v2"]);
+	assert.ok(!wizardView(state).rows.some((row) => row.text.includes("(loading)")));
 	const labels = (state.steps[1] as WizardStepDef & { kind: "checkbox" }).items.map((item) => item.id);
 	assert.deepEqual(labels, ["__base__", "v3", "v2"]);
 	// The cursor followed its role onto the input row across both swaps.
@@ -905,6 +915,101 @@ function drive(
 	assert.equal(wizardResult(finished.state).variants_hint, "focus deep learning");
 	// The overlay height budget counts the input row.
 	assert.ok(maxWizardRows(state) >= 7);
+}
+
+/* -------- loading semantics (2026-08-10): note-only view, Enter-through -------- */
+{
+	const steps: WizardStepDef[] = [
+		{
+			kind: "checkbox", id: "variants", tab: "V", title: "?",
+			items: [], selectAllLabel: "All", nextLabel: "Next",
+			optional: true, keepSelected: true, cursorStart: "next",
+			addInput: { id: "variants_own", label: "Own" },
+			input: { id: "variants_hint", label: "Steer" },
+		},
+		{ kind: "text", id: "q", tab: "Q", title: "?", plain: true },
+	];
+	let { state } = drive(initWizard(steps), [
+		{ kind: "setItems", step: "variants", items: [
+			{ id: "__base__", label: "base", locked: true },
+			{ id: "v1", label: "one" },
+		], emptyNote: "", loading: true },
+	] as never);
+	// Note-only view although items exist underneath.
+	assert.equal(wizardView(state).rows.length, 1);
+	// Neither typing row is a typing target while loading.
+	assert.equal(checkboxTypingRow(state.steps[0], 3), false);
+	assert.equal(checkboxTypingRow(state.steps[0], 4), false);
+	// Toggle is inert; Enter ADVANCES (the tab never waits on the model).
+	state = { ...state, cursors: state.cursors.map(() => 1) };
+	({ state } = drive(state, ["toggle"]));
+	assert.deepEqual([...state.selected[0]], ["__base__"]); // locked only, unchanged
+	({ state } = drive(state, ["confirm"]));
+	assert.equal(state.tab, 1);
+	// The resolved swap clears the flag: the full view returns.
+	({ state } = drive(state, [
+		"left",
+		{ kind: "setItems", step: "variants", items: [
+			{ id: "__base__", label: "base", locked: true },
+			{ id: "v1", label: "one" },
+		], emptyNote: "" },
+	] as never));
+	assert.ok(wizardView(state).rows.length > 1);
+	assert.equal(checkboxTypingRow(state.steps[0], 4), true);
+}
+
+/* -------- variants ADD row: type your own variant (2026-08-10) -------- */
+{
+	const steps: WizardStepDef[] = [{
+		kind: "checkbox", id: "variants", tab: "V", title: "?",
+		items: [], selectAllLabel: "All", nextLabel: "Next",
+		optional: true, keepSelected: true, cursorStart: "next",
+		addInput: { id: "variants_own", label: "Own variant" },
+		input: { id: "variants_hint", label: "Steer" },
+	}];
+	let { state } = drive(initWizard(steps), [
+		{ kind: "setItems", step: "variants", items: [
+			{ id: "__base__", label: "water (main query)", locked: true },
+			{ id: "v1", label: "surface water extraction" },
+		], emptyNote: "" },
+	] as never);
+	// Rows: 0 all, 1-2 items, 3 add, 4 steer, 5 Next; cursorStart landed on
+	// Next and role-followed it across the item swap.
+	assert.equal(state.cursors[0], 5);
+	// The adapter predicate marks BOTH typing rows, nothing else.
+	assert.equal(checkboxTypingRow(state.steps[0], 3), true);
+	assert.equal(checkboxTypingRow(state.steps[0], 4), true);
+	assert.equal(checkboxTypingRow(state.steps[0], 2), false);
+	assert.equal(checkboxTypingRow(state.steps[0], 5), false);
+	// Type an own variant on the add row: Enter adds it CHECKED, clears the
+	// draft and the cursor follows the add row (the list grew by one).
+	state = { ...state, cursors: state.cursors.map(() => 3) };
+	({ state } = drive(state, [{ kind: "input", chars: "river ice mapping" }]));
+	assert.ok(wizardView(state).rows.some((row) => row.text.includes("Own variant: river ice mapping_")));
+	({ state } = drive(state, ["confirm"]));
+	let step = state.steps[0] as WizardStepDef & { kind: "checkbox" };
+	assert.deepEqual(step.items.map((item) => item.id), ["__base__", "v1", "river ice mapping"]);
+	assert.deepEqual([...state.selected[0]].sort(), ["__base__", "river ice mapping"]);
+	assert.equal(state.cursors[0], 4); // the add row, shifted by the new item
+	assert.ok(wizardView(state).rows.some((row) => row.text.includes("Own variant: _"))); // draft cleared
+	// Enter with an EMPTY draft is a no-op.
+	({ state } = drive(state, ["confirm"]));
+	assert.equal((state.steps[0] as WizardStepDef & { kind: "checkbox" }).items.length, 3);
+	// Typing an EXISTING id (case-insensitive) just checks the row.
+	({ state } = drive(state, [{ kind: "input", chars: "V1" }, "confirm"]));
+	step = state.steps[0] as WizardStepDef & { kind: "checkbox" };
+	assert.equal(step.items.length, 3);
+	assert.deepEqual([...state.selected[0]].sort(), ["__base__", "river ice mapping", "v1"]);
+	// A regeneration keeps the added row (keepSelected orphan semantics).
+	({ state } = drive(state, [
+		{ kind: "setItems", step: "variants", items: [
+			{ id: "__base__", label: "water (main query)", locked: true },
+			{ id: "v9", label: "new suggestion" },
+		], emptyNote: "" },
+	] as never));
+	step = state.steps[0] as WizardStepDef & { kind: "checkbox" };
+	assert.deepEqual(step.items.map((item) => item.id), ["__base__", "v9", "v1", "river ice mapping"]);
+	assert.deepEqual([...state.selected[0]].sort(), ["__base__", "river ice mapping", "v1"]);
 }
 
 /* -------- setItems preselect vs locked ordering (2026-08-06) -------- */
@@ -950,6 +1055,20 @@ function drive(
 	assert.equal(pasteText("a"), null);
 	assert.equal(pasteText("\x1b[A"), null);
 	assert.equal(pasteText("\x1b[200~\x1b[201~"), null);
+}
+
+// animateEllipsis (2026-08-10): the FINAL "..." of a loading note cycles
+// 1-2-3 dots with the tick; notes without an ellipsis pass unchanged.
+{
+	const note = "generating search suggestions ...";
+	assert.equal(animateEllipsis(note, 0), "generating search suggestions .");
+	assert.equal(animateEllipsis(note, 1), "generating search suggestions ..");
+	assert.equal(animateEllipsis(note, 2), "generating search suggestions ...");
+	assert.equal(animateEllipsis(note, 3), "generating search suggestions .");
+	// Only the LAST ellipsis animates (a note quoting dots mid-text keeps them).
+	assert.equal(animateEllipsis("a ... b ...", 0), "a ... b .");
+	// No ellipsis: unchanged at every tick.
+	assert.equal(animateEllipsis("no journals found", 5), "no journals found");
 }
 
 console.log("dialog-state tests passed");

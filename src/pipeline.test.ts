@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import {
 	applyFilters,
 	dedupe,
+	dropWithoutAbstract,
 	filterRecords,
 	group,
 	groupAcrossQueries,
@@ -403,6 +404,24 @@ function record(overrides: Partial<SourceRecord>): SourceRecord {
 	);
 	assert.equal(kept.length, 1);
 	assert.equal(dropped.length, 0);
+}
+
+// abstract gate (2026-08-10): records still without an abstract after
+// enrichment move to dropped with the caller's reason; whitespace-only
+// counts as empty; order preserved.
+{
+	const { kept, dropped } = dropWithoutAbstract(
+		[
+			{ title: "a", abstract: "Real text." },
+			{ title: "b", abstract: "" },
+			{ title: "c", abstract: "   " },
+			{ title: "d", abstract: "Also real." },
+		],
+		"no abstract (sources and the OpenAlex lookup delivered none)",
+	);
+	assert.deepEqual(kept.map((r) => r.title), ["a", "d"]);
+	assert.deepEqual(dropped.map((d) => d.record.title), ["b", "c"]);
+	assert.ok(dropped.every((d) => d.reason === "no abstract (sources and the OpenAlex lookup delivered none)"));
 }
 
 // sort: descending, unknown values last, input untouched

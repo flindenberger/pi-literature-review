@@ -17,6 +17,7 @@ import {
 	parseVariantLines,
 	parseYearRange,
 	queryBlocks,
+	sortVariantsByBreadth,
 	yearRangeToSpec,
 } from "./intake.ts";
 
@@ -191,6 +192,55 @@ import {
 	assert.deepEqual(parseVariantLines("\n- \n\"\"\n", "base"), []);
 	// German quotes strip too.
 	assert.deepEqual(parseVariantLines("„Wassermaske Sentinel-2“", "base"), ["Wassermaske Sentinel-2"]);
+}
+
+// sortVariantsByBreadth (2026-08-10): suggestions run narrow-to-broad no
+// matter what order the model emitted -- fewer terms first, then fewer
+// base-foreign terms, ties keep the model's order (stable).
+{
+	const base = queryBlocks("water mask satellite");
+	// Term count decides first: the broad 9-term row falls behind the
+	// narrow 4-term row although the model emitted it first.
+	assert.deepEqual(
+		sortVariantsByBreadth(
+			[
+				"(water OR waterbody OR hydrology) AND (mask OR mapping OR segmentation) AND (satellite OR spaceborne OR remote sensing)",
+				"(water) AND (mask OR mapping) AND (satellite)",
+			],
+			base,
+		),
+		[
+			"(water) AND (mask OR mapping) AND (satellite)",
+			"(water OR waterbody OR hydrology) AND (mask OR mapping OR segmentation) AND (satellite OR spaceborne OR remote sensing)",
+		],
+	);
+	// Same term count: the row with fewer base-foreign terms comes first.
+	assert.deepEqual(
+		sortVariantsByBreadth(
+			[
+				"(waterbody OR hydrology) AND (segmentation OR delineation)",
+				"(water OR waterbody) AND (mask OR mapping)",
+			],
+			base,
+		),
+		[
+			"(water OR waterbody) AND (mask OR mapping)",
+			"(waterbody OR hydrology) AND (segmentation OR delineation)",
+		],
+	);
+	// Fully tied rows keep the model's order.
+	assert.deepEqual(
+		sortVariantsByBreadth(["(a OR b) AND (c)", "(d OR e) AND (f)"], base),
+		["(a OR b) AND (c)", "(d OR e) AND (f)"],
+	);
+	// parseVariantLines applies the sort end-to-end.
+	assert.deepEqual(
+		parseVariantLines(
+			"(water OR waterbody OR hydrology) AND (mask OR mapping OR segmentation)\n(water) AND (mask)",
+			"water mask satellite",
+		),
+		["(water) AND (mask)", "(water OR waterbody OR hydrology) AND (mask OR mapping OR segmentation)"],
+	);
 }
 
 // alignBlocksToBase / alignVariantExpression (2026-08-07): suggestions

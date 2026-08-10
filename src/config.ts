@@ -45,6 +45,10 @@ interface StoredConfig {
 	/** Optional GitHub token for the code-link lookup (2026-08-07): raises
 	 * the search rate limit from 10 to 30 requests/min. Never required. */
 	githubToken?: string;
+	/** Semantic Scholar API key (2026-08-10, 4th source), optional: the
+	 * anonymous shared pool is heavily contended; a free key gives a
+	 * dedicated 1 request/second. */
+	s2ApiKey?: string;
 	/** Local LLM backend for the synthesis/chat stages; unset fields use
 	 * defaults. chatModel is the paper-chat generator (see chatModel()). */
 	llm?: Partial<LlmConfig> & { chatModel?: string };
@@ -89,6 +93,20 @@ export function githubToken(
 	stored: StoredConfig = loadStoredConfig(),
 ): string {
 	return pick(env.PI_LITERATURE_REVIEW_GITHUB_TOKEN, stored.githubToken);
+}
+
+/**
+ * Semantic Scholar API key (2026-08-10, 4th source), optional: without
+ * one the client shares an anonymous pool that is often saturated (pure
+ * 429 across minutes in the build-day probes); a free key from
+ * semanticscholar.org/product/api gives a dedicated 1 request/second.
+ * Same precedence as the mailto/githubToken; empty string = anonymous.
+ */
+export function s2ApiKey(
+	env: Record<string, string | undefined> = process.env,
+	stored: StoredConfig = loadStoredConfig(),
+): string {
+	return pick(env.PI_LITERATURE_REVIEW_S2_API_KEY, stored.s2ApiKey);
 }
 
 /* ---------------- LLM backend (synthesis stage) ---------------- */

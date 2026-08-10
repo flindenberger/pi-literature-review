@@ -3,15 +3,19 @@
  *
  * Query results are research data and never belong inside the extension
  * package (that folder is code and gets replaced on update). Default root:
- * <working directory>/pi-literature-review, overridable via the
+ * the working directory itself (2026-08-10 user decision: the lit-search/,
+ * lit-selection/ and lit-synthesis/ folders land DIRECTLY in the cwd -- the
+ * earlier pi-literature-review/ bundling folder cost everyone one extra
+ * click per stage; old bundled folders stay in place as legacy, the corpus
+ * union still reads a bundled lit-selection/ library). Overridable via the
  * PI_LITERATURE_REVIEW_HOME environment variable. HTML renderings go to
  * lit-search/<YYYY-MM-DD>_<query-slug>.html; a same-day rerun of the same
  * query gets _2, _3, ... appended instead of overwriting. The full JSON
  * payload lands next to the HTML as a .json sidecar with the same basename
  * (the agent model only receives a short digest, so the structured data has
  * to live on disk for follow-up steps and for the archive). PDF downloads
- * (Phase 3) joined as the lit-selection/ PDF library keyed by DOI/arXiv ID
- * so the same paper is never stored twice.
+ * land in the lit-selection/ PDF library keyed by DOI/arXiv ID so the same
+ * paper is never stored twice.
  */
 
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
@@ -19,7 +23,7 @@ import { dirname, join, resolve } from "node:path";
 
 export function outputRoot(): string {
 	const home = (process.env.PI_LITERATURE_REVIEW_HOME || "").trim();
-	return resolve(home || join(process.cwd(), "pi-literature-review"));
+	return resolve(home || process.cwd());
 }
 
 /** "sandbar detection Sentinel-1" -> "sandbar_detection_Sentinel-1". */
