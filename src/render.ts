@@ -236,6 +236,65 @@ function fetchIdOf(record: RenderRecord): string {
 	return "";
 }
 
+/* --- BibTeX column (2026-08-10 user wish: copy&paste into LaTeX) ------ *
+ * The entry is generated DETERMINISTICALLY from the record's API fields;
+ * no LLM is ever near it (the inviolable citation rule). Identifiers
+ * (DOI, arXiv id) stay verbatim -- escaping would corrupt them. */
+const LATEX_SPECIALS: Record<string, string> = {
+	"\\": "\\textbackslash{}", "&": "\\&", "%": "\\%", "$": "\\$", "#": "\\#",
+	"_": "\\_", "{": "\\{", "}": "\\}", "~": "\\textasciitilde{}", "^": "\\textasciicircum{}",
+};
+function latexEscape(text: string): string {
+	return text.replace(/[\\&%$#_{}~^]/g, (char) => LATEX_SPECIALS[char] as string);
+}
+
+/** Citation key <firstauthor><year><firsttitleword>, ASCII-only; records
+ * without authors key as "anon". */
+function bibtexKey(record: RenderRecord): string {
+	const author = firstAuthorLastName(record.authors).toLowerCase().replace(/[^a-z0-9]/g, "");
+	const year = record.year && /^\d{4}$/.test(record.year) ? record.year : "";
+	const titleWord = (record.title.toLowerCase().match(/[a-z0-9]{3,}/) ?? [""])[0];
+	return `${author || "anon"}${year}${titleWord}`;
+}
+
+/** @article when a venue exists, else @misc (arXiv preprints carry
+ * eprint/archivePrefix). The doubled title braces protect capitalization
+ * in LaTeX; only fields the record actually has are emitted. */
+export function bibtexEntry(record: RenderRecord): string {
+	const fields: string[] = [];
+	const push = (name: string, value: string): void => {
+		if (value) fields.push(`  ${name} = {${value}},`);
+	};
+	push("title", `{${latexEscape(record.title)}}`);
+	push("author", latexEscape(record.authors.join(" and ")));
+	if (record.venue) push("journal", latexEscape(record.venue));
+	if (record.year && /^\d{4}$/.test(record.year)) push("year", record.year);
+	if (record.doi) push("doi", record.doi);
+	else if (record.arxiv_id) {
+		push("eprint", record.arxiv_id);
+		push("archivePrefix", "arXiv");
+	} else if (record.url) push("url", record.url);
+	return `@${record.venue ? "article" : "misc"}{${bibtexKey(record)},\n${fields.join("\n")}\n}`;
+}
+
+/** Long author lists collapse (2026-08-10 user wish, from an off-topic
+ * test query whose surveys carry 20+ names): the cell shows the first
+ * three and the LAST author; the middle names sit hidden behind a
+ * "+N more" toggle (AUTHORS_SCRIPT). Sorting is untouched -- the
+ * column's sort key stays the first author's last name. */
+const AUTHOR_HEAD = 3;
+function authorsCellHtml(authors: string[]): string {
+	if (!authors.length) return "&mdash;";
+	// First three plus last covers the list entirely up to four names.
+	if (authors.length <= AUTHOR_HEAD + 1) return esc(authors.join("; "));
+	const head = esc(authors.slice(0, AUTHOR_HEAD).join("; "));
+	const middle = esc(authors.slice(AUTHOR_HEAD, -1).join("; "));
+	const last = esc(authors[authors.length - 1]);
+	const hiddenCount = authors.length - AUTHOR_HEAD - 1;
+	return `${head}<span class="mid-authors" hidden>; ${middle}</span><span class="authors-gap">; &hellip;</span>; ${last}`
+		+ ` <a href="#" class="authors-toggle" data-more="(+${hiddenCount} more)" data-less="(show fewer)">(+${hiddenCount} more)</a>`;
+}
+
 /** The metadata cells the results table and the dropped table share
  * (2026-08-10 user wish: dropped records show the same columns, so source
  * lists, scores and citations stay comparable across both tables):
@@ -253,12 +312,17 @@ function metadataCells(record: RenderRecord): string[] {
 	const authorKey = firstAuthorLastName(record.authors).toLowerCase();
 	return [
 		cell(record.title.toLowerCase(), articleCell(record), "paper"),
-		cell(authorKey, record.authors.length ? esc(record.authors.join("; ")) : "&mdash;", "authorscol"),
+		cell(authorKey, authorsCellHtml(record.authors), "authorscol"),
 		cell(year, esc(record.year ?? "") || "&mdash;"),
 		cell(record.venue.toLowerCase(), record.venue ? esc(record.venue) + venueStar : "&mdash;"),
 		cell(score === null ? "" : String(score), score === null ? "&mdash;" : score.toFixed(1)),
 		cell(cites, cites ? cites + citesStar : "&mdash;"),
 		cell((record.doi || record.arxiv_id).toLowerCase(), doiCell(record)),
+		// BibTeX copy button (2026-08-10): the entry text sits in a hidden
+		// textarea, escaped -- the copy script reads .value, so the clipboard
+		// gets the original characters back.
+		cell("", `<button type="button" class="bibtex-copy" title="Copy BibTeX entry">BibTeX</button>`
+			+ `<textarea class="bibtex-src" hidden>${esc(bibtexEntry(record))}</textarea>`, "bibtexcell"),
 	];
 }
 
@@ -355,6 +419,20 @@ const STYLE = `
 	a { color: #2b4a6f; }
 	td.paper { min-width: 18rem; }
 	td.authorscol { color: #3d3d3d; max-width: 13rem; }
+	/* Search tables: fixed layout + shared colgroup = identical column
+	   widths in the results AND the dropped table (they sit under each
+	   other). Headers may wrap; long unbroken strings (DOIs, URLs) break
+	   inside their column instead of overflowing. */
+	table.records { table-layout: fixed; }
+	table.records th { white-space: normal; }
+	table.records td { overflow-wrap: break-word; }
+	table.records td.paper { min-width: 0; }
+	table.records td.authorscol { max-width: none; }
+	.authors-toggle { font-size: 0.78rem; white-space: nowrap; }
+	td.bibtexcell { text-align: center; }
+	.bibtex-copy { font: inherit; font-size: 0.72rem; padding: 0.15rem 0.4rem; cursor: pointer;
+		background: #f1f1ec; border: 1px solid #c9c9c2; border-radius: 3px; }
+	.bibtex-copy:hover { background: #e6e6df; }
 	td.pickcell { text-align: center; }
 	th.no-sort { cursor: default; }
 	.selectbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem;
@@ -375,7 +453,7 @@ const STYLE = `
 	.selectbar .copied { color: #2e7d43; font-weight: 600; }
 	footer { margin: 2.5rem 0 1rem; font-size: 0.78rem; color: #6b6b6b;
 		border-top: 1px solid #d9d9d4; padding-top: 0.6rem; }
-	@media print { body { max-width: none; } details, .selectbar, td.pickcell, th.no-sort { display: none; } }
+	@media print { body { max-width: none; } details, .selectbar, td.pickcell, td.bibtexcell, th.no-sort { display: none; } }
 `;
 
 /**
@@ -455,7 +533,18 @@ for (const table of document.querySelectorAll("table.sortable")) {
 }
 `;
 
-const RESULT_HEADERS = "<tr><th class=\"no-sort\" title=\"Select rows, then copy the download request below\"></th><th>#</th><th>Article</th><th>Authors</th><th>Year</th><th>Journal</th><th>Journal score&sup1;</th><th>Citations</th><th>DOI</th><th>Code&sup2;</th><th>Data source</th><th>Label</th></tr>";
+const RESULT_HEADERS = "<tr><th class=\"no-sort\" title=\"Select rows, then copy the download request below\"></th><th>#</th><th>Article</th><th>Authors</th><th>Year</th><th>Journal</th><th>Journal score&sup1;</th><th>Citations</th><th>DOI</th><th class=\"no-sort\">BibTeX</th><th>Code&sup2;</th><th>Data source</th><th>Label</th></tr>";
+
+/** Both search tables share this colgroup and table-layout: fixed, so the
+ * results table and the dropped table get IDENTICAL column widths and sit
+ * perfectly aligned under each other (2026-08-10 user wish). Widths sum
+ * to 100%. */
+const RESULT_COLGROUP = "<colgroup>"
+	+ "<col style=\"width:2.2%\"><col style=\"width:2.8%\"><col style=\"width:20%\">"
+	+ "<col style=\"width:12.5%\"><col style=\"width:4.3%\"><col style=\"width:8.5%\">"
+	+ "<col style=\"width:5.5%\"><col style=\"width:6%\"><col style=\"width:12%\">"
+	+ "<col style=\"width:5%\"><col style=\"width:4.2%\"><col style=\"width:7%\">"
+	+ "<col style=\"width:10%\"></colgroup>";
 
 /**
  * Selection layer: checkboxes feed a ready-made chat sentence ("Download
@@ -513,6 +602,51 @@ const SELECT_SCRIPT = `
 		});
 		update();
 	}
+}
+`;
+
+/** Per-row BibTeX copy (2026-08-10): reads the hidden textarea's value --
+ * the browser has decoded the escaped entities back to the original
+ * characters there -- and puts it on the clipboard, with the same
+ * execCommand fallback as the selection bar. Brief "Copied" feedback on
+ * the button itself. */
+const BIBTEX_SCRIPT = `
+for (const button of document.querySelectorAll("button.bibtex-copy")) {
+	button.addEventListener("click", () => {
+		const source = button.closest("td").querySelector("textarea.bibtex-src");
+		const done = () => {
+			button.textContent = "Copied";
+			setTimeout(() => { button.textContent = "BibTeX"; }, 1500);
+		};
+		const fallback = () => {
+			source.hidden = false;
+			source.select();
+			document.execCommand("copy");
+			source.hidden = true;
+			done();
+		};
+		if (navigator.clipboard?.writeText) navigator.clipboard.writeText(source.value).then(done, fallback);
+		else fallback();
+	});
+}
+`;
+
+/** Expands/collapses the hidden middle names of a long author list (see
+ * authorsCellHtml). Pure view logic; the sort keys and checkboxes are
+ * untouched, and the sorter only moves whole rows, so the listeners
+ * survive re-ordering. */
+const AUTHORS_SCRIPT = `
+for (const toggle of document.querySelectorAll("a.authors-toggle")) {
+	toggle.addEventListener("click", (event) => {
+		event.preventDefault();
+		const cell = toggle.closest("td");
+		const mid = cell.querySelector(".mid-authors");
+		const gap = cell.querySelector(".authors-gap");
+		const open = mid.hidden;
+		mid.hidden = !open;
+		gap.hidden = open;
+		toggle.textContent = open ? toggle.dataset.less : toggle.dataset.more;
+	});
 }
 `;
 // The dropped table shares RESULT_HEADERS since 2026-08-10 (user wish:
@@ -653,21 +787,25 @@ the selection tool downloads the PDFs into the lit-selection/ library after you 
 </div>`
 		: "";
 
-	const resultsTable = results.length
-		? `<table class="sortable">
+	// The results table carries its own heading with the count since
+	// 2026-08-10 (user wish -- the dropped section already had one).
+	const resultsTable = `<h2>Query results (${results.length})</h2>\n` + (results.length
+		? `<table class="sortable records">
+${RESULT_COLGROUP}
 <thead>${RESULT_HEADERS}</thead>
 <tbody>
 ${results.map((record, index) => resultRow(record, index, queryLabels)).join("\n")}
 </tbody>
 </table>${enrichmentFootnote}${scoreFootnote}${codeFootnote}`
-		: "<p>No results.</p>";
+		: "<p>No results.</p>");
 
 	const droppedSection = payload.dropped.length
 		? `<h2>Dropped records (${payload.dropped.length})</h2>
 <p class="meta">Removed by the junk filter or by the requested metadata filters -- nothing disappears silently,
 the Label column carries each reason. Same columns as the results table; tick dropped papers too, the download
 request below includes them. The Code lookup deliberately never runs for dropped records.</p>
-<table class="sortable">
+<table class="sortable records">
+${RESULT_COLGROUP}
 <thead>${RESULT_HEADERS}</thead>
 <tbody>
 ${payload.dropped.map((entry, index) => droppedRow(entry, index, queryLabels)).join("\n")}
@@ -681,7 +819,13 @@ ${payload.dropped.map((entry, index) => droppedRow(entry, index, queryLabels)).j
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Literature Search: ${esc(payload.query)}</title>
-<style>${STYLE}</style>
+<style>${STYLE}
+/* The search page runs wide (2026-08-10 user wish: 13 columns were too
+   cramped inside the shared 78rem reading width) -- on a big screen the
+   two record tables get the room; smaller windows stay responsive. The
+   synthesis/report pages keep the narrower width for reading prose. */
+body { max-width: 120rem; }
+</style>
 </head>
 <body>
 <h1>Literature Search</h1>
@@ -708,6 +852,8 @@ doi.org / arxiv.org. Column sorting only reorders the rows above. No language mo
 modified any citation data.</footer>
 <script>${SORT_SCRIPT}</script>
 <script>${SELECT_SCRIPT}</script>
+<script>${AUTHORS_SCRIPT}</script>
+<script>${BIBTEX_SCRIPT}</script>
 </body>
 </html>
 `;

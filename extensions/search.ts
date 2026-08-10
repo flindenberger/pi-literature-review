@@ -38,6 +38,7 @@ import { renderDigest } from "../src/digest.ts";
 import { DEFAULT_PER_SOURCE, MAX_PER_SOURCE, runSearch, SEARCHERS } from "../src/search.ts";
 import {
 	formatGroupExpression,
+	isProseQuery,
 	parsePerSource,
 	parseVariantLines,
 	parseYearRange,
@@ -82,7 +83,7 @@ const VARIANT_SYSTEM_PROMPT =
 	"You build concept-block search queries for academic literature databases (the systematic-review "
 	+ "building-blocks method). You only shape search queries; you never produce citations, paper "
 	+ "titles, authors or any bibliographic data.";
-function variantPrompt(query: string, hint: string, count: number): string {
+function variantPrompt(query: string, hint: string, count: number, prose: boolean): string {
 	return [
 		`Base query: ${query}`,
 		hint ? `User steering hint (follow it): ${hint}` : "",
@@ -90,6 +91,14 @@ function variantPrompt(query: string, hint: string, count: number): string {
 		`Suggest ${count} alternative searches for the same information need, each as a CONCEPT-BLOCK boolean query.`,
 		"Format per line: 2-4 concept blocks joined with AND; each block is 1-4 synonyms joined with OR, in parentheses.",
 		"Example: (river OR fluvial OR river channel) AND (water extraction OR water mapping) AND (satellite OR remote sensing)",
+		// Prose base (2026-08-10 field find: a full sentence typed into the
+		// query window): the first line must DISTILL the sentence, not vary
+		// it -- it arrives prechecked in the tab and carries the default run.
+		prose
+			? "The base query reads like a prose sentence, not a keyword query. Your FIRST suggestion must be a "
+			+ "faithful distillation of exactly that sentence into concept blocks: cover its core concepts, "
+			+ "invent no new aspects, drop only filler words."
+			: "",
 		// 2026-08-10 user wish: staggered breadth -- the first rows stay
 		// close to the base query, later rows grow freer. Code enforces the
 		// ordering afterwards (sortVariantsByBreadth in parseVariantLines);
@@ -226,6 +235,11 @@ const SEARCH_TEXT: Record<DialogLang, {
 	variantsNoneFound: string;
 	variantsFailed: (message: string) => string;
 	variantsNoModel: string;
+	/** Dim note under the base row when the query reads like a prose
+	 * sentence (2026-08-10): the derived AND chain would be unsatisfiably
+	 * strict; the first suggestion distills the sentence and arrives
+	 * prechecked. */
+	variantsProse: string;
 	periodTab: string;
 	periodTitle: string;
 	periodLast: (n: number) => string;
@@ -294,6 +308,7 @@ const SEARCH_TEXT: Record<DialogLang, {
 		variantsNoneFound: "keine brauchbaren Vorschläge -- Hauptanfrage läuft trotzdem",
 		variantsFailed: (message) => `Vorschläge nicht abrufbar: ${message}`,
 		variantsNoModel: "kein Modell in pi gewählt -- Vorschläge nicht verfügbar",
+		variantsProse: "liest sich wie ein Satz -- der erste Vorschlag unten destilliert ihn in Konzeptblöcke und ist vorausgewählt",
 		periodTab: "Suchzeitraum",
 		periodTitle: "Erscheinungszeitraum?",
 		periodLast: (n) => `Letzte ${n} Jahre`,
@@ -365,6 +380,7 @@ const SEARCH_TEXT: Record<DialogLang, {
 		variantsNoneFound: "no usable suggestions -- the main query still runs",
 		variantsFailed: (message) => `suggestions not available: ${message}`,
 		variantsNoModel: "no model selected in pi -- suggestions not available",
+		variantsProse: "reads like a sentence -- the first suggestion below distills it into concept blocks and is prechecked",
 		periodTab: "Search Period",
 		periodTitle: "Publication period?",
 		periodLast: (n) => `Last ${n} years`,
@@ -489,6 +505,11 @@ async function intakeWizard(
 		}
 	}
 	const thisYear = new Date().getFullYear();
+	// Set by the variants loader when the base query reads like a prose
+	// sentence (2026-08-10): the first suggestion after the breadth sort --
+	// the distillation under the prompt's prose rule -- so preselect can
+	// check it for the default run.
+	let proseDistilled: string | null = null;
 	// Filled by the journal itemLoader below; the submit mapping needs to
 	// know which journals the list actually showed (v30.11), and the author
 	// loader needs their OpenAlex source ids to scope its facet (v30.13).
@@ -636,22 +657,32 @@ async function intakeWizard(
 			load: async (answers) => {
 				const liveQuery = String(answers.query ?? "").trim();
 				const hint = String(answers.variants_hint ?? "").trim();
+				// Prose sentence as base (2026-08-10): the prompt demands a
+				// faithful distillation as the FIRST line; after the breadth
+				// sort the closest-to-base suggestion sits first, which under
+				// that rule IS the distillation -- preselect checks it so the
+				// default Enter-through run carries a proper block query.
+				const prose = isProseQuery(liveQuery);
 				const agentItems: CheckboxItem[] = agentVariants
 					.filter((variant) => variant.toLowerCase() !== liveQuery.toLowerCase())
 					.map((variant) => ({ id: variant, label: variant }));
 				const base = (note?: string): CheckboxItem => variantBaseRow(liveQuery, text, note);
+				proseDistilled = null;
 				if (!ctx.model) return [base(text.variantsNoModel), ...agentItems];
 				try {
 					const raw = await completeWithPiModel(ctx, {
 						system: VARIANT_SYSTEM_PROMPT,
-						user: variantPrompt(liveQuery, hint, VARIANT_SUGGESTION_LIMIT),
+						user: variantPrompt(liveQuery, hint, VARIANT_SUGGESTION_LIMIT, prose),
 						maxTokens: 500,
 						...(signal ? { signal } : {}),
 					});
 					const suggestions = parseVariantLines(raw, liveQuery, VARIANT_SUGGESTION_LIMIT)
 						.filter((line) => !agentVariants.some((seen) => seen.toLowerCase() === line.toLowerCase()));
+					proseDistilled = prose && suggestions.length ? (suggestions[0] as string) : null;
 					return [
-						base(suggestions.length ? undefined : text.variantsNoneFound),
+						base(suggestions.length
+							? (prose ? text.variantsProse : undefined)
+							: text.variantsNoneFound),
 						...agentItems,
 						...suggestions.map((line) => ({ id: line, label: line })),
 					];
@@ -662,13 +693,19 @@ async function intakeWizard(
 					];
 				}
 			},
-			...(agentVariants.length
-				? {
-					preselect: (items: { id: string }[]) => items
-						.filter((item) => agentVariants.some((seen) => seen.toLowerCase() === item.id.toLowerCase()))
-						.map((item) => item.id),
+			preselect: (items: { id: string }[]) => {
+				const picked = items
+					.filter((item) => agentVariants.some((seen) => seen.toLowerCase() === item.id.toLowerCase()))
+					.map((item) => item.id);
+				// The distillation of a prose base runs by default (set by the
+				// load() above; preselect only ever applies while the user has
+				// not checked anything yet -- their picks always win).
+				if (proseDistilled !== null && !picked.includes(proseDistilled)
+					&& items.some((item) => item.id === proseDistilled)) {
+					picked.push(proseDistilled);
 				}
-				: {}),
+				return picked;
+			},
 			loadingNote: text.variantsLoading,
 			idleNote: text.variantsIdle,
 			emptyNote: text.variantsNoneFound,

@@ -91,8 +91,14 @@ export function parseGroupSpec(spec: string): string[][] {
 export const QUERY_STOPWORDS = new Set([
 	"and", "or", "of", "the", "a", "an", "in", "on", "at", "for", "with", "to", "by", "from",
 	"via", "using",
+	// 2026-08-10 field find (prose sentence typed as query): sentence glue
+	// survived into AND clauses ("all:based AND ... all:as AND ...").
+	"as", "is", "are", "be", "based", "beyond", "into", "about", "between", "within",
+	"through", "towards", "toward", "this", "that", "these", "those", "its", "their",
 	"und", "oder", "der", "die", "das", "dem", "den", "des", "ein", "eine", "einer", "eines",
 	"im", "mit", "für", "von", "vom", "zur", "zum", "auf", "bei", "aus", "über",
+	"als", "ist", "sind", "basierend", "durch", "nach", "unter", "zwischen", "ohne",
+	"sowie", "zu", "an", "am", "um", "beim", "einem", "einen",
 ]);
 
 /**
@@ -109,7 +115,12 @@ export function deriveGroupsFromQuery(query: string): string[][] {
 	const trimmed = query.trim().replace(/\s+/g, " ");
 	if (!trimmed) return [];
 	if (/(^|\s)(AND|OR|NOT)(\s|$)/.test(trimmed) || trimmed.includes('"')) return [];
-	const tokens = trimmed.toLowerCase().split(" ").filter(Boolean);
+	// Punctuation glued to a word ("approach," / "(components") never
+	// belongs to the term -- strip it at both ends, keep inner hyphens and
+	// dots ("sentinel-2", "4.0") intact (2026-08-10 field find).
+	const tokens = trimmed.toLowerCase().split(" ")
+		.map((token) => token.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ""))
+		.filter(Boolean);
 	const units: string[][] = [];
 	let leading: string[] = []; // single chars with no word yet; bound to the next word
 	for (const token of tokens) {
@@ -182,6 +193,20 @@ export function isBlockExpression(text: string): boolean {
 export function queryBlocks(text: string): string[][] {
 	if (/"|(?:^|\s)(?:all|ti|abs|au|cat):/i.test(text)) return [];
 	return isBlockExpression(text) ? parseGroupSpec(text) : deriveGroupsFromQuery(text);
+}
+
+/** Whether a plain query reads like a PROSE SENTENCE rather than keywords
+ * (2026-08-10 field find: a naive user typed a full sentence into the
+ * query window; word-per-block derivation turned it into an unsatisfiable
+ * many-block AND chain). Deterministic: the user's own boolean/quote/
+ * field syntax is never second-guessed; otherwise a derivation of
+ * PROSE_BLOCK_THRESHOLD or more blocks marks prose. The wizard's variants
+ * tab reacts (distillation rule in the LLM prompt, first suggestion
+ * prechecked, warning under the base row). */
+export const PROSE_BLOCK_THRESHOLD = 6;
+export function isProseQuery(query: string): boolean {
+	if (/"|(?:^|\s)(?:all|ti|abs|au|cat):/i.test(query) || isBlockExpression(query)) return false;
+	return deriveGroupsFromQuery(query).length >= PROSE_BLOCK_THRESHOLD;
 }
 
 /** All words of a block's terms, lowercased, hyphens as spaces -- the

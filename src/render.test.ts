@@ -9,6 +9,7 @@
 import assert from "node:assert/strict";
 import type { ChatReport, SynthReport } from "./synthesis.ts";
 import {
+	bibtexEntry,
 	localPdfHref,
 	renderHtml,
 	renderPaperChatReportHtml,
@@ -153,9 +154,17 @@ const html = renderHtml(payload);
 
 // table: expected column order, sortable markup, on_target highlighting
 {
-	assert.ok(html.includes("</th><th>#</th><th>Article</th><th>Authors</th><th>Year</th><th>Journal</th><th>Journal score&sup1;</th><th>Citations</th><th>DOI</th><th>Code&sup2;</th><th>Data source</th><th>Label</th>"));
+	assert.ok(html.includes("</th><th>#</th><th>Article</th><th>Authors</th><th>Year</th><th>Journal</th><th>Journal score&sup1;</th><th>Citations</th><th>DOI</th><th class=\"no-sort\">BibTeX</th><th>Code&sup2;</th><th>Data source</th><th>Label</th>"));
 	assert.ok(html.includes('<th class="no-sort"')); // checkbox column is not sortable
-	assert.ok(html.includes('<table class="sortable">'));
+	assert.ok(html.includes('<table class="sortable records">'));
+	// Both tables share one fixed colgroup, so results and dropped columns
+	// align perfectly (2026-08-10 user wish).
+	assert.equal(html.split("<colgroup>").length - 1, 2);
+	assert.ok(html.includes("table.records { table-layout: fixed; }"));
+	// The search page runs wide (2026-08-10); synthesis pages keep 78rem.
+	assert.ok(html.includes("body { max-width: 120rem; }"));
+	// The results table has its own counted heading (2026-08-10 user wish).
+	assert.ok(html.includes(`<h2>Query results (${payload.results.length})</h2>`));
 	assert.ok(html.includes('<tr class="on-target">'));
 	assert.ok(html.includes('data-sort="12"'));
 	assert.ok(html.includes("<details><summary>Abstract</summary><p>Fluvial sandbar study.</p></details>"));
@@ -360,6 +369,26 @@ const html = renderHtml(payload);
 		dropped: [],
 	});
 	assert.ok(commaStyle.includes('data-sort="kryniecka"')); // "Last, F." spelling
+	// Long author lists collapse (2026-08-10): the cell shows the first
+	// three and the last name; the middle hides behind a "+N more" toggle.
+	// Four or fewer names stay a plain join without any toggle.
+	const many = renderHtml({
+		...payload,
+		results: [{ ...payload.results[0],
+			authors: ["A1 One", "A2 Two", "A3 Three", "A4 Four", "A5 Five", "A6 Six"] }],
+		dropped: [],
+	});
+	assert.ok(many.includes('A1 One; A2 Two; A3 Three<span class="mid-authors" hidden>; A4 Four; A5 Five</span>'));
+	assert.ok(many.includes('<span class="authors-gap">; &hellip;</span>; A6 Six'));
+	assert.ok(many.includes('data-more="(+2 more)"'));
+	assert.ok(many.includes('data-sort="one"')); // sort key stays the first author
+	const four = renderHtml({
+		...payload,
+		results: [{ ...payload.results[0], authors: ["A One", "B Two", "C Three", "D Four"] }],
+		dropped: [],
+	});
+	assert.ok(four.includes(">A One; B Two; C Three; D Four</td>"));
+	assert.ok(!four.includes('class="authors-toggle"'));
 	// dropped table (2026-08-10, second round: FULL parity with the results
 	// table -- same headers incl. checkbox/#/Code/Label; the Label cell
 	// reads "dropped" with the reason as its dim note, keyed on the reason).
@@ -387,6 +416,29 @@ const html = renderHtml(payload);
 	assert.ok(droppedFull.includes("results AND dropped"));
 	// sticky selection bar styling is present
 	assert.ok(html.includes("position: sticky; bottom: 0;"));
+}
+
+// BibTeX column (2026-08-10): deterministic entry from the record's API
+// fields, LaTeX specials escaped, identifiers verbatim; a copy button with
+// a hidden textarea sits in BOTH tables
+{
+	const entry = bibtexEntry(payload.results[0]);
+	assert.ok(entry.startsWith("@article{author2021river,"));
+	assert.ok(entry.includes("  author = {A. Author and B. Author},"));
+	assert.ok(entry.includes("  journal = {Remote Sensing},"));
+	assert.ok(entry.includes("  year = {2021},"));
+	assert.ok(entry.includes("  doi = {10.1234/abc},"));
+	const arxivEntry = bibtexEntry(payload.results[1]);
+	assert.ok(arxivEntry.includes("  eprint = {2401.16393v1},"));
+	assert.ok(arxivEntry.includes("  archivePrefix = {arXiv},"));
+	const escaped = bibtexEntry({ ...payload.results[0], title: "Water & sediment 100% _new_" });
+	assert.ok(escaped.includes("title = {{Water \\& sediment 100\\% \\_new\\_}}"));
+	const misc = bibtexEntry({ ...payload.results[0], venue: "", doi: "", url: "https://example.org/x" });
+	assert.ok(misc.startsWith("@misc{"));
+	assert.ok(misc.includes("  url = {https://example.org/x},"));
+	assert.ok(html.includes('<button type="button" class="bibtex-copy"'));
+	assert.ok(html.includes('<textarea class="bibtex-src" hidden>@article{author2021river,'));
+	assert.ok(html.includes("@misc{anon1983component,")); // the dropped row's entry
 }
 
 // selection layer: checkboxes carry the fetch identifier, the bar and the

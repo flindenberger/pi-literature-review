@@ -11,6 +11,7 @@ import {
 	deriveGroupsFromQuery,
 	formatGroupExpression,
 	isBlockExpression,
+	isProseQuery,
 	parseGroupSpec,
 	parseGroupTerms,
 	parsePerSource,
@@ -138,6 +139,18 @@ import {
 	assert.deepEqual(deriveGroupsFromQuery('"river sandbar" detection'), []);
 	assert.deepEqual(deriveGroupsFromQuery(""), []);
 	assert.deepEqual(deriveGroupsFromQuery("   "), []);
+	// 2026-08-10 (prose field find): punctuation glued to a word never
+	// enters the term ("approach," derived as all:approach, before); inner
+	// hyphens and dots stay ("4.0"); sentence glue like "based"/"as"/
+	// "beyond" is a stopword now.
+	assert.deepEqual(
+		deriveGroupsFromQuery("digitalization based on RAMI 4.0, beyond industrial environments"),
+		[["digitalization"], ["rami"], ["4.0"], ["industrial"], ["environments"]],
+	);
+	assert.deepEqual(
+		deriveGroupsFromQuery("components as a general approach,"),
+		[["components"], ["general"], ["approach"]],
+	);
 	// The derived groups round-trip through the dialog's expression form.
 	assert.equal(
 		formatGroupExpression(deriveGroupsFromQuery("Sentinel 2 sandbar detection")),
@@ -147,6 +160,18 @@ import {
 		parseGroupSpec(formatGroupExpression(deriveGroupsFromQuery("Sentinel 2 sandbar detection"))),
 		[["sentinel 2"], ["sandbar"], ["detection"]],
 	);
+}
+
+// isProseQuery (2026-08-10): six or more derived blocks mark a prose
+// sentence; the user's own boolean/quote/field syntax is never prose.
+{
+	assert.equal(isProseQuery(
+		"Digitalization based on RAMI 4.0 I4.0 Components as a general digitalization approach, beyond industrial environments",
+	), true);
+	assert.equal(isProseQuery("sandbar detection rivers Sentinel-1 Sentinel-2"), false);
+	assert.equal(isProseQuery("(river OR fluvial) AND sandbar AND x AND y AND z AND w"), false);
+	assert.equal(isProseQuery('"a long quoted phrase that would otherwise derive many blocks here"'), false);
+	assert.equal(isProseQuery(""), false);
 }
 
 // deriveCoreGroupsFromQuery (v30.2): the broader variant drops generic
