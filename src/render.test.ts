@@ -223,6 +223,21 @@ const html = renderHtml(payload);
 	assert.ok(droppedCode.includes("&sup2; Code = "));
 }
 
+// journal-score footnote (&sup1;): the score COLUMN always exists, so its
+// header mark always carries the explanation -- even when no record has a
+// score (enrich:false / preprint-only runs; 2026-08-11 review find: the
+// gated footnote left an unexplained superscript, the defect class the
+// code column had already fixed)
+{
+	const noScores = renderHtml({
+		...payload,
+		results: [payload.results[1]],
+		dropped: [],
+	});
+	assert.ok(noScores.includes("Journal score&sup1;"));
+	assert.ok(noScores.includes("&sup1; Journal score = "));
+}
+
 // query variants: header lists Q1/Q2, data-source cell notes which found it
 {
 	const multi = renderHtml({
@@ -375,8 +390,9 @@ const html = renderHtml(payload);
 	// exact term that hit per block; adjacent rows carry none.
 	assert.ok(html.includes("via Q2: sandbar · river"));
 	assert.ok(html.includes('data-sort="1_adjacent"'));
+	// No records at all -> no table, no &sup1; header -> no footnote either.
 	const bare = renderHtml({ ...payload, results: [], dropped: [] });
-	assert.ok(!bare.includes("2-year mean citedness")); // no scores, no footnote
+	assert.ok(!bare.includes("2-year mean citedness"));
 }
 
 // authors column: own cell, sorted by the FIRST author's last name; the
@@ -419,8 +435,8 @@ const html = renderHtml(payload);
 	});
 	assert.ok(droppedFull.includes('<td class="authorscol" data-sort="author">A. Author; B. Author</td>'));
 	assert.ok(!droppedFull.includes('<span class="authors">')); // never doubled into the article cell
-	// Both tables share RESULT_HEADERS (two occurrences on a page with rows
-	// in each; here results is empty, so exactly one).
+	// Both tables share resultHeaders(withCode) (two occurrences on a page
+	// with rows in each; here results is empty, so exactly one).
 	assert.ok(droppedFull.includes("<th class=\"no-sort\">BibTeX</th><th>Data source</th><th>Label</th>"));
 	assert.ok(droppedFull.includes(
 		'<td data-sort="year out of range">dropped<br><span class="note">reason: year out of range</span></td>'));

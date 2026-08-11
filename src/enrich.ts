@@ -380,23 +380,37 @@ export function codeUrlFromAbstract(abstract: string | undefined): string | null
 	return repo ? `https://github.com/${match[1]}/${repo}` : null;
 }
 
+/** The version-free arXiv id -- the GitHub search key; also the dedupe
+ * key of the lookup stage (the same paper may enter twice, e.g. junk
+ * drops collected per query variant before deduplication). Pure. */
+export function bareArxivId(arxivId: string): string {
+	return arxivId.replace(/v\d+$/i, "");
+}
+
 /** Which records get a lookup: arxiv_id holders, on_target ones first
- * (the cap should spend its budget on the labeled hits), capped. Pure;
- * stable within each priority class. */
+ * (the cap should spend its budget on the labeled hits), one candidate
+ * per bare arXiv id (a duplicate would burn a capped slot on an
+ * identical search), capped. Pure; stable within each priority class. */
 export function codeLookupCandidates<T extends { arxiv_id: string; group?: string }>(
 	records: T[],
 	cap: number = CODE_LOOKUP_CAP,
 ): T[] {
 	const withId = records.filter((record) => record.arxiv_id);
+	const seen = new Set<string>();
 	return [
 		...withId.filter((record) => record.group === "on_target"),
 		...withId.filter((record) => record.group !== "on_target"),
-	].slice(0, Math.max(0, cap));
+	].filter((record) => {
+		const id = bareArxivId(record.arxiv_id);
+		if (seen.has(id)) return false;
+		seen.add(id);
+		return true;
+	}).slice(0, Math.max(0, cap));
 }
 
 async function fetchCodeLink(arxivId: string, token: string): Promise<string | null> {
 	const spacing = token ? GITHUB_SPACING_AUTH_MS : GITHUB_SPACING_MS;
-	const bareId = arxivId.replace(/v\d+$/i, "");
+	const bareId = bareArxivId(arxivId);
 	const params = new URLSearchParams({
 		q: `"${bareId}" in:name,description,readme`,
 		per_page: "3",
@@ -444,50 +458,57 @@ export async function addCodeLinks<T extends EnrichableRecord & { group?: string
 		const url = codeUrlFromAbstract(record.abstract);
 		if (url !== null) abstractUrl.set(record, url);
 	}
-	// Pass 2 candidates: arXiv records still without a link.
+	// Pass 2 candidates: arXiv records still without a link, one per bare
+	// id (codeLookupCandidates dedupes -- duplicate records share one
+	// search and one capped slot).
 	const searchable = records.filter((record) => !abstractUrl.has(record));
-	const candidates = new Set<T>(codeLookupCandidates(searchable));
-	const eligible = searchable.filter((record) => record.arxiv_id).length;
-	if (eligible > candidates.size) {
-		warn(`code links: lookup capped at ${candidates.size} of ${eligible} arXiv record(s); the rest stays unmarked`);
+	const candidates = codeLookupCandidates(searchable);
+	const eligible = new Set(
+		searchable.filter((record) => record.arxiv_id).map((record) => bareArxivId(record.arxiv_id)),
+	).size;
+	if (eligible > candidates.length) {
+		warn(`code links: lookup capped at ${candidates.length} of ${eligible} arXiv record(s); the rest stays unmarked`);
 	}
 	const token = githubToken();
+	// Resolve the candidates first, keyed by bare id, so EVERY record
+	// carrying that id receives the link -- including duplicates that were
+	// not themselves candidates.
+	const resolvedById = new Map<string, string | null>();
 	let found = 0;
-	const out: Array<Enriched<T> & { code_url?: string }> = [];
-	for (const record of records) {
-		const fromAbstract = abstractUrl.get(record);
-		if (fromAbstract !== undefined) {
-			out.push({
-				...record,
-				code_url: fromAbstract,
-				enriched: { ...(record as Enriched<T>).enriched, code_url: "abstract" },
-			});
-			continue;
-		}
-		if (!candidates.has(record)) {
-			out.push(record);
-			continue;
-		}
+	for (const record of candidates) {
 		if (signal?.aborted) throw new Error("search aborted by the user");
 		try {
 			const codeUrl = await fetchCodeLink(record.arxiv_id, token);
-			if (codeUrl === null) {
-				out.push(record);
-				continue;
-			}
-			found++;
-			out.push({
-				...record,
-				code_url: codeUrl,
-				enriched: { ...(record as Enriched<T>).enriched, code_url: "github" },
-			});
+			resolvedById.set(bareArxivId(record.arxiv_id), codeUrl);
+			if (codeUrl !== null) found++;
 		} catch (error) {
-			warn(`code lookup for "${record.title}" failed: ${error instanceof Error ? error.message : error}; record kept as delivered`);
-			out.push(record);
+			const name = record.title || record.doi || record.arxiv_id || "(unidentified record)";
+			warn(`code lookup for "${name}" failed: ${error instanceof Error ? error.message : error}; record kept as delivered`);
 		}
 	}
-	if (abstractUrl.size || candidates.size) {
-		warn(`code links: ${abstractUrl.size} from abstract(s), ${found}/${candidates.size} from GitHub lookup(s)`);
+	// One output per input, in input order -- the engine re-zips kept and
+	// dropped records positionally and relies on this 1:1 mapping.
+	const out: Array<Enriched<T> & { code_url?: string }> = records.map((record) => {
+		const fromAbstract = abstractUrl.get(record);
+		if (fromAbstract !== undefined) {
+			return {
+				...record,
+				code_url: fromAbstract,
+				enriched: { ...(record as Enriched<T>).enriched, code_url: "abstract" },
+			};
+		}
+		const fromLookup = record.arxiv_id ? resolvedById.get(bareArxivId(record.arxiv_id)) : undefined;
+		if (fromLookup !== undefined && fromLookup !== null) {
+			return {
+				...record,
+				code_url: fromLookup,
+				enriched: { ...(record as Enriched<T>).enriched, code_url: "github" },
+			};
+		}
+		return record;
+	});
+	if (abstractUrl.size || candidates.length) {
+		warn(`code links: ${abstractUrl.size} from abstract(s), ${found}/${candidates.length} from GitHub lookup(s)`);
 	}
 	return out;
 }

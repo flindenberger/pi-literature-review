@@ -233,23 +233,22 @@ export async function runSearch(options: SearchOptions) {
 	// order -- dropped records carry no group and sort behind). Rides the
 	// enrich switch like every lookup beyond the search itself.
 	aborted();
-	const droppedEntries = [
-		...dropped.map(({ reason, record }) => ({ reason, record })),
-		...abstractGate.dropped.map(({ reason, record }) => ({ reason, record })),
-		...filterResult.dropped.map(({ reason, record }) => ({ reason, record })),
-	];
+	const droppedEntries = [...dropped, ...abstractGate.dropped, ...filterResult.dropped];
 	let results = grouped;
 	let droppedOut = droppedEntries;
 	if (options.enrich !== false) {
-		const withLinks = await addCodeLinks(
-			[...grouped, ...droppedEntries.map((entry) => entry.record)] as typeof grouped,
-			warn,
-			options.signal,
-		);
+		const combined = [...grouped, ...droppedEntries.map((entry) => entry.record)] as typeof grouped;
+		const withLinks = await addCodeLinks(combined, warn, options.signal);
+		// addCodeLinks maps its input 1:1 (same length, same order; pinned
+		// in enrich.test). A violation would silently re-pair drop reasons
+		// with the wrong records, so it fails loudly here instead.
+		if (withLinks.length !== combined.length) {
+			throw new Error(`code-link stage returned ${withLinks.length} record(s) for ${combined.length} input(s)`);
+		}
 		results = withLinks.slice(0, grouped.length) as typeof grouped;
 		droppedOut = droppedEntries.map((entry, index) => ({
 			reason: entry.reason,
-			record: withLinks[grouped.length + index] as unknown as (typeof droppedEntries)[number]["record"],
+			record: withLinks[grouped.length + index],
 		}));
 	}
 

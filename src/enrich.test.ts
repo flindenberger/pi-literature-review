@@ -6,7 +6,7 @@
  */
 
 import assert from "node:assert/strict";
-import { applyEnrichment, applyJournalScores, codeLookupCandidates, codeUrlFromAbstract, lookupDoi, pickCodeRepo } from "./enrich.ts";
+import { addCodeLinks, applyEnrichment, applyJournalScores, bareArxivId, codeLookupCandidates, codeUrlFromAbstract, lookupDoi, pickCodeRepo } from "./enrich.ts";
 
 const base = {
 	title: "A Title",
@@ -176,6 +176,61 @@ const base = {
 		codeLookupCandidates(records, 2).map((r) => r.arxiv_id),
 		["2401.00002", "2401.00001"],
 	);
+}
+
+// bareArxivId + candidate dedupe (2026-08-11 review find): the same paper
+// can enter the pool twice (junk drops are collected per query variant,
+// pre-dedupe) -- a duplicate must not burn a capped slot on an identical
+// GitHub search; the on_target instance wins the shared slot
+{
+	assert.equal(bareArxivId("2401.00001v2"), "2401.00001");
+	assert.equal(bareArxivId("2401.00001"), "2401.00001");
+	const dupes = [
+		{ arxiv_id: "2401.00001", group: "adjacent" },
+		{ arxiv_id: "2401.00001v2", group: "on_target" },
+		{ arxiv_id: "2401.00002" },
+	];
+	assert.deepEqual(
+		codeLookupCandidates(dupes).map((r) => r.arxiv_id),
+		["2401.00001v2", "2401.00002"],
+	);
+}
+
+// addCodeLinks: one output per input, in input order (the engine re-zips
+// kept and dropped records positionally -- this 1:1 mapping is contract),
+// and duplicate arXiv records share ONE lookup, both carrying the link
+{
+	const calls: string[] = [];
+	const realFetch = globalThis.fetch;
+	globalThis.fetch = (async (url: unknown) => {
+		calls.push(String(url));
+		return new Response(
+			JSON.stringify({ items: [{ name: "sandbar-net", html_url: "https://github.com/acme/sandbar-net" }] }),
+			{ status: 200 },
+		);
+	}) as typeof fetch;
+	try {
+		const records = [
+			{ title: "A", doi: "10.1/a", arxiv_id: "", cites: null, venue: "", abstract: "Code at https://github.com/acme/a-repo." },
+			{ title: "B", doi: "", arxiv_id: "2401.00007", cites: null, venue: "" },
+			{ title: "B dup", doi: "", arxiv_id: "2401.00007v2", cites: null, venue: "" },
+			{ title: "C", doi: "10.1/c", arxiv_id: "", cites: null, venue: "" },
+		];
+		const warnings: string[] = [];
+		const out = await addCodeLinks(records, (message) => warnings.push(message));
+		assert.equal(out.length, records.length);
+		assert.deepEqual(out.map((r) => r.title), ["A", "B", "B dup", "C"]);
+		assert.equal(out[0].code_url, "https://github.com/acme/a-repo");
+		assert.equal(out[0].enriched?.code_url, "abstract");
+		assert.equal(calls.length, 1); // the two duplicates share one search
+		assert.equal(out[1].code_url, "https://github.com/acme/sandbar-net");
+		assert.equal(out[1].enriched?.code_url, "github");
+		assert.equal(out[2].code_url, "https://github.com/acme/sandbar-net");
+		assert.equal(out[3].code_url, undefined);
+		assert.ok(warnings.some((m) => m.includes("1 from abstract(s), 1/1 from GitHub lookup(s)")));
+	} finally {
+		globalThis.fetch = realFetch;
+	}
 }
 
 console.log("enrich.test.ts: all assertions passed");

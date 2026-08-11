@@ -326,6 +326,17 @@ function metadataCells(record: RenderRecord): string[] {
 	];
 }
 
+/** The Code cell, shared by BOTH tables (2026-08-07; extracted 2026-08-11
+ * -- a one-sided edit of two copies would silently desynchronize the
+ * tables while the shared colgroup keeps them looking aligned): sort key
+ * 0/1 so the first header click puts records WITH code on top. Only
+ * present when the page has any code link at all (2026-08-10). */
+function codeCells(record: RenderRecord, withCode: boolean): string[] {
+	if (!withCode) return [];
+	return [cell(record.code_url ? "0" : "1",
+		record.code_url ? link(safeHref(record.code_url), "GitHub") : "&mdash;")];
+}
+
 function resultRow(
 	record: RenderRecord,
 	index: number,
@@ -347,13 +358,7 @@ function resultRow(
 		cell("", pickBox, "pickcell"),
 		cell(String(index + 1), String(index + 1)),
 		...metadataCells(record),
-		// Code column (2026-08-07): sort key 0/1 so the first header click
-		// puts the records WITH code on top. Only present when the page has
-		// any code link at all (2026-08-10).
-		...(withCode
-			? [cell(record.code_url ? "0" : "1",
-				record.code_url ? link(safeHref(record.code_url), "GitHub") : "&mdash;")]
-			: []),
+		...codeCells(record, withCode),
 		cell(sourcesOf(record).join(", "), (esc(sourcesOf(record).join(", ")) || "&mdash;") + foundBy),
 		// The evidence line (2026-08-06): which query's blocks earned the
 		// label, and the exact term that hit per block -- a homonym like
@@ -392,10 +397,7 @@ function droppedRow(
 		cell("", pickBox, "pickcell"),
 		cell(String(index + 1), String(index + 1)),
 		...metadataCells(record),
-		...(withCode
-			? [cell(record.code_url ? "0" : "1",
-				record.code_url ? link(safeHref(record.code_url), "GitHub") : "&mdash;")]
-			: []),
+		...codeCells(record, withCode),
 		cell(sourcesOf(record).join(", "), (esc(sourcesOf(record).join(", ")) || "&mdash;") + foundBy),
 		cell(reason.toLowerCase(), `dropped<br><span class="note">reason: ${esc(reason)}</span>`),
 	].join("")}</tr>`;
@@ -562,6 +564,16 @@ function resultColgroup(withCode: boolean): string {
 	const widths = withCode
 		? [2.2, 2.8, 20, 12.5, 4.3, 8.5, 5.5, 6, 12, 5, 4.2, 7, 10]
 		: [2.2, 2.8, 20, 12.5, 4.3, 8.5, 5.5, 6, 14, 5, 8, 11.2];
+	// This table gains a column nearly every session, and headers, widths
+	// and row builders are parallel structures nothing ties together --
+	// under table-layout:fixed a mismatch SHIFTS every column silently
+	// instead of erroring, so it is checked loudly here (deterministic:
+	// any render in the test suite exercises both variants).
+	const headerCount = resultHeaders(withCode).split("<th").length - 1;
+	const sum = widths.reduce((a, b) => a + b, 0);
+	if (widths.length !== headerCount || Math.abs(sum - 100) > 0.01) {
+		throw new Error(`column spec mismatch: ${widths.length} width(s) for ${headerCount} header(s), width sum ${sum}`);
+	}
 	return `<colgroup>${widths.map((width) => `<col style="width:${width}%">`).join("")}</colgroup>`;
 }
 
@@ -631,11 +643,16 @@ const SELECT_SCRIPT = `
  * the button itself. */
 const BIBTEX_SCRIPT = `
 for (const button of document.querySelectorAll("button.bibtex-copy")) {
+	let resetTimer = null;
 	button.addEventListener("click", () => {
 		const source = button.closest("td").querySelector("textarea.bibtex-src");
 		const done = () => {
 			button.textContent = "Copied";
-			setTimeout(() => { button.textContent = "BibTeX"; }, 1000);
+			// One live timer per button: without the clear, a second click
+			// within the second would let the FIRST click's timeout snap the
+			// fresh "Copied" straight back to "BibTeX".
+			if (resetTimer !== null) clearTimeout(resetTimer);
+			resetTimer = setTimeout(() => { button.textContent = "BibTeX"; resetTimer = null; }, 1000);
 		};
 		const fallback = () => {
 			source.hidden = false;
@@ -695,10 +712,21 @@ export function renderHtml(payload: RenderPayload): string {
 	const enrichmentFootnote = enrichedProviders.length
 		? `\n<p class="meta">* Value filled in by a deterministic identifier lookup at ${esc(enrichedProviders.join(", "))} because the original search source did not deliver this field (arXiv, for example, carries no citation counts or journal names). Looked up from an open API, never generated; each record's <code>enriched</code> field in the JSON names the filled fields.</p>`
 		: "";
-	const scoreFootnote = allRecords.some((r) => typeof r.journal_2yr_citedness === "number")
+	// The score column exists on every rendered table, so its &sup1; header
+	// mark needs the explanation whenever ANY row renders -- even when no
+	// record carries a score (enrich:false, preprint-only runs; before
+	// 2026-08-11 the footnote gated on a scored record and left the header
+	// superscript unexplained). A page without records renders no table,
+	// no header, no footnote. Same rule as the code pair below: mark and
+	// footnote only ever appear together.
+	const scoreFootnote = allRecords.length
 		? `\n<p class="meta">&sup1; Journal score = the journal's 2-year mean citedness from OpenAlex (api.openalex.org): average citations received in the last two years by works the journal published in the two years before. It is the open analog of the proprietary journal impact factor; values are computed over the OpenAlex citation graph and differ somewhat from Clarivate's JIF. It rates the journal, not the paper.</p>`
 		: "";
-	const codeFootnote = allRecords.some((r) => r.code_url)
+	// The Code column exists only when any record carries a link (2026-08-10
+	// user wish); column and &sup2; footnote share this ONE flag so they can
+	// never drift apart.
+	const withCode = allRecords.some((r) => r.code_url);
+	const codeFootnote = withCode
 		? `\n<p class="meta">&sup2; Code = a GitHub repository found deterministically: preferably the URL the paper's own abstract names, else the best-matching repository from one GitHub search per arXiv id (the repository mentions the id in its name, description or README; aggregator/reading-list repositories are skipped). The search path is a heuristic pointer to likely code, not a verified artifact link -- follow it and judge; journal papers whose abstract names no repository are not looked up. Recorded in the JSON as <code>code_url</code>, provenance in <code>enriched</code> (abstract | github).</p>`
 		: "";
 
@@ -806,10 +834,6 @@ the selection tool downloads the PDFs into the lit-selection/ library after you 
 </div>`
 		: "";
 
-	// The Code column exists only when any record carries a link
-	// (2026-08-10 user wish; the &sup2; footnote then always has its
-	// explanation on the page).
-	const withCode = allRecords.some((r) => r.code_url);
 	// The results table carries its own heading with the count since
 	// 2026-08-10 (user wish -- the dropped section already had one). The
 	// footnotes moved BELOW the dropped table (2026-08-10 user wish) --
