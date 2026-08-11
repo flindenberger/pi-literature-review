@@ -173,11 +173,12 @@ if (process.argv[2] === "llm-check") {
 	// model exits non-zero with the server's own message.
 	const cfg = llmConfig();
 	// Name the config file first -- "where does this setting come from?" is
-	// the question every failed check raises (2026-08-11 user find).
+	// the question every failed check raises (2026-08-11 user find). Each
+	// role prints ITS backend (they may be split since 2026-08-11).
 	warn(`config   ${configPath()} (env PI_LITERATURE_REVIEW_* overrides)`);
-	warn(`backend  ${cfg.api} at ${cfg.baseUrl}`);
-	warn(`generate ${cfg.generateModel}`);
-	warn(`embed    ${cfg.embedModel}`);
+	warn(`embed    ${cfg.embedModel} (${cfg.embedApi ?? cfg.api} at ${cfg.embedBaseUrl || cfg.baseUrl})`);
+	warn(`generate ${cfg.generateModel} (${cfg.generateApi ?? cfg.api} at ${cfg.generateBaseUrl || cfg.baseUrl})`);
+	warn("note     inside the pi agent, chat and summaries run on the model selected there; llm.generateModel (when set) handles the review genres -- any capable chat model works, see the README");
 	const backend = createBackend(cfg);
 	try {
 		let started = Date.now();

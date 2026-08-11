@@ -549,12 +549,23 @@ so the agent is instructed to pass the user's question VERBATIM.
 **Generator models.** In pi, EVERYTHING -- chat answers, summaries, mode B
 and review synthesis -- runs on the model currently selected in pi
 (separate excerpts-only calls; hidden reasoning off). No extra generator
-model is ever a prerequisite. Optionally, an explicitly configured
-`"llm": {"generateModel": ...}` (e.g. a hand-imported `openscholar-8b`,
-a model tuned for terse synthesis prose) takes over the review genres;
-a `model` parameter overrides everything. Embeddings always run on the
-configured embedding backend (see Configuration) -- pi's model API has no
-embedding call, so this is the one extra piece synthesis needs.
+model is ever a prerequisite. A `model` parameter overrides everything.
+Embeddings always run on the configured embedding backend (see
+Configuration) -- pi's model API has no embedding call, so this is the one
+extra piece synthesis needs.
+
+**Optional: a dedicated review model.** The review genres (cross-paper
+mode and "State of the literature") can run on a DIFFERENT model than
+your pi chat model: set `"llm": {"generateModel": "<name>"}` in the
+config and that model takes over exactly those calls -- the report's
+metadata names it. Any capable instruct model works. A model tuned for
+scientific synthesis prose is OpenScholar-8B (AllenAI/UW); to serve it
+via Ollama: download an OpenScholar-8B GGUF (based on
+`OpenScholar/Llama-3.1-OpenScholar-8B`), write a two-line Modelfile
+(`FROM ./<file>.gguf`), run `ollama create openscholar-8b -f Modelfile`,
+then set `"generateModel": "openscholar-8b"`. Without this entry,
+reviews simply run on the model selected in pi -- the option is a
+quality lever, never a requirement.
 
 - **Slash commands.** `/lit-search`, `/lit-selection` and `/lit-synthesis` are
   checked by pi BEFORE the agent, and every BARE command opens its own
@@ -632,6 +643,18 @@ defaults.
   everything (default `openscholar-8b`). The same values can live in
   config.json under `"llm"`; `api: "openai"` plus a base URL switches to
   any OpenAI-compatible server (e.g. llama.cpp's llama-server).
+- `PI_LITERATURE_REVIEW_EMBED_URL` / `_EMBED_API` and
+  `PI_LITERATURE_REVIEW_GENERATE_URL` / `_GENERATE_API` (or
+  `embedBaseUrl`/`embedApi`/`generateBaseUrl`/`generateApi` in the
+  `"llm"` block) -- OPTIONAL per-role backend split: embeddings and
+  generation may point at different servers; unset roles use the shared
+  `baseUrl`/`api`. This makes a pure llama.cpp setup possible (a
+  llama-server instance holds exactly one model): e.g. one instance with
+  an embedding GGUF (`llama-server --embedding -m bge-m3.gguf --port
+  9090`) and one with a chat GGUF, configured as `{"llm": {"embedApi":
+  "openai", "embedBaseUrl": "http://127.0.0.1:9090", "embedModel":
+  "bge-m3", ...}}`. Serving everything from one Ollama needs none of
+  these fields.
 - `PI_LITERATURE_REVIEW_LLM_API_KEY` (or `"llm": {"apiKey": ...}` in
   config.json) -- optional bearer token sent as `Authorization: Bearer` on
   every LLM-backend request. Opens the `api: "openai"` dialect to REMOTE

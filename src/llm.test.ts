@@ -158,6 +158,30 @@ import {
 	]);
 }
 
+/* ---------------- per-role backend split (2026-08-11) ---------------- */
+{
+	// Embeddings and generation may live on DIFFERENT servers (llama.cpp
+	// friendly: one llama-server holds exactly one model). Split fields
+	// win per role; unset roles ride the shared baseUrl/api.
+	const cfg: LlmConfig = {
+		baseUrl: "http://127.0.0.1:11434", api: "ollama",
+		generateModel: "gen", embedModel: "emb",
+		embedBaseUrl: "http://127.0.0.1:9090", embedApi: "openai",
+	};
+	const urls: string[] = [];
+	const backend = createBackend(cfg, async (url) => {
+		urls.push(url);
+		if (url.endsWith("/v1/embeddings")) return { data: [{ index: 0, embedding: [1] }] };
+		return { message: { content: "ok" } };
+	});
+	await backend.embed(["x"]);
+	assert.equal(await backend.generate("s", "u"), "ok");
+	assert.deepEqual(urls, [
+		"http://127.0.0.1:9090/v1/embeddings", // embed: split openai backend
+		"http://127.0.0.1:11434/api/chat", // generate: shared ollama backend
+	]);
+}
+
 /* ---------------- bearer auth rides only with an apiKey (2026-08-11) ---------------- */
 {
 	// With apiKey: every request carries the Authorization header (opens
@@ -183,8 +207,12 @@ import {
 	assert.equal(seen[2], undefined);
 }
 
-/* ---------------- fetchJson errors surface unchanged ---------------- */
+/* ---------------- backend failures name the ROLE (2026-08-11) ---------------- */
 {
+	// A bare "no LLM server reachable" reads as nonsense to a user whose
+	// CHAT model is visibly running in pi -- the wrapped message must name
+	// the embedding/generation role, keep the server's own message, and
+	// point at the fix and llm-check.
 	const cfg: LlmConfig = {
 		baseUrl: "http://127.0.0.1:11434", api: "ollama",
 		generateModel: "g", embedModel: "e",
@@ -192,7 +220,29 @@ import {
 	const backend = createBackend(cfg, async () => {
 		throw new Error("no LLM server reachable at http://127.0.0.1:11434/api/embed -- is it running?");
 	});
-	await assert.rejects(() => backend.embed(["x"]), /no LLM server reachable/);
+	await assert.rejects(() => backend.embed(["x"]), (error: Error) => {
+		assert.match(error.message, /embedding model "e" is unavailable/);
+		assert.match(error.message, /no LLM server reachable/); // server message kept
+		assert.match(error.message, /not the LLM chat model selected in the pi agent, but a separate embedding model/);
+		assert.match(error.message, /IP address in this message/);
+		assert.match(error.message, /ollama pull e/);
+		assert.match(error.message, /llama-server/); // vendor-neutral: both local routes named
+		assert.match(error.message, /check permissions and licensing/);
+		assert.match(error.message, /llm-check/);
+		return true;
+	});
+	await assert.rejects(() => backend.generate("s", "u"), (error: Error) => {
+		assert.match(error.message, /generation model "g" is unavailable/);
+		assert.match(error.message, /not by the pi agent/);
+		return true;
+	});
+	// A user cancellation is NOT a config problem and passes unchanged.
+	const aborter = new AbortController();
+	const cancelled = createBackend(cfg, async () => {
+		aborter.abort();
+		throw new Error("aborted mid-flight");
+	});
+	await assert.rejects(() => cancelled.embed(["x"], aborter.signal), /^Error: aborted mid-flight$/);
 }
 
 console.log("llm.test.ts: all assertions passed");

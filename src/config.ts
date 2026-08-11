@@ -160,6 +160,23 @@ export function llmConfig(
 		...(pick(env.PI_LITERATURE_REVIEW_LLM_API_KEY, stored.apiKey)
 			? { apiKey: pick(env.PI_LITERATURE_REVIEW_LLM_API_KEY, stored.apiKey) }
 			: {}),
+		// Per-role backend split (2026-08-11 user wish, llama.cpp-friendly):
+		// embeddings and generation may point at different servers -- a
+		// llama-server instance holds exactly ONE model, so the shared
+		// baseUrl forced Ollama for the local pair before. All optional and
+		// absent when unset; unset roles ride the shared baseUrl/api.
+		...(pick(env.PI_LITERATURE_REVIEW_EMBED_URL, stored.embedBaseUrl)
+			? { embedBaseUrl: pick(env.PI_LITERATURE_REVIEW_EMBED_URL, stored.embedBaseUrl) }
+			: {}),
+		...((normalizeApi(env.PI_LITERATURE_REVIEW_EMBED_API) ?? normalizeApi(stored.embedApi))
+			? { embedApi: normalizeApi(env.PI_LITERATURE_REVIEW_EMBED_API) ?? normalizeApi(stored.embedApi) }
+			: {}),
+		...(pick(env.PI_LITERATURE_REVIEW_GENERATE_URL, stored.generateBaseUrl)
+			? { generateBaseUrl: pick(env.PI_LITERATURE_REVIEW_GENERATE_URL, stored.generateBaseUrl) }
+			: {}),
+		...((normalizeApi(env.PI_LITERATURE_REVIEW_GENERATE_API) ?? normalizeApi(stored.generateApi))
+			? { generateApi: normalizeApi(env.PI_LITERATURE_REVIEW_GENERATE_API) ?? normalizeApi(stored.generateApi) }
+			: {}),
 	};
 }
 

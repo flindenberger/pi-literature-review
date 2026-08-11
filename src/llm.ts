@@ -41,6 +41,19 @@ export interface LlmConfig {
 	 * leaves the machine, which the README discloses.
 	 */
 	apiKey?: string;
+	/**
+	 * Optional per-role backend split (2026-08-11 user wish): embeddings
+	 * and generation may live on DIFFERENT servers -- e.g. two llama.cpp
+	 * llama-server instances (one embedding GGUF, one chat GGUF), or
+	 * embeddings on Ollama plus generation elsewhere. A llama-server holds
+	 * exactly one model, so the single shared baseUrl forced Ollama for
+	 * the local pair before. Unset fields fall back to the shared
+	 * baseUrl/api, so an all-Ollama setup needs nothing new.
+	 */
+	embedBaseUrl?: string;
+	embedApi?: "ollama" | "openai";
+	generateBaseUrl?: string;
+	generateApi?: "ollama" | "openai";
 }
 
 export interface GenerateOptions {
@@ -211,7 +224,10 @@ async function fetchJsonHttp(
 		});
 	} catch (error) {
 		if (signal.aborted) throw error; // cancellation/timeout: report as-is
-		throw new Error(`no LLM server reachable at ${url} -- is it running?`, { cause: error });
+		// Role-neutral on purpose: createBackend wraps this with the role
+		// ("embedding model ... unavailable") -- a bare "LLM server" here
+		// misled users whose chat LLM was visibly running in pi.
+		throw new Error(`no server reachable at ${url} -- is it running?`, { cause: error });
 	}
 	if (!response.ok) {
 		const detail = (await response.text().catch(() => "")).slice(0, 300);
@@ -226,28 +242,59 @@ function combinedSignal(timeoutMs: number, signal?: AbortSignal): AbortSignal {
 }
 
 export function createBackend(cfg: LlmConfig, fetchJson: FetchJson = fetchJsonHttp): LlmBackend {
-	const openai = cfg.api === "openai";
+	// Per-role backend resolution: split fields win, else the shared pair.
+	const embedOpenai = (cfg.embedApi ?? cfg.api) === "openai";
+	const embedBase = cfg.embedBaseUrl || cfg.baseUrl;
+	const generateOpenai = (cfg.generateApi ?? cfg.api) === "openai";
+	const generateBase = cfg.generateBaseUrl || cfg.baseUrl;
 	// Bearer auth (2026-08-11): set only when the user configured an apiKey
 	// -- requests to local servers stay byte-identical without one.
 	const headers = cfg.apiKey ? { authorization: `Bearer ${cfg.apiKey}` } : undefined;
+	// Role-specific failure framing (2026-08-11 user find): a bare "no LLM
+	// server reachable" reads as nonsense to someone whose CHAT model is
+	// visibly running in pi -- the embedding model is a SEPARATE small
+	// model on a separate backend, and only the error message can teach
+	// that at the moment it matters. User cancellations pass unchanged.
+	const failure = (role: "embedding" | "generation", model: string, error: unknown): Error => {
+		const message = error instanceof Error ? error.message : String(error);
+		const fix = role === "embedding"
+			? ` This is not the LLM chat model selected in the pi agent, but a separate embedding model; the IP address in this message is where the llm config points (nothing configured = the local default). Equal options to run one: llama.cpp's llama-server serving an embedding GGUF (--embedding); or Ollama (ollama.com) with \`ollama pull ${model}\`; or a remote OpenAI-compatible API via llm.apiKey (paper content will be submitted to the external provider -- please check permissions and licensing). See the README's Configuration section.`
+			: ` This model is served by the configured backend, not by the pi agent.`;
+		return new Error(
+			`the ${role} model "${model}" is unavailable: ${message} --${fix} Diagnose with \`node src/cli.ts llm-check\` (prints config path and backend).`,
+			{ cause: error },
+		);
+	};
 	return {
 		async embed(texts, signal) {
 			if (!texts.length) return [];
-			const request = openai
-				? openaiEmbedRequest(cfg.baseUrl, cfg.embedModel, texts)
-				: ollamaEmbedRequest(cfg.baseUrl, cfg.embedModel, texts);
-			const json = await fetchJson(request.url, request.body, combinedSignal(EMBED_TIMEOUT_MS, signal), headers);
-			return openai
+			const request = embedOpenai
+				? openaiEmbedRequest(embedBase, cfg.embedModel, texts)
+				: ollamaEmbedRequest(embedBase, cfg.embedModel, texts);
+			let json: unknown;
+			try {
+				json = await fetchJson(request.url, request.body, combinedSignal(EMBED_TIMEOUT_MS, signal), headers);
+			} catch (error) {
+				if (signal?.aborted) throw error;
+				throw failure("embedding", cfg.embedModel, error);
+			}
+			return embedOpenai
 				? parseOpenaiEmbedResponse(json, texts.length)
 				: parseOllamaEmbedResponse(json, texts.length);
 		},
 		async generate(system, user, opts = {}, signal) {
 			const model = opts.model || cfg.generateModel;
-			const request = openai
-				? openaiChatRequest(cfg.baseUrl, model, system, user, opts)
-				: ollamaChatRequest(cfg.baseUrl, model, system, user, opts);
-			const json = await fetchJson(request.url, request.body, combinedSignal(GENERATE_TIMEOUT_MS, signal), headers);
-			return openai ? parseOpenaiChatResponse(json) : parseOllamaChatResponse(json);
+			const request = generateOpenai
+				? openaiChatRequest(generateBase, model, system, user, opts)
+				: ollamaChatRequest(generateBase, model, system, user, opts);
+			let json: unknown;
+			try {
+				json = await fetchJson(request.url, request.body, combinedSignal(GENERATE_TIMEOUT_MS, signal), headers);
+			} catch (error) {
+				if (signal?.aborted) throw error;
+				throw failure("generation", model, error);
+			}
+			return generateOpenai ? parseOpenaiChatResponse(json) : parseOllamaChatResponse(json);
 		},
 	};
 }

@@ -902,7 +902,7 @@ function wireEngine(ctx: ExtensionContext, paramModel: string | undefined): Engi
 			deps: undefined,
 			explainModel: paramModel,
 			reviewModel: paramModel,
-			generatorLine: `Generator: ${paramModel} (${cfg.api} at ${cfg.baseUrl})`,
+			generatorLine: `Generator: ${paramModel} (${cfg.generateApi ?? cfg.api} at ${cfg.generateBaseUrl || cfg.baseUrl})`,
 		};
 	}
 	if (ctx.model) {
@@ -918,7 +918,7 @@ function wireEngine(ctx: ExtensionContext, paramModel: string | undefined): Engi
 				: `Generator: ${piName} (pi); embeddings: ${cfg.embedModel}`,
 		};
 	}
-	return { deps: undefined, explainModel: undefined, reviewModel: undefined, generatorLine: `Generator: (config default) (${cfg.api} at ${cfg.baseUrl})` };
+	return { deps: undefined, explainModel: undefined, reviewModel: undefined, generatorLine: `Generator: (config default) (${cfg.generateApi ?? cfg.api} at ${cfg.generateBaseUrl || cfg.baseUrl})` };
 }
 
 /** One grounded round over the given scope, with ticker + answer card. */

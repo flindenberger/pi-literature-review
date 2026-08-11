@@ -105,6 +105,29 @@ import { chatModel, configPath, configuredGenerateModel, isPlausibleMailto, LLM_
 	assert.equal(configuredGenerateModel({ PI_LITERATURE_REVIEW_LLM_MODEL: "  " }, {}), "");
 }
 
+/* ---------------- per-role backend split (2026-08-11) ---------------- */
+{
+	// All four split fields are optional and ABSENT when unset (the
+	// deepEqual-to-defaults pin above depends on that); env beats stored.
+	assert.equal("embedBaseUrl" in llmConfig({}, {}), false);
+	assert.equal("generateApi" in llmConfig({}, {}), false);
+	const split = llmConfig({}, {
+		embedBaseUrl: "http://127.0.0.1:9090",
+		embedApi: "openai",
+		generateBaseUrl: "http://127.0.0.1:9091",
+		generateApi: "openai",
+	});
+	assert.equal(split.embedBaseUrl, "http://127.0.0.1:9090");
+	assert.equal(split.embedApi, "openai");
+	assert.equal(split.generateBaseUrl, "http://127.0.0.1:9091");
+	assert.equal(split.generateApi, "openai");
+	assert.equal(
+		llmConfig({ PI_LITERATURE_REVIEW_EMBED_URL: "http://env:1" }, { embedBaseUrl: "http://cfg:2" }).embedBaseUrl,
+		"http://env:1",
+	);
+	assert.equal(llmConfig({ PI_LITERATURE_REVIEW_GENERATE_API: "banana" }, {}).generateApi, undefined);
+}
+
 /* ---------------- llm apiKey (2026-08-11) ---------------- */
 {
 	// Absent entirely when unset (llmConfig({},{}) stays deepEqual to the
