@@ -426,10 +426,11 @@ async function fetchCodeLink(arxivId: string, token: string): Promise<string | n
  * Attach code_url to records. Two deterministic signals, in order of
  * precision: (1) a GitHub URL the paper's own abstract names (any record,
  * zero requests, provider "abstract"); (2) a GitHub repository search per
- * arXiv id (provider "github"). Runs AFTER filters/grouping so no lookup
- * is spent on a dropped record and the cap prefers on_target ones.
- * Failures degrade per record, loudly; order and everything else ship
- * unchanged.
+ * arXiv id (provider "github"). Runs AFTER filters/grouping; since
+ * 2026-08-10 the engine passes DROPPED records too (user wish -- their
+ * code links matter as well), appended behind the kept ones so the cap
+ * prefers on_target, then kept, then dropped. Failures degrade per
+ * record, loudly; order and everything else ship unchanged.
  */
 export async function addCodeLinks<T extends EnrichableRecord & { group?: string; abstract?: string }>(
 	records: T[],

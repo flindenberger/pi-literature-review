@@ -154,7 +154,10 @@ const html = renderHtml(payload);
 
 // table: expected column order, sortable markup, on_target highlighting
 {
-	assert.ok(html.includes("</th><th>#</th><th>Article</th><th>Authors</th><th>Year</th><th>Journal</th><th>Journal score&sup1;</th><th>Citations</th><th>DOI</th><th class=\"no-sort\">BibTeX</th><th>Code&sup2;</th><th>Data source</th><th>Label</th>"));
+	// The fixture has no code_url anywhere, so the Code column is absent
+	// (2026-08-10) -- the with-code header order is pinned in the code
+	// column block below.
+	assert.ok(html.includes("</th><th>#</th><th>Article</th><th>Authors</th><th>Year</th><th>Journal</th><th>Journal score&sup1;</th><th>Citations</th><th>DOI</th><th class=\"no-sort\">BibTeX</th><th>Data source</th><th>Label</th>"));
 	assert.ok(html.includes('<th class="no-sort"')); // checkbox column is not sortable
 	assert.ok(html.includes('<table class="sortable records">'));
 	// Both tables share one fixed colgroup, so results and dropped columns
@@ -191,7 +194,8 @@ const html = renderHtml(payload);
 }
 
 // code column (2026-08-07): GitHub link plus the heuristic footnote; a page
-// without any code_url shows dashes and keeps the footnote away
+// without any code_url drops the WHOLE column and its footnote (2026-08-10
+// user wish: an all-dash column with an unexplained &sup2; was noise)
 {
 	const withCode = renderHtml({
 		...payload,
@@ -199,8 +203,24 @@ const html = renderHtml(payload);
 		dropped: [],
 	});
 	assert.ok(withCode.includes('<a href="https://github.com/acme/sandbar-net" target="_blank" rel="noopener">GitHub</a>'));
+	assert.ok(withCode.includes("<th>Code&sup2;</th>"));
 	assert.ok(withCode.includes("&sup2; Code = "));
+	assert.ok(!html.includes("<th>Code&sup2;</th>")); // no code link anywhere -> no column
 	assert.ok(!html.includes("&sup2; Code = "));
+	// Dropped records carry code links too since 2026-08-10 (the engine
+	// passes them through the lookup at lowest cap priority): a link on a
+	// dropped row alone brings the column AND the footnote to BOTH tables.
+	const droppedCode = renderHtml({
+		...payload,
+		results: [payload.results[0]],
+		dropped: [{
+			reason: "year out of range",
+			record: { ...payload.results[1], code_url: "https://github.com/acme/dropped-net" },
+		}],
+	});
+	assert.ok(droppedCode.includes('<a href="https://github.com/acme/dropped-net" target="_blank" rel="noopener">GitHub</a>'));
+	assert.equal(droppedCode.split("<th>Code&sup2;</th>").length - 1, 2);
+	assert.ok(droppedCode.includes("&sup2; Code = "));
 }
 
 // query variants: header lists Q1/Q2, data-source cell notes which found it
@@ -401,7 +421,7 @@ const html = renderHtml(payload);
 	assert.ok(!droppedFull.includes('<span class="authors">')); // never doubled into the article cell
 	// Both tables share RESULT_HEADERS (two occurrences on a page with rows
 	// in each; here results is empty, so exactly one).
-	assert.ok(droppedFull.includes("<th>Code&sup2;</th><th>Data source</th><th>Label</th>"));
+	assert.ok(droppedFull.includes("<th class=\"no-sort\">BibTeX</th><th>Data source</th><th>Label</th>"));
 	assert.ok(droppedFull.includes(
 		'<td data-sort="year out of range">dropped<br><span class="note">reason: year out of range</span></td>'));
 	assert.ok(droppedFull.includes("Remote Sensing")); // venue survives the drop
@@ -488,6 +508,10 @@ const html = renderHtml(payload);
 	assert.ok(html.includes("Dropped records (1)"));
 	assert.ok(html.includes("Component junk"));
 	assert.ok(html.includes("empty author list"));
+	// Footnotes sit BELOW the dropped table since 2026-08-10 (user wish),
+	// ahead of the selection bar.
+	assert.ok(html.indexOf("&sup1; Journal score") > html.indexOf("Dropped records (1)"));
+	assert.ok(html.indexOf('<div class="selectbar">') > html.indexOf("&sup1; Journal score"));
 }
 
 // no grouping rules and no results: honest fallbacks instead of empty markup

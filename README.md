@@ -244,13 +244,16 @@ tool with:
   precision -- a repository URL the paper's own abstract names (any record,
   zero extra requests), else one GitHub repository search per arXiv id
   (aggregator/reading-list repos are skipped; paced to GitHub's 10 searches/min,
-  capped per run with on_target records first; an optional token in
+  capped per run with on_target records first, then kept, then DROPPED
+  records (included since 2026-08-10 -- interesting papers keep landing in
+  the dropped table, their code links matter there too); an optional token in
   `config.json` `githubToken` or `PI_LITERATURE_REVIEW_GITHUB_TOKEN` raises
   the limit to 30/min). The search path is a disclosed heuristic -- the HTML
   footnote says so -- and replaces the dead Papers-with-Code API for now;
   provenance per record in `enriched` (`abstract` | `github`). Journal papers
   whose abstract names no repository are not looked up (no comparably precise
-  search key; guessing by title is against the rules).
+  search key; guessing by title is against the rules). The Code column only
+  renders when at least one record on the page carries a link.
 - `html_file` -- override for the HTML output path (see below).
 
 All filters act on metadata the source APIs delivered -- pure deterministic

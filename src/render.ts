@@ -326,7 +326,12 @@ function metadataCells(record: RenderRecord): string[] {
 	];
 }
 
-function resultRow(record: RenderRecord, index: number, queryLabels: Map<string, string>): string {
+function resultRow(
+	record: RenderRecord,
+	index: number,
+	queryLabels: Map<string, string>,
+	withCode: boolean,
+): string {
 	const rowClass = record.group === "on_target" ? ' class="on-target"' : "";
 	const foundBy = queryLabels.size > 1 && record.found_by?.length
 		? `<br><span class="note">${esc(record.found_by.map((q) => queryLabels.get(q) ?? q).join(", "))}</span>`
@@ -343,9 +348,12 @@ function resultRow(record: RenderRecord, index: number, queryLabels: Map<string,
 		cell(String(index + 1), String(index + 1)),
 		...metadataCells(record),
 		// Code column (2026-08-07): sort key 0/1 so the first header click
-		// puts the records WITH code on top.
-		cell(record.code_url ? "0" : "1",
-			record.code_url ? link(safeHref(record.code_url), "GitHub") : "&mdash;"),
+		// puts the records WITH code on top. Only present when the page has
+		// any code link at all (2026-08-10).
+		...(withCode
+			? [cell(record.code_url ? "0" : "1",
+				record.code_url ? link(safeHref(record.code_url), "GitHub") : "&mdash;")]
+			: []),
 		cell(sourcesOf(record).join(", "), (esc(sourcesOf(record).join(", ")) || "&mdash;") + foundBy),
 		// The evidence line (2026-08-06): which query's blocks earned the
 		// label, and the exact term that hit per block -- a homonym like
@@ -363,13 +371,14 @@ function resultRow(record: RenderRecord, index: number, queryLabels: Map<string,
  * are selectable for download exactly like kept ones -- checkbox, #, the
  * shared metadata cells, Code, Data source). The Label column reads
  * "dropped" with the exclusion reason as its dim note; its sort key is
- * the reason, so a header click clusters equal reasons. The Code cell is
- * honestly empty -- the code lookup deliberately never runs for dropped
- * records (disclosed in the section intro). */
+ * the reason, so a header click clusters equal reasons. Since 2026-08-10
+ * the code lookup covers dropped records too (lowest cap priority), so
+ * their Code cell can carry a link like any kept row. */
 function droppedRow(
 	entry: { reason: string; record: RenderRecord },
 	index: number,
 	queryLabels: Map<string, string>,
+	withCode: boolean,
 ): string {
 	const { record, reason } = entry;
 	const fetchId = fetchIdOf(record);
@@ -383,8 +392,10 @@ function droppedRow(
 		cell("", pickBox, "pickcell"),
 		cell(String(index + 1), String(index + 1)),
 		...metadataCells(record),
-		cell(record.code_url ? "0" : "1",
-			record.code_url ? link(safeHref(record.code_url), "GitHub") : "&mdash;"),
+		...(withCode
+			? [cell(record.code_url ? "0" : "1",
+				record.code_url ? link(safeHref(record.code_url), "GitHub") : "&mdash;")]
+			: []),
 		cell(sourcesOf(record).join(", "), (esc(sourcesOf(record).join(", ")) || "&mdash;") + foundBy),
 		cell(reason.toLowerCase(), `dropped<br><span class="note">reason: ${esc(reason)}</span>`),
 	].join("")}</tr>`;
@@ -437,15 +448,15 @@ const STYLE = `
 	th.no-sort { cursor: default; }
 	.selectbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem;
 		margin-top: 0.8rem; font-size: 0.84rem;
-		position: sticky; bottom: 0; z-index: 5; background: #fdfdfc;
-		padding: 0.5rem 0.2rem; border-top: 1px solid #d9d9d4;
-		box-shadow: 0 -3px 8px rgba(0, 0, 0, 0.07); }
+		position: sticky; bottom: 0; z-index: 5; background: #eef2f7;
+		padding: 0.6rem 0.8rem; border-top: 2px solid #2b4a6f;
+		box-shadow: 0 -3px 8px rgba(0, 0, 0, 0.12); }
 	.selectbar button { font: inherit; padding: 0.3rem 0.7rem; cursor: pointer;
 		background: #f1f1ec; border: 1px solid #c9c9c2; border-radius: 3px; }
 	.selectbar button:hover:enabled { background: #e6e6df; }
 	.selectbar button:disabled { color: #9a9a94; cursor: default; }
 	.selectbar button.copy-selection { background: #2b4a6f; border-color: #223c5b; color: #fff;
-		font-weight: 600; }
+		font-weight: 600; padding: 0.45rem 1rem; }
 	.selectbar button.copy-selection:hover:enabled { background: #223c5b; }
 	.selectbar button.copy-selection:disabled { background: #f1f1ec; border-color: #c9c9c2;
 		color: #9a9a94; font-weight: 400; }
@@ -533,18 +544,26 @@ for (const table of document.querySelectorAll("table.sortable")) {
 }
 `;
 
-const RESULT_HEADERS = "<tr><th class=\"no-sort\" title=\"Select rows, then copy the download request below\"></th><th>#</th><th>Article</th><th>Authors</th><th>Year</th><th>Journal</th><th>Journal score&sup1;</th><th>Citations</th><th>DOI</th><th class=\"no-sort\">BibTeX</th><th>Code&sup2;</th><th>Data source</th><th>Label</th></tr>";
+/** Header row of both record tables. The Code column exists only when at
+ * least one record on the page carries a code link (2026-08-10 user wish:
+ * an all-dash column with an unexplained footnote mark was noise). */
+function resultHeaders(withCode: boolean): string {
+	return "<tr><th class=\"no-sort\" title=\"Select rows, then copy the download request below\"></th><th>#</th><th>Article</th><th>Authors</th><th>Year</th><th>Journal</th><th>Journal score&sup1;</th><th>Citations</th><th>DOI</th><th class=\"no-sort\">BibTeX</th>"
+		+ (withCode ? "<th>Code&sup2;</th>" : "")
+		+ "<th>Data source</th><th>Label</th></tr>";
+}
 
 /** Both search tables share this colgroup and table-layout: fixed, so the
  * results table and the dropped table get IDENTICAL column widths and sit
  * perfectly aligned under each other (2026-08-10 user wish). Widths sum
- * to 100%. */
-const RESULT_COLGROUP = "<colgroup>"
-	+ "<col style=\"width:2.2%\"><col style=\"width:2.8%\"><col style=\"width:20%\">"
-	+ "<col style=\"width:12.5%\"><col style=\"width:4.3%\"><col style=\"width:8.5%\">"
-	+ "<col style=\"width:5.5%\"><col style=\"width:6%\"><col style=\"width:12%\">"
-	+ "<col style=\"width:5%\"><col style=\"width:4.2%\"><col style=\"width:7%\">"
-	+ "<col style=\"width:10%\"></colgroup>";
+ * to 100%; without the Code column its share goes to DOI, Data source and
+ * Label. */
+function resultColgroup(withCode: boolean): string {
+	const widths = withCode
+		? [2.2, 2.8, 20, 12.5, 4.3, 8.5, 5.5, 6, 12, 5, 4.2, 7, 10]
+		: [2.2, 2.8, 20, 12.5, 4.3, 8.5, 5.5, 6, 14, 5, 8, 11.2];
+	return `<colgroup>${widths.map((width) => `<col style="width:${width}%">`).join("")}</colgroup>`;
+}
 
 /**
  * Selection layer: checkboxes feed a ready-made chat sentence ("Download
@@ -616,7 +635,7 @@ for (const button of document.querySelectorAll("button.bibtex-copy")) {
 		const source = button.closest("td").querySelector("textarea.bibtex-src");
 		const done = () => {
 			button.textContent = "Copied";
-			setTimeout(() => { button.textContent = "BibTeX"; }, 1500);
+			setTimeout(() => { button.textContent = "BibTeX"; }, 1000);
 		};
 		const fallback = () => {
 			source.hidden = false;
@@ -649,7 +668,7 @@ for (const toggle of document.querySelectorAll("a.authors-toggle")) {
 	});
 }
 `;
-// The dropped table shares RESULT_HEADERS since 2026-08-10 (user wish:
+// The dropped table shares resultHeaders() since 2026-08-10 (user wish:
 // identical columns incl. the selection checkbox; the Label column holds
 // "dropped" + reason there) -- see droppedRow.
 
@@ -787,28 +806,34 @@ the selection tool downloads the PDFs into the lit-selection/ library after you 
 </div>`
 		: "";
 
+	// The Code column exists only when any record carries a link
+	// (2026-08-10 user wish; the &sup2; footnote then always has its
+	// explanation on the page).
+	const withCode = allRecords.some((r) => r.code_url);
 	// The results table carries its own heading with the count since
-	// 2026-08-10 (user wish -- the dropped section already had one).
+	// 2026-08-10 (user wish -- the dropped section already had one). The
+	// footnotes moved BELOW the dropped table (2026-08-10 user wish) --
+	// see the main template.
 	const resultsTable = `<h2>Query results (${results.length})</h2>\n` + (results.length
 		? `<table class="sortable records">
-${RESULT_COLGROUP}
-<thead>${RESULT_HEADERS}</thead>
+${resultColgroup(withCode)}
+<thead>${resultHeaders(withCode)}</thead>
 <tbody>
-${results.map((record, index) => resultRow(record, index, queryLabels)).join("\n")}
+${results.map((record, index) => resultRow(record, index, queryLabels, withCode)).join("\n")}
 </tbody>
-</table>${enrichmentFootnote}${scoreFootnote}${codeFootnote}`
+</table>`
 		: "<p>No results.</p>");
 
 	const droppedSection = payload.dropped.length
 		? `<h2>Dropped records (${payload.dropped.length})</h2>
 <p class="meta">Removed by the junk filter or by the requested metadata filters -- nothing disappears silently,
 the Label column carries each reason. Same columns as the results table; tick dropped papers too, the download
-request below includes them. The Code lookup deliberately never runs for dropped records.</p>
+request below includes them.</p>
 <table class="sortable records">
-${RESULT_COLGROUP}
-<thead>${RESULT_HEADERS}</thead>
+${resultColgroup(withCode)}
+<thead>${resultHeaders(withCode)}</thead>
 <tbody>
-${payload.dropped.map((entry, index) => droppedRow(entry, index, queryLabels)).join("\n")}
+${payload.dropped.map((entry, index) => droppedRow(entry, index, queryLabels, withCode)).join("\n")}
 </tbody>
 </table>`
 		: "";
@@ -845,7 +870,7 @@ body { max-width: 120rem; }
 selection flow and the labeling rule -- the material a PRISMA-2020/PRISMA-S methods section documents.</p>
 </details>
 ${resultsTable}
-${droppedSection}${selectBar}
+${droppedSection}${enrichmentFootnote}${scoreFootnote}${codeFootnote}${selectBar}
 <footer>Rendered deterministically from the pi-literature-review JSON payload. Every field on this page
 originates from a search-API response; an identifier counts as verified when it resolved via HTTP at
 doi.org / arxiv.org. Column sorting only reorders the rows above. No language model produced or

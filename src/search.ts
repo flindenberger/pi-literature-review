@@ -225,12 +225,33 @@ export async function runSearch(options: SearchOptions) {
 		warn("no grouping rules supplied; results are ungrouped");
 	}
 
-	// Code-link stage (2026-08-07): one GitHub repo search per arXiv record
-	// attaches code_url -- AFTER filters and grouping, so no lookup is spent
-	// on a dropped record and the per-run cap prefers on_target ones. Rides
-	// the enrich switch like every lookup beyond the search itself.
+	// Code-link stage (2026-08-07; extended to DROPPED records 2026-08-10 --
+	// user wish: interesting papers keep landing in the dropped table, their
+	// code links matter there too). ONE pass over kept + dropped records;
+	// the abstract signal is free for everyone, and the capped GitHub search
+	// spends its budget kept-on_target first, then kept, then dropped (input
+	// order -- dropped records carry no group and sort behind). Rides the
+	// enrich switch like every lookup beyond the search itself.
 	aborted();
-	const results = options.enrich === false ? grouped : await addCodeLinks(grouped, warn, options.signal);
+	const droppedEntries = [
+		...dropped.map(({ reason, record }) => ({ reason, record })),
+		...abstractGate.dropped.map(({ reason, record }) => ({ reason, record })),
+		...filterResult.dropped.map(({ reason, record }) => ({ reason, record })),
+	];
+	let results = grouped;
+	let droppedOut = droppedEntries;
+	if (options.enrich !== false) {
+		const withLinks = await addCodeLinks(
+			[...grouped, ...droppedEntries.map((entry) => entry.record)] as typeof grouped,
+			warn,
+			options.signal,
+		);
+		results = withLinks.slice(0, grouped.length) as typeof grouped;
+		droppedOut = droppedEntries.map((entry, index) => ({
+			reason: entry.reason,
+			record: withLinks[grouped.length + index] as unknown as (typeof droppedEntries)[number]["record"],
+		}));
+	}
 
 	// Dropped records stay inspectable: nothing disappears silently --
 	// junk drops and user-filter drops alike ship with full record and
@@ -298,10 +319,6 @@ export async function runSearch(options: SearchOptions) {
 		filters: filtersActive ? filters : null,
 		sort: options.sort ?? null,
 		results,
-		dropped: [
-			...dropped.map(({ reason, record }) => ({ reason, record })),
-			...abstractGate.dropped.map(({ reason, record }) => ({ reason, record })),
-			...filterResult.dropped.map(({ reason, record }) => ({ reason, record })),
-		],
+		dropped: droppedOut,
 	};
 }
