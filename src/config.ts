@@ -154,7 +154,29 @@ export function llmConfig(
 		api: normalizeApi(env.PI_LITERATURE_REVIEW_LLM_API) ?? normalizeApi(stored.api) ?? LLM_DEFAULTS.api,
 		generateModel: pick(env.PI_LITERATURE_REVIEW_LLM_MODEL, stored.generateModel, LLM_DEFAULTS.generateModel),
 		embedModel: pick(env.PI_LITERATURE_REVIEW_EMBED_MODEL, stored.embedModel, LLM_DEFAULTS.embedModel),
+		// Bearer token for REMOTE OpenAI-compatible backends (2026-08-11);
+		// no default, and the key is absent entirely when unset -- local,
+		// key-free servers stay the first choice.
+		...(pick(env.PI_LITERATURE_REVIEW_LLM_API_KEY, stored.apiKey)
+			? { apiKey: pick(env.PI_LITERATURE_REVIEW_LLM_API_KEY, stored.apiKey) }
+			: {}),
 	};
+}
+
+/**
+ * The generator model the user EXPLICITLY configured (env or config.json),
+ * or "" when none is set. The synthesis adapter uses this to decide where
+ * review genres run (2026-08-11 user decision): with pi present, everything
+ * defaults to the model selected in pi; only an explicit generateModel
+ * entry routes review genres to the local generator (e.g. a hand-imported
+ * openscholar-8b). The LLM_DEFAULTS fallback stays for headless/CLI runs,
+ * which have no pi model to fall back to.
+ */
+export function configuredGenerateModel(
+	env: Record<string, string | undefined> = process.env,
+	stored: Partial<LlmConfig> = loadStoredConfig().llm ?? {},
+): string {
+	return pick(env.PI_LITERATURE_REVIEW_LLM_MODEL, stored.generateModel);
 }
 
 /**

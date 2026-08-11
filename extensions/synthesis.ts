@@ -25,7 +25,7 @@ import { pathToFileURL } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { cardLine } from "../src/cardtext.ts";
-import { llmConfig } from "../src/config.ts";
+import { configuredGenerateModel, llmConfig } from "../src/config.ts";
 import {
 	type CheckboxItem,
 	detectDialogLang,
@@ -402,9 +402,12 @@ function startElapsedTicker(update: (line: string) => void): () => void {
 /**
  * Generator = the model currently selected in pi, called in a SEPARATE,
  * excerpts-only completion; embeddings stay on the configured local
- * embedding server. In runReport the review-genre units (mode B + review
- * synthesis) still route to the CONFIGURED generator (openscholar, v24
- * decision) -- this backend dispatches on the model name per call.
+ * embedding server. Review-genre units (mode B + review synthesis) run on
+ * the pi model too since 2026-08-11 (user decision: no extra model is ever
+ * a prerequisite); only an EXPLICITLY configured llm.generateModel routes
+ * them to the local generator (the v24 openscholar setup, now opt-in) --
+ * this backend dispatches on the model name per call, localModels empty
+ * when nothing is configured.
  */
 function piModelBackend(ctx: ExtensionContext, local: LlmBackend, localModels: string[]): LlmBackend {
 	const model = ctx.model!;
@@ -880,27 +883,42 @@ interface EngineWiring {
 	deps: ChatDeps | undefined;
 	/** Explain-genre model name (undefined: engine config default). */
 	explainModel: string | undefined;
+	/** Review-genre model name (undefined: engine config default) -- kept
+	 * honest so report metadata names the model that actually ran. */
+	reviewModel: string | undefined;
 	generatorLine: string;
 }
 
-/** Generator resolution: explicit param > the model selected in pi (with
- * review-genre calls still routed to the configured local generator) >
- * the engine's config slots. */
+/** Generator resolution: explicit param > the model selected in pi >
+ * the engine's config slots. Review genres run on the pi model too since
+ * 2026-08-11 (user decision: everything must work with the model selected
+ * in pi, no extra downloads); ONLY an explicitly configured generateModel
+ * (config.json/env, e.g. a hand-imported openscholar-8b) routes them to
+ * the local generator. */
 function wireEngine(ctx: ExtensionContext, paramModel: string | undefined): EngineWiring {
 	const cfg = llmConfig();
 	if (paramModel) {
-		return { deps: undefined, explainModel: paramModel, generatorLine: `Generator: ${paramModel} (${cfg.api} at ${cfg.baseUrl})` };
+		return {
+			deps: undefined,
+			explainModel: paramModel,
+			reviewModel: paramModel,
+			generatorLine: `Generator: ${paramModel} (${cfg.api} at ${cfg.baseUrl})`,
+		};
 	}
 	if (ctx.model) {
 		const local = createBackend(cfg);
 		const piName = `${ctx.model.provider}/${ctx.model.id}`;
+		const localReviewModel = configuredGenerateModel();
 		return {
-			deps: { backend: piModelBackend(ctx, local, [cfg.generateModel]) },
+			deps: { backend: piModelBackend(ctx, local, localReviewModel ? [localReviewModel] : []) },
 			explainModel: piName,
-			generatorLine: `Generator: ${piName} (pi) + ${cfg.generateModel} for review genres; embeddings: ${cfg.embedModel}`,
+			reviewModel: localReviewModel || piName,
+			generatorLine: localReviewModel
+				? `Generator: ${piName} (pi) + ${localReviewModel} for review genres; embeddings: ${cfg.embedModel}`
+				: `Generator: ${piName} (pi); embeddings: ${cfg.embedModel}`,
 		};
 	}
-	return { deps: undefined, explainModel: undefined, generatorLine: `Generator: (config default) (${cfg.api} at ${cfg.baseUrl})` };
+	return { deps: undefined, explainModel: undefined, reviewModel: undefined, generatorLine: `Generator: (config default) (${cfg.api} at ${cfg.baseUrl})` };
 }
 
 /** One grounded round over the given scope, with ticker + answer card. */
@@ -989,6 +1007,7 @@ async function runReportWithUi(
 			...options,
 			model: options.model,
 			explainModel: wiring.explainModel,
+			reviewModel: wiring.reviewModel,
 			session: sessionId(ctx),
 			onWarn,
 			onProgress: (message) => {
@@ -1091,7 +1110,7 @@ export default async function literatureSynthesis(pi: ExtensionAPI) {
 				description: "Do not use (report parameter): reports run via the /lit-synthesis command only.",
 			})),
 			model: Type.Optional(Type.String({
-				description: "Generator model override. Default: the model selected in pi for chat/summaries, the configured generator for review genres. Only pass when the user explicitly asks.",
+				description: "Generator model override. Default: the model selected in pi for everything; an explicitly configured llm.generateModel handles review genres. Only pass when the user explicitly asks.",
 			})),
 			top_k: Type.Optional(Type.Integer({
 				minimum: 1,

@@ -17,6 +17,11 @@
     "@earendil-works/pi-tui": "*",
     "typebox": "*"
   },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": { "optional": true },
+    "@earendil-works/pi-tui": { "optional": true },
+    "typebox": { "optional": true }
+  },
   "dependencies": {
     "fast-xml-parser": "^5.9.3",
     "unpdf": "^1.6.2"

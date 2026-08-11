@@ -30,7 +30,7 @@ import { join } from "node:path";
 
 import { adoptUnmatched, realAdoptDeps } from "./adopt.ts";
 import { runChatReport, runReport, runRound } from "./synthesis.ts";
-import { llmConfig } from "./config.ts";
+import { configPath, llmConfig } from "./config.ts";
 import { ensureIndexed, matchLibrary, realCorpusDeps, unmatchedGroups } from "./corpus.ts";
 import { chunkPages, cleanPageText, extractPdfPages, isExtractionUsable } from "./extract.ts";
 import { renderFetchReport, runSelection } from "./selection.ts";
@@ -172,6 +172,9 @@ if (process.argv[2] === "llm-check") {
 	// working backend. Honest failure: an unreachable server or a missing
 	// model exits non-zero with the server's own message.
 	const cfg = llmConfig();
+	// Name the config file first -- "where does this setting come from?" is
+	// the question every failed check raises (2026-08-11 user find).
+	warn(`config   ${configPath()} (env PI_LITERATURE_REVIEW_* overrides)`);
 	warn(`backend  ${cfg.api} at ${cfg.baseUrl}`);
 	warn(`generate ${cfg.generateModel}`);
 	warn(`embed    ${cfg.embedModel}`);

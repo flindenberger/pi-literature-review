@@ -158,6 +158,31 @@ import {
 	]);
 }
 
+/* ---------------- bearer auth rides only with an apiKey (2026-08-11) ---------------- */
+{
+	// With apiKey: every request carries the Authorization header (opens
+	// the openai dialect to remote APIs, e.g. api.openai.com embeddings).
+	// Without: headers stay absent -- local requests are byte-identical.
+	const seen: Array<Record<string, string> | undefined> = [];
+	const cfg: LlmConfig = {
+		baseUrl: "http://127.0.0.1:8080", api: "openai",
+		generateModel: "g", embedModel: "e", apiKey: "sk-test",
+	};
+	const answer = async (url: string, _b: Record<string, unknown>, _s: AbortSignal, headers?: Record<string, string>) => {
+		seen.push(headers);
+		if (url.endsWith("/v1/embeddings")) return { data: [{ index: 0, embedding: [1] }] };
+		return { choices: [{ message: { content: "ok" } }] };
+	};
+	const withKey = createBackend(cfg, answer);
+	await withKey.embed(["x"]);
+	await withKey.generate("s", "u");
+	assert.deepEqual(seen[0], { authorization: "Bearer sk-test" });
+	assert.deepEqual(seen[1], { authorization: "Bearer sk-test" });
+	const withoutKey = createBackend({ ...cfg, apiKey: undefined }, answer);
+	await withoutKey.embed(["x"]);
+	assert.equal(seen[2], undefined);
+}
+
 /* ---------------- fetchJson errors surface unchanged ---------------- */
 {
 	const cfg: LlmConfig = {

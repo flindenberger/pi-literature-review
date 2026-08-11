@@ -56,8 +56,12 @@ pi install /absolute/path/to/pi-literature-review         # local checkout
 ```
 
 No prerequisites beyond Pi itself. Pi runs `npm install` for published packages;
-for a local checkout run it yourself in this directory. (Development note: on
-filesystems without symlink support, e.g. exFAT, use `npm install --no-bin-links`.)
+for a local checkout run it yourself in this directory. The install is small
+by design: two direct dependencies (`fast-xml-parser`, `unpdf`), nine packages
+in total, no install scripts. The pi packages listed as peer dependencies are
+marked optional and are NOT installed -- pi's extension loader provides them
+at runtime from its own bundle. (Development note: on filesystems without
+symlink support, e.g. exFAT, use `npm install --no-bin-links`.)
 
 ## Use
 
@@ -542,11 +546,15 @@ word overrides the list. The digest and the HTML meta show the variants
 and lexical terms used. Retrieval is measurably sensitive to phrasing,
 so the agent is instructed to pass the user's question VERBATIM.
 
-**Generator models.** In pi, chat answers and summaries run on the model
-currently selected in pi (separate excerpts-only calls; hidden reasoning
-off); mode B and review synthesis run on the configured local generator
-(`openscholar-8b` by default). A `model` parameter overrides everything.
-Embeddings always stay on the configured local embedding server.
+**Generator models.** In pi, EVERYTHING -- chat answers, summaries, mode B
+and review synthesis -- runs on the model currently selected in pi
+(separate excerpts-only calls; hidden reasoning off). No extra generator
+model is ever a prerequisite. Optionally, an explicitly configured
+`"llm": {"generateModel": ...}` (e.g. a hand-imported `openscholar-8b`,
+a model tuned for terse synthesis prose) takes over the review genres;
+a `model` parameter overrides everything. Embeddings always run on the
+configured embedding backend (see Configuration) -- pi's model API has no
+embedding call, so this is the one extra piece synthesis needs.
 
 - **Slash commands.** `/lit-search`, `/lit-selection` and `/lit-synthesis` are
   checked by pi BEFORE the agent, and every BARE command opens its own
@@ -589,6 +597,19 @@ no session, pass the scope explicitly.
 
 ## Configuration
 
+All settings live in ONE file at the OS-standard user-config location:
+
+- Linux/macOS: `~/.config/pi-literature-review/config.json` (respects `$XDG_CONFIG_HOME`)
+- Windows: `%APPDATA%\pi-literature-review\config.json`
+
+`node src/cli.ts llm-check` prints the resolved path. The file sits
+deliberately OUTSIDE the extension folder and outside `~/.pi`: pi resets and
+cleans its managed package folders on every update, and keys must never live
+next to code that goes into version control. Every setting below can also be
+passed as an environment variable, which overrides the file per field.
+Everything is optional -- without the file the package runs with its
+defaults.
+
 - `PI_LITERATURE_REVIEW_MAILTO` -- optional contact email added to the User-Agent and
   polite-pool parameters of API requests (CrossRef/OpenAlex etiquette) and required
   by Unpaywall. Overrides the email stored via the fetch dialog (config.json, see
@@ -600,20 +621,30 @@ no session, pass the scope explicitly.
   config.json). Without one the source degrades loudly when the anonymous
   pool is saturated.
 - `PI_LITERATURE_REVIEW_LLM_URL` / `_LLM_API` / `_LLM_MODEL` / `_EMBED_MODEL` --
-  the local LLM backend for synthesis and chat (defaults: Ollama at
-  `http://127.0.0.1:11434`, generator `openscholar-8b`, embeddings
-  `nomic-embed-text`; RECOMMENDED embedder: `bge-m3` -- multilingual, fixes
-  German questions over English papers; `ollama pull bge-m3` and set
-  `"llm": {"embedModel": "bge-m3"}`). The same values can live in
-  config.json under `"llm"`;
-  `api: "openai"` plus a base URL switches to any OpenAI-compatible local
-  server (e.g. llama.cpp's llama-server).
+  the LLM backend for the synthesis stage (defaults: Ollama at
+  `http://127.0.0.1:11434`, embeddings `nomic-embed-text`; RECOMMENDED
+  embedder: `bge-m3` -- multilingual, fixes German questions over English
+  papers; `ollama pull bge-m3` and set `"llm": {"embedModel": "bge-m3"}`).
+  Inside pi, generation runs on the model selected in pi; setting
+  `_LLM_MODEL` / `"llm": {"generateModel": ...}` EXPLICITLY routes the
+  review genres to that local model instead (opt-in, e.g. a hand-imported
+  `openscholar-8b`). Headless/CLI runs, which have no pi model, use it for
+  everything (default `openscholar-8b`). The same values can live in
+  config.json under `"llm"`; `api: "openai"` plus a base URL switches to
+  any OpenAI-compatible server (e.g. llama.cpp's llama-server).
+- `PI_LITERATURE_REVIEW_LLM_API_KEY` (or `"llm": {"apiKey": ...}` in
+  config.json) -- optional bearer token sent as `Authorization: Bearer` on
+  every LLM-backend request. Opens the `api: "openai"` dialect to REMOTE
+  OpenAI-compatible APIs, so synthesis can run without any local Ollama,
+  e.g. `{"llm": {"api": "openai", "baseUrl": "https://api.openai.com",
+  "embedModel": "text-embedding-3-small", "apiKey": "sk-..."}}`.
+  DISCLOSURE: with a remote backend the text of your PDFs (chunks and
+  questions) is sent to that provider -- the local, key-free setup stays
+  the default and the first choice of this package.
 - `PI_LITERATURE_REVIEW_CHAT_MODEL` (or `"llm": {"chatModel": ...}` in
   config.json) -- generator for chat answers and summaries in the CLI (and
   the fallback when pi has no model selected). Inside pi, these run on the
   model currently selected in pi. Falls back to the synthesis generator.
-- `SEMANTIC_SCHOLAR_API_KEY` -- reserved for future Semantic Scholar support (the
-  free tier rate-limits without a key; not implemented yet).
 
 ## Web / RPC clients (e.g. pi-tau-web-server)
 

@@ -6,7 +6,7 @@
  */
 
 import assert from "node:assert/strict";
-import { chatModel, configPath, isPlausibleMailto, LLM_DEFAULTS, llmConfig } from "./config.ts";
+import { chatModel, configPath, configuredGenerateModel, isPlausibleMailto, LLM_DEFAULTS, llmConfig } from "./config.ts";
 
 /* ---------------- configPath ---------------- */
 {
@@ -92,6 +92,26 @@ import { chatModel, configPath, isPlausibleMailto, LLM_DEFAULTS, llmConfig } fro
 	assert.equal(chatModel({ PI_LITERATURE_REVIEW_LLM_MODEL: "env-gen" }, {}), "env-gen");
 	// Whitespace-only values fall through.
 	assert.equal(chatModel({ PI_LITERATURE_REVIEW_CHAT_MODEL: "  " }, { chatModel: " cfg-chat " }), "cfg-chat");
+}
+
+/* ---------------- configuredGenerateModel (2026-08-11) ---------------- */
+{
+	// Explicit config only -- NO default fallback: with pi present the
+	// adapter runs everything on the pi model unless the user opted into a
+	// local generator (the openscholar setup, now opt-in).
+	assert.equal(configuredGenerateModel({}, {}), "");
+	assert.equal(configuredGenerateModel({}, { generateModel: "openscholar-8b" }), "openscholar-8b");
+	assert.equal(configuredGenerateModel({ PI_LITERATURE_REVIEW_LLM_MODEL: "env-gen" }, { generateModel: "cfg" }), "env-gen");
+	assert.equal(configuredGenerateModel({ PI_LITERATURE_REVIEW_LLM_MODEL: "  " }, {}), "");
+}
+
+/* ---------------- llm apiKey (2026-08-11) ---------------- */
+{
+	// Absent entirely when unset (llmConfig({},{}) stays deepEqual to the
+	// defaults above); env beats stored config.
+	assert.equal("apiKey" in llmConfig({}, {}), false);
+	assert.equal(llmConfig({}, { apiKey: "sk-stored" }).apiKey, "sk-stored");
+	assert.equal(llmConfig({ PI_LITERATURE_REVIEW_LLM_API_KEY: "sk-env" }, { apiKey: "sk-stored" }).apiKey, "sk-env");
 }
 
 console.log("config.test.ts: all assertions passed");

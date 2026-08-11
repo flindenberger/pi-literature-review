@@ -32,6 +32,15 @@ export interface LlmConfig {
 	generateModel: string;
 	/** Model that turns text into embedding vectors. */
 	embedModel: string;
+	/**
+	 * Optional bearer token, sent as "Authorization: Bearer <key>" when set
+	 * (2026-08-11): opens the openai dialect to REMOTE OpenAI-compatible
+	 * APIs (e.g. api.openai.com embeddings), so synthesis can run without
+	 * any local Ollama. Local servers ignore it. Local stays the default
+	 * and the documented first choice -- with an API backend the paper text
+	 * leaves the machine, which the README discloses.
+	 */
+	apiKey?: string;
 }
 
 export interface GenerateOptions {
@@ -178,15 +187,25 @@ export function parseOpenaiChatResponse(json: unknown): string {
 
 /* ---------------- backend ---------------- */
 
-export type FetchJson = (url: string, body: Record<string, unknown>, signal: AbortSignal) => Promise<unknown>;
+export type FetchJson = (
+	url: string,
+	body: Record<string, unknown>,
+	signal: AbortSignal,
+	headers?: Record<string, string>,
+) => Promise<unknown>;
 
 /** Default network step; separated so tests can inject a fake. */
-async function fetchJsonHttp(url: string, body: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
+async function fetchJsonHttp(
+	url: string,
+	body: Record<string, unknown>,
+	signal: AbortSignal,
+	headers?: Record<string, string>,
+): Promise<unknown> {
 	let response: Response;
 	try {
 		response = await fetch(url, {
 			method: "POST",
-			headers: { "content-type": "application/json" },
+			headers: { "content-type": "application/json", ...headers },
 			body: JSON.stringify(body),
 			signal,
 		});
@@ -208,13 +227,16 @@ function combinedSignal(timeoutMs: number, signal?: AbortSignal): AbortSignal {
 
 export function createBackend(cfg: LlmConfig, fetchJson: FetchJson = fetchJsonHttp): LlmBackend {
 	const openai = cfg.api === "openai";
+	// Bearer auth (2026-08-11): set only when the user configured an apiKey
+	// -- requests to local servers stay byte-identical without one.
+	const headers = cfg.apiKey ? { authorization: `Bearer ${cfg.apiKey}` } : undefined;
 	return {
 		async embed(texts, signal) {
 			if (!texts.length) return [];
 			const request = openai
 				? openaiEmbedRequest(cfg.baseUrl, cfg.embedModel, texts)
 				: ollamaEmbedRequest(cfg.baseUrl, cfg.embedModel, texts);
-			const json = await fetchJson(request.url, request.body, combinedSignal(EMBED_TIMEOUT_MS, signal));
+			const json = await fetchJson(request.url, request.body, combinedSignal(EMBED_TIMEOUT_MS, signal), headers);
 			return openai
 				? parseOpenaiEmbedResponse(json, texts.length)
 				: parseOllamaEmbedResponse(json, texts.length);
@@ -224,7 +246,7 @@ export function createBackend(cfg: LlmConfig, fetchJson: FetchJson = fetchJsonHt
 			const request = openai
 				? openaiChatRequest(cfg.baseUrl, model, system, user, opts)
 				: ollamaChatRequest(cfg.baseUrl, model, system, user, opts);
-			const json = await fetchJson(request.url, request.body, combinedSignal(GENERATE_TIMEOUT_MS, signal));
+			const json = await fetchJson(request.url, request.body, combinedSignal(GENERATE_TIMEOUT_MS, signal), headers);
 			return openai ? parseOpenaiChatResponse(json) : parseOllamaChatResponse(json);
 		},
 	};
