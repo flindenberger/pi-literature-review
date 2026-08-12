@@ -47,6 +47,7 @@ import {
 } from "../src/intake.ts";
 import { writeRunOutputs } from "../src/output.ts";
 import { renderHtml } from "../src/render.ts";
+import { writeNetworkPage } from "../src/network.ts";
 import { fetchAuthorMetrics, fetchJournalScores } from "../src/enrich.ts";
 import { authorFacets, type FacetScope, journalFacets } from "../src/sources/openalex.ts";
 import { chatLangDefault, installChatLangObserver, runWizard } from "./dialogs.ts";
@@ -1157,7 +1158,10 @@ export default function literatureSearch(pi: ExtensionAPI) {
 			let htmlPath: string | null = null;
 			let jsonPath: string | null = null;
 			try {
-				({ htmlPath, jsonPath } = writeRunOutputs(renderHtml(payload), payload, params.html_file));
+				({ htmlPath, jsonPath } = writeRunOutputs(renderHtml(payload, { network: true }), payload, params.html_file));
+				// The static network page the Network column links to; written
+				// beside the results so the relative link always resolves.
+				writeNetworkPage(htmlPath);
 				diagnostics.push(`wrote HTML rendering to ${htmlPath} and JSON copy to ${jsonPath}`);
 			} catch (error) {
 				diagnostics.push(`writing the output files failed: ${error instanceof Error ? error.message : error}`);
@@ -1251,7 +1255,8 @@ export default function literatureSearch(pi: ExtensionAPI) {
 				ctx.ui.setWidget(INTAKE_WIDGET, undefined);
 				let htmlPath: string | null = null;
 				try {
-					({ htmlPath } = writeRunOutputs(renderHtml(payload), payload, undefined));
+					({ htmlPath } = writeRunOutputs(renderHtml(payload, { network: true }), payload, undefined));
+					writeNetworkPage(htmlPath);
 				} catch (error) {
 					ctx.ui.notify(
 						`writing the output files failed: ${error instanceof Error ? error.message : error}`,

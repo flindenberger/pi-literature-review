@@ -39,6 +39,7 @@ import { runSynthesis, type SynthesisOptions } from "./synthesis.ts";
 import { renderChatDigest, renderChatReportDigest, renderDigest, renderReportDigest, renderSynthesisDigest } from "./digest.ts";
 import { runSearch, SEARCHERS, type SearchOptions } from "./search.ts";
 import { parseGroupTerms } from "./intake.ts";
+import { writeNetworkPage } from "./network.ts";
 import { outputRoot, writeRunOutputs } from "./output.ts";
 import { readCurrentScope } from "./protocol.ts";
 import { resolvePiSessionId } from "./pisession.ts";
@@ -459,8 +460,9 @@ const options: SearchOptions = {
 const payload = await runSearch(options);
 let htmlPath: string | null = null;
 if (args.htmlFile !== undefined) {
-	const written = writeRunOutputs(renderHtml(payload), payload, args.htmlFile || undefined);
+	const written = writeRunOutputs(renderHtml(payload, { network: true }), payload, args.htmlFile || undefined);
 	htmlPath = written.htmlPath;
+	writeNetworkPage(written.htmlPath);
 	warn(`wrote HTML rendering to ${written.htmlPath}`);
 	warn(`wrote JSON copy to ${written.jsonPath}`);
 }

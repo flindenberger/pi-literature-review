@@ -337,11 +337,32 @@ function codeCells(record: RenderRecord, withCode: boolean): string[] {
 		record.code_url ? link(safeHref(record.code_url), "GitHub") : "&mdash;")];
 }
 
+/** The Network cell (2026-08-12 user wish, connected-papers style): a link
+ * into the static network.html written NEXT TO the results page, carrying
+ * the record's identifiers in the hash -- the network page fetches the
+ * citation neighbourhood live from OpenAlex only when opened, so the run
+ * itself costs nothing. DOI first (exact lookup), title always as the
+ * fallback seed (arXiv DataCite DOIs are not indexed by OpenAlex --
+ * live-proven 2026-08-12). Not sortable; every record has a title, so the
+ * cell never renders a dash while the column exists. */
+function networkCells(record: RenderRecord, withNetwork: boolean): string[] {
+	if (!withNetwork) return [];
+	const params = [
+		record.doi ? `doi=${encodeURIComponent(record.doi)}` : "",
+		`title=${encodeURIComponent(record.title)}`,
+	].filter(Boolean).join("&");
+	// Styled like the BibTeX button (2026-08-12 user wish) -- but it stays
+	// an anchor: it opens a page instead of running script.
+	return [cell("", `<a class="graph-link" href="${esc(`network.html#${params}`)}" target="_blank" rel="noopener"`
+		+ ` title="Open the citation network of this paper (fetches live from OpenAlex)">Graph</a>`, "graphcell")];
+}
+
 function resultRow(
 	record: RenderRecord,
 	index: number,
 	queryLabels: Map<string, string>,
 	withCode: boolean,
+	withNetwork: boolean,
 ): string {
 	const rowClass = record.group === "on_target" ? ' class="on-target"' : "";
 	const foundBy = queryLabels.size > 1 && record.found_by?.length
@@ -359,6 +380,7 @@ function resultRow(
 		cell(String(index + 1), String(index + 1)),
 		...metadataCells(record),
 		...codeCells(record, withCode),
+		...networkCells(record, withNetwork),
 		cell(sourcesOf(record).join(", "), (esc(sourcesOf(record).join(", ")) || "&mdash;") + foundBy),
 		// The evidence line (2026-08-06): which query's blocks earned the
 		// label, and the exact term that hit per block -- a homonym like
@@ -384,6 +406,7 @@ function droppedRow(
 	index: number,
 	queryLabels: Map<string, string>,
 	withCode: boolean,
+	withNetwork: boolean,
 ): string {
 	const { record, reason } = entry;
 	const fetchId = fetchIdOf(record);
@@ -398,6 +421,7 @@ function droppedRow(
 		cell(String(index + 1), String(index + 1)),
 		...metadataCells(record),
 		...codeCells(record, withCode),
+		...networkCells(record, withNetwork),
 		cell(sourcesOf(record).join(", "), (esc(sourcesOf(record).join(", ")) || "&mdash;") + foundBy),
 		cell(reason.toLowerCase(), `dropped<br><span class="note">reason: ${esc(reason)}</span>`),
 	].join("")}</tr>`;
@@ -446,6 +470,11 @@ const STYLE = `
 	.bibtex-copy { font: inherit; font-size: 0.72rem; padding: 0.15rem 0.4rem; cursor: pointer;
 		background: #f1f1ec; border: 1px solid #c9c9c2; border-radius: 3px; }
 	.bibtex-copy:hover { background: #e6e6df; }
+	td.graphcell { text-align: center; }
+	.graph-link { display: inline-block; font-size: 0.72rem; padding: 0.15rem 0.4rem;
+		background: #f1f1ec; border: 1px solid #c9c9c2; border-radius: 3px;
+		color: #1c1c1c; text-decoration: none; }
+	.graph-link:hover { background: #e6e6df; }
 	td.pickcell { text-align: center; }
 	th.no-sort { cursor: default; }
 	.selectbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem;
@@ -549,9 +578,10 @@ for (const table of document.querySelectorAll("table.sortable")) {
 /** Header row of both record tables. The Code column exists only when at
  * least one record on the page carries a code link (2026-08-10 user wish:
  * an all-dash column with an unexplained footnote mark was noise). */
-function resultHeaders(withCode: boolean): string {
+function resultHeaders(withCode: boolean, withNetwork: boolean): string {
 	return "<tr><th class=\"no-sort\" title=\"Select rows, then copy the download request below\"></th><th>#</th><th>Article</th><th>Authors</th><th>Year</th><th>Journal</th><th>Journal score&sup1;</th><th>Citations</th><th>DOI</th><th class=\"no-sort\">BibTeX</th>"
 		+ (withCode ? "<th>Code&sup2;</th>" : "")
+		+ (withNetwork ? "<th class=\"no-sort\">Network</th>" : "")
 		+ "<th>Data source</th><th>Label</th></tr>";
 }
 
@@ -560,16 +590,22 @@ function resultHeaders(withCode: boolean): string {
  * perfectly aligned under each other (2026-08-10 user wish). Widths sum
  * to 100%; without the Code column its share goes to DOI, Data source and
  * Label. */
-function resultColgroup(withCode: boolean): string {
+function resultColgroup(withCode: boolean, withNetwork: boolean): string {
+	// Four variants (Code and Network are each conditional); the Network
+	// column takes 4% from Article/DOI/Label when present.
 	const widths = withCode
-		? [2.2, 2.8, 20, 12.5, 4.3, 8.5, 5.5, 6, 12, 5, 4.2, 7, 10]
-		: [2.2, 2.8, 20, 12.5, 4.3, 8.5, 5.5, 6, 14, 5, 8, 11.2];
+		? (withNetwork
+			? [2.2, 2.8, 18, 12.5, 4.3, 8.5, 5.5, 6, 11, 5, 4.2, 4, 7, 9]
+			: [2.2, 2.8, 20, 12.5, 4.3, 8.5, 5.5, 6, 12, 5, 4.2, 7, 10])
+		: (withNetwork
+			? [2.2, 2.8, 18, 12.5, 4.3, 8.5, 5.5, 6, 13, 5, 4, 8, 10.2]
+			: [2.2, 2.8, 20, 12.5, 4.3, 8.5, 5.5, 6, 14, 5, 8, 11.2]);
 	// This table gains a column nearly every session, and headers, widths
 	// and row builders are parallel structures nothing ties together --
 	// under table-layout:fixed a mismatch SHIFTS every column silently
 	// instead of erroring, so it is checked loudly here (deterministic:
 	// any render in the test suite exercises both variants).
-	const headerCount = resultHeaders(withCode).split("<th").length - 1;
+	const headerCount = resultHeaders(withCode, withNetwork).split("<th").length - 1;
 	const sum = widths.reduce((a, b) => a + b, 0);
 	if (widths.length !== headerCount || Math.abs(sum - 100) > 0.01) {
 		throw new Error(`column spec mismatch: ${widths.length} width(s) for ${headerCount} header(s), width sum ${sum}`);
@@ -689,8 +725,12 @@ for (const toggle of document.querySelectorAll("a.authors-toggle")) {
 // identical columns incl. the selection checkbox; the Label column holds
 // "dropped" + reason there) -- see droppedRow.
 
-/** Render the full discovery payload as a standalone HTML document. */
-export function renderHtml(payload: RenderPayload): string {
+/** Render the full discovery payload as a standalone HTML document.
+ * options.network adds the Network column linking into the static
+ * network.html BESIDE this page -- callers set it exactly when they also
+ * write that file (writeNetworkPage), so the link can never dangle;
+ * re-renders of old sidecars without the flag stay column-free. */
+export function renderHtml(payload: RenderPayload, options?: { network?: boolean }): string {
 	const results = payload.results;
 	const onTarget = results.filter((r) => r.group === "on_target").length;
 	const verifiedCount = results.filter((r) => r.verified).length;
@@ -726,6 +766,14 @@ export function renderHtml(payload: RenderPayload): string {
 	// user wish); column and &sup2; footnote share this ONE flag so they can
 	// never drift apart.
 	const withCode = allRecords.some((r) => r.code_url);
+	// The Network column (2026-08-12): only when the caller wrote the
+	// network.html sidecar page, and only when any row exists to link from.
+	// Its explanation is an unmarked footnote -- a numbered mark would
+	// renumber with the conditional Code column.
+	const withNetwork = options?.network === true && allRecords.length > 0;
+	const networkFootnote = withNetwork
+		? `\n<p class="meta">Network = opens a citation-context graph of the paper in a new tab: its references and citing works, related by the classic bibliometric similarity measures (bibliographic coupling, Kessler 1963; co-citation analysis, Small 1973 -- the graph page explains how each is used). The page fetches this live from the open OpenAlex API when opened (internet needed then; only the paper's DOI or title is sent, never paper content) and involves no language model.</p>`
+		: "";
 	const codeFootnote = withCode
 		? `\n<p class="meta">&sup2; Code = a GitHub repository found deterministically: preferably the URL the paper's own abstract names, else the best-matching repository from one GitHub search per arXiv id (the repository mentions the id in its name, description or README; aggregator/reading-list repositories are skipped). The search path is a heuristic pointer to likely code, not a verified artifact link -- follow it and judge; journal papers whose abstract names no repository are not looked up. Recorded in the JSON as <code>code_url</code>, provenance in <code>enriched</code> (abstract | github).</p>`
 		: "";
@@ -840,10 +888,10 @@ the selection tool downloads the PDFs into the lit-selection/ library after you 
 	// see the main template.
 	const resultsTable = `<h2>Query results (${results.length})</h2>\n` + (results.length
 		? `<table class="sortable records">
-${resultColgroup(withCode)}
-<thead>${resultHeaders(withCode)}</thead>
+${resultColgroup(withCode, withNetwork)}
+<thead>${resultHeaders(withCode, withNetwork)}</thead>
 <tbody>
-${results.map((record, index) => resultRow(record, index, queryLabels, withCode)).join("\n")}
+${results.map((record, index) => resultRow(record, index, queryLabels, withCode, withNetwork)).join("\n")}
 </tbody>
 </table>`
 		: "<p>No results.</p>");
@@ -854,10 +902,10 @@ ${results.map((record, index) => resultRow(record, index, queryLabels, withCode)
 the Label column carries each reason. Same columns as the results table; tick dropped papers too, the download
 request below includes them.</p>
 <table class="sortable records">
-${resultColgroup(withCode)}
-<thead>${resultHeaders(withCode)}</thead>
+${resultColgroup(withCode, withNetwork)}
+<thead>${resultHeaders(withCode, withNetwork)}</thead>
 <tbody>
-${payload.dropped.map((entry, index) => droppedRow(entry, index, queryLabels, withCode)).join("\n")}
+${payload.dropped.map((entry, index) => droppedRow(entry, index, queryLabels, withCode, withNetwork)).join("\n")}
 </tbody>
 </table>`
 		: "";
@@ -894,7 +942,7 @@ body { max-width: 120rem; }
 selection flow and the labeling rule -- the material a PRISMA-2020/PRISMA-S methods section documents.</p>
 </details>
 ${resultsTable}
-${droppedSection}${enrichmentFootnote}${scoreFootnote}${codeFootnote}${selectBar}
+${droppedSection}${enrichmentFootnote}${scoreFootnote}${codeFootnote}${networkFootnote}${selectBar}
 <footer>Rendered deterministically from the pi-literature-review JSON payload. Every field on this page
 originates from a search-API response; an identifier counts as verified when it resolved via HTTP at
 doi.org / arxiv.org. Column sorting only reorders the rows above. No language model produced or

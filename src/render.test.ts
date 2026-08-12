@@ -223,6 +223,37 @@ const html = renderHtml(payload);
 	assert.ok(droppedCode.includes("&sup2; Code = "));
 }
 
+// network column (2026-08-12): opt-in via renderHtml options -- callers set
+// it exactly when they also write the network.html sidecar page, so the
+// relative link can never dangle; plain renders (old sidecars) stay free of
+// the column. DOI-carrying records link with doi AND title (title = the
+// fallback seed, arXiv DataCite DOIs are not in OpenAlex); identifiers are
+// URL-encoded, the parameter separator is entity-escaped in the attribute.
+{
+	const withNetwork = renderHtml(payload, { network: true });
+	// Both tables carry the header (results + dropped).
+	assert.equal(withNetwork.split('<th class="no-sort">Network</th>').length - 1, 2);
+	assert.ok(withNetwork.includes('href="network.html#doi=10.1234%2Fabc&amp;title=River%20sandbar%20dynamics'));
+	// Styled like the BibTeX button (2026-08-12), but as an anchor.
+	assert.ok(withNetwork.includes('<a class="graph-link"'));
+	assert.ok(withNetwork.includes(".graph-link {"));
+	// The arXiv-only record has no DOI -> title-only seed.
+	assert.ok(withNetwork.includes('href="network.html#title=Preprint%20without%20DOI"'));
+	assert.ok(withNetwork.includes("Network = opens a citation-context graph"));
+	// Without the flag: no column, no link, no footnote (byte-identical
+	// legacy rendering).
+	assert.ok(!html.includes("Network</th>"));
+	assert.ok(!html.includes("network.html#"));
+	assert.ok(!html.includes("Network = opens"));
+	// The four colgroup variants (code x network) all pass the loud
+	// width/header consistency check.
+	renderHtml({
+		...payload,
+		results: [{ ...payload.results[0], code_url: "https://github.com/acme/sandbar-net" }],
+		dropped: [],
+	}, { network: true });
+}
+
 // journal-score footnote (&sup1;): the score COLUMN always exists, so its
 // header mark always carries the explanation -- even when no record has a
 // score (enrich:false / preprint-only runs; 2026-08-11 review find: the
