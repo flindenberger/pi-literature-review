@@ -39,14 +39,12 @@ Two direct dependencies (`fast-xml-parser`, `unpdf`), nine packages in total,
 no install scripts. The Pi packages listed as optional peer dependencies are
 provided by Pi itself at runtime.
 
-Search and selection need nothing beyond that — they even run with no model
-selected at all (the query-variants tab then simply offers only your main
-query). Synthesis needs a local embedding model, e.g. install
-[Ollama](https://ollama.com), run `ollama pull bge-m3`, and set
-`"llm": {"embedModel": "bge-m3"}` in the config file
-(see [Configuration](docs/configuration.md)). Generation runs on the model
-you selected in Pi — see [Requirements](docs/requirements.md) for tested
-model and hardware combinations.
+Search and selection work out of the box — even with no model selected in
+Pi. Synthesis needs one small local embedding model: the first
+`/lit-synthesis` checks for it and offers to fetch it (Ollama, ~1.2 GB,
+one-time, stays on your machine). Generation runs on the model you selected
+in Pi — see [Requirements](docs/requirements.md) for tested model and
+hardware combinations.
 
 ## Usage
 
@@ -119,10 +117,9 @@ machine only if you deliberately configure a remote LLM backend via API
 | [Search](docs/search.md) | The wizard tabs, block search, the pipeline, the results page, tool parameters |
 | [Selection](docs/selection.md) | Consent dialogs, resolution order, file naming, the honest per-paper report |
 | [Synthesis](docs/synthesis.md) | Indexing, trust architecture, chat mode, report mode, the HTML-write gate |
-| [Configuration](docs/configuration.md) | Config file location, every key, every environment override |
+| [Configuration](docs/configuration.md) | Optional: llama.cpp, remote APIs, a dedicated review model, keys -- every key and environment override |
 | [Command line](docs/cli.md) | Using the package without the Pi agent |
-| [Web / RPC clients](docs/rpc-clients.md) | How the wizards behave in web frontends |
-| [Development and tests](docs/development.md) | Layout, running from a checkout, the test suite, the release acceptance gate |
+| [Development and tests](docs/development.md) | Layout, running from a checkout, the test suite, web/RPC clients, the release acceptance gate |
 
 ## What this tool does not do
 

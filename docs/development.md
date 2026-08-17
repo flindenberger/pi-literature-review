@@ -54,6 +54,16 @@ DOIs `10.3390/rs13081505` and `10.3390/rs18010132` must appear with
 matches) must be dropped with reasons, and a fabricated DOI must come out
 `verified: false`.
 
+## Web / RPC clients
+
+Pi web frontends drive Pi in RPC mode; there every wizard runs as a chain
+of modal dialogs (one select or editor per step, form tabs as a field
+menu). Result cards are a terminal feature, so a finished command run hands
+its text to the agent for one verbatim chat answer; progress widgets are
+invisible in clients that do not render them; some clients report an empty
+editor save as cancelled, so the dialog chain never treats an editor
+cancel as a run abort (cancelling is the Cancel row of a select step).
+
 ## Conventions
 
 - No language model in the citation path -- ever. A model may shape a

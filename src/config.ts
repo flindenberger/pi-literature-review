@@ -112,17 +112,22 @@ export function s2ApiKey(
 /* ---------------- LLM backend (synthesis stage) ---------------- */
 
 /**
- * Defaults describe the intended local setup: Ollama on its standard port,
- * OpenScholar-8B (imported as an Ollama model named "openscholar-8b") for
- * generation, nomic-embed-text for embeddings. Every value can be changed
- * in config.json ("llm" block) or per environment variable; a switch to
- * llama.cpp's llama-server is just baseUrl + api: "openai".
+ * Defaults describe the zero-config local setup: Ollama on its standard
+ * port, bge-m3 for embeddings (multilingual -- German questions over
+ * English papers rank correctly, measured; the embedding-model doctor
+ * offers to fetch it on the first synthesis call), OpenScholar-8B
+ * (imported as an Ollama model named "openscholar-8b") as the CLI's
+ * generator -- inside pi, generation runs on the model selected there.
+ * Every value can be changed in config.json ("llm" block) or per
+ * environment variable; a switch to llama.cpp's llama-server is just
+ * baseUrl + api: "openai" (per role if wanted). Earlier installs used
+ * nomic-embed-text; an index built with it re-embeds itself once.
  */
 export const LLM_DEFAULTS: LlmConfig = {
 	baseUrl: "http://127.0.0.1:11434",
 	api: "ollama",
 	generateModel: "openscholar-8b",
-	embedModel: "nomic-embed-text",
+	embedModel: "bge-m3",
 };
 
 function normalizeApi(value: string | undefined): "ollama" | "openai" | undefined {

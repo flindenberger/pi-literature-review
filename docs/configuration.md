@@ -1,8 +1,10 @@
-# Configuration
+# Configuration (optional)
 
-Everything is optional; without a config file the package runs with its
-defaults (local Ollama, no keys). All settings live in ONE file at the
-OS-standard user-config location:
+The default setup needs no config file at all: local Ollama, `bge-m3` for
+embeddings (fetched on request by the first `/lit-synthesis`), generation
+on the model selected in Pi. The file exists for everything else --
+llama.cpp, a remote API, a dedicated review model, keys, an email for
+Unpaywall. It lives at the OS-standard user-config location:
 
 - Linux/macOS: `~/.config/pi-literature-review/config.json` (respects `$XDG_CONFIG_HOME`)
 - Windows: `%APPDATA%\pi-literature-review\config.json`
@@ -23,7 +25,7 @@ which wins per field.
 | `githubToken` | `PI_LITERATURE_REVIEW_GITHUB_TOKEN` | Raises the code-link repository search limit from 10 to 30 per minute. |
 | `llm.baseUrl` | `PI_LITERATURE_REVIEW_LLM_URL` | LLM backend address (default `http://127.0.0.1:11434`, Ollama). |
 | `llm.api` | `PI_LITERATURE_REVIEW_LLM_API` | `ollama` (default) or `openai` for any OpenAI-compatible server (llama.cpp's llama-server, vLLM, ...). |
-| `llm.embedModel` | `PI_LITERATURE_REVIEW_EMBED_MODEL` | Embedding model (default `nomic-embed-text`; recommended `bge-m3`, multilingual). Changing it re-embeds the index automatically. |
+| `llm.embedModel` | `PI_LITERATURE_REVIEW_EMBED_MODEL` | Embedding model (default `bge-m3`, multilingual). Changing it re-embeds the index automatically. |
 | `llm.generateModel` | `PI_LITERATURE_REVIEW_LLM_MODEL` | Optional dedicated model for the review genres inside Pi (unset = the model selected in Pi runs everything). Headless/CLI runs use it for all generation (default `openscholar-8b`). |
 | `llm.chatModel` | `PI_LITERATURE_REVIEW_CHAT_MODEL` | CLI generator for chat answers and summaries; falls back to `generateModel`. |
 | `llm.embedBaseUrl`, `llm.embedApi` | `PI_LITERATURE_REVIEW_EMBED_URL`, `_EMBED_API` | Per-role split: a separate backend for embeddings. |
@@ -37,16 +39,10 @@ copies a provider key from Pi's own configuration.
 
 ## Examples
 
-Recommended local setup (Ollama, everything on your machine):
+A dedicated review model (everything else default):
 
 ```json
-{ "llm": { "embedModel": "bge-m3" } }
-```
-
-With a dedicated review model:
-
-```json
-{ "llm": { "embedModel": "bge-m3", "generateModel": "openscholar-8b" } }
+{ "llm": { "generateModel": "openscholar-8b" } }
 ```
 
 Pure llama.cpp (one `llama-server` instance holds exactly one model):

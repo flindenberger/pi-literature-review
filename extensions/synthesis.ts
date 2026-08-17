@@ -38,6 +38,7 @@ import {
 import { type LibraryPaper, matchLibrary } from "../src/corpus.ts";
 import { renderChatDigest, renderReportDigest } from "../src/digest.ts";
 import { createBackend, type LlmBackend } from "../src/llm.ts";
+import { checkEmbedModel, type DoctorState, pullEmbedModel } from "../src/doctor.ts";
 import { outputRoot, writeRunOutputs } from "../src/output.ts";
 import { loadRounds, readCurrentScope, realProtocolDeps, writeCurrentScope } from "../src/protocol.ts";
 import { localPdfHref, renderSynthReportHtml } from "../src/render.ts";
@@ -588,6 +589,112 @@ const SYNTH_TEXT: Record<DialogLang, {
 
 /** The HTML-write gate's question dialog (v29: the gate ASKS instead of
  * hard-blocking -- the wizard choice IS the report consent). */
+/** Embedding-model doctor strings (zero-config synthesis). Vendor
+ * wording stays equal: llama.cpp and Ollama side by side; only the
+ * automatic fetch is Ollama-only because llama.cpp has no pull API. */
+const DOCTOR_TEXT: Record<DialogLang, {
+	missingTitle: (model: string, baseUrl: string) => string;
+	unreachableTitle: (baseUrl: string, error: string) => string;
+	fetch: (model: string) => string;
+	retry: string;
+	howTo: string;
+	cancel: string;
+	howToNote: (model: string, baseUrl: string) => string;
+	fetched: (model: string) => string;
+	fetchFailed: (error: string) => string;
+	cancelled: string;
+}> = {
+	de: {
+		missingTitle: (model, baseUrl) =>
+			`Die Synthese braucht ein kleines lokales Embedding-Modell (nicht das in Pi gewählte Chat-Modell). "${model}" ist bei Ollama unter ${baseUrl} nicht vorhanden. Jetzt laden? Einmaliger Download (bge-m3: ca. 1,2 GB), bleibt auf diesem Rechner, kein Konto.`,
+		unreachableTitle: (baseUrl, error) =>
+			`Kein Embedding-Backend erreichbar unter ${baseUrl} (${error}). Die Synthese braucht ein kleines lokales Embedding-Modell -- nicht das in Pi gewählte Chat-Modell.`,
+		fetch: (model) => `Jetzt laden: ollama pull ${model} (lokal, einmalig)`,
+		retry: "Erneut prüfen (nachdem das Backend gestartet ist)",
+		howTo: "Wie richte ich eines ein? (Optionen anzeigen)",
+		cancel: "Jetzt nicht",
+		howToNote: (model, baseUrl) =>
+			`Gleichwertige Optionen für das Embedding-Modell "${model}": (1) llama.cpp: llama-server --embedding -m <embedding>.gguf, Adresse als llm.embedBaseUrl mit llm.embedApi "openai" in der Config eintragen; (2) Ollama (ollama.com) installieren und starten -- dann bietet dieser Dialog den Download an; (3) eine entfernte OpenAI-kompatible API über llm.apiKey (Papertext geht dann an den Anbieter -- Rechte prüfen). Erwartete Adresse derzeit: ${baseUrl}. Diagnose: node src/cli.ts llm-check.`,
+		fetched: (model) => `Embedding-Modell ${model} geladen.`,
+		fetchFailed: (error) => `Download fehlgeschlagen: ${error}`,
+		cancelled: "Synthese abgebrochen: kein Embedding-Modell verfügbar.",
+	},
+	en: {
+		missingTitle: (model, baseUrl) =>
+			`Synthesis needs a small local embedding model (not the chat model selected in Pi). "${model}" is not present in Ollama at ${baseUrl}. Fetch it now? One-time download (bge-m3: about 1.2 GB), stays on this machine, no account.`,
+		unreachableTitle: (baseUrl, error) =>
+			`No embedding backend reachable at ${baseUrl} (${error}). Synthesis needs a small local embedding model -- not the chat model selected in Pi.`,
+		fetch: (model) => `Fetch now: ollama pull ${model} (local, one-time)`,
+		retry: "Check again (after starting the backend)",
+		howTo: "How do I set one up? (show options)",
+		cancel: "Not now",
+		howToNote: (model, baseUrl) =>
+			`Equal options for the embedding model "${model}": (1) llama.cpp: llama-server --embedding -m <embedding>.gguf, put its address in the config as llm.embedBaseUrl with llm.embedApi "openai"; (2) install and start Ollama (ollama.com) -- this dialog then offers the download; (3) a remote OpenAI-compatible API via llm.apiKey (paper text is then sent to that provider -- check permissions). Address expected right now: ${baseUrl}. Diagnose: node src/cli.ts llm-check.`,
+		fetched: (model) => `Embedding model ${model} fetched.`,
+		fetchFailed: (error) => `Download failed: ${error}`,
+		cancelled: "Synthesis cancelled: no embedding model available.",
+	},
+};
+
+/** Once the doctor has seen the model, later calls in this process skip
+ * the probe (a model does not vanish mid-session; a failure re-probes). */
+let embedDoctorPassed = false;
+
+/** The zero-config gate for every synthesis run with a UI: probe the
+ * embedding backend, offer the Ollama fetch when the model is missing,
+ * explain the options when nothing is reachable. Returns true when the
+ * run may proceed. Non-Ollama dialects pass through (the backend's own
+ * role-clear error covers them). Headless callers never reach this. */
+async function ensureEmbeddingModel(ctx: ExtensionContext): Promise<boolean> {
+	if (embedDoctorPassed || !ctx.hasUI) return true;
+	const cfg = llmConfig();
+	const text = DOCTOR_TEXT[chatLangDefault()];
+	for (;;) {
+		const state: DoctorState = await checkEmbedModel(cfg, fetch, ctx.signal);
+		if (state.state === "ok" || state.state === "not-ollama") {
+			embedDoctorPassed = true;
+			return true;
+		}
+		if (state.state === "missing") {
+			const choice = await ctx.ui.select(
+				text.missingTitle(state.model, state.baseUrl),
+				[text.fetch(state.model), text.howTo, text.cancel],
+				{ signal: ctx.signal },
+			);
+			if (choice === text.howTo) {
+				ctx.ui.notify(text.howToNote(state.model, state.baseUrl), "warning");
+				return false;
+			}
+			if (choice !== text.fetch(state.model)) {
+				ctx.ui.notify(text.cancelled, "warning");
+				return false;
+			}
+			try {
+				ctx.ui.setWidget(SYNTHESIS_WIDGET, [`fetching ${state.model} ...`]);
+				await pullEmbedModel(cfg, (line) => ctx.ui.setWidget(SYNTHESIS_WIDGET, [line]), fetch, ctx.signal);
+				ctx.ui.notify(text.fetched(state.model), "info");
+				embedDoctorPassed = true;
+				return true;
+			} catch (error) {
+				ctx.ui.notify(text.fetchFailed(error instanceof Error ? error.message : String(error)), "error");
+				return false;
+			} finally {
+				ctx.ui.setWidget(SYNTHESIS_WIDGET, undefined);
+			}
+		}
+		// unreachable
+		const choice = await ctx.ui.select(
+			text.unreachableTitle(state.baseUrl, state.error),
+			[text.retry, text.howTo, text.cancel],
+			{ signal: ctx.signal },
+		);
+		if (choice === text.retry) continue;
+		if (choice === text.howTo) ctx.ui.notify(text.howToNote(cfg.embedModel, state.baseUrl), "warning");
+		else ctx.ui.notify(text.cancelled, "warning");
+		return false;
+	}
+}
+
 const GATE_TEXT: Record<DialogLang, {
 	title: (path: string, label: string) => string;
 	wizard: string;
@@ -940,6 +1047,7 @@ async function runRoundWithUi(
 		asMessage?: boolean;
 	},
 ): Promise<{ answer: ChatAnswer } | { error: string }> {
+	if (!(await ensureEmbeddingModel(ctx))) return { error: "no embedding model available (see the dialog)" };
 	const wiring = wireEngine(ctx, options.model);
 	let keepWidget = false;
 	let stopTicker = () => {};
@@ -990,6 +1098,7 @@ async function runReportWithUi(
 	signal: AbortSignal | undefined,
 	asMessage = false,
 ): Promise<{ digest: string } | { error: string }> {
+	if (!(await ensureEmbeddingModel(ctx))) return { error: "no embedding model available (see the dialog)" };
 	const wiring = wireEngine(ctx, options.model);
 	let stopTicker = () => {};
 	let keepWidget = false;
@@ -1260,6 +1369,9 @@ export default async function literatureSynthesis(pi: ExtensionAPI) {
 			+ "(documents, questions, report menu); /lit-synthesis <question> answers once, agent-free.",
 		handler: async (args, ctx) => {
 			if (!ctx.hasUI) return;
+			// Zero-config gate first: nobody should fill the wizard only to
+			// learn afterwards that the embedding model is missing.
+			if (!(await ensureEmbeddingModel(ctx))) return;
 			const question = (args ?? "").trim();
 			const diagnostics: string[] = [];
 			const progress = (message: string) => ctx.ui.notify(message, "info");
