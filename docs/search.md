@@ -100,3 +100,5 @@ line per record), never the full JSON.
 `min_cites`, `min_journal_score`, `year_from` / `year_to`, `venues`,
 `authors`, `require_pdf`, `verified_only`, `sort` (`cites` | `year`),
 `enrich` (default on), `html_file`.
+
+Where it lives in the code: see [Development -> Module map](development.md#module-map).

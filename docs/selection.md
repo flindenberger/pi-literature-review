@@ -66,3 +66,5 @@ arXiv.
 ```
 node src/cli.ts selection 10.3390/rs13081505 arXiv:2401.16393
 ```
+
+Where it lives in the code: see [Development -> Module map](development.md#module-map).

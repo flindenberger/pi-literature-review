@@ -18,6 +18,61 @@ without Pi; the CLI drives them directly. Tests sit next to their modules
 (`src/<name>.test.ts`, `src/sources/<name>.test.ts`) and use only Node's
 built-in `assert`.
 
+## Module map
+
+Where each stage lives; the adapter/engine pair shares its basename.
+
+**Search**
+
+| File | Holds |
+|---|---|
+| `extensions/search.ts` | the `pi-literature-search` tool + `/lit-search` command: intake wizard (tabs, variant suggestions via the Pi model, journal/author loaders), digest card |
+| `src/search.ts` | run orchestration: per source and query fetch, pipeline steps in order, payload assembly, source failures |
+| `src/sources/arxiv.ts`, `crossref.ts`, `openalex.ts`, `semanticscholar.ts` | one client per source: query building (booleans, author scope), pacing/retry, record normalization; OpenAlex also holds the facet queries and the abstract reconstruction |
+| `src/pipeline.ts` | junk filter, deduplication, term matching, block labeling with evidence, the metadata filters, abstract gate |
+| `src/verify.ts` | the trust gate: DOI / arXiv ID resolution over HTTP |
+| `src/enrich.ts` | OpenAlex identifier lookup (cites, venue, abstract), journal 2-year citedness, author metrics, GitHub code links |
+| `src/intake.ts` | query parsing: block expressions, derived blocks, stopwords, prose detection, variant-line parsing and ordering, year ranges |
+| `src/render.ts` | the results page: tables, sorting, BibTeX, selection bar, search documentation block, footnotes |
+| `src/network.ts` | the static citation-graph page (`network.html`) with its embedded fetch + layout script |
+| `src/digest.ts` | the agent-facing digest and the transcript card text |
+| `src/output.ts` | output folders and collision-safe file names |
+
+**Selection**
+
+| File | Holds |
+|---|---|
+| `extensions/selection.ts` | the `pi-literature-selection` tool + `/lit-selection` command: identifier dialog, Unpaywall-email dialog, consent dialog, per-paper report widget |
+| `src/selection.ts` | identifier parsing, resolver chain (record link -> Unpaywall -> arXiv), `%PDF` check, library naming, the report |
+
+**Synthesis**
+
+| File | Holds |
+|---|---|
+| `extensions/synthesis.ts` | the `pi-literature-synthesis` tool + `/lit-synthesis` command: the wizard, answer/report cards, paper-chat mode, HTML-write gate, embedding-model doctor dialog |
+| `extensions/pi-model.ts` | one completion call on the model selected in Pi (used for suggestions and generation) |
+| `src/synthesis.ts` | the engine: chat rounds, composable reports, prompts, the citation gate (marker validation, reference insertion), report assembly |
+| `src/retrieve.ts` | shared retrieval: query variants, lexical layer, embedding ranking, union |
+| `src/extract.ts` | PDF text extraction, cleanup, bibliography cut, chunking, highlight-phrase measurement |
+| `src/pdfjs-find.ts` | faithful port of the PDF viewer's find normalization (guarantees highlights) |
+| `src/corpus.ts` | which PDFs form the corpus, library matching against saved searches, the embedding-index cache |
+| `src/adopt.ts` | adoption of loose PDFs: identifier from the PDF text, verified by lookup |
+| `src/protocol.ts` | protocol files of validated rounds, sticky scope per session |
+| `src/doctor.ts` | embedding-model probe and Ollama fetch (zero-config path) |
+| `src/llm.ts` | the HTTP client for the embedding/generation backends (Ollama and OpenAI dialects, per-role split, role-clear errors) |
+| `src/pisession.ts` | current Pi session id for the CLI |
+
+**Shared**
+
+| File | Holds |
+|---|---|
+| `src/dialog-state.ts` + `extensions/dialogs.ts` | the tabbed wizard: pure reducer (steps, checkbox lists, forms, review page) and its Pi adapter (overlay drawing, keys, paste, RPC fallback) |
+| `src/config.ts` | the config file and environment overrides |
+| `src/cli.ts` | the standalone command line over all three engines |
+| `src/types.ts` | shared record and payload shapes |
+| `src/cardtext.ts` | bold/bullet formatting for transcript cards |
+| `index.ts` | registers the three tools |
+
 ## Running from a checkout
 
 ```

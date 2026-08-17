@@ -93,3 +93,5 @@ node src/cli.ts synthesis --report --all --review
 ```
 
 See [Command line](cli.md).
+
+Where it lives in the code: see [Development -> Module map](development.md#module-map).
