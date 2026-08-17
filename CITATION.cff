@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it using the metadata below."
+type: software
+title: "pi-literature-review"
+abstract: "Local, open, login-free literature review extension for the Pi coding agent: deterministic multi-source search (arXiv, CrossRef, OpenAlex, Semantic Scholar) with HTTP-verified identifiers, legal open-access PDF selection, and grounded synthesis over local PDFs with page-exact citations. No language model is in the citation path."
+authors:
+  - family-names: "Lindenberger"
+    given-names: "Florian"
+    orcid: "https://orcid.org/0009-0008-1759-3515"
+version: "0.1.0"
+date-released: "2026-08-17"
+license: MIT
+repository-code: "https://github.com/<owner>/pi-literature-review"
+keywords:
+  - literature review
+  - systematic review
+  - PRISMA
+  - remote sensing
+  - Pi coding agent

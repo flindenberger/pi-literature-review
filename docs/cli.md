@@ -1,0 +1,70 @@
+# Command line (no Pi)
+
+The same engines run standalone with plain Node from the package folder
+-- useful for scripting, testing and for machines without Pi. Output
+folders (`lit-search/`, `lit-selection/`, `lit-synthesis/`) land in the
+working directory (override with `PI_LITERATURE_REVIEW_HOME`).
+
+## Search
+
+```
+node src/cli.ts "<query>" [-n PER_SOURCE] [-s SOURCES] [-g "a,b;c,d"]
+       [--min-cites N] [--year-from YYYY] [--year-to YYYY] [--venues "a,b"]
+       [--require-pdf] [--verified-only] [--sort cites|year] [--html [FILE]] [--no-enrich]
+       [--variant "..." (repeatable)] [--digest]
+```
+
+- `-s` -- comma list of `arxiv`, `crossref`, `openalex`, `semanticscholar`
+  (default all).
+- `-g` -- the concept blocks: groups separated by `;`, terms by `,`
+  (`"river,fluvial;sandbar,bar;sentinel,s-1,s-2"`), or the AND/OR
+  expression form.
+- `--variant` -- an additional query for the same need; results are
+  deduplicated across variants and labeled Q1, Q2, ...
+- `--html` without FILE writes `lit-search/<date>_<query>.html` plus the
+  JSON sidecar; with FILE, that path. Without `--html` the JSON payload
+  prints to stdout.
+- `--digest` prints the agent-facing digest instead of the JSON.
+
+Example (the release acceptance query):
+
+```
+node src/cli.ts "sandbar detection rivers Sentinel-1 Sentinel-2" -n 5 \
+  -s arxiv,crossref,openalex -g "river,fluvial;sandbar,bar;sentinel,s-1,s-2" --html --digest
+```
+
+## Selection
+
+```
+node src/cli.ts selection <DOI-or-arXiv-ID> [more ...]
+```
+
+Downloads legal open-access PDFs into `lit-selection/`; set
+`PI_LITERATURE_REVIEW_MAILTO` for Unpaywall.
+
+## Synthesis
+
+```
+node src/cli.ts synthesis "<question>" [--paper <file.pdf>] [--session ID] [--model M]
+       [--embed-model E] [--top-k N] [--language L] [--reindex] [--digest]
+node src/cli.ts synthesis --report [--papers "a.pdf,b.pdf" | --all | --paper X]
+       [--questions "q1;q2"] [--summary bullets|prose] [--detail-mode per-paper|cross-paper]
+       [--review] [--language L] [--ui-language de|en] [--html [FILE]] [--digest]
+node src/cli.ts synthesis --session-report [--paper <file.pdf>] ["<focus>"] [--session ID] [--html [FILE]]
+```
+
+The CLI shares Pi's session scoping: without `--session` it uses the most
+recently WRITTEN Pi session of the current folder (from
+`~/.pi/agent/sessions/`), so a `synthesis` call right after a Pi chat picks
+up that session's sticky scope; `--session <uuid>` targets an older one;
+with no session at all, pass the scope explicitly. Generation in the CLI
+runs on `llm.chatModel` / `llm.generateModel` (there is no Pi model to fall
+back to).
+
+## Maintenance
+
+```
+node src/cli.ts llm-check              # resolved config path, embed + generate round trip
+node src/cli.ts extract <file.pdf>     # pages, usability gate and chunking of one PDF
+node src/cli.ts index [--reindex]      # match lit-selection/ against saved searches, update the embedding index
+```
