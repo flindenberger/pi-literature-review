@@ -14,25 +14,26 @@
 import { viewerFindsPhrase } from "./pdfjs-find.ts";
 
 /**
- * Retrieval chunk target: ~250 tokens of academic prose, about one
- * paragraph.
+ * Retrieval target: ~250 tokens of academic prose (~1 paragraph).
+ * 1000/300/150 (target / minimum / overlap) is the measured middle ground
+ * between "finds the passage" and "cites a paragraph, not a page".
  *
- * MEASURED, not guessed: a chunk-size experiment ranked, for a set of
- * questions whose answer passage a human had located in the PDF
- * beforehand, the chunk holding that passage under several cut sizes
- * (bge-m3 embeddings, cosine ranking exactly as retrieve.ts does it).
- * Against the previous 1600/400/200 not one case ranked worse and four
- * ranked better (median rank 2 -> 1, worst 4 -> 3), while the text ONE
- * citation marker covers fell from ~1550 to ~900 characters -- the point
- * of the change, since a superscript should send the reader to a
- * paragraph, not half a page.
+ * MEASURED, not guessed. In a chunk-size experiment, we took 8 question/
+ * passage pairs across 3 papers where a human had pre-located the answer
+ * passage, then ranked the chunk containing that passage using bge-m3
+ * embeddings and the same cosine ranking as retrieve.ts. Versus the
+ * previous 1600/400/200 setup, no case regressed and 4 improved:
+ * median rank 2 -> 1, worst rank 4 -> 3. Meanwhile, a single citation
+ * marker's text coverage dropped from ~1550 to ~900 characters. That's
+ * the actual goal: a citation should point to the relevant paragraph,
+ * not half a page.
  *
- * Do not shrink this further without a mechanism for context-poor pieces:
- * at 600 the same measurement collapsed on a results table (rank 3 ->
- * 159). A small piece cut out of a table is number soup; what made it
- * findable at 1600 was the page header that happened to share the chunk.
- * The ground truth is small (8 passages over 3 papers); widen it before
- * moving these numbers again.
+ * Do not shrink this further without handling context-poor fragments.
+ * At 600, the same test collapsed on a results table (rank 3 -> 159):
+ * a table fragment is mostly number soup. At 1600, it was retrievable
+ * because the chunk also contained the page header. The current
+ * measurement is small (8 passages / 3 papers), so widen the ground
+ * truth before changing these numbers again.
  */
 export const CHUNK_TARGET_CHARS = 1000;
 /** Trailing fragments below this merge into the previous chunk. */
