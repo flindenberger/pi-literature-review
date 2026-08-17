@@ -3,12 +3,20 @@
  *
  * package.json points pi.extensions at THIS file (the package root), not at
  * the extensions/ directory. Two reasons:
- *   1. A directory entry makes pi list one line per file (chat.ts, fetch.ts,
- *      ...); a single-file entry collapses the package to one entry.
- *   2. For a path-installed package pi labels that entry with the entry
- *      file's PARENT directory name. At the package root that name is
- *      "pi-literature-review" -- the label we want -- whereas an aggregator
- *      inside extensions/ would show the generic "extensions".
+ *   1. A directory entry makes pi list one line per file (search.ts,
+ *      selection.ts, ...); a single-file entry collapses the package to
+ *      ONE entry in pi's [Extensions] list.
+ *   2. pi labels that entry with the entry file's PARENT directory name.
+ *      Whatever the install route, the package sits in a folder named
+ *      after it -- pi install <path> uses the checkout folder,
+ *      pi install npm:pi-literature-review lands in
+ *      ~/.pi/agent/npm/node_modules/pi-literature-review/, a git install
+ *      in ~/.pi/agent/git/<host>/<owner>/pi-literature-review/ -- so an
+ *      entry file at the package root is always labelled
+ *      "pi-literature-review", whereas an aggregator inside extensions/
+ *      would show the generic "extensions" everywhere.
+ * pi owns that install folder (updates reset it), which is also why the
+ * user configuration lives outside it (see src/config.ts).
  * Each pipeline stage still lives in its own module under extensions/; this
  * file only fans the pi API out to their registrars, in pipeline order.
  */

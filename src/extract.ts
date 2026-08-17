@@ -14,19 +14,25 @@
 import { viewerFindsPhrase } from "./pdfjs-find.ts";
 
 /**
- * Retrieval chunk target: ~250 tokens of academic prose.
+ * Retrieval chunk target: ~250 tokens of academic prose, about one
+ * paragraph.
  *
- * MEASURED, not guessed (experiments/chunk-eval.ts, 2026-07-27, 8
- * human-verified passages over 3 papers, bge-m3): against the previous
- * 1600/400/200 not one case ranked worse and four ranked better (median
- * rank 2 -> 1, worst 4 -> 3), while the text ONE citation marker covers
- * fell from ~1550 to ~900 characters -- the point of the change, since a
- * superscript should send the reader to a paragraph, not half a page.
+ * MEASURED, not guessed: a chunk-size experiment ranked, for a set of
+ * questions whose answer passage a human had located in the PDF
+ * beforehand, the chunk holding that passage under several cut sizes
+ * (bge-m3 embeddings, cosine ranking exactly as retrieve.ts does it).
+ * Against the previous 1600/400/200 not one case ranked worse and four
+ * ranked better (median rank 2 -> 1, worst 4 -> 3), while the text ONE
+ * citation marker covers fell from ~1550 to ~900 characters -- the point
+ * of the change, since a superscript should send the reader to a
+ * paragraph, not half a page.
  *
  * Do not shrink this further without a mechanism for context-poor pieces:
  * at 600 the same measurement collapsed on a results table (rank 3 ->
  * 159). A small piece cut out of a table is number soup; what made it
  * findable at 1600 was the page header that happened to share the chunk.
+ * The ground truth is small (8 passages over 3 papers); widen it before
+ * moving these numbers again.
  */
 export const CHUNK_TARGET_CHARS = 1000;
 /** Trailing fragments below this merge into the previous chunk. */
