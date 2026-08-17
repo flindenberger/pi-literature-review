@@ -16,6 +16,7 @@ import {
 	parseGroupTerms,
 	parsePerSource,
 	parseVariantLines,
+	parseVariantSuggestions,
 	parseYearRange,
 	queryBlocks,
 	sortVariantsByBreadth,
@@ -338,3 +339,19 @@ import {
 }
 
 console.log("intake.test.ts: all assertions passed");
+
+// parseVariantSuggestions (2026-08-17): the model marks its arXiv/CS
+// phrasing with a leading "arXiv:"; the marker is stripped and carried as a
+// flag (survives bullets, dedupe and the breadth sort); unmarked lines are
+// plain; the string-only wrapper stays marker-free.
+{
+	const raw = "1. river sandbar satellite\n2. arXiv: (river OR water body) AND (segmentation OR mapping) AND (satellite OR SAR)";
+	const parsed = parseVariantSuggestions(raw, "sandbar detection");
+	assert.equal(parsed.length, 2);
+	const tagged = parsed.filter((entry) => entry.arxiv);
+	assert.equal(tagged.length, 1);
+	assert.ok(!/arxiv:/i.test(tagged[0]!.text), "marker stripped");
+	assert.ok(tagged[0]!.text.includes("segmentation"));
+	assert.ok(parseVariantLines(raw, "sandbar detection").every((line) => !/^arxiv:/i.test(line)));
+	assert.deepEqual(parseVariantSuggestions("plain line", "base").map((entry) => entry.arxiv), [false]);
+}

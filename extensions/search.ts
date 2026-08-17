@@ -40,7 +40,8 @@ import {
 	formatGroupExpression,
 	isProseQuery,
 	parsePerSource,
-	parseVariantLines,
+	parseVariantSuggestions,
+	type VariantSuggestion,
 	parseYearRange,
 	queryBlocks,
 	yearRangeToSpec,
@@ -130,6 +131,22 @@ function variantPrompt(query: string, hint: string, count: number, prose: boolea
 		+ "stream, band, body alone) appear only as anchored phrases (river channel, stream network, "
 		+ "water body). One block may hold the task words (extraction OR mapping OR segmentation), but "
 		+ "every OTHER block must pin the topic unambiguously.",
+		// 2026-08-17 user wish after an arXiv-0-hits diagnosis: arXiv is a
+		// physics/CS/math preprint server -- MEASURED that domain vocabulary
+		// (waterline 20 papers in all of arXiv, "shoreline extraction" 1)
+		// yields nothing there, while the same need phrased in computer-
+		// vision terms ("water body" AND segmentation, sensor names as OR
+		// list) reaches ~100. One suggestion per round speaks that dialect;
+		// it runs against all sources like any other and its Q-label shows
+		// what arXiv answered. Code sorts by breadth afterwards, so the
+		// row may not stay last -- the CONTENT is the point, not the slot.
+		"Make EXACTLY ONE suggestion (the last line) a computer-science / preprint-server phrasing of the "
+		+ "same need, the way arXiv machine-learning and computer-vision papers describe it: generic method "
+		+ "words (segmentation OR extraction OR mapping OR detection, deep learning, CNN, SAR) instead of "
+		+ "field jargon, the object as 'water body' or 'surface water', and the sensor block as an OR "
+		+ "list of plain sensor names (satellite OR remote sensing OR Sentinel OR Landsat OR SAR); keep it "
+		+ "to 3 blocks, no multi-word specialist phrases, and do NOT reuse the base query's specialist "
+		+ "terms in it. Start exactly that line with the marker 'arXiv: ' (only that line carries a marker).",
 		"Prefer English terms (the databases index English metadata); if the base query is in another language, "
 		+ "translate the concepts to English.",
 		"Multi-word terms as plain words, NO quotation marks, no field prefixes.",
@@ -241,6 +258,7 @@ const SEARCH_TEXT: Record<DialogLang, {
 	 * strict; the first suggestion distills the sentence and arrives
 	 * prechecked. */
 	variantsProse: string;
+	variantsArxiv: string;
 	periodTab: string;
 	periodTitle: string;
 	periodLast: (n: number) => string;
@@ -310,6 +328,7 @@ const SEARCH_TEXT: Record<DialogLang, {
 		variantsFailed: (message) => `Vorschläge nicht abrufbar: ${message}`,
 		variantsNoModel: "kein Modell in pi gewählt -- Vorschläge nicht verfügbar",
 		variantsProse: "liest sich wie ein Satz -- der erste Vorschlag unten destilliert ihn in Konzeptblöcke und ist vorausgewählt",
+		variantsArxiv: "arXiv/CS-Fassung: Methodenwörter statt Fachjargon -- die Zeile, die arXiv beantworten kann",
 		periodTab: "Suchzeitraum",
 		periodTitle: "Erscheinungszeitraum?",
 		periodLast: (n) => `Letzte ${n} Jahre`,
@@ -382,6 +401,7 @@ const SEARCH_TEXT: Record<DialogLang, {
 		variantsFailed: (message) => `suggestions not available: ${message}`,
 		variantsNoModel: "no model selected in pi -- suggestions not available",
 		variantsProse: "reads like a sentence -- the first suggestion below distills it into concept blocks and is prechecked",
+		variantsArxiv: "arXiv/CS phrasing: method words instead of field jargon -- the row arXiv can answer",
 		periodTab: "Search Period",
 		periodTitle: "Publication period?",
 		periodLast: (n) => `Last ${n} years`,
@@ -677,15 +697,21 @@ async function intakeWizard(
 						maxTokens: 500,
 						...(signal ? { signal } : {}),
 					});
-					const suggestions = parseVariantLines(raw, liveQuery, VARIANT_SUGGESTION_LIMIT)
-						.filter((line) => !agentVariants.some((seen) => seen.toLowerCase() === line.toLowerCase()));
-					proseDistilled = prose && suggestions.length ? (suggestions[0] as string) : null;
+					const suggestions = parseVariantSuggestions(raw, liveQuery, VARIANT_SUGGESTION_LIMIT)
+						.filter((entry) => !agentVariants.some((seen) => seen.toLowerCase() === entry.text.toLowerCase()));
+					proseDistilled = prose && suggestions.length ? (suggestions[0] as VariantSuggestion).text : null;
 					return [
 						base(suggestions.length
 							? (prose ? text.variantsProse : undefined)
 							: text.variantsNoneFound),
 						...agentItems,
-						...suggestions.map((line) => ({ id: line, label: line })),
+						...suggestions.map((entry) => ({
+							id: entry.text,
+							label: entry.text,
+							// The model's arXiv/CS phrasing gets a dim tag line so
+							// the user can spot it; no marker from the model = no tag.
+							...(entry.arxiv ? { description: text.variantsArxiv } : {}),
+						})),
 					];
 				} catch (error) {
 					return [

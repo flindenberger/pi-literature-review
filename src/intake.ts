@@ -305,13 +305,35 @@ export function sortVariantsByBreadth(variants: string[], baseBlocks: string[][]
  * before it runs.
  */
 export function parseVariantLines(raw: string, baseQuery: string, cap = 8): string[] {
+	return parseVariantSuggestions(raw, baseQuery, cap).map((entry) => entry.text);
+}
+
+/** One parsed suggestion; `arxiv` marks the line the model flagged as its
+ * arXiv / computer-science phrasing (2026-08-17). */
+export interface VariantSuggestion {
+	text: string;
+	arxiv: boolean;
+}
+
+/** Marker the prompt asks the model to put in front of its arXiv/CS
+ * phrasing; stripped here, carried as the `arxiv` flag so the dialog can
+ * label the row. Missing marker = no label, honestly. */
+const ARXIV_MARKER = /^arxiv\s*:\s*/i;
+
+/** parseVariantLines with the arXiv marker preserved as a flag (same
+ * cleaning, dedupe, cap and breadth order). */
+export function parseVariantSuggestions(raw: string, baseQuery: string, cap = 8): VariantSuggestion[] {
 	const baseBlocks = queryBlocks(baseQuery.trim());
 	const seen = new Set([baseQuery.trim().toLowerCase()]);
+	const flags = new Map<string, boolean>();
 	const variants: string[] = [];
 	for (const line of raw.split("\n")) {
-		const cleaned = line
+		const unbulleted = line
 			.trim()
-			.replace(/^(?:[-*•]|\d{1,2}[.)])(?:\s+|$)/, "")
+			.replace(/^(?:[-*•]|\d{1,2}[.)])(?:\s+|$)/, "");
+		const arxiv = ARXIV_MARKER.test(unbulleted);
+		const cleaned = unbulleted
+			.replace(ARXIV_MARKER, "")
 			.replace(/^["'„“`]+|["'“”`]+$/g, "")
 			.trim();
 		if (!cleaned) continue;
@@ -319,10 +341,12 @@ export function parseVariantLines(raw: string, baseQuery: string, cap = 8): stri
 		const key = aligned.toLowerCase();
 		if (seen.has(key)) continue;
 		seen.add(key);
+		flags.set(key, arxiv);
 		variants.push(aligned);
 		if (variants.length >= cap) break;
 	}
-	return sortVariantsByBreadth(variants, baseBlocks);
+	return sortVariantsByBreadth(variants, baseBlocks)
+		.map((text) => ({ text, arxiv: flags.get(text.toLowerCase()) === true }));
 }
 
 /**

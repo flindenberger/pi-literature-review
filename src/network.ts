@@ -274,13 +274,25 @@ const PAGE_SCRIPT = `
 		return "rgb(" + rgb.join(",") + ")";
 	}
 
-	function radiusOf(work) {
-		return 6 + 4 * Math.log10((work.cited_by_count || 0) + 2);
+	// Circle AREA grows with the citation count, scaled to the most-cited
+	// work of THIS graph (radius = sqrt of the share). The earlier
+	// log10 scale drew 10 vs 217 citations as 10 vs 15 px -- visually
+	// almost equal, which defeated the encoding. Pool-relative sqrt keeps
+	// the extremes apart (5 px for zero, 24 px for the top work) without a
+	// runaway outlier: the largest circle is always exactly 24 px.
+	var RADIUS_MIN = 5;
+	var RADIUS_MAX = 24;
+	function radiusOf(work, maxCites) {
+		var share = (work.cited_by_count || 0) / Math.max(1, maxCites || 0);
+		return RADIUS_MIN + (RADIUS_MAX - RADIUS_MIN) * Math.sqrt(Math.min(1, share));
 	}
 
 	function drawGraph(graph, resolvedBy) {
 		var nodes = graph.nodes;
 		var seed = nodes[0];
+		var maxCites = nodes.reduce(function (acc, work) {
+			return Math.max(acc, work.cited_by_count || 0);
+		}, 0);
 		var random = seededRandom(shortId(seed));
 		// Fixed stage, set once: the graph settles centred inside it (an
 		// auto-fit viewBox was tried 2026-08-12 and reverted on user
@@ -372,7 +384,7 @@ const PAGE_SCRIPT = `
 			});
 			nodes.forEach(function (work, index) {
 				var p = points[index];
-				var r = radiusOf(work);
+				var r = radiusOf(work, maxCites);
 				var isSeed = index === 0;
 				var inEdge = hoverEdge !== null
 					&& (graph.edges[hoverEdge].source === index || graph.edges[hoverEdge].target === index);
@@ -516,7 +528,7 @@ export function renderNetworkHtml(): string {
 <div><h1>Citation Network</h1><span class="meta" id="seedline"></span></div>
 <p class="status" id="status">Loading ...</p>
 <svg id="canvas" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Citation network graph"></svg>
-<p class="legend">Circle size = citation count &middot; colour = publication year
+<p class="legend">Circle size = citation count (area proportional, scaled to the most-cited work shown) &middot; colour = publication year
 (<span class="swatch" id="legend-old-swatch"></span><span id="legend-old"></span> to
 <span class="swatch" id="legend-new-swatch"></span><span id="legend-new"></span>)
 &middot; line thickness = shared references &middot; the red-ringed circle is the selected paper.</p>

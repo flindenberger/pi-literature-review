@@ -105,6 +105,17 @@ stay close to the base query's own words with few synonyms, later rows
 grow freer (wider synonym sets, subtopics, method names) -- the prompt
 asks for the staggering and fixed code guarantees the order by sorting
 on term count, then on how many terms share no word with the base query.
+One suggestion per round is deliberately an arXiv/computer-science
+phrasing (2026-08-17): arXiv is a physics/CS/math preprint server, and
+measured live, hydrology or coastal jargon ("waterline" appears in 20
+arXiv papers in total, "shoreline extraction" in 1) returns nothing there
+while the same need in computer-vision words ("water body" AND
+segmentation, sensor names as an OR list) reaches about a hundred; the
+model marks that line and the dialog shows it with a dim "arXiv/CS
+phrasing" tag under the row (no mark from the model = no tag); the row
+runs against all sources like any other, and the "Records
+identified" rows show what each source answered per query. A zero for
+arXiv on a domain-jargon query is coverage, not a failed request.
 A base query that reads like a PROSE SENTENCE (2026-08-10; deterministic
 detection: six or more derived word blocks, the user's own boolean/quote
 syntax is never touched) gets special handling: word-per-block derivation
