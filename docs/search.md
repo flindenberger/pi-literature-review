@@ -79,8 +79,11 @@ self-contained and offline-readable.
   fields); a **Graph** button per row.
 - **Graph**: the paper's references and citing works, the best-connected
   35 as circles (area = citations relative to the most-cited work shown,
-  colour = year), linked by bibliographic coupling and co-citation; hover
-  focuses, hovering a line names why it exists; the mouse wheel zooms,
+  colour = year), linked by bibliographic coupling and co-citation; two
+  toggles ("Cited by this paper" / "Citing this paper") draw the paper's
+  direct citations as arrows towards the cited work; works the paper
+  cites settle to its left, works citing it to its right; hover focuses,
+  hovering a line names why it exists; the mouse wheel zooms,
   dragging pans, a double-click resets the view. `network.html` next to
   the results page fetches this from OpenAlex only when opened; only the
   DOI or title is sent, no language model involved.
