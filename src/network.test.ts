@@ -80,6 +80,21 @@ const html = renderNetworkHtml();
 	assert.ok(html.includes("direct citation"));
 }
 
+// zoom + pan (2026-08-18 user wish, small screens): wheel zoom around the
+// cursor, drag to pan, double-click resets -- all via the viewBox, the
+// fixed 1400x900 start view stays; the status line tells the user
+{
+	assert.ok(html.includes('addEventListener("wheel"'));
+	assert.ok(html.includes('addEventListener("dblclick"'));
+	assert.ok(html.includes("installViewControls(width, height)"));
+	assert.ok(html.includes("Mouse wheel zooms, drag pans, double-click resets the view."));
+	assert.ok(html.includes('"0 0 " + width + " " + height'));
+	// settled layout glides to a padded bounding-box start view; the
+	// full stage stays the outer limit
+	assert.ok(html.includes("viewControls.setHome(homeView(points, width, height))"));
+	assert.ok(html.includes("HOME_FILL"));
+}
+
 // deterministic layout: seeded PRNG, no Math.random / Date.now in the page
 {
 	assert.ok(html.includes("seededRandom"));

@@ -55,7 +55,8 @@ const STYLE = `
 	.status.error { color: #8a1f11; font-weight: 600; }
 	a { color: #2b4a6f; }
 	#canvas { width: 100%; height: 84vh; min-height: 28rem; border: 1px solid #d9d9d4;
-		background: #fdfdfc; margin-top: 0.3rem; display: block; }
+		background: #fdfdfc; margin-top: 0.3rem; display: block; cursor: grab; touch-action: none;
+		user-select: none; -webkit-user-select: none; }
 	#canvas text { pointer-events: none; }
 	#canvas circle { cursor: pointer; }
 	#canvas line { pointer-events: stroke; cursor: pointer; }
@@ -300,6 +301,7 @@ const PAGE_SCRIPT = `
 		var width = 1400;
 		var height = 900;
 		canvas.setAttribute("viewBox", "0 0 " + width + " " + height);
+		var viewControls = installViewControls(width, height);
 
 		var years = nodes.map(function (w) { return w.publication_year || 0; }).filter(Boolean);
 		var minYear = Math.min.apply(null, years.length ? years : [0]);
@@ -410,6 +412,7 @@ const PAGE_SCRIPT = `
 			for (var step = 0; step < 4 && ticks < 320; step++, ticks++) tick();
 			render();
 			if (ticks < 320) window.requestAnimationFrame(frame);
+			else viewControls.setHome(homeView(points, width, height));
 		}
 		window.requestAnimationFrame(frame);
 
@@ -473,7 +476,127 @@ const PAGE_SCRIPT = `
 		var suffix = resolvedBy === "doi" ? "" : " (resolved by title search)";
 		seedLine.textContent = " -- " + (seed.display_name || "(untitled)") + suffix;
 		setStatus(nodes.length + " papers, " + graph.edges.length + " similarity links. "
-			+ "Hover a circle or a line for details; click a circle to open the paper.", false);
+			+ "Hover a circle or a line for details; click a circle to open the paper. "
+			+ "Mouse wheel zooms, drag pans, double-click resets the view.", false);
+	}
+
+	// Mouse-wheel zoom + drag-to-pan + double-click reset, all done by
+	// moving the SVG viewBox (the layout itself never changes; the fixed
+	// stage stays the start view). Wheel zooms around the cursor so the
+	// paper under the pointer stays put; the zoom range is capped so the
+	// graph can neither vanish nor explode. Ctrl-wheel is left to the
+	// browser (page zoom).
+	var ZOOM_MIN = 0.25;
+	var ZOOM_MAX = 8;
+	// Start view once the layout has settled (2026-08-18 user wish: "a bit
+	// larger, not filling"): the graph's bounding box padded so it covers
+	// roughly two thirds of the visible area, stage aspect kept, never
+	// wider than the full stage and never zoomed in beyond 2x (a tiny
+	// graph keeps floating). Double-click returns to this view.
+	var HOME_FILL = 0.65;
+	var HOME_ZOOM_MAX = 2;
+	function homeView(points, width, height) {
+		var minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+		points.forEach(function (p) {
+			minX = Math.min(minX, p.x - 30); maxX = Math.max(maxX, p.x + 30);
+			minY = Math.min(minY, p.y - 30); maxY = Math.max(maxY, p.y + 45);
+		});
+		if (!isFinite(minX)) return { x: 0, y: 0, w: width, h: height };
+		var w = Math.max((maxX - minX) / HOME_FILL, (maxY - minY) / HOME_FILL * (width / height));
+		w = Math.max(width / HOME_ZOOM_MAX, Math.min(width, w));
+		var h = w * (height / width);
+		return { x: (minX + maxX) / 2 - w / 2, y: (minY + maxY) / 2 - h / 2, w: w, h: h };
+	}
+	function installViewControls(width, height) {
+		var home = { x: 0, y: 0, w: width, h: height };
+		var view = { x: home.x, y: home.y, w: home.w, h: home.h };
+		function apply() {
+			canvas.setAttribute("viewBox", view.x + " " + view.y + " " + view.w + " " + view.h);
+		}
+		// Glide the view to a target over a few frames (no snap).
+		var glide = null;
+		function glideTo(target) {
+			var from = { x: view.x, y: view.y, w: view.w, h: view.h };
+			var start = null;
+			glide = function (now) {
+				if (start === null) start = now;
+				var t = Math.min(1, (now - start) / 350);
+				var e = 1 - Math.pow(1 - t, 3);
+				view.x = from.x + (target.x - from.x) * e;
+				view.y = from.y + (target.y - from.y) * e;
+				view.w = from.w + (target.w - from.w) * e;
+				view.h = from.h + (target.h - from.h) * e;
+				apply();
+				if (t < 1 && glide) window.requestAnimationFrame(glide);
+				else glide = null;
+			};
+			window.requestAnimationFrame(glide);
+		}
+		// Client (pixel) -> stage (viewBox) coordinates, honouring the
+		// preserveAspectRatio "xMidYMid meet" letterboxing of the <svg>.
+		function stagePoint(clientX, clientY) {
+			var box = canvas.getBoundingClientRect();
+			var scale = Math.min(box.width / view.w, box.height / view.h);
+			var offX = (box.width - view.w * scale) / 2;
+			var offY = (box.height - view.h * scale) / 2;
+			return {
+				x: view.x + (clientX - box.left - offX) / scale,
+				y: view.y + (clientY - box.top - offY) / scale,
+				scale: scale,
+			};
+		}
+		canvas.addEventListener("wheel", function (event) {
+			if (event.ctrlKey) return;
+			event.preventDefault();
+			var factor = Math.exp(-event.deltaY * (event.deltaMode === 1 ? 0.05 : 0.0015));
+			var zoom = width / view.w;
+			var next = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, zoom * factor));
+			factor = next / zoom;
+			var at = stagePoint(event.clientX, event.clientY);
+			view.w = view.w / factor;
+			view.h = view.h / factor;
+			view.x = at.x - (at.x - view.x) / factor;
+			view.y = at.y - (at.y - view.y) / factor;
+			glide = null;
+			apply();
+		}, { passive: false });
+		var drag = null;
+		canvas.addEventListener("mousedown", function (event) {
+			if (event.button !== 0) return;
+			var target = event.target;
+			if (target && target.getAttribute && (target.getAttribute("data-node") !== null)) return;
+			// Without this the browser starts a text selection while panning
+			// and the node labels light up (field find 2026-08-18).
+			event.preventDefault();
+			glide = null;
+			drag = { x: event.clientX, y: event.clientY, vx: view.x, vy: view.y, moved: false };
+			canvas.style.cursor = "grabbing";
+		});
+		window.addEventListener("mousemove", function (event) {
+			if (!drag) return;
+			var scale = stagePoint(0, 0).scale;
+			var dx = (event.clientX - drag.x) / scale;
+			var dy = (event.clientY - drag.y) / scale;
+			if (Math.abs(dx) + Math.abs(dy) > 2) drag.moved = true;
+			view.x = drag.vx - dx;
+			view.y = drag.vy - dy;
+			apply();
+		});
+		window.addEventListener("mouseup", function () {
+			canvas.style.cursor = "";
+			drag = null;
+		});
+		canvas.addEventListener("dblclick", function (event) {
+			var target = event.target;
+			if (target && target.getAttribute && (target.getAttribute("data-node") !== null)) return;
+			glideTo(home);
+		});
+		return {
+			setHome: function (next) {
+				home = next;
+				glideTo(home);
+			},
+		};
 	}
 
 	function escapeHtml(text) {
