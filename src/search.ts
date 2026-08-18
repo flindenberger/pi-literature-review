@@ -190,7 +190,7 @@ export async function runSearch(options: SearchOptions) {
 		scored,
 		options.enrich === false
 			? "no abstract (sources delivered none; enrichment disabled)"
-			: "no abstract (sources and the OpenAlex lookup delivered none)",
+			: "no abstract (sources, the OpenAlex and the Semantic Scholar lookup delivered none)",
 	);
 	for (const { record, reason } of abstractGate.dropped) {
 		warn(`dropped "${record.title}": ${reason}`);

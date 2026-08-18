@@ -6,7 +6,7 @@
  */
 
 import assert from "node:assert/strict";
-import { addCodeLinks, applyEnrichment, applyJournalScores, bareArxivId, codeLookupCandidates, codeUrlFromAbstract, lookupDoi, pickCodeRepo } from "./enrich.ts";
+import { addCodeLinks, applyEnrichment, applyJournalScores, bareArxivId, codeLookupCandidates, codeUrlFromAbstract, enrichAll, lookupDoi, pickCodeRepo } from "./enrich.ts";
 
 const base = {
 	title: "A Title",
@@ -15,6 +15,56 @@ const base = {
 	cites: null as number | null,
 	venue: "",
 };
+
+// enrichAll (2026-08-18): an abstract still missing after the OpenAlex
+// lookup is asked from Semantic Scholar by DOI (injected here; stubbed
+// OpenAlex fetch delivers cites+venue but no abstract); provenance
+// "semanticscholar"; a record whose OpenAlex answer carries the abstract
+// never asks S2; arXiv-only records (no own DOI) never ask S2 either;
+// a failing S2 lookup keeps the record, loudly.
+{
+	const realFetch = globalThis.fetch;
+	globalThis.fetch = (async (url: unknown) => {
+		const u = String(url);
+		if (u.includes("/doi:10.1/withabs")) {
+			return new Response(JSON.stringify({ cited_by_count: 3, abstract_inverted_index: { Own: [0], text: [1] } }), { status: 200 });
+		}
+		return new Response(JSON.stringify({ cited_by_count: 5, primary_location: { source: { display_name: "V" } } }), { status: 200 });
+	}) as typeof fetch;
+	try {
+		const asked: string[] = [];
+		const lookup = async (doi: string) => {
+			asked.push(doi);
+			if (doi === "10.1/fail") throw new Error("boom");
+			return doi === "10.1/s2" ? "From S2." : null;
+		};
+		const warnings: string[] = [];
+		const out = await enrichAll([
+			{ title: "S2", doi: "10.1/s2", arxiv_id: "", cites: null, venue: "", abstract: "" },
+			{ title: "None", doi: "10.1/none", arxiv_id: "", cites: null, venue: "", abstract: "" },
+			{ title: "OA", doi: "10.1/withabs", arxiv_id: "", cites: null, venue: "", abstract: "" },
+			{ title: "Arx", doi: "", arxiv_id: "2401.00001", cites: null, venue: "", abstract: "" },
+			{ title: "Fail", doi: "10.1/fail", arxiv_id: "", cites: null, venue: "", abstract: "" },
+			{ title: "After", doi: "10.1/after", arxiv_id: "", cites: null, venue: "", abstract: "" },
+		], (m) => warnings.push(m), lookup);
+		// the failure trips the breaker: "After" is not asked any more
+		assert.deepEqual(asked, ["10.1/s2", "10.1/none", "10.1/fail"]);
+		assert.equal(out[5].abstract, "");
+		assert.equal(out[5].cites, 5);
+		assert.equal(out[0].abstract, "From S2.");
+		assert.equal(out[0].enriched?.abstract, "semanticscholar");
+		assert.equal(out[0].enriched?.cites, "openalex");
+		assert.equal(out[1].abstract, "");
+		assert.equal(out[2].abstract, "Own text");
+		assert.equal(out[2].enriched?.abstract, "openalex");
+		assert.equal(out[4].abstract, "");
+		assert.equal(out[4].cites, 5);
+		assert.ok(warnings.some((m) => m.includes("abstract lookup at Semantic Scholar for \"Fail\" failed: boom") && m.includes("skipped this run")));
+		assert.ok(warnings.some((m) => m.includes("abstract lookups at Semantic Scholar: 3, 1 abstract(s) filled")));
+	} finally {
+		globalThis.fetch = realFetch;
+	}
+}
 
 // lookupDoi: own DOI wins; arXiv falls back to its DataCite DOI, version dropped
 {

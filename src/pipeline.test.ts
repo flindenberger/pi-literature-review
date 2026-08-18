@@ -417,11 +417,11 @@ function record(overrides: Partial<SourceRecord>): SourceRecord {
 			{ title: "c", abstract: "   " },
 			{ title: "d", abstract: "Also real." },
 		],
-		"no abstract (sources and the OpenAlex lookup delivered none)",
+		"no abstract (sources, the OpenAlex and the Semantic Scholar lookup delivered none)",
 	);
 	assert.deepEqual(kept.map((r) => r.title), ["a", "d"]);
 	assert.deepEqual(dropped.map((d) => d.record.title), ["b", "c"]);
-	assert.ok(dropped.every((d) => d.reason === "no abstract (sources and the OpenAlex lookup delivered none)"));
+	assert.ok(dropped.every((d) => d.reason === "no abstract (sources, the OpenAlex and the Semantic Scholar lookup delivered none)"));
 }
 
 // sort: descending, unknown values last, input untouched

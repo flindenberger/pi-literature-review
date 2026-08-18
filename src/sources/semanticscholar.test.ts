@@ -7,7 +7,7 @@
  */
 
 import assert from "node:assert/strict";
-import { buildBulkQuery, toSourceRecord } from "./semanticscholar.ts";
+import { abstractLookupUrl, buildBulkQuery, toSourceRecord } from "./semanticscholar.ts";
 
 /* ---------------- buildBulkQuery ---------------- */
 {
@@ -77,6 +77,14 @@ import { buildBulkQuery, toSourceRecord } from "./semanticscholar.ts";
 	assert.equal(bare.url, "https://www.semanticscholar.org/paper/abc123");
 	assert.equal(bare.year, null);
 	assert.equal(bare.cites, null);
+}
+
+// abstractLookupUrl (2026-08-18): single-paper endpoint by DOI, abstract only
+{
+	assert.equal(
+		abstractLookupUrl("10.1016/j.geomorph.2019.02.014"),
+		"https://api.semanticscholar.org/graph/v1/paper/DOI:10.1016%2Fj.geomorph.2019.02.014?fields=abstract",
+	);
 }
 
 console.log("semanticscholar.test.ts: all assertions passed");

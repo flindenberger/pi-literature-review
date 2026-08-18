@@ -8,7 +8,11 @@
  * of CrossRef records lacked one). For records that still miss cites,
  * venue or abstract after dedupe, one identifier lookup at OpenAlex
  * (GET api.openalex.org/works/doi:<doi>) fills the gap -- an open API, not
- * scraping, and no LLM. Only empty fields are filled, never overwritten,
+ * scraping, and no LLM. An abstract still missing after that is asked
+ * from Semantic Scholar by DOI (2026-08-18; OpenAlex lacks abstracts for
+ * many Elsevier papers that S2 carries -- such a record used to fall to
+ * the abstract gate depending on which source happened to find it).
+ * Only empty fields are filled, never overwritten,
  * and every filled field is recorded in `enriched` (field -> provider) so
  * both the JSON and the HTML rendering can mark the provenance. A filled
  * abstract also feeds the block labeling, which matches title+abstract.
@@ -17,6 +21,7 @@
 import { githubToken } from "./config.ts";
 import { retryDelayMs } from "./sources/arxiv.ts";
 import { reconstructAbstract } from "./sources/openalex.ts";
+import { fetchAbstractByDoi } from "./sources/semanticscholar.ts";
 import { contactMailto, userAgent, warn as defaultWarn } from "./types.ts";
 
 const BASE_URL = "https://api.openalex.org/works";
@@ -106,10 +111,14 @@ export function applyEnrichment<T extends EnrichableRecord>(
 export async function enrichAll<T extends EnrichableRecord>(
 	records: T[],
 	warn: (message: string) => void = defaultWarn,
+	abstractLookup: (doi: string) => Promise<string | null> = fetchAbstractByDoi,
 ): Promise<Array<Enriched<T>>> {
 	const out: Array<Enriched<T>> = [];
 	let lookups = 0;
 	let gained = 0;
+	let s2Lookups = 0;
+	let s2Gained = 0;
+	let s2Down = false;
 	for (const record of records) {
 		const doi = lookupDoi(record);
 		if (doi === null || !needsEnrichment(record)) {
@@ -117,6 +126,7 @@ export async function enrichAll<T extends EnrichableRecord>(
 			continue;
 		}
 		lookups++;
+		let current: Enriched<T> = record;
 		try {
 			const mailto = contactMailto();
 			const query = mailto ? `?${new URLSearchParams({ mailto })}` : "";
@@ -126,22 +136,42 @@ export async function enrichAll<T extends EnrichableRecord>(
 			});
 			if (!response.ok) {
 				warn(`enrichment lookup for "${record.title}" answered HTTP ${response.status}; record kept as delivered`);
-				out.push(record);
-				continue;
+			} else {
+				const work = (await response.json()) as Record<string, any>;
+				const { record: enrichedRecord, filled } = applyEnrichment(record, work);
+				if (filled.length) {
+					gained++;
+					warn(`enriched "${record.title}": ${filled.join(", ")} (openalex)`);
+				}
+				current = enrichedRecord;
 			}
-			const work = (await response.json()) as Record<string, any>;
-			const { record: enrichedRecord, filled } = applyEnrichment(record, work);
-			if (filled.length) {
-				gained++;
-				warn(`enriched "${record.title}": ${filled.join(", ")} (openalex)`);
-			}
-			out.push(enrichedRecord);
 		} catch (error) {
 			warn(`enrichment lookup for "${record.title}" failed: ${error instanceof Error ? error.message : error}; record kept as delivered`);
-			out.push(record);
 		}
+		// Second abstract source: Semantic Scholar by the record's own DOI
+		// (arXiv DataCite DOIs are not asked -- arXiv records always carry
+		// their abstract). Failure keeps the record as it is, loudly.
+		// The anonymous S2 pool answers 429 for minutes at a time (measured
+		// 2026-08-10); after the first hard failure the remaining lookups of
+		// this run are skipped instead of each burning its own retries.
+		if (!current.abstract && record.doi && !s2Down) {
+			s2Lookups++;
+			try {
+				const abstract = await abstractLookup(record.doi);
+				if (abstract) {
+					s2Gained++;
+					current = { ...current, abstract, enriched: { ...current.enriched, abstract: "semanticscholar" } };
+					warn(`enriched "${record.title}": abstract (semanticscholar)`);
+				}
+			} catch (error) {
+				s2Down = true;
+				warn(`abstract lookup at Semantic Scholar for "${record.title}" failed: ${error instanceof Error ? error.message : error}; record kept as delivered, further Semantic Scholar abstract lookups skipped this run`);
+			}
+		}
+		out.push(current);
 	}
 	if (lookups) warn(`enrichment: ${lookups} lookup(s), ${gained} record(s) gained fields`);
+	if (s2Lookups) warn(`abstract lookups at Semantic Scholar: ${s2Lookups}, ${s2Gained} abstract(s) filled`);
 	return out;
 }
 

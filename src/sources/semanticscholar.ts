@@ -27,7 +27,8 @@ import type { SourceRecord, SourceScope } from "../types.ts";
 import { userAgent } from "../types.ts";
 import { retryDelayMs } from "./arxiv.ts";
 
-const BASE_URL = "https://api.semanticscholar.org/graph/v1/paper/search/bulk";
+const GRAPH_URL = "https://api.semanticscholar.org/graph/v1/paper";
+const BASE_URL = GRAPH_URL + "/search/bulk";
 const TIMEOUT_MS = 30_000;
 const FIELDS = "title,year,venue,externalIds,citationCount,openAccessPdf,abstract,authors";
 
@@ -89,11 +90,36 @@ export function toSourceRecord(paper: Record<string, any>): SourceRecord {
 }
 
 async function fetchBulk(params: URLSearchParams, apiKey: string): Promise<Record<string, any>> {
+	return (await fetchS2(`${BASE_URL}?${params}`, apiKey)) ?? {};
+}
+
+/** URL of the single-paper abstract lookup (pure, exported for tests). */
+export function abstractLookupUrl(doi: string): string {
+	return `${GRAPH_URL}/DOI:${encodeURIComponent(doi)}?fields=abstract`;
+}
+
+/**
+ * Abstract of one paper by DOI (2026-08-18): the second abstract source
+ * behind the OpenAlex lookup in enrichment. Same pacing, key and retry
+ * mechanics as the search; an unknown DOI (HTTP 404) is null, not an
+ * error. Field find: OpenAlex carries no abstract for many Elsevier
+ * papers that Semantic Scholar does have -- a record that one query
+ * found via S2 (with abstract) was dropped by the abstract gate when a
+ * second query found it via OpenAlex only.
+ */
+export async function fetchAbstractByDoi(doi: string): Promise<string | null> {
+	const data = await fetchS2(abstractLookupUrl(doi), s2ApiKey());
+	const abstract = typeof data?.abstract === "string" ? data.abstract.trim() : "";
+	return abstract || null;
+}
+
+/** One paced, retrying GET; null on 404 (bulk search never 404s). */
+async function fetchS2(url: string, apiKey: string): Promise<Record<string, any> | null> {
 	for (let attempt = 0; ; attempt++) {
 		const wait = nextRequestAt - Date.now();
 		if (wait > 0) await sleep(wait);
 		nextRequestAt = Date.now() + REQUEST_SPACING_MS;
-		const response = await fetch(`${BASE_URL}?${params}`, {
+		const response = await fetch(url, {
 			headers: {
 				"User-Agent": userAgent(),
 				Accept: "application/json",
@@ -102,6 +128,7 @@ async function fetchBulk(params: URLSearchParams, apiKey: string): Promise<Recor
 			signal: AbortSignal.timeout(TIMEOUT_MS),
 		});
 		if (response.ok) return (await response.json()) as Record<string, any>;
+		if (response.status === 404) return null;
 		const rateLimited = response.status === 429 || response.status === 503;
 		const delay = rateLimited ? retryDelayMs(attempt, response.headers.get("retry-after")) : null;
 		if (delay === null) {
