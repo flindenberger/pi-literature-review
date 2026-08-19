@@ -1,5 +1,5 @@
 /**
- * Offline tests for the Semantic Scholar client's pure parts (2026-08-10).
+ * Offline tests for the Semantic Scholar client's pure parts.
  * The paper fixture mirrors a real bulk-endpoint response captured live on
  * the build day (sandbar / Sentinel-2 query). No network.
  *
@@ -13,7 +13,7 @@ import { abstractLookupUrl, buildBulkQuery, toSourceRecord } from "./semanticsch
 {
 	// Blocks become required (+) groups, synonyms OR-join with |, multi-word
 	// terms are quoted phrases -- the bulk endpoint's own syntax (verified
-	// live 2026-08-10: +sandbar +("sentinel-2" | "sentinel 2") answered 200
+	// live: +sandbar +("sentinel-2" | "sentinel 2") answered 200
 	// with on-topic, citation-sorted records).
 	assert.equal(
 		buildBulkQuery("ignored", [["river", "fluvial"], ["sandbar"], ["sentinel-2", "sentinel 2"]]),

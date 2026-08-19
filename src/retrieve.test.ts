@@ -1,5 +1,5 @@
 /**
- * Offline tests for the shared retrieval core (v24 Stage 1). Centerpieces:
+ * Offline tests for the shared retrieval core. Centerpieces:
  * the disclosed English query variant (degrades, never aborts), the
  * deterministic lexical layer (salient terms, whole-word matching,
  * guaranteed slots) and the paper-aware union. No network, no models.
@@ -31,8 +31,8 @@ const paperB: PaperIndex["paper"] = {
 
 function makeIndex(paper: PaperIndex["paper"], chunks: Array<{ page: number; text: string; embedding: number[] }>): PaperIndex {
 	return {
-		schema: 1, sha256: "hash", embedding_model: "fake-embed", paper,
-		chunks: chunks.map((chunk, i) => ({ id: i, ...chunk })),
+		schema: 1, chunking: "test", sha256: "hash", embedding_model: "fake-embed", paper,
+		chunks: chunks.map((chunk, i) => ({ id: i, phrase_words: 0, ...chunk })),
 	};
 }
 
@@ -61,7 +61,7 @@ function makeIndex(paper: PaperIndex["paper"], chunks: Array<{ page: number; tex
 	assert.deepEqual(salientTerms("hat A das gemessen?"), []);
 	// v27 stoplist: generic reading-situation nouns and mid-sentence German
 	// interrogatives carry no signal (German capitalizes EVERY noun -- the
-	// field failure: "Paper" grabbed a guaranteed excerpt slot). Domain
+	// "Paper" would grab a guaranteed excerpt slot). Domain
 	// terms in the same question survive.
 	assert.deepEqual(salientTerms("Welche Kamera wurde im Paper verwendet?"), ["Kamera"]);
 	assert.deepEqual(salientTerms("Steht dazu etwas im Dokument, Welche Studie meint der Autor?"), []);

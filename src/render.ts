@@ -1,18 +1,27 @@
 /**
- * Deterministic HTML rendering of a discovery payload (Phase 5).
+ * Deterministic HTML rendering -- three self-contained pages:
+ *   renderHtml()                 the search results page (both record tables,
+ *                                meta block, PRISMA documentation, selection bar)
+ *   renderPaperChatReportHtml()  the session report of one paper (paper chat)
+ *   renderSynthReportHtml()      the composable literature report (de/en chrome)
  *
- * Pure function, no network, no LLM: the page is a typographic view of the
- * emitted JSON and nothing else. Every title, author, year, venue and link
- * on the page comes from the payload; all strings are HTML-escaped, and
- * hrefs are built only from record fields with an http(s) scheme. Plain,
- * scholarly, emoji-free, self-contained (inline CSS and a small inline
- * column-sort script; sorting only reorders already-rendered rows).
+ * Pure functions, no network, no LLM: every page is a typographic view of
+ * its JSON payload and nothing else. All strings are HTML-escaped; hrefs are
+ * built only from record fields with an http(s) scheme or from
+ * code-constructed local PDF paths (localPdfHref). The only "live" markup
+ * inside model prose are the code-validated citation markers. Plain,
+ * scholarly, emoji-free; inline CSS and small inline scripts that only
+ * reorder, reveal or copy what is already on the page.
  */
 
 import { pathToFileURL } from "node:url";
 
+import type { ResultFilters } from "./pipeline.ts";
+import type { CitationSite } from "./protocol.ts";
+import { type ChatReport, highlightPhrase, type ReportUnit, type SynthReport } from "./synthesis.ts";
 import { firstAuthorLastName } from "./types.ts";
 
+/** One search record as the page needs it (kept AND dropped records). */
 interface RenderRecord {
 	title: string;
 	authors: string[];
@@ -31,8 +40,7 @@ interface RenderRecord {
 	verify_note?: string;
 	group?: "on_target" | "adjacent";
 	/** Which query's blocks earned the on_target label, with the exact term
-	 * that hit per block (2026-08-06 evidence line) -- absent on adjacent
-	 * records and pre-evidence sidecars. */
+	 * that hit per block -- absent on adjacent records and older sidecars. */
 	group_matched?: { query: number; terms: string[] } | null;
 	/** Fields filled by the deterministic identifier lookup: field -> provider. */
 	enriched?: Record<string, string>;
@@ -40,65 +48,54 @@ interface RenderRecord {
 	found_by?: string[];
 	/** Journal-level 2-yr mean citedness from OpenAlex (open JIF analog). */
 	journal_2yr_citedness?: number | null;
-	/** GitHub repository mentioning the record's arXiv id (2026-08-07 code
-	 * column) -- a disclosed heuristic, not a verified artifact link. */
+	/** GitHub repository named in the abstract or found by an arXiv-id
+	 * search -- a disclosed heuristic, not a verified artifact link. */
 	code_url?: string;
 }
 
-import type { ChatReport } from "./synthesis.ts";
-import type { CitationSite } from "./protocol.ts";
-import { highlightPhrase, type ReportUnit, type SynthesisResult, type SynthReport } from "./synthesis.ts";
-
-// Moved to synthesize.ts in v25 E2b (the snippet is citation provenance);
-// re-exported here for existing importers.
-export { searchSnippet } from "./synthesis.ts";
-
+/** The search payload (runSearch output / JSON sidecar) as the page reads
+ * it; optional fields are absent in sidecars written by older versions. */
 export interface RenderPayload {
 	query: string;
 	/** Additional query phrasings searched in the same run (null: single query). */
 	query_variants?: string[] | null;
 	generated: string;
 	sources_used: string[];
-	/** Requested records per source (undefined in pre-v30.13 sidecars). */
+	/** Requested records per source. */
 	per_source?: number | null;
-	/** Sources that errored during the run (v30.1: a failed source must stay
-	 * visible after the run; null: none failed). */
+	/** Sources that errored during the run (null: none failed); a failed
+	 * source must stay visible on the page. */
 	source_failures?: Array<{ source: string; error: string }> | null;
 	/** Boolean expression actually sent to arXiv per query (null: arXiv unused). */
 	arxiv_queries?: string[] | null;
-	/** Boolean block search actually sent to OpenAlex per query (2026-08-06;
-	 * null/absent: OpenAlex unused or a pre-block sidecar). */
+	/** Boolean block search actually sent to OpenAlex per query. */
 	openalex_queries?: string[] | null;
-	/** Flattened block terms actually sent to CrossRef per query (2026-08-06:
-	 * CrossRef has no boolean search). */
+	/** Flattened block terms actually sent to CrossRef per query (CrossRef
+	 * has no boolean search). */
 	crossref_queries?: string[] | null;
-	/** Boolean bulk-endpoint query actually sent to Semantic Scholar per
-	 * query (2026-08-10, 4th source; +/| syntax, citation-sorted). */
+	/** Boolean bulk-endpoint query sent to Semantic Scholar per query (+/|
+	 * syntax, citation-sorted). */
 	semanticscholar_queries?: string[] | null;
-	/** Raw per-source×query hit counts before any processing (2026-08-10,
-	 * PRISMA-S "records identified"; absent in older sidecars). */
+	/** Raw per-source x query hit counts before any processing (PRISMA-S
+	 * "records identified"). */
 	source_counts?: Array<{ source: string; query: string; count: number }> | null;
-	/** PRISMA flow numbers of the run (2026-08-10; absent in older
-	 * sidecars). Every value is the plain length of a list the run
-	 * actually produced. */
+	/** PRISMA flow numbers of the run; every value is the plain length of a
+	 * list the run actually produced. */
 	flow?: {
 		identified: number;
 		junk_removed: number;
 		duplicates_removed: number;
 		screened: number;
-		/** Records still without an abstract after enrichment (2026-08-10
-		 * abstract gate; absent in older sidecars). */
+		/** Records still without an abstract after enrichment. */
 		no_abstract_removed?: number;
 		excluded_by_filters: number;
 		included: number;
 	} | null;
 	grouping: string[][] | null;
-	/** Per-query concept blocks of a multi-query run (2026-08-06); a record
-	 * is on_target when it fully matches ANY of these sets. */
+	/** Per-query concept blocks of a multi-query run; a record is on_target
+	 * when it fully matches ANY of these sets. */
 	grouping_by_query?: Array<{ query: string; groups: string[][] | null }> | null;
-	/** on_target needs only this many groups (null: all groups; v30.3). */
-	grouping_require?: number | null;
-	filters: Record<string, unknown> | null;
+	filters: ResultFilters | null;
 	sort: string | null;
 	results: RenderRecord[];
 	dropped: Array<{ reason: string; record: RenderRecord }>;
@@ -117,8 +114,8 @@ function safeHref(url: string): string | null {
 	return /^https?:\/\//i.test(url) ? url : null;
 }
 
-// target=_blank (2026-08-10 user wish): every link opens a new tab, like
-// the synthesis report links since v20.
+/** An escaped link that opens in a new tab; plain text when there is no
+ * safe href. */
 function link(href: string | null, text: string): string {
 	if (href === null) return esc(text);
 	return `<a href="${esc(href)}" target="_blank" rel="noopener">${esc(text)}</a>`;
@@ -139,14 +136,14 @@ const FILTER_LABELS: Record<string, string> = {
 	verifiedOnly: "verified only",
 };
 
-/** Human-readable filter summary; exported since v30.13 -- the digest logs
- * the same dialog inputs as the HTML meta block, from one wording. */
-export function describeFilters(filters: Record<string, unknown> | null): string {
+/** Human-readable filter summary; shared with the digest so both log the
+ * dialog inputs in one wording. */
+export function describeFilters(filters: ResultFilters | null): string {
 	if (!filters) return "none";
 	const parts: string[] = [];
-	// The pickers' "other journals/sources" and "other authors" rows
-	// (v30.11): what such a run actually removes is the LISTED entries that
-	// were not selected -- state that, instead of dumping the whole list.
+	// The pickers' "other journals/sources" and "other authors" rows: what
+	// such a run actually removes is the LISTED entries that were not
+	// selected -- state that, instead of dumping the whole list.
 	const venuesOther = filters.venuesOther === true;
 	const authorsOther = filters.authorsOther === true;
 	const skip = new Set<string>(["venuesListed", "authorsListed", "venuesOther", "authorsOther"]);
@@ -176,16 +173,10 @@ export function describeFilters(filters: Record<string, unknown> | null): string
 	return parts.length ? parts.join("; ") : "none";
 }
 
-/** Grouping expression as shown to the reader; exported since v30.13 (see
- * describeFilters). */
-export function describeGrouping(grouping: string[][] | null, require?: number | null): string {
+/** Grouping expression as shown to the reader (shared with the digest). */
+export function describeGrouping(grouping: string[][] | null): string {
 	if (!grouping?.length) return "none (results ungrouped)";
-	const expression = grouping.map((terms) => `(${terms.join(" OR ")})`).join(" AND ");
-	// The wide variant (v30.3): on_target needs only `require` of the groups.
-	if (typeof require === "number" && require < grouping.length) {
-		return `at least ${require} of: ${grouping.map((terms) => terms.join(" OR ")).join(" | ")}`;
-	}
-	return expression;
+	return grouping.map((terms) => `(${terms.join(" OR ")})`).join(" AND ");
 }
 
 function sourcesOf(record: RenderRecord): string[] {
@@ -215,31 +206,26 @@ function articleCell(record: RenderRecord, withAuthors = false): string {
 		? `<br><span class="authors">${esc(record.authors.join("; "))}</span>`
 		: "";
 	// A looked-up abstract carries the enrichment star like any filled
-	// field (2026-08-10; the footnote under the table explains it).
+	// field (the footnote under the table explains it).
 	const abstract = record.abstract
 		? `<details><summary>Abstract${record.enriched?.abstract ? "*" : ""}</summary><p>${esc(record.abstract)}</p></details>`
 		: "";
 	return `${title}${authors}${abstract}`;
 }
 
-/** Column order: # / Article / Year / Journal / Citations / DOI / Data source / Label.
- * Values filled by the enrichment lookup carry an asterisk; a footnote under
- * the table names the provider. The sort key stays the bare value. On
- * multi-query runs the data-source cell also notes which query variants
- * found the record (Q1, Q2, ... as listed in the page header). */
-/** The identifier the fetch stage accepts for this record: DOI first, else
- * the arXiv ID in its arXiv:... spelling; empty when the record has neither
- * (then there is nothing to fetch and the row gets no checkbox). */
+/** The identifier the selection stage accepts for this record: DOI first,
+ * else the arXiv ID in its arXiv:... spelling; empty when the record has
+ * neither (then there is nothing to download and the row gets no checkbox). */
 function fetchIdOf(record: RenderRecord): string {
 	if (record.doi) return record.doi;
 	if (record.arxiv_id) return `arXiv:${record.arxiv_id}`;
 	return "";
 }
 
-/* --- BibTeX column (2026-08-10 user wish: copy&paste into LaTeX) ------ *
+/* --- BibTeX column (copy & paste into LaTeX) --------------------------- *
  * The entry is generated DETERMINISTICALLY from the record's API fields;
- * no LLM is ever near it (the inviolable citation rule). Identifiers
- * (DOI, arXiv id) stay verbatim -- escaping would corrupt them. */
+ * no LLM is ever near it. Identifiers (DOI, arXiv id) stay verbatim --
+ * escaping would corrupt them. */
 const LATEX_SPECIALS: Record<string, string> = {
 	"\\": "\\textbackslash{}", "&": "\\&", "%": "\\%", "$": "\\$", "#": "\\#",
 	"_": "\\_", "{": "\\{", "}": "\\}", "~": "\\textasciitilde{}", "^": "\\textasciicircum{}",
@@ -277,11 +263,10 @@ export function bibtexEntry(record: RenderRecord): string {
 	return `@${record.venue ? "article" : "misc"}{${bibtexKey(record)},\n${fields.join("\n")}\n}`;
 }
 
-/** Long author lists collapse (2026-08-10 user wish, from an off-topic
- * test query whose surveys carry 20+ names): the cell shows the first
- * three and the LAST author; the middle names sit hidden behind a
- * "+N more" toggle (AUTHORS_SCRIPT). Sorting is untouched -- the
- * column's sort key stays the first author's last name. */
+/** Long author lists collapse: the cell shows the first three and the
+ * LAST author; the middle names sit hidden behind a "+N more" toggle
+ * (AUTHORS_SCRIPT). Sorting is untouched -- the column's sort key stays
+ * the first author's last name. */
 const AUTHOR_HEAD = 3;
 function authorsCellHtml(authors: string[]): string {
 	if (!authors.length) return "&mdash;";
@@ -295,10 +280,11 @@ function authorsCellHtml(authors: string[]): string {
 		+ ` <a href="#" class="authors-toggle" data-more="(+${hiddenCount} more)" data-less="(show fewer)">(+${hiddenCount} more)</a>`;
 }
 
-/** The metadata cells the results table and the dropped table share
- * (2026-08-10 user wish: dropped records show the same columns, so source
- * lists, scores and citations stay comparable across both tables):
- * Article / Authors / Year / Journal / Journal score / Citations / DOI. */
+/** The metadata cells the results table and the dropped table share, so
+ * both tables stay comparable: Article / Authors / Year / Journal / Journal
+ * score / Citations / DOI / BibTeX. Values filled by the enrichment lookup
+ * carry an asterisk (footnote under the tables); sort keys stay the bare
+ * values. */
 function metadataCells(record: RenderRecord): string[] {
 	const year = record.year !== null && /^\d{4}$/.test(record.year) ? record.year : "";
 	const cites = record.cites === null || record.cites === undefined ? "" : String(record.cites);
@@ -318,113 +304,101 @@ function metadataCells(record: RenderRecord): string[] {
 		cell(score === null ? "" : String(score), score === null ? "&mdash;" : score.toFixed(1)),
 		cell(cites, cites ? cites + citesStar : "&mdash;"),
 		cell((record.doi || record.arxiv_id).toLowerCase(), doiCell(record)),
-		// BibTeX copy button (2026-08-10): the entry text sits in a hidden
-		// textarea, escaped -- the copy script reads .value, so the clipboard
-		// gets the original characters back.
+		// BibTeX copy button: the entry text sits in a hidden textarea,
+		// escaped -- the copy script reads .value, so the clipboard gets the
+		// original characters back.
 		cell("", `<button type="button" class="bibtex-copy" title="Copy BibTeX entry">BibTeX</button>`
 			+ `<textarea class="bibtex-src" hidden>${esc(bibtexEntry(record))}</textarea>`, "bibtexcell"),
 	];
 }
 
-/** The Code cell, shared by BOTH tables (2026-08-07; extracted 2026-08-11
- * -- a one-sided edit of two copies would silently desynchronize the
- * tables while the shared colgroup keeps them looking aligned): sort key
- * 0/1 so the first header click puts records WITH code on top. Only
- * present when the page has any code link at all (2026-08-10). */
+/** The Code cell, shared by BOTH tables: sort key 0/1 so the first header
+ * click puts records WITH code on top. Only present when the page has any
+ * code link at all. */
 function codeCells(record: RenderRecord, withCode: boolean): string[] {
 	if (!withCode) return [];
 	return [cell(record.code_url ? "0" : "1",
 		record.code_url ? link(safeHref(record.code_url), "GitHub") : "&mdash;")];
 }
 
-/** The Network cell (2026-08-12 user wish, connected-papers style): a link
- * into the static network.html written NEXT TO the results page, carrying
- * the record's identifiers in the hash -- the network page fetches the
- * citation neighbourhood live from OpenAlex only when opened, so the run
- * itself costs nothing. DOI first (exact lookup), title always as the
- * fallback seed (arXiv DataCite DOIs are not indexed by OpenAlex --
- * live-proven 2026-08-12). Not sortable; every record has a title, so the
- * cell never renders a dash while the column exists. */
+/** The Network cell: a link into the static network.html written NEXT TO
+ * the results page, carrying the record's identifiers in the hash -- the
+ * network page fetches the citation neighbourhood live from OpenAlex only
+ * when opened, so the run itself costs nothing. DOI first (exact lookup),
+ * title always as the fallback seed (arXiv DataCite DOIs are not indexed
+ * by OpenAlex). Not sortable; every record has a title, so the cell never
+ * renders a dash while the column exists. */
 function networkCells(record: RenderRecord, withNetwork: boolean): string[] {
 	if (!withNetwork) return [];
 	const params = [
 		record.doi ? `doi=${encodeURIComponent(record.doi)}` : "",
 		`title=${encodeURIComponent(record.title)}`,
 	].filter(Boolean).join("&");
-	// Styled like the BibTeX button (2026-08-12 user wish) -- but it stays
-	// an anchor: it opens a page instead of running script.
+	// Styled like the BibTeX button, but it stays an anchor: it opens a page
+	// instead of running script.
 	return [cell("", `<a class="graph-link" href="${esc(`network.html#${params}`)}" target="_blank" rel="noopener"`
 		+ ` title="Open the citation network of this paper (fetches live from OpenAlex)">Graph</a>`, "graphcell")];
 }
 
-function resultRow(
-	record: RenderRecord,
-	index: number,
-	queryLabels: Map<string, string>,
-	withCode: boolean,
-	withNetwork: boolean,
-): string {
-	const rowClass = record.group === "on_target" ? ' class="on-target"' : "";
-	const foundBy = queryLabels.size > 1 && record.found_by?.length
-		? `<br><span class="note">${esc(record.found_by.map((q) => queryLabels.get(q) ?? q).join(", "))}</span>`
-		: "";
-	// Label sort keys are prefixed so that the FIRST click puts on_target on
-	// top (matching the initial page order), not alphabetical "adjacent".
-	const groupKey = record.group === "on_target" ? "0_on_target" : record.group ? "1_adjacent" : "";
+/** Column flags shared by every row builder of the two record tables. */
+interface TableColumns {
+	withCode: boolean;
+	withNetwork: boolean;
+	/** Query text -> "Q1"/"Q2"... labels (size > 1 on multi-query runs). */
+	queryLabels: Map<string, string>;
+}
+
+/** Every cell of a record row EXCEPT the last (Label) one -- identical for
+ * the results table and the dropped table, which mirror each other column
+ * for column: checkbox, #, the shared metadata cells, Code, Network, Data
+ * source (with the finding query variants on multi-query runs). */
+function leadingCells(record: RenderRecord, index: number, columns: TableColumns): string[] {
 	const fetchId = fetchIdOf(record);
 	const pickBox = fetchId
 		? `<input type="checkbox" class="pick" data-id="${esc(fetchId)}" aria-label="Select for PDF download">`
 		: "";
-	const cells = [
+	const foundBy = columns.queryLabels.size > 1 && record.found_by?.length
+		? `<br><span class="note">${esc(record.found_by.map((q) => columns.queryLabels.get(q) ?? q).join(", "))}</span>`
+		: "";
+	const sources = sourcesOf(record).join(", ");
+	return [
 		cell("", pickBox, "pickcell"),
 		cell(String(index + 1), String(index + 1)),
 		...metadataCells(record),
-		...codeCells(record, withCode),
-		...networkCells(record, withNetwork),
-		cell(sourcesOf(record).join(", "), (esc(sourcesOf(record).join(", ")) || "&mdash;") + foundBy),
-		// The evidence line (2026-08-06): which query's blocks earned the
-		// label, and the exact term that hit per block -- a homonym like
-		// "stream" (two-stream CNNs) is then readable right at the label.
-		cell(groupKey, (record.group ? esc(record.group) : "&mdash;")
-			+ (record.group_matched?.terms?.length
-				? `<br><span class="note">via Q${record.group_matched.query}: ${esc(record.group_matched.terms.join(" · "))}</span>`
-				: "")),
+		...codeCells(record, columns.withCode),
+		...networkCells(record, columns.withNetwork),
+		cell(sources, (esc(sources) || "&mdash;") + foundBy),
+	];
+}
+
+function resultRow(record: RenderRecord, index: number, columns: TableColumns): string {
+	const rowClass = record.group === "on_target" ? ' class="on-target"' : "";
+	// Label sort keys are prefixed so that the FIRST click puts on_target on
+	// top (matching the initial page order), not alphabetical "adjacent".
+	const groupKey = record.group === "on_target" ? "0_on_target" : record.group ? "1_adjacent" : "";
+	// The evidence line: which query's blocks earned the label, and the exact
+	// term that hit per block -- a homonym like "stream" (two-stream CNNs) is
+	// then readable right at the label.
+	const evidence = record.group_matched?.terms?.length
+		? `<br><span class="note">via Q${record.group_matched.query}: ${esc(record.group_matched.terms.join(" · "))}</span>`
+		: "";
+	const cells = [
+		...leadingCells(record, index, columns),
+		cell(groupKey, (record.group ? esc(record.group) : "&mdash;") + evidence),
 	];
 	return `<tr${rowClass}>${cells.join("")}</tr>`;
 }
 
-/** Dropped rows mirror the results table column for column (2026-08-10
- * user wish: interesting papers keep landing in the dropped list, so they
- * are selectable for download exactly like kept ones -- checkbox, #, the
- * shared metadata cells, Code, Data source). The Label column reads
- * "dropped" with the exclusion reason as its dim note; its sort key is
- * the reason, so a header click clusters equal reasons. Since 2026-08-10
- * the code lookup covers dropped records too (lowest cap priority), so
- * their Code cell can carry a link like any kept row. */
-function droppedRow(
-	entry: { reason: string; record: RenderRecord },
-	index: number,
-	queryLabels: Map<string, string>,
-	withCode: boolean,
-	withNetwork: boolean,
-): string {
-	const { record, reason } = entry;
-	const fetchId = fetchIdOf(record);
-	const pickBox = fetchId
-		? `<input type="checkbox" class="pick" data-id="${esc(fetchId)}" aria-label="Select for PDF download">`
-		: "";
-	const foundBy = queryLabels.size > 1 && record.found_by?.length
-		? `<br><span class="note">${esc(record.found_by.map((q) => queryLabels.get(q) ?? q).join(", "))}</span>`
-		: "";
-	return `<tr>${[
-		cell("", pickBox, "pickcell"),
-		cell(String(index + 1), String(index + 1)),
-		...metadataCells(record),
-		...codeCells(record, withCode),
-		...networkCells(record, withNetwork),
-		cell(sourcesOf(record).join(", "), (esc(sourcesOf(record).join(", ")) || "&mdash;") + foundBy),
-		cell(reason.toLowerCase(), `dropped<br><span class="note">reason: ${esc(reason)}</span>`),
-	].join("")}</tr>`;
+/** Dropped rows mirror the results table (dropped papers are selectable for
+ * download exactly like kept ones); the Label column reads "dropped" with
+ * the exclusion reason as its dim note, sort key = the reason, so a header
+ * click clusters equal reasons. */
+function droppedRow(entry: { reason: string; record: RenderRecord }, index: number, columns: TableColumns): string {
+	const cells = [
+		...leadingCells(entry.record, index, columns),
+		cell(entry.reason.toLowerCase(), `dropped<br><span class="note">reason: ${esc(entry.reason)}</span>`),
+	];
+	return `<tr>${cells.join("")}</tr>`;
 }
 
 const STYLE = `
@@ -576,8 +550,8 @@ for (const table of document.querySelectorAll("table.sortable")) {
 `;
 
 /** Header row of both record tables. The Code column exists only when at
- * least one record on the page carries a code link (2026-08-10 user wish:
- * an all-dash column with an unexplained footnote mark was noise). */
+ * least one record on the page carries a code link (an all-dash column
+ * with an unexplained footnote mark would be noise). */
 function resultHeaders(withCode: boolean, withNetwork: boolean): string {
 	return "<tr><th class=\"no-sort\" title=\"Select rows, then copy the download request below\"></th><th>#</th><th>Article</th><th>Authors</th><th>Year</th><th>Journal</th><th>Journal score&sup1;</th><th>Citations</th><th>DOI</th><th class=\"no-sort\">BibTeX</th>"
 		+ (withCode ? "<th>Code&sup2;</th>" : "")
@@ -587,9 +561,8 @@ function resultHeaders(withCode: boolean, withNetwork: boolean): string {
 
 /** Both search tables share this colgroup and table-layout: fixed, so the
  * results table and the dropped table get IDENTICAL column widths and sit
- * perfectly aligned under each other (2026-08-10 user wish). Widths sum
- * to 100%; without the Code column its share goes to DOI, Data source and
- * Label. */
+ * aligned under each other. Widths sum to 100%; without the Code column
+ * its share goes to DOI, Data source and Label. */
 function resultColgroup(withCode: boolean, withNetwork: boolean): string {
 	// Four variants (Code and Network are each conditional); the Network
 	// column takes 4% from Article/DOI/Label when present.
@@ -600,11 +573,10 @@ function resultColgroup(withCode: boolean, withNetwork: boolean): string {
 		: (withNetwork
 			? [2.2, 2.8, 18, 12.5, 4.3, 8.5, 5.5, 6, 13, 5, 4, 8, 10.2]
 			: [2.2, 2.8, 20, 12.5, 4.3, 8.5, 5.5, 6, 14, 5, 8, 11.2]);
-	// This table gains a column nearly every session, and headers, widths
-	// and row builders are parallel structures nothing ties together --
-	// under table-layout:fixed a mismatch SHIFTS every column silently
-	// instead of erroring, so it is checked loudly here (deterministic:
-	// any render in the test suite exercises both variants).
+	// Headers, widths and row builders are parallel structures nothing ties
+	// together -- under table-layout:fixed a mismatch SHIFTS every column
+	// silently instead of erroring, so it is checked loudly here (every
+	// render in the test suite exercises the variants).
 	const headerCount = resultHeaders(withCode, withNetwork).split("<th").length - 1;
 	const sum = widths.reduce((a, b) => a + b, 0);
 	if (widths.length !== headerCount || Math.abs(sum - 100) > 0.01) {
@@ -672,7 +644,7 @@ const SELECT_SCRIPT = `
 }
 `;
 
-/** Per-row BibTeX copy (2026-08-10): reads the hidden textarea's value --
+/** Per-row BibTeX copy: reads the hidden textarea's value --
  * the browser has decoded the escaped entities back to the original
  * characters there -- and puts it on the clipboard, with the same
  * execCommand fallback as the selection bar. Brief "Copied" feedback on
@@ -721,11 +693,7 @@ for (const toggle of document.querySelectorAll("a.authors-toggle")) {
 	});
 }
 `;
-// The dropped table shares resultHeaders() since 2026-08-10 (user wish:
-// identical columns incl. the selection checkbox; the Label column holds
-// "dropped" + reason there) -- see droppedRow.
-
-/** Render the full discovery payload as a standalone HTML document.
+/** Render the full search payload as a standalone HTML document.
  * options.network adds the Network column linking into the static
  * network.html BESIDE this page -- callers set it exactly when they also
  * write that file (writeNetworkPage), so the link can never dangle;
@@ -739,9 +707,9 @@ export function renderHtml(payload: RenderPayload, options?: { network?: boolean
 		: "";
 
 	const PROVIDER_LABELS: Record<string, string> = { openalex: "OpenAlex (api.openalex.org)" };
-	// Footnote gates look at BOTH tables since the dropped table carries
-	// the full columns (2026-08-10): a star or score appearing only on a
-	// dropped row still needs its explanation.
+	// Footnote gates look at BOTH tables (the dropped table carries the
+	// full columns): a star or score appearing only on a dropped row still
+	// needs its explanation.
 	const allRecords = [...results, ...payload.dropped.map((entry) => entry.record)];
 	// The code column has its own footnote (&sup2;) -- its provenance entry
 	// must not pull "github" into the asterisk note, which describes FILLED
@@ -754,22 +722,19 @@ export function renderHtml(payload: RenderPayload, options?: { network?: boolean
 		: "";
 	// The score column exists on every rendered table, so its &sup1; header
 	// mark needs the explanation whenever ANY row renders -- even when no
-	// record carries a score (enrich:false, preprint-only runs; before
-	// 2026-08-11 the footnote gated on a scored record and left the header
-	// superscript unexplained). A page without records renders no table,
-	// no header, no footnote. Same rule as the code pair below: mark and
-	// footnote only ever appear together.
+	// record carries a score (enrich:false, preprint-only runs). A page
+	// without records renders no table, no header, no footnote. Same rule
+	// as the code pair below: mark and footnote only ever appear together.
 	const scoreFootnote = allRecords.length
 		? `\n<p class="meta">&sup1; Journal score = the journal's 2-year mean citedness from OpenAlex (api.openalex.org): average citations received in the last two years by works the journal published in the two years before. It is the open analog of the proprietary journal impact factor; values are computed over the OpenAlex citation graph and differ somewhat from Clarivate's JIF. It rates the journal, not the paper.</p>`
 		: "";
-	// The Code column exists only when any record carries a link (2026-08-10
-	// user wish); column and &sup2; footnote share this ONE flag so they can
-	// never drift apart.
+	// The Code column exists only when any record carries a link; column and
+	// &sup2; footnote share this ONE flag so they can never drift apart.
 	const withCode = allRecords.some((r) => r.code_url);
-	// The Network column (2026-08-12): only when the caller wrote the
-	// network.html sidecar page, and only when any row exists to link from.
-	// Its explanation is an unmarked footnote -- a numbered mark would
-	// renumber with the conditional Code column.
+	// The Network column: only when the caller wrote the network.html
+	// sidecar page, and only when any row exists to link from. Its
+	// explanation is an unmarked footnote -- a numbered mark would renumber
+	// with the conditional Code column.
 	const withNetwork = options?.network === true && allRecords.length > 0;
 	const networkFootnote = withNetwork
 		? `\n<p class="meta">Network = opens a citation-context graph of the paper in a new tab: its references and citing works, related by the classic bibliometric similarity measures (bibliographic coupling, Kessler 1963; co-citation analysis, Small 1973 -- the graph page explains how each is used). The page fetches this live from the open OpenAlex API when opened (internet needed then; only the paper's DOI or title is sent, never paper content) and involves no language model.</p>`
@@ -786,9 +751,8 @@ export function renderHtml(payload: RenderPayload, options?: { network?: boolean
 		? `\n<dt>Variants</dt>${variants.map((v, i) => `<dd>Q${i + 2}: ${esc(v)}</dd>`).join("")}`
 		: "";
 	const queryLabel = variants.length ? `Q1: ${payload.query}` : payload.query;
-	// Per-source transparency (v18 arXiv; all three since the 2026-08-06
-	// block search, PRISMA-S habit: document the strategy per database):
-	// the expression each source actually received, per query.
+	// Per-source transparency (PRISMA-S: document the strategy per
+	// database): the expression each source actually received, per query.
 	const sentRows = (label: string, values: string[] | null | undefined, note?: string): string => {
 		const list = values ?? [];
 		if (!list.length) return "";
@@ -798,8 +762,8 @@ export function renderHtml(payload: RenderPayload, options?: { network?: boolean
 	};
 	const arxivQueries = payload.arxiv_queries ?? [];
 	// Old sidecars carry only arxiv_queries; without the other rows this one
-	// read as "only arXiv was searched" in the field (2026-08-06) -- the
-	// legacy note keeps those pages honest.
+	// reads as "only arXiv was searched" -- the legacy note keeps those
+	// pages honest.
 	const legacySidecar = arxivQueries.length && !payload.openalex_queries?.length
 		&& !payload.crossref_queries?.length;
 	const arxivQueryRows = sentRows(
@@ -820,31 +784,28 @@ export function renderHtml(payload: RenderPayload, options?: { network?: boolean
 		payload.semanticscholar_queries,
 		"Bulk-endpoint boolean syntax (+ = required block, | = OR); the bulk endpoint has no relevance ranking, results arrive sorted by citation count.",
 	);
-	// Grouping: per query since the block search; a record is on_target when
-	// it fully matches ANY confirmed query's blocks (2026-08-06 revision --
-	// the finder no longer decides the label). Single-query runs and old
+	// Grouping: per query on multi-query runs; a record is on_target when it
+	// fully matches ANY confirmed query's blocks. Single-query runs and old
 	// sidecars keep the one-line form.
 	const groupingByQuery = payload.grouping_by_query ?? [];
 	const groupingRows = groupingByQuery.length
 		? `\n<dt>Grouping</dt>${groupingByQuery
 			.map((entry, i) => `<dd>Q${i + 1}: ${esc(entry.groups?.length
-				? describeGrouping(entry.groups, i === 0 ? payload.grouping_require : null)
+				? describeGrouping(entry.groups)
 				: "(no blocks -- query passed through unchanged)")}</dd>`)
 			.join("")}<dd><span class="note">on_target = full match of at least one of these block sets, regardless of which query found the record.</span></dd>`
-		: `\n<dt>Grouping</dt><dd>${esc(describeGrouping(payload.grouping, payload.grouping_require))}</dd>`;
-	// PRISMA-S documentation, collapsed at the END of the meta block
-	// (2026-08-10 user wish: the per-database strategies, raw counts, flow
-	// chain and labeling rule are expert info -- out of the skim path, one
-	// click away). Old sidecars without counts/flow show whatever rows
-	// they carry.
+		: `\n<dt>Grouping</dt><dd>${esc(describeGrouping(payload.grouping))}</dd>`;
+	// PRISMA-S documentation, collapsed at the END of the meta block: the
+	// per-database strategies, raw counts, flow chain and labeling rule are
+	// expert info -- out of the skim path, one click away. Old sidecars
+	// without counts/flow show whatever rows they carry.
 	const identifiedRows = payload.source_counts?.length
 		? `\n<dt>Records identified</dt>${payload.source_counts
 			.map((entry) => `<dd>${queryLabels.size > 1 ? `${queryLabels.get(entry.query) ?? "?"} ` : ""}${esc(entry.source)}: ${entry.count}</dd>`)
 			.join("")}<dd><span class="note">raw hits per source and query, before deduplication and filtering.</span></dd>`
 		: "";
-	// The chain's last step names its destination (2026-08-10 field
-	// reading: a bare "3 included" was read as "included into the dropped
-	// list"; the user chose this wording over an explaining note line).
+	// The chain's last step names its destination (a bare "3 included" is
+	// easily read as "included into the dropped list").
 	const flow = payload.flow;
 	const flowRow = flow
 		? `\n<dt>Flow</dt><dd>${flow.identified} record(s) identified &rarr; ${flow.junk_removed} removed as uncitable (no title or no authors) &rarr; ${flow.duplicates_removed} duplicate(s) merged &rarr; ${flow.screened} screened${
@@ -852,9 +813,9 @@ export function renderHtml(payload: RenderPayload, options?: { network?: boolean
 				? ` &rarr; ${flow.no_abstract_removed} removed without abstract`
 				: ""} &rarr; ${flow.excluded_by_filters} excluded by the requested filters &rarr; ${flow.included} included to the final literature list, awaiting manual selection</dd>`
 		: "";
-	// Honest degradation stays visible (v30.1): a source that errored is
-	// listed with its reason -- the results may be incomplete and the page
-	// must say so, not just a transient status line during the run.
+	// Honest degradation stays visible: a source that errored is listed with
+	// its reason -- the results may be incomplete and the page must say so,
+	// not just a transient status line during the run.
 	const sourceFailures = payload.source_failures ?? [];
 	const sourceFailureRows = sourceFailures.length
 		? `\n<dt>Failed sources</dt>${sourceFailures
@@ -862,14 +823,9 @@ export function renderHtml(payload: RenderPayload, options?: { network?: boolean
 			.join("")}`
 		: "";
 
-	// The selection bar sits BELOW both tables and covers them both
-	// (2026-08-10 user wish: interesting papers keep landing in the dropped
-	// list -- their checkboxes join the same download request; the select
-	// script collects every input.pick on the page).
-	const fetchable = [...results, ...payload.dropped.map((entry) => entry.record)]
-		.some((record) => fetchIdOf(record));
-	// Plain "Select all" (v30.15 user decision): the earlier on_target-only
-	// button was useless on runs without any on_target hit.
+	// The selection bar sits BELOW both tables and covers them both (the
+	// select script collects every input.pick on the page).
+	const fetchable = allRecords.some((record) => fetchIdOf(record));
 	const selectBar = fetchable
 		? `\n<div class="selectbar">
 <span class="selectcount">0 selected</span>
@@ -882,16 +838,13 @@ the selection tool downloads the PDFs into the lit-selection/ library after you 
 </div>`
 		: "";
 
-	// The results table carries its own heading with the count since
-	// 2026-08-10 (user wish -- the dropped section already had one). The
-	// footnotes moved BELOW the dropped table (2026-08-10 user wish) --
-	// see the main template.
+	const columns: TableColumns = { withCode, withNetwork, queryLabels };
 	const resultsTable = `<h2>Query results (${results.length})</h2>\n` + (results.length
 		? `<table class="sortable records">
 ${resultColgroup(withCode, withNetwork)}
 <thead>${resultHeaders(withCode, withNetwork)}</thead>
 <tbody>
-${results.map((record, index) => resultRow(record, index, queryLabels, withCode, withNetwork)).join("\n")}
+${results.map((record, index) => resultRow(record, index, columns)).join("\n")}
 </tbody>
 </table>`
 		: "<p>No results.</p>");
@@ -905,7 +858,7 @@ request below includes them.</p>
 ${resultColgroup(withCode, withNetwork)}
 <thead>${resultHeaders(withCode, withNetwork)}</thead>
 <tbody>
-${payload.dropped.map((entry, index) => droppedRow(entry, index, queryLabels, withCode, withNetwork)).join("\n")}
+${payload.dropped.map((entry, index) => droppedRow(entry, index, columns)).join("\n")}
 </tbody>
 </table>`
 		: "";
@@ -917,10 +870,10 @@ ${payload.dropped.map((entry, index) => droppedRow(entry, index, queryLabels, wi
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Literature Search: ${esc(payload.query)}</title>
 <style>${STYLE}
-/* The search page runs wide (2026-08-10 user wish: 13 columns were too
-   cramped inside the shared 78rem reading width) -- on a big screen the
-   two record tables get the room; smaller windows stay responsive. The
-   synthesis/report pages keep the narrower width for reading prose. */
+/* The search page runs wide (13 columns are too cramped inside the shared
+   78rem reading width) -- on a big screen the two record tables get the
+   room; smaller windows stay responsive. The synthesis/report pages keep
+   the narrower width for reading prose. */
 body { max-width: 120rem; }
 </style>
 </head>
@@ -957,8 +910,14 @@ modified any citation data.</footer>
 }
 
 /* ------------------------------------------------------------------ *
- * Synthesis review page                                               *
+ * Shared pieces of the synthesis pages (prose, markers, references)   *
  * ------------------------------------------------------------------ */
+
+/** An escaped link that opens in a new tab (PDF links: the report stays
+ * open next to the paper). */
+function pdfAnchor(href: string, text: string): string {
+	return `<a href="${esc(href)}" target="_blank" rel="noopener">${esc(text)}</a>`;
+}
 
 const REVIEW_STYLE = `
 	.warnbanner { background: #fbeee6; border: 1px solid #d9a184; border-left: 5px solid #8a1f11;
@@ -981,8 +940,8 @@ const REVIEW_STYLE = `
 interface CiteContext {
 	sites: CitationSite[];
 	hrefFor: (site: CitationSite) => string | null;
-	/** Override of the DISPLAYED number (v25 single-paper reports number
-	 * cited passages, not papers); defaults to the marker's own digits. */
+	/** Override of the DISPLAYED number (single-paper reports number cited
+	 * passages, not papers); defaults to the marker's own digits. */
 	labelFor?: (site: CitationSite, digits: string) => string;
 	/** In-page anchor prefix of the fallback link (default "ref"). */
 	anchorPrefix?: string;
@@ -1004,9 +963,9 @@ function makeMarkerRenderer(cite?: CiteContext): (escaped: string) => string {
 }
 
 /** Inline markdown BOLD on an already-escaped string: models habitually
- * write **heading** / **term:** and the literal asterisks read as noise
- * (v27 field finding). Only the double-asterisk pair is interpreted --
- * nothing else in the model's text becomes markup. */
+ * write **heading** / **term:** and the literal asterisks read as noise.
+ * Only the double-asterisk pair is interpreted -- nothing else in the
+ * model's text becomes markup. */
 function strongHtml(escaped: string): string {
 	return escaped.replace(/\*\*([^*\n][^*]*?)\*\*/g, "<strong>$1</strong>");
 }
@@ -1023,7 +982,7 @@ function proseHtml(prose: string, cite?: CiteContext): string {
 
 /**
  * Prose where "- "/"* " line groups become real lists (the bullets summary
- * format, v25) -- a deterministic text transformation; markers keep their
+ * format) -- a deterministic text transformation; markers keep their
  * document order across paragraphs and list items via the shared renderer.
  */
 function bulletsHtml(prose: string, cite?: CiteContext): string {
@@ -1070,16 +1029,8 @@ function referenceHref(reference: { doi: string; arxiv_id: string }): string | n
 }
 
 /**
- * Deterministic rendering of a SynthesisResult. Same trust boundary as the
- * search page: every value in the reference table originates from verified
- * search records; the model's prose is escaped text whose only live parts
- * are the code-validated citation markers. An ungrounded result renders
- * with an unmissable warning banner instead of being suppressed -- the
- * draft stays inspectable, but nobody can mistake it for a review.
- */
-/**
- * Retrieval transparency rows (v24): the disclosed English query variant(s)
- * -- the ONE place an LLM shapes retrieval, citations unaffected -- and the
+ * Retrieval transparency rows: the disclosed English query variant(s) --
+ * the ONE place an LLM shapes retrieval, citations unaffected -- and the
  * deterministic lexical exact-match layer.
  */
 function retrievalMetaRows(
@@ -1097,118 +1048,6 @@ function retrievalMetaRows(
 				: "; no additional excerpts"}</dd>`
 		: "";
 	return `${variantRow}${lexicalRow}`;
-}
-
-export function renderReviewHtml(result: SynthesisResult): string {
-	const banner = result.grounded
-		? ""
-		: `\n<div class="warnbanner">UNGROUNDED DRAFT -- the model produced no verifiable citations.
-Do not use this text as a literature review.</div>`;
-
-	const referenceRows = result.references.map((reference) => {
-		const id = reference.doi || (reference.arxiv_id ? `arXiv:${reference.arxiv_id}` : reference.key);
-		return `<tr id="ref-${reference.n}">
-<td>[${reference.n}]</td>
-<td>${esc(reference.year ?? "")}</td>
-<td class="authorscol">${esc(reference.authors.join("; "))}</td>
-<td class="paper title">${esc(reference.title || "(title not in the saved search records)")}</td>
-<td>${link(referenceHref(reference), id)}</td>
-<td>${esc(reference.pages.join(", "))}</td>
-</tr>`;
-	}).join("\n");
-
-	const referencesSection = result.references.length
-		? `<h2>References</h2>
-<p class="meta">Inserted by fixed code from HTTP-verified search records; the model only chose excerpt numbers.</p>
-<table>
-<thead><tr><th>#</th><th>Year</th><th>Authors</th><th>Title</th><th>Identifier</th><th>PDF pages cited</th></tr></thead>
-<tbody>
-${referenceRows}
-</tbody>
-</table>`
-		: "<h2>References</h2>\n<p>None -- no valid citations survived the gate.</p>";
-
-	const excerptItems = result.chunks.map((chunk) =>
-		`<details><summary>[${chunk.id}] ${esc(chunk.title || chunk.paper_key)} -- page ${chunk.page}, similarity ${chunk.score.toFixed(3)}${chunk.lexical ? ", exact term match" : ""}</summary>
-<p class="excerpt">${esc(chunk.text)}</p></details>`).join("\n");
-
-	const adoptionReasons = new Map(result.adoption_failures.map((failure) => [failure.file, failure.reason]));
-	const exclusions: string[] = [];
-	for (const file of result.unmatched_pdfs) {
-		exclusions.push(`<dd>${esc(file)} -- ${esc(adoptionReasons.get(file)
-			?? "no verified record (not part of any saved search); run a search that covers it")}</dd>`);
-	}
-	for (const failure of result.extraction_failures) {
-		exclusions.push(`<dd>${esc(failure.file)} -- ${esc(failure.reason)}</dd>`);
-	}
-	const exclusionRows = exclusions.length ? `\n<dt>Excluded</dt>${exclusions.join("")}` : "";
-	const adoptedRow = result.adopted_pdfs.length
-		? `\n<dt>Adopted</dt><dd>${esc(result.adopted_pdfs.join(", "))} -- identifier found in the PDF text, metadata from a verified API lookup</dd>`
-		: "";
-	const uncitedRow = result.papers_uncited.length
-		? `\n<dt>Retrieved, uncited</dt><dd>${esc(result.papers_uncited.join(", "))}</dd>`
-		: "";
-	// Clickable superscripts: resolve each marker through its citation site
-	// to the cited page of the paper's local PDF (path from the verified
-	// library scan, carried on the reference entry).
-	const pdfPathByKey = new Map(result.references.map((reference) => [reference.key, reference.pdf_path]));
-	const cite = (result.sites ?? []).length
-		? {
-			sites: result.sites,
-			hrefFor: (site: CitationSite): string | null => {
-				const path = pdfPathByKey.get(site.paper_key);
-				return path ? localPdfHref(path, site.page, site.snippet) : null;
-			},
-		}
-		: undefined;
-
-	const integrity: string[] = [];
-	integrity.push(`${result.invalid_markers.length} invalid citation marker(s) stripped`
-		+ (result.invalid_markers.length ? ` (${result.invalid_markers.join(" ")})` : ""));
-	integrity.push(`${result.unmarked_sentences} sentence(s) without a citation marker`);
-	if (result.stripped_reference_section) {
-		integrity.push("a model-written reference section was cut (references come from verified records only)");
-	}
-	if (result.trimmed_chunks) {
-		integrity.push(`${result.trimmed_chunks} lowest-ranked excerpt(s) dropped by the context budget`);
-	}
-
-	return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Literature Synthesis: ${esc(result.question)}</title>
-<style>${STYLE}${REVIEW_STYLE}</style>
-</head>
-<body>
-<h1>Literature Synthesis</h1>
-<dl class="meta">
-<dt>Question</dt><dd>${esc(result.question)}</dd>
-<dt>Generated</dt><dd>${esc(result.generated)} (UTC)</dd>
-</dl>${banner}
-<div class="prose">
-${proseHtml(result.prose, cite)}
-</div>${cite ? `\n${SUP_NOTE}` : ""}
-${referencesSection}
-<h2>Method &amp; transparency</h2>
-<dl class="meta">
-<dt>Generator</dt><dd>${esc(result.model)} (${esc(result.backend)})</dd>
-<dt>Embeddings</dt><dd>${esc(result.embedding_model)}</dd>
-<dt>Retrieval</dt><dd>top ${esc(result.top_k)} excerpts by cosine similarity; ${result.chunks.length} in the prompt</dd>${retrievalMetaRows(result)}
-<dt>Corpus</dt><dd>${result.papers_matched} paper(s) with verified metadata; ${result.papers_cited} cited</dd>${uncitedRow}${adoptedRow}${exclusionRows}
-<dt>Integrity</dt><dd>${esc(integrity.join("; "))}</dd>
-</dl>
-<h2>Excerpts given to the model</h2>
-<p class="meta">The complete evidence trail: these are the only sources the model saw. Chunk-level citations per reference are in the JSON sidecar next to this file.</p>
-${excerptItems || "<p>None.</p>"}
-<footer>Rendered deterministically from the pi-literature-review synthesis payload. The language model wrote
-the prose and chose excerpt numbers only; every reference on this page was inserted by fixed code from
-HTTP-verified search records. Citation markers naming non-existent excerpts were stripped and are reported
-above. No language model produced or modified any citation data.</footer>
-</body>
-</html>
-`;
 }
 
 /* ------------------------------------------------------------------ *
@@ -1238,8 +1077,7 @@ export function localPdfHref(pdfPath: string, page?: number, snippet?: string | 
 	if (page !== undefined) {
 		href += `#page=${page}`;
 		// phrase=true makes PDF.js highlight the CONTIGUOUS passage; without
-		// it the query is split into single words (live finding 2026-07-16:
-		// an 8-word snippet lit up countless stray words, even bare letters).
+		// it the query is split into single words and stray words light up.
 		if (snippet) href += `&search=${encodeURIComponent(snippet)}&phrase=true`;
 	}
 	return href;
@@ -1265,10 +1103,6 @@ Do not use this text as a summary of the paper.</div>`;
 	const identifier = paper.verified
 		? paper.doi || (paper.arxiv_id ? `arXiv:${paper.arxiv_id}` : paper.key)
 		: "(unverified -- no bibliographic record, identified by filename)";
-	// PDF links open in a new tab (user decision 2026-07-16): the report
-	// stays open next to the paper.
-	const pdfAnchor = (href: string, text: string): string =>
-		`<a href="${esc(href)}" target="_blank" rel="noopener">${esc(text)}</a>`;
 	const pageLinks = (pages: number[]): string =>
 		pages.map((page) => pdfAnchor(localPdfHref(paper.pdf_path, page), String(page))).join(", ");
 
@@ -1312,11 +1146,10 @@ ${referenceRows}
 		const pages = [...new Set(round.references.flatMap((reference) => reference.pages))].sort((a, b) => a - b);
 		const state = round.grounded ? "" : " -- UNGROUNDED (no verifiable citations)";
 		const cited = pages.length ? `<p class="roundmeta">Cited pages: ${pageLinks(pages)}</p>` : "";
-		// Rounds recorded since v25 carry per-marker citation sites -- their
-		// markers then link into the PDF exactly like the summary's (field
-		// wish 2026-07-22: dead round answers annoyed). The count guard keeps
-		// a hand-edited or legacy round from misaligning marker and site;
-		// such rounds fall back to plain text, honestly.
+		// Rounds carrying per-marker citation sites link into the PDF exactly
+		// like the summary; the count guard keeps a hand-edited or older
+		// round from misaligning marker and site -- such rounds fall back to
+		// plain text, honestly.
 		const markerCount = (round.prose.match(/\[\d+\]/g) ?? []).length;
 		const roundCite = round.sites && round.sites.length === markerCount && markerCount > 0
 			? {
@@ -1336,7 +1169,7 @@ ${cited}</div>`;
 	const protocolSection = report.rounds.length
 		? `<h2>Chat protocol</h2>
 <p class="meta">The code-validated rounds of this session (from ${esc(report.protocol_files.map((file) => file.split("/").pop() ?? file).join(", "))}).
-Superscript markers open the cited PDF page; rounds recorded before v25 keep their bracketed numbers as plain text.</p>
+Superscript markers open the cited PDF page; older rounds without marker sites keep their bracketed numbers as plain text.</p>
 ${roundBlocks}`
 		: "";
 
@@ -1411,18 +1244,16 @@ from model output. No language model produced or modified any citation data.</fo
 }
 
 /* ------------------------------------------------------------------ *
- * Composable report page (v25 E2d)                                    *
+ * Composable report page                                              *
  * ------------------------------------------------------------------ */
 
-/** Page chrome per uiLanguage; "de" is the default (user decision: the
- * report audience reads German -- "Excerpts" was not understood). */
+/** Page chrome per uiLanguage; "de" is the default. */
 const REPORT_LABELS = {
 	de: {
 		pageTitle: "Literaturbericht",
 		generated: "Erstellt",
 		scopeLibrary: "gesamte Bibliothek",
 		questionsLabel: "Fragen",
-		toc: "Inhalt",
 		metadataTitle: "Abfrage-Metadaten",
 		documents: "Dokumente",
 		models: "Modelle (LLM)",
@@ -1492,7 +1323,6 @@ const REPORT_LABELS = {
 		generated: "Generated",
 		scopeLibrary: "whole library",
 		questionsLabel: "Questions",
-		toc: "Contents",
 		metadataTitle: "Query metadata",
 		documents: "Documents",
 		models: "Models (LLM)",
@@ -1578,13 +1408,13 @@ const REPORT_STYLE = `
 	.reviewnote { background: #eef3f8; border-left: 4px solid #4a6fa5; padding: 0.5rem 0.9rem;
 		font-size: 0.86rem; color: #2c3e50; margin: 0.6rem 0; }
 	ol.passages li { margin: 0.25rem 0; }
-	/* v31.7: the truncated passage line IS the expander -- no default
-	 * disclosure triangle, a dim "more"/"less" hint at the line end, and
-	 * while OPEN the truncated span disappears (the full excerpt below
-	 * replaces it instead of repeating it). */
+	/* The truncated passage line IS the expander -- no default disclosure
+	 * triangle, a dim "more"/"less" hint at the line end, and while OPEN the
+	 * truncated span disappears (the full excerpt below replaces it instead
+	 * of repeating it). */
 	ol.passages details.passage { display: inline; }
-	/* The preview text matches the EXPANDED excerpt (same grey, same size,
-	 * v31.7 user wish) -- only the more/less hint keeps the accent color. */
+	/* The preview text matches the EXPANDED excerpt (same grey, same size)
+	 * -- only the more/less hint keeps the accent color. */
 	ol.passages details.passage summary { cursor: pointer; list-style: none; display: inline;
 		color: #2c2c2c; font-size: 0.84rem; }
 	ol.passages details.passage summary::-webkit-details-marker { display: none; }
@@ -1600,25 +1430,22 @@ const REPORT_STYLE = `
 `;
 
 /**
- * Deterministic rendering of the composable report (v25). Layout follows
- * the 2026-07-22 field feedback: answers live up top inside each paper's
- * section, method & transparency sits right under the head metadata, and
- * SINGLE-paper reports number the cited PASSAGES (a reference table naming
- * the one paper the reader is asking about carries no information) --
- * multi-paper reports keep scholarly paper-level numbering.
+ * Deterministic rendering of the composable report. Answers live up top
+ * inside each paper's section, method & transparency sits right under the
+ * head metadata, and SINGLE-paper reports number the cited PASSAGES (a
+ * reference table naming the one paper the reader is asking about carries
+ * no information) -- multi-paper reports keep scholarly paper-level
+ * numbering.
  */
 export function renderSynthReportHtml(report: SynthReport): string {
 	const labels = REPORT_LABELS[report.ui_language === "en" ? "en" : "de"];
 	const singleMode = report.papers.length === 1;
 	const pdfPathByKey = new Map(report.papers.map((paper) => [paper.key, paper.pdf_path]));
-	const pdfAnchor = (href: string, text: string): string =>
-		`<a href="${esc(href)}" target="_blank" rel="noopener">${esc(text)}</a>`;
 
 	// Single-paper mode: number distinct cited passages across all units in
 	// first-citation order (identity: paper, page, chunk text). Each passage
-	// remembers WHERE it came from (v31.6 user wish: the retrieval detail
-	// belongs at the passage): per citing unit its retrieval rank and score
-	// -- chunk ids are assigned in score order, so the id IS the rank.
+	// remembers WHERE it came from: per citing unit its retrieval rank and
+	// score -- chunk ids are assigned in score order, so the id IS the rank.
 	const passageOfSite = new Map<CitationSite, number>();
 	const passages: Array<{
 		n: number; page: number; text: string; snippet: string | null; paper_key: string;
@@ -1678,18 +1505,15 @@ export function renderSynthReportHtml(report: SynthReport): string {
 		: undefined);
 
 	// EVERY unit renders through the bullet-aware transformer: models write
-	// "- "/"* " lists in ANSWERS too, and proseHtml kept the asterisks
-	// literal (v27 field finding). bulletsHtml is a superset -- plain
+	// "- "/"* " lists in ANSWERS too. bulletsHtml is a superset -- plain
 	// paragraphs pass through unchanged.
 	const unitHtml = (unit: ReportUnit): string =>
 		`<div class="prose">\n${bulletsHtml(unit.prose, citeOf(unit))}\n</div>`;
 
-	// ---- Numbered sections following the v27 user template: Contents ->
-	// Query metadata -> one section per document (N.1 Summary, N.2
-	// Questions) -> cross questions -> state of the literature ->
-	// references/passages -> source excerpts. Technical transparency lives
-	// in a collapsed block with plain-language explanations (field wish:
-	// "Retrieval/Lexical layer/Integrity" meant nothing to a lay reader).
+	// ---- Page order: query metadata -> one section per document (summary,
+	// questions, references/passages, source excerpts) -> cross questions ->
+	// state of the literature. Technical transparency lives in a collapsed
+	// block with plain-language explanations for the lay reader.
 	const crossUnits = report.units.filter((unit) => unit.kind === "detail-cross");
 	const reviewUnits = report.units.filter((unit) => unit.kind === "review");
 
@@ -1729,9 +1553,8 @@ export function renderSynthReportHtml(report: SynthReport): string {
 <dt>${labels.integrity}</dt><dd>${esc(integrity.join("; "))}<br><span class="authors">${esc(labels.integrityPlain)}</span></dd>
 </dl></details>`;
 
-	// ---- Layout (v27 user decision, second iteration): NO table of
-	// contents, NO section numbers. Query metadata first, then one block
-	// per document -- title + metadata open, Summary / Questions /
+	// ---- Layout: no table of contents, no section numbers. One block per
+	// document -- title + metadata open, Summary / Questions /
 	// References|Passages / Source excerpts each COLLAPSED -- then cross
 	// questions and State of the literature; horizontal rules separate the
 	// blocks. References live WITH their paper, not at the page bottom.
@@ -1752,11 +1575,10 @@ ${technicalBlock}
 
 	// Per-block reference table: only the entries the given units cite,
 	// keeping their GLOBAL [n] numbers. Anchor ids stay unique across the
-	// page (first occurrence wins -- marker fallback links land there).
-	// v31.5 (user decision): the retrieval excerpts are no longer their own
-	// top-level block -- they ride collapsed at the END of this block as an
-	// "advanced" sub-details (the user reads the cited passages; similarity
-	// scores are for the curious).
+	// page (first occurrence wins -- marker fallback links land there). The
+	// retrieval excerpts ride collapsed at the END of this block as an
+	// "advanced" sub-details (the reader wants the cited passages;
+	// similarity scores are for the curious).
 	const usedRefIds = new Set<number>();
 	const referencesBlock = (units: ReportUnit[], trail: string | null): string | null => {
 		const cited = new Set(units.flatMap((unit) => unit.sites.map((site) => site.ref)));
@@ -1787,11 +1609,11 @@ ${rows}
 </details>`;
 	};
 
-	// Per-block evidence trail (the excerpts each unit's model saw) --
-	// since v31.5 a NESTED details at the end of the cited-passages block.
-	// v31.6 (single mode): the CITED chunks carry their retrieval detail at
-	// the passage itself, so the trail here shows only what was retrieved
-	// and NOT cited (onlyUncited) -- together they stay the complete trail.
+	// Per-block evidence trail (the excerpts each unit's model saw), a
+	// NESTED details at the end of the cited-passages block. In single mode
+	// the CITED chunks carry their retrieval detail at the passage itself,
+	// so the trail here shows only what was retrieved and NOT cited
+	// (onlyUncited) -- together they stay the complete trail.
 	const excerptsBlock = (units: ReportUnit[], onlyUncited = false): string | null => {
 		const chunkKey = (chunk: ReportUnit["chunks"][number]): string =>
 			`${chunk.paper_key}\u0000${chunk.page}\u0000${chunk.text}`;
@@ -1836,16 +1658,16 @@ ${inner}
 			parts.push(`<details class="block"><summary>${labels.questionsLabel}</summary>\n${questionUnits
 				.map((unit) => `<h4>${esc(unit.question ?? "")}</h4>\n${unitHtml(unit)}`).join("\n")}\n</details>`);
 		}
-		// Single mode: cited chunks explain themselves at the passage
-		// (v31.6), so the trail carries only the uncited leftovers.
+		// Single mode: cited chunks explain themselves at the passage, so the
+		// trail carries only the uncited leftovers.
 		const trail = excerptsBlock(paperUnits, singleMode);
 		let trailPlaced = false;
 		if (singleMode) {
 			// Single paper: the numbered passages replace the reference table.
-			// The truncated line itself is the expander (v31.7 user wish: no
-			// duplicated first sentence): a "more" hint at its end opens the
-			// FULL excerpt -- CSS hides the truncated span while open -- plus,
-			// per citing question, the retrieval rank and similarity.
+			// The truncated line itself is the expander: a "more" hint at its
+			// end opens the FULL excerpt -- CSS hides the truncated span while
+			// open -- plus, per citing question, the retrieval rank and
+			// similarity.
 			const items = passages.map((passage) => {
 				const href = localPdfHref(paper.pdf_path, passage.page, passage.snippet);
 				const excerpt = passage.text.length > 160 ? `${passage.text.slice(0, 160)}...` : passage.text;

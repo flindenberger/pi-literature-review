@@ -1,8 +1,9 @@
 /**
- * Minimal HTTP client for a LOCAL LLM server -- the only place in the
- * package that talks to a language model. Used by the synthesis stage for
- * two operations: embedding text chunks and generating prose. Two wire
- * dialects are supported, selected by config:
+ * Minimal HTTP client for the embedding / generation backend -- the place
+ * in the package that talks to a language-model server (the pi adapter
+ * additionally routes generation to the model selected in pi). Used by the
+ * synthesis stage for two operations: embedding text chunks and generating
+ * prose. Two wire dialects are supported, selected by config:
  *
  *   "ollama"  Ollama's native API      POST /api/embed, /api/chat
  *   "openai"  OpenAI-compatible JSON   POST /v1/embeddings, /v1/chat/completions
@@ -20,7 +21,7 @@
  *    timeout is generous)
  *
  * THE ONE INVIOLABLE RULE lives one layer above: whatever generate()
- * returns is untrusted prose -- citation enforcement in synthesize.ts only
+ * returns is untrusted prose -- citation enforcement in synthesis.ts only
  * ever accepts bracketed chunk numbers from it, never bibliographic text.
  */
 
@@ -33,22 +34,21 @@ export interface LlmConfig {
 	/** Model that turns text into embedding vectors. */
 	embedModel: string;
 	/**
-	 * Optional bearer token, sent as "Authorization: Bearer <key>" when set
-	 * (2026-08-11): opens the openai dialect to REMOTE OpenAI-compatible
-	 * APIs (e.g. api.openai.com embeddings), so synthesis can run without
-	 * any local Ollama. Local servers ignore it. Local stays the default
-	 * and the documented first choice -- with an API backend the paper text
-	 * leaves the machine, which the README discloses.
+	 * Optional bearer token, sent as "Authorization: Bearer <key>" when set:
+	 * opens the openai dialect to REMOTE OpenAI-compatible APIs (e.g.
+	 * api.openai.com embeddings), so synthesis can run without any local
+	 * server. Local servers ignore it. Local stays the default and the
+	 * documented first choice -- with an API backend the paper text leaves
+	 * the machine, which the README discloses.
 	 */
 	apiKey?: string;
 	/**
-	 * Optional per-role backend split (2026-08-11 user wish): embeddings
-	 * and generation may live on DIFFERENT servers -- e.g. two llama.cpp
-	 * llama-server instances (one embedding GGUF, one chat GGUF), or
-	 * embeddings on Ollama plus generation elsewhere. A llama-server holds
-	 * exactly one model, so the single shared baseUrl forced Ollama for
-	 * the local pair before. Unset fields fall back to the shared
-	 * baseUrl/api, so an all-Ollama setup needs nothing new.
+	 * Optional per-role backend split: embeddings and generation may live
+	 * on DIFFERENT servers -- e.g. two llama.cpp llama-server instances
+	 * (one embedding GGUF, one chat GGUF; a llama-server holds exactly one
+	 * model), or embeddings on Ollama plus generation elsewhere. Unset
+	 * fields fall back to the shared baseUrl/api, so an all-Ollama setup
+	 * needs nothing new.
 	 */
 	embedBaseUrl?: string;
 	embedApi?: "ollama" | "openai";
@@ -70,12 +70,11 @@ export interface GenerateOptions {
 	maxTokens?: number;
 	/**
 	 * Ollama dialect only: turn hidden reasoning on/off (top-level "think"
-	 * field; models without a thinking mode accept and ignore it -- verified
-	 * live 2026-07-22). Needed because a thinking model otherwise spends a
-	 * capped call's entire budget on reasoning and returns empty content
-	 * (the v22 failure, re-found on the translation call). The OpenAI
-	 * dialect ignores it: thinking control lives in the server/provider
-	 * config there (pi's models.json thinkingFormat).
+	 * field; models without a thinking mode accept and ignore it). Needed
+	 * because a thinking model otherwise spends a capped call's entire
+	 * budget on reasoning and returns empty content. The OpenAI dialect
+	 * ignores it: thinking control lives in the server/provider config
+	 * there (pi's models.json thinkingFormat).
 	 */
 	think?: boolean;
 }
@@ -226,7 +225,7 @@ async function fetchJsonHttp(
 		if (signal.aborted) throw error; // cancellation/timeout: report as-is
 		// Role-neutral on purpose: createBackend wraps this with the role
 		// ("embedding model ... unavailable") -- a bare "LLM server" here
-		// misled users whose chat LLM was visibly running in pi.
+		// misleads users whose chat LLM is visibly running in pi.
 		throw new Error(`no server reachable at ${url} -- is it running?`, { cause: error });
 	}
 	if (!response.ok) {
@@ -247,14 +246,14 @@ export function createBackend(cfg: LlmConfig, fetchJson: FetchJson = fetchJsonHt
 	const embedBase = cfg.embedBaseUrl || cfg.baseUrl;
 	const generateOpenai = (cfg.generateApi ?? cfg.api) === "openai";
 	const generateBase = cfg.generateBaseUrl || cfg.baseUrl;
-	// Bearer auth (2026-08-11): set only when the user configured an apiKey
-	// -- requests to local servers stay byte-identical without one.
+	// Bearer auth: set only when the user configured an apiKey -- requests
+	// to local servers stay byte-identical without one.
 	const headers = cfg.apiKey ? { authorization: `Bearer ${cfg.apiKey}` } : undefined;
-	// Role-specific failure framing (2026-08-11 user find): a bare "no LLM
-	// server reachable" reads as nonsense to someone whose CHAT model is
-	// visibly running in pi -- the embedding model is a SEPARATE small
-	// model on a separate backend, and only the error message can teach
-	// that at the moment it matters. User cancellations pass unchanged.
+	// Role-specific failure framing: a bare "no LLM server reachable" reads
+	// as nonsense to someone whose CHAT model is visibly running in pi --
+	// the embedding model is a SEPARATE small model on a separate backend,
+	// and only the error message can teach that at the moment it matters.
+	// User cancellations pass unchanged.
 	const failure = (role: "embedding" | "generation", model: string, error: unknown): Error => {
 		const message = error instanceof Error ? error.message : String(error);
 		const fix = role === "embedding"

@@ -94,7 +94,7 @@ import { chatModel, configPath, configuredGenerateModel, isPlausibleMailto, LLM_
 	assert.equal(chatModel({ PI_LITERATURE_REVIEW_CHAT_MODEL: "  " }, { chatModel: " cfg-chat " }), "cfg-chat");
 }
 
-/* ---------------- configuredGenerateModel (2026-08-11) ---------------- */
+/* ---------------- configuredGenerateModel ---------------- */
 {
 	// Explicit config only -- NO default fallback: with pi present the
 	// adapter runs everything on the pi model unless the user opted into a
@@ -105,7 +105,7 @@ import { chatModel, configPath, configuredGenerateModel, isPlausibleMailto, LLM_
 	assert.equal(configuredGenerateModel({ PI_LITERATURE_REVIEW_LLM_MODEL: "  " }, {}), "");
 }
 
-/* ---------------- per-role backend split (2026-08-11) ---------------- */
+/* ---------------- per-role backend split ---------------- */
 {
 	// All four split fields are optional and ABSENT when unset (the
 	// deepEqual-to-defaults pin above depends on that); env beats stored.
@@ -128,7 +128,7 @@ import { chatModel, configPath, configuredGenerateModel, isPlausibleMailto, LLM_
 	assert.equal(llmConfig({ PI_LITERATURE_REVIEW_GENERATE_API: "banana" }, {}).generateApi, undefined);
 }
 
-/* ---------------- llm apiKey (2026-08-11) ---------------- */
+/* ---------------- llm apiKey ---------------- */
 {
 	// Absent entirely when unset (llmConfig({},{}) stays deepEqual to the
 	// defaults above); env beats stored config.

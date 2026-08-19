@@ -8,7 +8,7 @@
  * decades-old open bibliometric methods: bibliographic coupling, Kessler
  * 1963, plus direct citations).
  *
- * Live-proven against the real API before building (2026-08-12):
+ * Facts about the API the page relies on (all verified live):
  *   - CORS: api.openalex.org answers access-control-allow-origin: * even
  *     for Origin: null -- a file:// page may fetch it.
  *   - Seed lookup: /works?filter=doi:<doi> works; the /works/arxiv:<id>
@@ -24,7 +24,7 @@
  * (works offline up to the honest "could not reach api.openalex.org"
  * message), deterministic layout (seeded PRNG from the resolved work id, so
  * the same paper always draws the same graph). OpenAlex data is CC0; the
- * page credits the source and disclosures what leaves the machine: only
+ * page credits the source and discloses what leaves the machine: only
  * the DOI/title lookup and follow-up identifier queries -- never paper
  * content.
  */
@@ -51,7 +51,7 @@ const STYLE = `
 		color: #1c1c1c; background: #fdfdfc; max-width: 110rem; margin: 0 auto;
 		padding: 0.6rem 1.2rem 0.4rem; line-height: 1.35; box-sizing: border-box;
 		display: flex; flex-direction: column; }
-	/* Everything fits one screen (2026-08-18, 14-inch laptop): the canvas
+	/* Everything fits one screen (also on a 14-inch laptop): the canvas
 	   takes whatever height the text rows leave, no page scrolling. */
 	h1 { font-size: 1.15rem; margin: 0; }
 	.meta { font-size: 0.88rem; color: #3d3d3d; margin: 0; }
@@ -235,9 +235,9 @@ const PAGE_SCRIPT = `
 	function buildGraph(seed, neighbourhood) {
 		var seedId = shortId(seed);
 		var candidates = new Map();
-		// Role of every candidate relative to the seed (2026-08-18 user
-		// wish -- "who cites the author, whom does she cite"): "ref" = the
-		// seed cites it, "citer" = it cites the seed, "both" when both hold.
+		// Role of every candidate relative to the seed ("whom does the paper
+		// cite, who cites it"): "ref" = the seed cites it, "citer" = it cites
+		// the seed, "both" when both hold.
 		var roleById = new Map();
 		neighbourhood.refs.forEach(function (work) { roleById.set(shortId(work), "ref"); });
 		neighbourhood.citers.forEach(function (work) {
@@ -339,9 +339,8 @@ const PAGE_SCRIPT = `
 	function yearColor(year, minYear, maxYear) {
 		var t = maxYear > minYear ? (year - minYear) / (maxYear - minYear) : 1;
 		if (!year) t = 0;
-		// Earth tones matching the result pages' warm palette (2026-08-12
-		// user wish): light sand #e3dcc9 -> dark umber #55432a, older =
-		// lighter, like a fading trail.
+		// Earth tones matching the result pages' warm palette: light sand
+		// #e3dcc9 -> dark umber #55432a, older = lighter, like a fading trail.
 		var from = [227, 220, 201];
 		var to = [85, 67, 42];
 		var rgb = from.map(function (start, index) {
@@ -365,8 +364,8 @@ const PAGE_SCRIPT = `
 
 	// Arrowhead as an explicit triangle at the tip (x, y) of a line coming
 	// from (fromX, fromY). Drawn as its own element AFTER all lines and
-	// circles so a thick coupling line can never cover it (SVG markers sit
-	// in the line's own layer -- field find 2026-08-18).
+	// circles so a thick coupling line can never cover it (SVG markers would
+	// sit in the line's own layer).
 	var ARROW_SIZE = 11;
 	var ARROW_FILL = "#b8541f"; // burnt sienna: reads apart from the umber lines
 	function arrowHead(fromX, fromY, x, y, fill, opacity) {
@@ -389,8 +388,8 @@ const PAGE_SCRIPT = `
 		}, 0);
 		var random = seededRandom(shortId(seed));
 		// Fixed stage, set once: the graph settles centred inside it (an
-		// auto-fit viewBox was tried 2026-08-12 and reverted on user
-		// feedback -- the floating, not-fully-zoomed look is the elegant one).
+		// auto-fit viewBox was tried and reverted -- the floating,
+		// not-fully-zoomed look is the elegant one).
 		var width = 1400;
 		var height = 900;
 		canvas.setAttribute("viewBox", "0 0 " + width + " " + height);
@@ -640,7 +639,7 @@ const PAGE_SCRIPT = `
 		// Counts name what is IN THE GRAPH against the paper's totals: the
 		// picture holds only the best-connected neighbours (MAX_NODES), the
 		// citer pool is capped at 50 -- "13 of 114" is honest, a bare "13"
-		// misled a field test (2026-08-18).
+		// misleads.
 		var totalRefs = (seed.referenced_works || []).length;
 		var totalCiters = seed.cited_by_count || 0;
 		document.getElementById("toggle-refs").textContent = "Cited by this paper (" + refCount + " of " + totalRefs + " shown)";
@@ -659,8 +658,8 @@ const PAGE_SCRIPT = `
 	// browser (page zoom).
 	var ZOOM_MIN = 0.25;
 	var ZOOM_MAX = 8;
-	// Start view once the layout has settled (2026-08-18 user wish: "a bit
-	// larger, not filling"): the graph's bounding box padded so it covers
+	// Start view once the layout has settled ("a bit larger, not filling"):
+	// the graph's bounding box padded so it covers
 	// roughly two thirds of the visible area, stage aspect kept, never
 	// wider than the full stage and never zoomed in beyond 2x (a tiny
 	// graph keeps floating). Double-click returns to this view.
@@ -737,7 +736,7 @@ const PAGE_SCRIPT = `
 			var target = event.target;
 			if (target && target.getAttribute && (target.getAttribute("data-node") !== null)) return;
 			// Without this the browser starts a text selection while panning
-			// and the node labels light up (field find 2026-08-18).
+			// and the node labels light up.
 			event.preventDefault();
 			glide = null;
 			drag = { x: event.clientX, y: event.clientY, vx: view.x, vy: view.y, moved: false };

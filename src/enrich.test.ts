@@ -14,9 +14,10 @@ const base = {
 	arxiv_id: "",
 	cites: null as number | null,
 	venue: "",
+	venue_id: undefined as string | undefined,
 };
 
-// enrichAll (2026-08-18): an abstract still missing after the OpenAlex
+// enrichAll: an abstract still missing after the OpenAlex
 // lookup is asked from Semantic Scholar by DOI (injected here; stubbed
 // OpenAlex fetch delivers cites+venue but no abstract); provenance
 // "semanticscholar"; a record whose OpenAlex answer carries the abstract

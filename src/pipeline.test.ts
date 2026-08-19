@@ -12,9 +12,7 @@ import {
 	dedupe,
 	dropWithoutAbstract,
 	filterRecords,
-	group,
 	groupAcrossQueries,
-	groupAll,
 	sanitizeTermGroups,
 	sortRecords,
 	termMatches,
@@ -109,16 +107,16 @@ function record(overrides: Partial<SourceRecord>): SourceRecord {
 	assert.deepEqual(merged.map((r) => r.doi.toLowerCase()), ["10.1/first", "10.1/second"]);
 }
 
-// group: on_target needs a hit from EVERY term group, case-insensitive
+// labeling: on_target needs a hit from EVERY term group, case-insensitive
 {
 	const rules = sanitizeTermGroups([["river", "fluvial"], ["sandbar", "bar"], ["sentinel"]]);
 	const vistula = { title: "Sentinel-2 study of alternate sandbars", abstract: "Vistula River reach" };
 	const coastal = { title: "Submerged sandbar crest from Sentinel-2", abstract: "Mediterranean beaches" };
-	assert.equal(group(vistula, rules), "on_target");
-	assert.equal(group(coastal, rules), "adjacent"); // no river context -> adjacent
+	assert.equal(groupAcrossQueries([vistula], [rules])[0].group, "on_target");
+	assert.equal(groupAcrossQueries([coastal], [rules])[0].group, "adjacent"); // no river context -> adjacent
 }
 
-// termMatches: whole words only -- no substring hits (v18)
+// termMatches: whole words only -- no substring hits
 {
 	assert.equal(termMatches("using s2 imagery", "s2"), true);
 	assert.equal(termMatches("the s2gis toolbox", "s2"), false); // no match inside words
@@ -127,14 +125,14 @@ function record(overrides: Partial<SourceRecord>): SourceRecord {
 	assert.equal(termMatches("a sandbarrier model", "sandbar"), false);
 }
 
-// termMatches: optional plural-s, nothing more (user decision, v18)
+// termMatches: optional plural-s, nothing more
 {
 	assert.equal(termMatches("alternate sandbars move", "sandbar"), true);
 	assert.equal(termMatches("one sandbar", "sandbar"), true);
 	assert.equal(termMatches("a sandbank", "sandbar"), false); // no stemming
 }
 
-// termMatches: hyphen and whitespace inside a term are interchangeable (user decision, v18)
+// termMatches: hyphen and whitespace inside a term are interchangeable
 {
 	assert.equal(termMatches("sentinel-2 images", "sentinel-2"), true);
 	assert.equal(termMatches("sentinel 2 images", "sentinel-2"), true);
@@ -144,7 +142,7 @@ function record(overrides: Partial<SourceRecord>): SourceRecord {
 	assert.equal(termMatches("sentinel-2 images", "sentinel"), true);
 }
 
-// group: the ALOHA 2 incident fixture (arXiv noise) hits zero groups -> adjacent
+// labeling: the ALOHA 2 fixture (arXiv noise) hits zero groups -> adjacent
 {
 	const rules = sanitizeTermGroups([
 		["sentinel-2", "satellite"],
@@ -162,26 +160,25 @@ function record(overrides: Partial<SourceRecord>): SourceRecord {
 			"bimanual manipulation, we open source all hardware designs of ALOHA 2 with a " +
 			"detailed tutorial, together with a MuJoCo model of ALOHA 2 with system identification.",
 	};
-	assert.equal(group(aloha, rules), "adjacent");
+	assert.equal(groupAcrossQueries([aloha], [rules])[0].group, "adjacent");
 }
 
-// groupAll: on_target sorts first; without rules, records stay ungrouped
+// labeling: on_target sorts first; without rules, records stay ungrouped
 {
 	const rules = sanitizeTermGroups([["match"]]);
-	const grouped = groupAll(
+	const grouped = groupAcrossQueries(
 		[record({ title: "no hit", abstract: "" }), record({ title: "a match here", abstract: "" })],
-		rules,
+		[rules],
 	);
 	assert.deepEqual(grouped.map((r) => r.group), ["on_target", "adjacent"]);
-	const ungrouped = groupAll([record({ title: "anything" })], sanitizeTermGroups(undefined));
+	const ungrouped = groupAcrossQueries([record({ title: "anything" })], [sanitizeTermGroups(undefined)]);
 	assert.equal("group" in ungrouped[0], false);
 }
 
-// groupAcrossQueries (2026-08-06, revised same day on user decision): a
-// record is on_target when it fully matches ANY confirmed query's blocks,
-// regardless of which query found it -- the field case: a surface-water
-// review found only by the strict base query must not stay adjacent when
-// a variant's blocks match it fully.
+// groupAcrossQueries: a record is on_target when it fully matches ANY
+// confirmed query's blocks, regardless of which query found it -- a
+// surface-water review found only by the strict base query must not stay
+// adjacent when a variant's blocks match it fully.
 {
 	const blockSets = [
 		sanitizeTermGroups([["water"], ["mask"]]),
@@ -254,7 +251,7 @@ function record(overrides: Partial<SourceRecord>): SourceRecord {
 // user filters: every rule drops with a reason; unknown cites pass min_cites
 {
 	const fr = (over: object) => ({
-		cites: 50, year: "2021", venue: "Remote Sensing", pdf_url: "x", verified: true, ...over,
+		cites: 50, year: "2021", venue: "Remote Sensing", authors: ["A. Author"], pdf_url: "x", verified: true, ...over,
 	});
 	const { kept, dropped } = applyFilters(
 		[
@@ -363,25 +360,12 @@ function record(overrides: Partial<SourceRecord>): SourceRecord {
 	);
 }
 
-// minGroups (v30.3): the wide "any two concepts" variant -- on_target when
-// at least minGroups of the term groups match; default stays "all"
-{
-	const record = (title: string) => ({ title, abstract: "" });
-	const groups = [["water"], ["mask"], ["sentinel 2"]];
-	assert.equal(group(record("water mask study"), groups), "adjacent"); // strict: all three needed
-	assert.equal(group(record("water mask study"), groups, 2), "on_target"); // any two suffice
-	assert.equal(group(record("water study"), groups, 2), "adjacent"); // one is not enough
-	assert.equal(group(record("mask of the sentinel-2 sensor"), groups, 2), "on_target"); // hyphen tolerance holds
-	// minGroups above the group count degrades to "all" (never impossible).
-	assert.equal(group(record("water mask sentinel 2"), groups, 5), "on_target");
-}
-
 // min journal score (v30): drops only records WITH a lower score; records
 // without a score (preprints, unmatched venues) always pass -- absence of
 // the open JIF analog is not evidence against the paper
 {
 	const fr = (over: object) => ({
-		cites: 50, year: "2021", venue: "Remote Sensing", pdf_url: "x", verified: true, ...over,
+		cites: 50, year: "2021", venue: "Remote Sensing", authors: ["A. Author"], pdf_url: "x", verified: true, ...over,
 	});
 	const { kept, dropped } = applyFilters(
 		[
@@ -399,7 +383,7 @@ function record(overrides: Partial<SourceRecord>): SourceRecord {
 // no filters -> everything passes untouched
 {
 	const { kept, dropped } = applyFilters(
-		[{ cites: null, year: null, venue: "", pdf_url: "", verified: false }],
+		[{ cites: null, year: null, venue: "", authors: [], pdf_url: "", verified: false }],
 		{},
 	);
 	assert.equal(kept.length, 1);

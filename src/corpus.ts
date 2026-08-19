@@ -1,19 +1,19 @@
 /**
- * Library corpus for the synthesis stage: which PDFs in lit-selection/ belong to
- * which VERIFIED search record, and a persisted embedding index per paper.
+ * Library corpus for the synthesis stage: which PDFs belong to which
+ * VERIFIED search record, and a persisted embedding index per paper.
  *
  * Matching order per PDF (no fuzzy matching, no guessing):
- *   1. the metadata twin lit-selection/<basename>.json written by fetch
+ *   1. the metadata twin <basename>.json written by the selection stage
  *   2. filename recomputation: every saved-search record's paperFilename()
- *      and identifierSlug() (legacy names) against the PDF's basename
+ *      and identifierSlug() (older names) against the PDF's basename
  * A PDF matching neither has no verified bibliographic identity -- it is
- * EXCLUDED from synthesis (citations require verified records) and listed
- * by name, honestly, everywhere the result is shown.
+ * listed by name, honestly, and (unless adoption finds an identifier in
+ * its text) cited by filename and page only.
  *
- * The index (one JSON per paper under <root>/index/) caches extraction and
- * embeddings; a paper is re-processed only when its content hash or the
- * embedding model changes. IO is injectable (CorpusDeps) so everything
- * tests offline.
+ * The index (one JSON per paper under lit-synthesis/index/) caches
+ * extraction and embeddings; a paper is re-processed only when its content
+ * hash, the embedding model, the chunking rules or its identity change. IO
+ * is injectable (CorpusDeps) so everything tests offline.
  */
 
 import { createHash } from "node:crypto";
@@ -48,38 +48,36 @@ export interface LibraryMatch {
 	matched: LibraryPaper[];
 	/** PDF basenames without a verified record -- excluded from synthesis. */
 	unmatched: string[];
-	/** The unmatched files grouped by the folder they live in (v31.1: the
-	 * corpus may span several folders; adoption and filename-only citation
-	 * need the right one per file). Optional so injected test fixtures and
-	 * older callers keep working -- read it via unmatchedGroups(). */
+	/** The unmatched files grouped by the folder they live in (the corpus
+	 * may span several folders; adoption and filename-only citation need the
+	 * right one per file). Optional so injected fixtures and core results
+	 * keep working -- read it via unmatchedGroups(). */
 	unmatchedByDir?: Array<{ dir: string; files: string[] }>;
 	/** Primary directory (the first of dirs) -- kept for messages and as
 	 * the place "no papers" errors point at. */
 	papersDir: string;
-	/** Every directory that contributed PDFs (v31.1). Optional, see above. */
+	/** Every directory that contributed PDFs. Optional, see above. */
 	dirs?: string[];
 }
 
 /** The unmatched files with their folders; falls back to the single
- * papersDir for matches built before v31.1 (test fixtures, core results). */
+ * papersDir for matches without unmatchedByDir (fixtures, core results). */
 export function unmatchedGroups(match: LibraryMatch): Array<{ dir: string; files: string[] }> {
 	if (match.unmatchedByDir) return match.unmatchedByDir;
 	return match.unmatched.length ? [{ dir: match.papersDir, files: match.unmatched }] : [];
 }
 
 /**
- * Where PDFs live. Candidate chain (user decision 2026-07-15, so that
- * starting pi in ANY folder of papers just works):
- *   1. <root>/lit-selection -- the canonical fetched library
+ * Where PDFs live. Candidate chain, so that starting pi in ANY folder of
+ * papers just works:
+ *   1. <root>/lit-selection -- the canonical downloaded library
  *   2. <cwd>/lit-selection  -- a library folder next to where pi runs
- *   3. <cwd>/pi-literature-review/lit-selection -- a library fetched
- *      before 2026-08-10, when every stage folder was bundled under
- *      pi-literature-review/ (the bundling folder is gone, but downloaded
- *      papers must stay selectable -- the v31.1 promise)
+ *   3. <cwd>/pi-literature-review/lit-selection -- a library downloaded
+ *      by an earlier version that bundled the stage folders (downloaded
+ *      papers must stay selectable)
  *   4. <cwd> itself         -- loose PDFs right in the working directory
- * Since v31.1 EVERY candidate that holds a PDF contributes to the corpus
- * (user decision 2026-07-29: an existing library must not hide loose PDFs
- * -- all documents stay selectable). When none holds one, the canonical
+ * EVERY candidate that holds a PDF contributes to the corpus (an existing
+ * library must not hide loose PDFs). When none holds one, the canonical
  * location is reported so "no papers" messages point at the place the
  * selection stage would fill. Pure via injected checks for tests.
  */
@@ -96,15 +94,6 @@ export function papersDirs(
 	])];
 	const withPdfs = candidates.filter((dir) => hasPdfs(dir));
 	return withPdfs.length ? withPdfs : [candidates[0]];
-}
-
-/** First folder of the chain -- messages and single-folder callers. */
-export function resolvePapersDir(
-	root: string,
-	cwd: string = process.cwd(),
-	hasPdfs: (dir: string) => boolean = hasPdfsReal,
-): string {
-	return papersDirs(root, cwd, hasPdfs)[0];
 }
 
 function hasPdfsReal(dir: string): boolean {
@@ -182,11 +171,11 @@ export function matchLibraryCore(
 
 /**
  * Thin IO wrapper: locate the PDFs, read twins, delegate to the pure core.
- * Since v31.1 the corpus is the UNION of every candidate folder holding
- * PDFs (canonical library, cwd library, cwd itself) -- a library must not
- * hide loose PDFs. Basenames stay unique corpus-wide (they key the sticky
- * scope, protocols and the index cache): on a collision the earlier folder
- * in the chain wins and the shadowed file is skipped with a warning.
+ * The corpus is the UNION of every candidate folder holding PDFs
+ * (canonical library, cwd library, cwd itself). Basenames stay unique
+ * corpus-wide (they key the sticky scope, protocols and the index cache):
+ * on a collision the earlier folder in the chain wins and the shadowed file
+ * is skipped with a warning.
  */
 export function matchLibrary(root: string, onWarn: (message: string) => void): LibraryMatch {
 	const dirs = papersDirs(root);
@@ -235,8 +224,7 @@ export function matchLibrary(root: string, onWarn: (message: string) => void): L
  * invalidation                                                        *
  * ------------------------------------------------------------------ */
 
-/** 2 (2026-07-27): indexes carry the chunking signature. Schema 1 files
- * predate the 1000/300/150 cut and are silently re-indexed -- an index is
+/** Index file schema; older schemas are silently re-indexed -- an index is
  * derived data, the PDF stays the ground truth. */
 export const INDEX_SCHEMA = 2;
 
@@ -306,8 +294,7 @@ export function realCorpusDeps(embed: CorpusDeps["embed"]): CorpusDeps {
 		},
 		saveIndex: (file, index) => {
 			// The index directory may not exist yet on a first run in a fresh
-			// folder (live finding 2026-07-15: ENOENT when pi was started
-			// inside the papers folder itself).
+			// folder.
 			mkdirSync(dirname(file), { recursive: true });
 			writeFileSync(file, JSON.stringify(index) + "\n", "utf8");
 		},
@@ -363,9 +350,9 @@ export async function ensureIndexed(
 		try {
 			// The reference list is removed BEFORE cleanup and chunking: its
 			// entries are titles of other work, they answer nothing about this
-			// paper, and they cost a fifth of the index (user decision
-			// 2026-07-27). Page positions are preserved, so page numbers and
-			// the highlight verification below stay exact.
+			// paper, and they cost a fifth of the index. Page positions are
+			// preserved, so page numbers and the highlight verification below
+			// stay exact.
 			bibliography = stripBibliography(await deps.extract(bytes));
 			pages = bibliography.pages.map(cleanPageText);
 		} catch (error) {

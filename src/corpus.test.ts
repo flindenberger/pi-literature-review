@@ -16,7 +16,6 @@ import {
 	matchLibraryCore,
 	type PaperIndex,
 	papersDirs,
-	resolvePapersDir,
 	unmatchedGroups,
 } from "./corpus.ts";
 import { CHUNK_SIGNATURE } from "./extract.ts";
@@ -57,35 +56,35 @@ const amazon: SidecarEntry = {
 	assert.equal(names.get("arxiv_2401.16393")?.key, "arxiv:2401.16393");
 
 	// Version-tolerance: a record saying "...v1" still matches the
-	// versionless filename the fetch produced (live finding, 2026-07-15).
+	// versionless filename the fetch produced .
 	const versioned = filenameIndex(new Map([["arxiv:2401.16393", { ...amazon, arxiv_id: "2401.16393v1" }]]));
 	assert.ok(versioned.has("arxiv_2401.16393v1"));
 	assert.ok(versioned.has("arxiv_2401.16393"));
 	assert.equal(versioned.get("arxiv_2401.16393")?.key, "arxiv:2401.16393");
 }
 
-/* ---------------- resolvePapersDir ---------------- */
+/* ---------------- papersDirs: first folder of the chain ---------------- */
 {
 	const sep = (p: string) => p.replaceAll("\\", "/"); // join() uses the OS separator
 	const chain = (dirsWithPdfs: string[]) =>
-		sep(resolvePapersDir("/root", "/cwd", (dir) => dirsWithPdfs.includes(sep(dir))));
+		sep(papersDirs("/root", "/cwd", (dir) => dirsWithPdfs.includes(sep(dir)))[0]);
 	// Canonical library first.
 	assert.equal(chain(["/root/lit-selection", "/cwd/lit-selection", "/cwd"]), "/root/lit-selection");
 	// Then a lit-selection/ folder next to where pi runs.
 	assert.equal(chain(["/cwd/lit-selection", "/cwd"]), "/cwd/lit-selection");
 	// Then loose PDFs right in the working directory.
 	assert.equal(chain(["/cwd"]), "/cwd");
-	// Nothing anywhere: report the canonical location (where fetch would fill).
+	// Nothing anywhere: report the canonical location (where the selection stage would fill).
 	assert.equal(chain([]), "/root/lit-selection");
 }
 
-/* ---------------- papersDirs + unmatchedGroups (v31.1) ---------------- */
+/* ---------------- papersDirs + unmatchedGroups ---------------- */
 {
 	const sep = (p: string) => p.replaceAll("\\", "/");
 	const dirs = (dirsWithPdfs: string[]) =>
 		papersDirs("/root", "/cwd", (dir) => dirsWithPdfs.includes(sep(dir))).map(sep);
-	// EVERY candidate holding PDFs contributes (user decision 2026-07-29:
-	// a library must not hide loose PDFs), priority order preserved.
+	// EVERY candidate holding PDFs contributes (a library must not hide
+	// loose PDFs), priority order preserved.
 	assert.deepEqual(
 		dirs(["/root/lit-selection", "/cwd"]),
 		["/root/lit-selection", "/cwd"],
@@ -95,7 +94,7 @@ const amazon: SidecarEntry = {
 		["/root/lit-selection", "/cwd/lit-selection", "/cwd"],
 	);
 	assert.deepEqual(dirs(["/cwd"]), ["/cwd"]);
-	// A library fetched before 2026-08-10 (bundled under the old
+	// A library downloaded by an older version (bundled under the old
 	// pi-literature-review/ folder) still contributes -- downloaded papers
 	// must stay selectable after the bundling folder was dropped.
 	assert.deepEqual(
@@ -106,7 +105,7 @@ const amazon: SidecarEntry = {
 	assert.deepEqual(dirs([]), ["/root/lit-selection"]);
 
 	// unmatchedGroups: explicit per-dir groups win; matches without the
-	// field (pre-v31.1 fixtures) fall back to the single papersDir.
+	// field (older fixtures) fall back to the single papersDir.
 	assert.deepEqual(
 		unmatchedGroups({
 			matched: [], unmatched: ["a.pdf", "b.pdf"], papersDir: "/lib",

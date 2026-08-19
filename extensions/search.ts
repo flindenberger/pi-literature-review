@@ -1,28 +1,20 @@
 /**
- * pi-literature-review Pi extension.
+ * Search stage adapter for pi: registers the pi-literature-search tool and
+ * the /lit-search command. Both run the SAME intake wizard (query, query
+ * variants, period, count, journals, authors, filters) and then the
+ * deterministic engine (src/search.ts); the only model call here is the
+ * query-variant suggestion in the wizard, and it only shapes queries.
  *
- * Registers the pi-literature-search tool: deterministic literature discovery
- * (search -> filter -> dedupe -> verify -> group) over arXiv, CrossRef,
- * OpenAlex. Contains no LLM call of any kind: the agent may shape the query
- * and propose grouping word lists, but every record field traces to a
- * search-API response, and every DOI/arXiv ID is HTTP-verified before it is
- * shown as verified.
+ * The tool result is deliberately NOT the full payload: full citation JSON
+ * in a small model's context gets re-typed and fabricated. The model
+ * receives a short digest (counts, HTML path, one copyable line per record);
+ * the full data goes to disk as HTML plus a JSON sidecar.
  *
- * The tool result is deliberately NOT the full payload: a 2026-07-10 field
- * test with a small local model showed that full citation JSON in context
- * gets re-typed, "completed" and outright fabricated. The model receives a
- * short plain-text digest (counts, file paths, one copyable line per record);
- * the full data goes to disk as an HTML rendering plus a JSON sidecar.
- *
- * Parameter confirmation is likewise code, not instruction: every call opens
- * a blocking intake wizard with the user (see intakeWizard below; since
- * v29.1 the same rpiv-style one-overlay dialog as /lit-synthesis; since
- * 2026-07-30 it ALWAYS starts on the query tab -- a proposal arrives as
- * prefill and the user walks the tabs; a BARE /lit-search starts there
- * with an empty query -- the command owns the dialog, no agent handoff)
- * -- models reliably skip "ask the user first" instructions, but they
- * cannot skip a dialog that the tool itself puts between them and the
- * search.
+ * Parameter confirmation is code, not instruction: every interactive call
+ * opens the blocking wizard -- models skip "ask the user first"
+ * instructions, but they cannot skip a dialog the tool itself puts between
+ * them and the search. The wizard always starts on the query tab (a
+ * proposal arrives as prefill); a bare /lit-search starts there empty.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -35,7 +27,8 @@ import {
 	type WizardStepDef,
 } from "../src/dialog-state.ts";
 import { renderDigest } from "../src/digest.ts";
-import { DEFAULT_PER_SOURCE, MAX_PER_SOURCE, runSearch, SEARCHERS } from "../src/search.ts";
+import { DEFAULT_PER_SOURCE, MAX_PER_SOURCE, runSearch, SEARCHERS, type SearchOptions, type SearchPayload } from "../src/search.ts";
+import type { ResultFilters } from "../src/pipeline.ts";
 import {
 	formatGroupExpression,
 	isProseQuery,
@@ -49,7 +42,7 @@ import {
 import { writeRunOutputs } from "../src/output.ts";
 import { renderHtml } from "../src/render.ts";
 import { writeNetworkPage } from "../src/network.ts";
-import { fetchAuthorMetrics, fetchJournalScores } from "../src/enrich.ts";
+import { type AuthorMetrics, fetchAuthorMetrics, fetchJournalScores } from "../src/enrich.ts";
 import { authorFacets, type FacetScope, journalFacets } from "../src/sources/openalex.ts";
 import { chatLangDefault, installChatLangObserver, runWizard } from "./dialogs.ts";
 import { completeWithPiModel } from "./pi-model.ts";
@@ -59,28 +52,28 @@ const THOROUGH_PER_SOURCE = 15;
  * 200; a wizard tab wants the meaningful head, footprint-friendly).
  * Declared before SEARCH_TEXT, whose strings quote it. */
 const JOURNAL_PICK_LIMIT = 12;
-/** Sentinel id of the catch-all row under the listed journals (v30.11).
- * Journal ids are their NAMES, so this cannot collide with one; the row's
- * visible label comes from SEARCH_TEXT.journalOther. */
+/** Sentinel id of the catch-all row under the listed journals. Journal ids
+ * are their NAMES, so this cannot collide with one; the row's visible label
+ * comes from SEARCH_TEXT.journalOther. */
 const JOURNAL_OTHER_ID = "__other_journals__";
-/** The same for the author list (v30.11): the top authors carrying results
- * for this query, with a catch-all row underneath. */
+/** The same for the author list: the top authors carrying results for this
+ * query, with a catch-all row underneath. */
 const AUTHOR_PICK_LIMIT = 12;
 const AUTHOR_OTHER_ID = "__other_authors__";
-/** Sentinel id of the LOCKED base-query row in the variants tab
- * (2026-08-06); variant ids are the query strings themselves, so this
- * cannot collide with one. */
+/** Sentinel id of the LOCKED base-query row in the variants tab; variant
+ * ids are the query strings themselves, so this cannot collide with one. */
 const VARIANT_BASE_ID = "__base_query__";
 /** How many LLM suggestions the variants tab asks for per generation
  * (block expressions are wide rows -- six keep the tab readable). */
 const VARIANT_SUGGESTION_LIMIT = 6;
 /** The variant generator only SHAPES queries (the one allowed LLM
- * contribution besides word lists) -- prompts pinned here, English like
- * all model-facing chrome. Since the block search (2026-08-06) the
- * suggestions are CONCEPT-BLOCK boolean queries (the systematic-review
- * building-blocks method): OR-synonyms per concept, AND between concepts
- * -- sent as real boolean queries to arXiv/OpenAlex and labeling their
- * own finds. */
+ * contribution besides word lists) -- prompts pinned here, English like all
+ * model-facing chrome. The suggestions are CONCEPT-BLOCK boolean queries
+ * (the systematic-review building-blocks method): OR-synonyms per concept,
+ * AND between concepts -- sent as real boolean queries to the sources and
+ * labeling their own finds. Every rule below exists because a model broke
+ * it in the field; code enforces the structural ones afterwards
+ * (breadth order, block order). */
 const VARIANT_SYSTEM_PROMPT =
 	"You build concept-block search queries for academic literature databases (the systematic-review "
 	+ "building-blocks method). You only shape search queries; you never produce citations, paper "
@@ -93,35 +86,28 @@ function variantPrompt(query: string, hint: string, count: number, prose: boolea
 		`Suggest ${count} alternative searches for the same information need, each as a CONCEPT-BLOCK boolean query.`,
 		"Format per line: 2-4 concept blocks joined with AND; each block is 1-4 synonyms joined with OR, in parentheses.",
 		"Example: (river OR fluvial OR river channel) AND (water extraction OR water mapping) AND (satellite OR remote sensing)",
-		// Prose base (2026-08-10 field find: a full sentence typed into the
-		// query window): the first line must DISTILL the sentence, not vary
-		// it -- it arrives prechecked in the tab and carries the default run.
+		// Prose base: the first line must DISTILL the sentence, not vary it
+		// -- it arrives prechecked in the tab and carries the default run.
 		prose
 			? "The base query reads like a prose sentence, not a keyword query. Your FIRST suggestion must be a "
 			+ "faithful distillation of exactly that sentence into concept blocks: cover its core concepts, "
 			+ "invent no new aspects, drop only filler words."
 			: "",
-		// 2026-08-10 user wish: staggered breadth -- the first rows stay
-		// close to the base query, later rows grow freer. Code enforces the
-		// ordering afterwards (sortVariantsByBreadth in parseVariantLines);
+		// Staggered breadth: code sorts afterwards (sortVariantsByBreadth);
 		// this rule makes the model GENERATE across the whole range.
 		"Identify the core concepts of the base query. Stagger the suggestions from narrow to broad: the "
 		+ "first two stay CLOSE to the base query's own words with at most 1-2 synonyms per block; later "
 		+ "suggestions widen the synonym sets and may explore subtopics, established domain terms and "
 		+ "method names.",
-		// 2026-08-07 user wish: parallel block order across all suggestions,
-		// so what the model built is comparable at a glance. parseVariantLines
-		// enforces it afterwards wherever a block shares a word with a base
-		// concept (alignBlocksToBase); this rule covers pure-synonym blocks
-		// that carry no base word.
+		// Parallel block order: code aligns afterwards wherever a block shares
+		// a word with a base concept (alignBlocksToBase); this rule covers
+		// pure-synonym blocks that carry no base word.
 		"Order the blocks by the base query's concept order in EVERY suggestion: the block covering the base "
 		+ "query's first concept comes first, and so on (base 'Sentinel Water Detection': sensor block, then "
 		+ "water block, then task block).",
-		// Field lessons 2026-08-06, both directions: broad homonym blocks
-		// ("channel"/"stream") both FETCH noise and LABEL it on_target, but
-		// anchoring EVERYTHING into phrases starved the blocks ("satellite
-		// imagery" no longer matched "satellite-based") and the model
-		// drifted from image-based water extraction to water withdrawal.
+		// Sense and precision: broad homonym blocks ("channel"/"stream")
+		// both FETCH noise and LABEL it on_target, but anchoring EVERYTHING
+		// into phrases starves the blocks and models drift in sense.
 		"Keep the base query's technical SENSE: infer what ambiguous terms mean from the other concepts "
 		+ "and stay in that sense in every suggestion (e.g. next to 'water body' and 'satellite', "
 		+ "'extraction' means extracting water surfaces from imagery, NOT water withdrawal or pumping).",
@@ -131,15 +117,11 @@ function variantPrompt(query: string, hint: string, count: number, prose: boolea
 		+ "stream, band, body alone) appear only as anchored phrases (river channel, stream network, "
 		+ "water body). One block may hold the task words (extraction OR mapping OR segmentation), but "
 		+ "every OTHER block must pin the topic unambiguously.",
-		// 2026-08-17 user wish after an arXiv-0-hits diagnosis: arXiv is a
-		// physics/CS/math preprint server -- MEASURED that domain vocabulary
-		// (waterline 20 papers in all of arXiv, "shoreline extraction" 1)
-		// yields nothing there, while the same need phrased in computer-
-		// vision terms ("water body" AND segmentation, sensor names as OR
-		// list) reaches ~100. One suggestion per round speaks that dialect;
-		// it runs against all sources like any other and its Q-label shows
-		// what arXiv answered. Code sorts by breadth afterwards, so the
-		// row may not stay last -- the CONTENT is the point, not the slot.
+		// arXiv is a physics/CS/math preprint server: domain jargon yields
+		// nothing there, the same need in computer-vision terms does. One
+		// suggestion per round speaks that dialect; it runs against all
+		// sources like any other and its Q-label shows what arXiv answered.
+		// Code sorts by breadth afterwards, so the row may not stay last.
 		"Make EXACTLY ONE suggestion (the last line) a computer-science / preprint-server phrasing of the "
 		+ "same need, the way arXiv machine-learning and computer-vision papers describe it: generic method "
 		+ "words (segmentation OR extraction OR mapping OR detection, deep learning, CNN, SAR) instead of "
@@ -172,21 +154,18 @@ function variantBaseRow(
 }
 
 const INTAKE_WIDGET = "pi-literature-review-intake";
-/** Transcript entry type for the /lit-search digest card (v30.3: the
- * 16-line widget truncated real result lists in the field -- the same
- * lesson as the v27 report cards; entries scroll, widgets do not). */
+/** Transcript entry type for the /lit-search digest card (entries scroll,
+ * widgets do not -- a capped widget truncates real result lists). */
 const DIGEST_ENTRY = "pi-literature-search-digest";
 let digestEntryReady = false;
 
-/** Agent-facing framing on the TUI command-path digest message
- * (2026-08-10, the synthesis pattern: card + brief chat answer). The card
- * above the agent's reply IS the full result; the agent adds a short
- * conversational summary so the run also leaves a real chat answer.
- * Titles, identifiers and paths are FORBIDDEN in the reply -- agents
- * re-typed and fabricated both in earlier field tests (2026-08-04); the
- * card already carries the reference lines and the clickable HTML link
- * deterministically. Costs one LLM call per TUI command run (explicit
- * user decision 2026-08-10). */
+/** Agent-facing framing on the TUI command-path digest message (card +
+ * brief chat answer): the card above the agent's reply IS the full result;
+ * the agent adds a short conversational summary so the run also leaves a
+ * real chat answer. Titles, identifiers and paths are FORBIDDEN in the
+ * reply -- agents re-type and fabricate both; the card already carries the
+ * reference lines and the clickable HTML link deterministically. Costs one
+ * LLM call per TUI command run. */
 function searchTurnNote(): string {
 	return "[/lit-search result -- deterministic, agent-free; the user already sees it IN FULL as a card "
 		+ "above your reply, including every reference line and the clickable HTML link. Reply NOW with a "
@@ -199,44 +178,40 @@ function searchTurnNote(): string {
 /** The user-adjustable subset of a discovery call. */
 interface IntakeValues {
 	query: string;
-	/** Additional query phrasings searched in the same run (2026-08-06: the
-	 * variants tab -- checked rows minus the locked base row). */
+	/** Additional query phrasings searched in the same run (the variants
+	 * tab: checked rows minus the locked base row). */
 	queryVariants?: string[] | undefined;
 	groupTerms: string[][] | undefined;
-	/** on_target needs only this many groups (undefined: all) -- the wide
-	 * "concept pairs" variant (v30.3). */
-	groupRequire?: number | undefined;
 	yearFrom: number | undefined;
 	yearTo: number | undefined;
 	perSource: number | undefined;
 	minCites: number | undefined;
 	minJournalScore: number | undefined;
 	venues: string[] | undefined;
-	/** v30.11: the "Other journals/sources" row of the picker was checked --
+	/** The "Other journals/sources" row of the picker was checked --
 	 * journals outside the listed head pass too (see ResultFilters). */
 	venuesOther?: boolean;
 	/** The journal names the picker listed, so "other" knows what it is
 	 * other THAN. Only meaningful together with venuesOther. */
 	venuesListed?: string[];
 	authors: string[] | undefined;
-	/** v30.11: the author picker's "other authors" row was checked. */
+	/** The author picker's "other authors" row was checked. */
 	authorsOther?: boolean;
 	/** The author names the picker listed (see venuesListed). */
 	authorsListed?: string[];
 }
 
 /** Intake wizard strings per dialog language (the dialogs follow the
- * chat's language, v27; shared observer in dialogs.ts; English default
- * v30). Wording is deliberately sober -- scholarly tool, no chattiness. */
+ * chat's language via the shared observer in dialogs.ts; English default).
+ * Wording is deliberately sober -- scholarly tool, no chattiness. */
 const SEARCH_TEXT: Record<DialogLang, {
-	/** Line above the tab bar: which dialog this is (v30.12). */
+	/** Line above the tab bar: which dialog this is. */
 	header: string;
 	queryTab: string;
 	queryTitle: string;
 	queryPlaceholder: string;
-	/** Query-variants tab (2026-08-06, replacing the grouping tab): locked
-	 * base query on top, LLM suggestions as checkable rows, a steering
-	 * input row at the bottom. */
+	/** Query-variants tab: locked base query on top, LLM suggestions as
+	 * checkable rows, a steering input row at the bottom. */
 	variantsTab: string;
 	variantsTitle: string;
 	variantsSelectAll: string;
@@ -254,9 +229,8 @@ const SEARCH_TEXT: Record<DialogLang, {
 	variantsFailed: (message: string) => string;
 	variantsNoModel: string;
 	/** Dim note under the base row when the query reads like a prose
-	 * sentence (2026-08-10): the derived AND chain would be unsatisfiably
-	 * strict; the first suggestion distills the sentence and arrives
-	 * prechecked. */
+	 * sentence: the derived AND chain would be unsatisfiably strict; the
+	 * first suggestion distills the sentence and arrives prechecked. */
 	variantsProse: string;
 	variantsArxiv: string;
 	periodTab: string;
@@ -274,18 +248,17 @@ const SEARCH_TEXT: Record<DialogLang, {
 	journalSelectAll: string;
 	journalNext: string;
 	/** List entry suffix: hit count plus the OpenAlex 2-yr citedness when
-	 * the journal has one (v30.8 user wish: the rate in parentheses; the
-	 * rate arrives pre-formatted with one decimal -- "3.0", never "3"). */
+	 * the journal has one (pre-formatted with one decimal -- "3.0"). */
 	journalItem: (count: number, score: string | undefined) => string;
-	/** The catch-all row under the listed journals (v30.11): everything the
-	 * top-N list does not show, so checking every row = no filter. */
+	/** The catch-all row under the listed journals: everything the top-N
+	 * list does not show, so checking every row = no filter. */
 	journalOther: string;
 	authorTab: string;
 	authorTitle: string;
 	authorSelectAll: string;
 	/** List entry suffix: hits for THIS query plus the author's OpenAlex
-	 * totals (citations, h-index) where the API has them (v30.11). */
-	authorItem: (count: number, metrics: { cites?: number; hIndex?: number; topics?: string[] }) => string;
+	 * totals (citations, h-index, topics) where the API has them. */
+	authorItem: (count: number, metrics: Partial<AuthorMetrics>) => string;
 	authorOther: string;
 	authorLoading: string;
 	authorNoneFound: string;
@@ -465,7 +438,7 @@ const ALL_YEARS_TOKENS = new Set([
  * custom range) into a year range. Null means an unparseable custom spec:
  * the submit mapping warns and keeps the proposal; the facet loaders
  * silently scope by nothing. Shared so the pickers and the run itself
- * always agree on what the chosen period means (v30.13).
+ * always agree on what the chosen period means.
  */
 function periodToRange(raw: unknown): { yearFrom?: number; yearTo?: number } | null {
 	const spec = typeof raw === "string" ? raw.trim() : "";
@@ -476,29 +449,59 @@ function periodToRange(raw: unknown): { yearFrom?: number; yearTo?: number } | n
 	return parseYearRange(spec);
 }
 
+/** Engine options shared by the tool and the command path: the confirmed
+ * wizard values, minus the filters (see filtersFor). */
+function searchOptionsFor(confirmed: IntakeValues): Pick<SearchOptions, "query" | "queryVariants" | "perSource" | "groupTerms"> {
+	return {
+		query: confirmed.query,
+		queryVariants: confirmed.queryVariants,
+		perSource: confirmed.perSource,
+		groupTerms: confirmed.groupTerms,
+	};
+}
+
+/** The confirmed wizard values as engine filters (the tool path adds its
+ * headless-only params on top). */
+function filtersFor(confirmed: IntakeValues): ResultFilters {
+	return {
+		minCites: confirmed.minCites,
+		minJournalScore: confirmed.minJournalScore,
+		yearFrom: confirmed.yearFrom,
+		yearTo: confirmed.yearTo,
+		venues: confirmed.venues,
+		venuesOther: confirmed.venuesOther,
+		venuesListed: confirmed.venuesListed,
+		authors: confirmed.authors,
+		authorsOther: confirmed.authorsOther,
+		authorsListed: confirmed.authorsListed,
+	};
+}
+
+/** Write the HTML page (with the Network column) + JSON sidecar and the
+ * static network page beside them; the relative Graph links can never
+ * dangle because both are written together. Throws on write failure. */
+function writeSearchOutputs(payload: SearchPayload, htmlFile?: string): { htmlPath: string; jsonPath: string } {
+	const written = writeRunOutputs(renderHtml(payload, { network: true }), payload, htmlFile);
+	writeNetworkPage(written.htmlPath);
+	return written;
+}
+
 /**
- * Code-enforced intake: a blocking dialog the MODEL cannot skip or answer.
- * Three field tests (2x Granite, 1x Gemini, 2026-07-10) proved that a
- * description-level instruction to ask intake questions gets ignored or
- * rationalized away; this gate runs on EVERY call (user decision). Since
- * v29.1 it is the ONE rpiv-style wizard (same look as /lit-synthesis). It
- * ALWAYS starts on the query tab (user decision 2026-07-30, revising the
- * v29.1 review-page-first ergonomics: the jump to the submit page
- * confused the first-time flow): a proposed query arrives as PREFILL,
- * the user walks the tabs to the submit page; bare /lit-search starts
- * the same way with an empty query. Esc cancels
- * the run before any network call. Values are WYSIWYG: what a tab shows
- * at submit time is what runs -- clearing the years means all years, and
- * an empty query at submit cancels honestly on EVERY path (v30; the
- * silent fallback to the proposal is gone). The query-variants tab
- * (2026-08-06, replacing the grouping tab) pins the base query as a
- * locked row, loads LLM concept-block suggestions when reached and lets
- * a steering row regenerate them; checked rows run as additional
- * queries. Blocks (2026-08-06 block search) drive the boolean fetch AND
- * the labeling, derived per query by the ENGINE (agent group_terms
- * override the base query's blocks). The count tab carries the presets
- * plus an inline custom row; the filter tab (min citations, author
- * names) is strictly opt-in.
+ * Code-enforced intake: a blocking wizard the MODEL cannot skip or answer,
+ * run on EVERY interactive call (the same one-overlay wizard as
+ * /lit-synthesis). It always starts on the query tab: a proposed query
+ * arrives as PREFILL, the user walks the tabs to the submit page; bare
+ * /lit-search starts the same way with an empty query. Esc cancels the run
+ * before any network call. Values are WYSIWYG: what a tab shows at submit
+ * time is what runs -- clearing the years means all years, and an empty
+ * query at submit cancels honestly on every path. Tabs: query; query
+ * variants (locked base row, LLM concept-block suggestions loaded when
+ * reached, steering row regenerates, checked rows run as additional
+ * queries -- blocks drive the boolean fetch AND the labeling, derived per
+ * query by the ENGINE, agent group_terms override the base query's
+ * blocks); period; count (presets + custom row); journals and authors
+ * (OpenAlex facet lists with an "other" row); filters (min citations,
+ * author names -- strictly opt-in).
  */
 async function intakeWizard(
 	ctx: ExtensionContext,
@@ -513,10 +516,10 @@ async function intakeWizard(
 	const text = SEARCH_TEXT[lang];
 	const proposedDepth = proposed.perSource ?? DEFAULT_PER_SOURCE;
 	const yearInitial = yearRangeToSpec(proposed.yearFrom, proposed.yearTo);
-	// Agent-proposed query variants (tool param, 2026-08-06): they become
-	// visible PREchecked rows in the variants tab (v30.8 preselect
-	// semantics) -- the user-confirmed checked list is what runs, raw
-	// params no longer bypass the dialog. Deduplicated case-insensitively.
+	// Agent-proposed query variants (tool param) become visible PREchecked
+	// rows in the variants tab -- the user-confirmed checked list is what
+	// runs, raw params never bypass the dialog. Deduplicated
+	// case-insensitively.
 	const agentVariants: string[] = [];
 	for (const variant of queryVariants ?? []) {
 		const trimmed = variant.trim();
@@ -527,20 +530,20 @@ async function intakeWizard(
 	}
 	const thisYear = new Date().getFullYear();
 	// Set by the variants loader when the base query reads like a prose
-	// sentence (2026-08-10): the first suggestion after the breadth sort --
-	// the distillation under the prompt's prose rule -- so preselect can
-	// check it for the default run.
+	// sentence: the first suggestion after the breadth sort -- the
+	// distillation under the prompt's prose rule -- so preselect can check
+	// it for the default run.
 	let proseDistilled: string | null = null;
 	// Filled by the journal itemLoader below; the submit mapping needs to
-	// know which journals the list actually showed (v30.11), and the author
-	// loader needs their OpenAlex source ids to scope its facet (v30.13).
+	// know which journals the list actually showed, and the author loader
+	// needs their OpenAlex source ids to scope its facet.
 	let listedJournals: string[] = [];
 	let listedJournalIds = new Map<string, string>();
 	let listedAuthors: string[] = [];
-	// Facet scope from the LIVE answers (v30.13 field finding: lists built
-	// from the query text alone showed journals/authors the configured run
-	// could never return). Both parts feed the loader cache keys, so editing
-	// the period or the journal picks re-fetches on the next tab visit.
+	// Facet scope from the LIVE answers (lists built from the query text
+	// alone would show journals/authors the configured run could never
+	// return). Both parts feed the loader cache keys, so editing the period
+	// or the journal picks re-fetches on the next tab visit.
 	const liveYearScope = (answers: WizardAnswers): FacetScope => periodToRange(answers.period) ?? {};
 	const livePickedSourceIds = (answers: WizardAnswers): string[] => {
 		const picked = Array.isArray(answers.journals) ? (answers.journals as string[]) : [];
@@ -560,27 +563,26 @@ async function intakeWizard(
 			...(query.trim() ? { initial: query } : {}),
 		},
 		{
-			// Query-variants tab (2026-08-06 user decision, REPLACING the
-			// grouping tab of v30.2-.5): the locked base query on top, LLM
-			// phrasing suggestions as checkable rows (loaded when the tab is
-			// reached -- see the variants itemLoader below), agent-proposed
-			// variants prechecked, and a steering input row at the bottom
-			// whose Enter regenerates the suggestions (checked rows survive
-			// via keepSelected). Grouping is auto-derived at submit since.
+			// Query-variants tab: the locked base query on top, LLM phrasing
+			// suggestions as checkable rows (loaded when the tab is reached --
+			// see the variants itemLoader below), agent-proposed variants
+			// prechecked, and a steering input row at the bottom whose Enter
+			// regenerates the suggestions (checked rows survive via
+			// keepSelected).
 			kind: "checkbox", id: "variants", tab: text.variantsTab, title: text.variantsTitle,
 			items: [], selectAllLabel: text.variantsSelectAll, nextLabel: text.journalNext,
 			optional: true, emptyNote: text.variantsIdle, keepSelected: true, cursorStart: "next",
-			// Own-variant row (2026-08-10 user wish): typed text + Enter joins
-			// the list as a checked row and runs like any confirmed variant.
+			// Own-variant row: typed text + Enter joins the list as a checked
+			// row and runs like any confirmed variant.
 			addInput: { id: "variants_own", label: text.variantsOwnLabel },
 			input: { id: "variants_hint", label: text.variantsSteerLabel },
 		},
 		{
-			// Search period as a menu (v30.3 user wish): last 5/10/20 years
-			// with the resolved range as the dim line, all years, or a custom
-			// range (2015-2024, 2015- or 2024). Bare calls recommend "last 5
-			// years"; the proposal path defaults to all years unless the
-			// agent proposed a range (which seeds the custom row).
+			// Search period as a menu: last 5/10/20 years with the resolved
+			// range as the dim line, all years, or a custom range (2015-2024,
+			// 2015- or 2024). Bare calls recommend "last 5 years"; the proposal
+			// path defaults to all years unless the agent proposed a range
+			// (which seeds the custom row).
 			kind: "choice", id: "period", tab: text.periodTab, title: text.periodTitle,
 			options: [
 				{ value: "5y", label: text.periodLast(5), description: `${thisYear - 4}-${thisYear}` },
@@ -601,29 +603,26 @@ async function intakeWizard(
 				{ value: "custom", label: text.countCustom, freeText: true },
 			],
 			initial: String(proposedDepth),
-			// On the proposal-confirm path the proposal IS the answer (one
-			// Enter runs it); a bare call starts genuinely unanswered (v30
-			// field complaint: no pre-set check marks).
+			// On the proposal-confirm path the proposal IS the answer; a bare
+			// call starts genuinely unanswered (no pre-set check marks).
 			...(query.trim() ? { initialIsAnswer: true } : {}),
 		},
 		{
-			// Journal filter (v30.7): the top journals for this query load
-			// INTO the tab (one OpenAlex facet query, fired by the adapter
-			// when the tab is reached -- see itemLoader below); an empty
-			// selection means no filter, so Enter-through stays one stroke.
-			// Typed name substrings (and an agent venues proposal) live in
-			// the filter form's journal-names field.
+			// Journal filter: the top journals for this query load INTO the
+			// tab (one OpenAlex facet query, fired when the tab is reached --
+			// see itemLoader below); an empty selection means no filter, so
+			// Enter-through stays one stroke. An agent venues proposal arrives
+			// as prechecked rows.
 			kind: "checkbox", id: "journals", tab: text.journalTab, title: text.journalTitle,
 			items: [], selectAllLabel: text.journalSelectAll, nextLabel: text.journalNext,
 			optional: true, emptyNote: text.journalLoading,
 		},
 		{
-			// Author filter (v30.11 user wish "neben dem Namen auch die Zahl
-			// der Zitationen"): the same mechanics as the journal tab -- the
-			// top authors for this query load into the tab, each row carrying
-			// its hits plus the author's open OpenAlex metrics (total
-			// citations, h-index). A typed name in the Filters tab still
-			// works for anyone outside this head.
+			// Author filter: the same mechanics as the journal tab -- the top
+			// authors for this query load into the tab, each row carrying its
+			// hits plus the author's open OpenAlex metrics (total citations,
+			// h-index, topics). A typed name in the Filters tab still works
+			// for anyone outside this head.
 			kind: "checkbox", id: "author_pick", tab: text.authorTab, title: text.authorTitle,
 			items: [], selectAllLabel: text.authorSelectAll, nextLabel: text.journalNext,
 			optional: true, emptyNote: text.authorLoading,
@@ -645,27 +644,21 @@ async function intakeWizard(
 	const result = await runWizard(ctx, steps, signal, {
 		lang,
 		header: text.header,
-		// The wizard ALWAYS starts on the query tab, proposal or not (user
-		// decision 2026-07-30, revising v29.1's review-page-first: jumping
-		// straight to the submit page confused the first-time flow; the
-		// proposal stays as PREFILL, the user walks the tabs to submit).
 		// Live variant count on the review page: checked rows minus the
-		// locked base row (2026-08-06).
+		// locked base row.
 		submitNote: (answers) => text.note(sources, Array.isArray(answers.variants)
 			? (answers.variants as string[]).filter((id) => id !== VARIANT_BASE_ID).length
 			: 0),
-		// The journal list loads when the tab is reached, keyed on the LIVE
-		// query text (v30.7) -- one OpenAlex facet request plus one batched
-		// score lookup (v30.8: hit count AND 2-yr citedness per entry),
-		// adapter-driven. An agent venues proposal prechecks matching rows.
+		// Lazily loaded tabs: each loader fires when its tab is reached,
+		// keyed on the LIVE answers it depends on (a changed key re-fetches
+		// on the next visit).
 		itemLoaders: [{
-			// Query-variant suggestions (2026-08-06): ONE call to the model
-			// selected in pi when the tab is reached; the key carries the
-			// COMMITTED steering text plus its commit counter, so Enter on
-			// the steering row regenerates and typing never fires a call.
-			// load() never throws -- every failure degrades to the locked
-			// base row with an explaining dim line, and the tab stays
-			// passable with one Enter.
+			// Query-variant suggestions: ONE call to the model selected in pi
+			// when the tab is reached; the key carries the COMMITTED steering
+			// text plus its commit counter, so Enter on the steering row
+			// regenerates and typing never fires a call. load() never throws
+			// -- every failure degrades to the locked base row with an
+			// explaining dim line, and the tab stays passable with one Enter.
 			step: "variants",
 			key: (answers) => {
 				const live = String(answers.query ?? "").trim().toLowerCase();
@@ -673,16 +666,16 @@ async function intakeWizard(
 				return `${live}|${String(answers.variants_hint ?? "")}|${String(answers.variants_hint_seq ?? "0")}`;
 			},
 			// The base row's dim line shows its concept blocks -- exactly what
-			// the boolean sources receive and what labels its finds (block
-			// search 2026-08-06); a failure/none note takes the line instead.
+			// the boolean sources receive and what labels its finds; a
+			// failure/none note takes the line instead.
 			load: async (answers) => {
 				const liveQuery = String(answers.query ?? "").trim();
 				const hint = String(answers.variants_hint ?? "").trim();
-				// Prose sentence as base (2026-08-10): the prompt demands a
-				// faithful distillation as the FIRST line; after the breadth
-				// sort the closest-to-base suggestion sits first, which under
-				// that rule IS the distillation -- preselect checks it so the
-				// default Enter-through run carries a proper block query.
+				// Prose sentence as base: the prompt demands a faithful
+				// distillation as the FIRST line; after the breadth sort the
+				// closest-to-base suggestion sits first, which under that rule
+				// IS the distillation -- preselect checks it so the default
+				// Enter-through run carries a proper block query.
 				const prose = isProseQuery(liveQuery);
 				const agentItems: CheckboxItem[] = agentVariants
 					.filter((variant) => variant.toLowerCase() !== liveQuery.toLowerCase())
@@ -746,8 +739,7 @@ async function intakeWizard(
 				);
 				const scores = await fetchJournalScores(page.listed.map((facet) => facet.id), () => {});
 				// Remember what the list SHOWED: the "other" row is defined
-				// against exactly these names (v30.11); the ids scope the
-				// author facet (v30.13).
+				// against exactly these names; the ids scope the author facet.
 				listedJournals = page.listed.map((facet) => facet.name);
 				listedJournalIds = new Map(page.listed.map((facet) => [facet.name, facet.id]));
 				const items = page.listed.map((facet) => {
@@ -757,7 +749,7 @@ async function intakeWizard(
 					return { id: facet.name, label: `${facet.name} ${text.journalItem(facet.count, rounded)}` };
 				});
 				// The catch-all row: checking everything is then genuinely "no
-				// filter" (v30.11 user decision -- "all" must never exclude).
+				// filter" ("all" must never exclude).
 				return items.length
 					? [...items, {
 						id: JOURNAL_OTHER_ID,
@@ -778,9 +770,9 @@ async function intakeWizard(
 			emptyNote: text.journalNoneFound,
 			failedNote: text.journalFetchFailed,
 		}, {
-			// The author list (v30.11): one facet request over the query's
-			// works plus one batched author lookup for the open metrics.
-			// Scoped by the live period AND the picked journals (v30.13).
+			// The author list: one facet request over the query's works plus
+			// one batched author lookup for the open metrics. Scoped by the
+			// live period AND the picked journals.
 			step: "author_pick",
 			key: (answers) => `${String(answers.query ?? "").trim().toLowerCase()}|${
 				scopeKey({ ...liveYearScope(answers), sourceIds: livePickedSourceIds(answers) })}`,
@@ -791,17 +783,10 @@ async function intakeWizard(
 				});
 				const metrics = await fetchAuthorMetrics(page.listed.map((facet) => facet.id), () => {});
 				listedAuthors = page.listed.map((facet) => facet.name);
-				const items = page.listed.map((facet) => {
-					const found = metrics.get(facet.id) ?? {};
-					return {
-						id: facet.name,
-						label: `${facet.name} ${text.authorItem(facet.count, {
-							...(found.cites !== undefined ? { cites: found.cites } : {}),
-							...(found.hIndex !== undefined ? { hIndex: found.hIndex } : {}),
-							...(found.topics?.length ? { topics: found.topics } : {}),
-						})}`,
-					};
-				});
+				const items = page.listed.map((facet) => ({
+					id: facet.name,
+					label: `${facet.name} ${text.authorItem(facet.count, metrics.get(facet.id) ?? {})}`,
+				}));
 				return items.length
 					? [...items, {
 						id: AUTHOR_OTHER_ID,
@@ -828,29 +813,26 @@ async function intakeWizard(
 		return null;
 	}
 	const values: IntakeValues = { ...proposed, query };
-	// WYSIWYG (v30): the query the tab shows at submit is the query that
-	// runs -- and an EMPTY query cancels honestly on every path (the old
-	// silent fallback to the proposal is gone with its hint text).
+	// WYSIWYG: the query the tab shows at submit is the query that runs --
+	// and an EMPTY query cancels honestly on every path.
 	values.query = typeof result.query === "string" ? result.query.trim() : "";
 	if (!values.query) {
 		ctx.ui.notify(text.noQuery, "warning");
 		diagnostics.push("intake dialog: submitted without a query");
 		return null;
 	}
-	// Query variants (2026-08-06): exactly the checked rows minus the
-	// locked base row -- WYSIWYG, the run searches base + checked variants.
-	// The engine dedupes against the base query again (belt and braces).
+	// Query variants: exactly the checked rows minus the locked base row --
+	// the run searches base + checked variants. The engine dedupes against
+	// the base query again (belt and braces).
 	const pickedVariantRows = Array.isArray(result.variants) ? (result.variants as string[]) : [];
 	const pickedVariants = pickedVariantRows.filter((id) =>
 		id !== VARIANT_BASE_ID && id.trim().toLowerCase() !== values.query.toLowerCase());
 	values.queryVariants = pickedVariants.length ? pickedVariants : undefined;
-	// Blocks/grouping: since the block search (2026-08-06) the ENGINE
-	// derives every query's concept blocks itself (expression parsed, plain
-	// keywords word-per-block) -- they drive the boolean fetch AND the
-	// labeling. Only an agent group_terms proposal overrides the BASE
-	// query's blocks.
+	// Blocks/grouping: the ENGINE derives every query's concept blocks
+	// itself (expression parsed, plain keywords word-per-block) -- they
+	// drive the boolean fetch AND the labeling. Only an agent group_terms
+	// proposal overrides the BASE query's blocks.
 	values.groupTerms = proposed.groupTerms?.length ? proposed.groupTerms : undefined;
-	values.groupRequire = undefined;
 	// The period step answers with a preset key or a custom range spec; an
 	// unparseable custom range keeps the proposal, loudly. Same resolution
 	// the facet loaders used live (periodToRange), so the pickers and the
@@ -864,7 +846,7 @@ async function intakeWizard(
 		values.yearTo = range.yearTo;
 	}
 	// The count step answers with a number string: a preset value or the
-	// free-entry input of the "custom" row (v30 -- no separate count tab).
+	// free-entry input of the "custom" row.
 	const countSpec = typeof result.count === "string" ? result.count.trim() : "";
 	if (countSpec) {
 		const count = parsePerSource(countSpec, MAX_PER_SOURCE);
@@ -888,14 +870,14 @@ async function intakeWizard(
 		return Number(spec.replace(",", "."));
 	};
 	values.minCites = numberField(result.min_cites, text.minCitesLabel, false);
-	// The journal-score filter left the DIALOG in v30.9 (user decision);
-	// WYSIWYG forbids silently applying an agent-passed value the wizard
-	// never showed. The tool param keeps working on headless runs.
+	// The journal-score filter is not shown in the dialog; WYSIWYG forbids
+	// silently applying an agent-passed value the wizard never showed. The
+	// tool param keeps working on headless runs.
 	values.minJournalScore = undefined;
-	// Author filter (v30.9): any listed name substring may match any author.
-	// v30.11: the Authors tab contributes picked names, plus its own
-	// catch-all row -- typed names and picked names are the same kind of
-	// wanted substring and simply merge (deduplicated, case-insensitive).
+	// Author filter: any listed name substring may match any author. The
+	// Authors tab contributes picked names, plus its own catch-all row --
+	// typed names and picked names are the same kind of wanted substring
+	// and simply merge (deduplicated, case-insensitive).
 	const authorsSpec = typeof result.authors === "string" ? result.authors.trim() : "";
 	const typedAuthors = authorsSpec.split(/[,;]/).map((name) => name.trim()).filter(Boolean);
 	const pickedAuthorRows = Array.isArray(result.author_pick) ? (result.author_pick as string[]) : [];
@@ -919,13 +901,11 @@ async function intakeWizard(
 		values.authorsOther = undefined;
 		values.authorsListed = undefined;
 	}
-	// Journal filter: exactly what the tab shows checked (v30.8 -- the
-	// typed-names form field is gone; an agent proposal arrives as
-	// prechecked rows via the loader's preselect); empty = no filter.
-	// v30.11: the list carries an explicit "other journals/sources" row --
+	// Journal filter: exactly what the tab shows checked (an agent proposal
+	// arrives as prechecked rows via the loader's preselect); empty = no
+	// filter. The list carries an explicit "other journals/sources" row --
 	// with it checked, journals outside the list pass too, and checking
-	// EVERY row is literally no filter (the select-all trap of v30.10 is
-	// gone: "all" can no longer exclude anything).
+	// EVERY row is literally no filter ("all" can never exclude anything).
 	const pickedJournals = Array.isArray(result.journals) ? (result.journals as string[]) : [];
 	const pickedOther = pickedJournals.includes(JOURNAL_OTHER_ID);
 	const pickedNames = pickedJournals.filter((name) => name !== JOURNAL_OTHER_ID);
@@ -963,15 +943,13 @@ export default function literatureSearch(pi: ExtensionAPI) {
 		try {
 			const { Box, Text } = await import("@earendil-works/pi-tui");
 			// A raw file:// URL WRAPS across card lines in narrow terminals and
-			// the click target breaks (2026-08-10 field find). Display-only
-			// fix: the card renders the URL as an OSC 8 hyperlink with the
-			// short basename as its text -- short text never wraps. OSC 8 is
-			// NOT the forbidden raw-ANSI styling of v30.3: the installed
-			// pi-tui explicitly supports it (dist/utils.js: visibleWidth
-			// strips OSC hyperlinks, the wrap tracker re-opens them per line;
+			// the click target breaks. Display-only fix: the card renders the
+			// URL as an OSC 8 hyperlink with the short basename as its text --
+			// short text never wraps. pi-tui explicitly supports OSC 8
+			// (visibleWidth strips it, the wrap tracker re-opens it per line;
 			// BEL terminator because some terminals only click BEL-terminated
-			// links -- pi-tui's own comment). The digest STRING stays a plain
-			// URL (LLM context, widget fallback, protocol).
+			// links). The digest STRING stays a plain URL (LLM context, widget
+			// fallback, protocol).
 			const linkified = (line: string): string => {
 				const match = line.match(/file:\/\/\S+/);
 				if (!match) return line;
@@ -992,11 +970,10 @@ export default function literatureSearch(pi: ExtensionAPI) {
 			};
 			pi.registerEntryRenderer(DIGEST_ENTRY, (entry, _state, theme) =>
 				buildCard(entry.data as { heading: string; text: string }, theme));
-			// The command-path digest travels as a custom MESSAGE since
-			// 2026-08-10 (the synthesis pattern: display, LLM context and
-			// /resume persistence in one call); this renderer draws the SAME
-			// card from message.details, so the user never sees the
-			// agent-facing turn note in `content`.
+			// The command-path digest travels as a custom MESSAGE (display,
+			// LLM context and /resume persistence in one call); this renderer
+			// draws the SAME card from message.details, so the user never sees
+			// the agent-facing turn note in `content`.
 			pi.registerMessageRenderer(DIGEST_ENTRY, (message, _options, theme) =>
 				message.details ? buildCard(message.details as { heading: string; text: string }, theme) : undefined);
 			digestEntryReady = true;
@@ -1102,7 +1079,7 @@ export default function literatureSearch(pi: ExtensionAPI) {
 			// in the UI (per-source counts, verification, enrichment).
 			const report = (message: string) => {
 				diagnostics.push(message);
-				onUpdate?.({ content: [{ type: "text", text: message }] });
+				onUpdate?.({ content: [{ type: "text", text: message }], details: undefined });
 			};
 			let confirmed: IntakeValues = {
 				query: params.query,
@@ -1152,27 +1129,13 @@ export default function literatureSearch(pi: ExtensionAPI) {
 					details: { diagnostics },
 				};
 			}
+			// The wizard-confirmed values run -- not the raw agent params;
+			// headless calls keep the params via the confirmed seed above.
 			const payload = await runSearch({
-				// The wizard-confirmed variant list runs -- not the raw agent
-				// param (2026-08-06: the variants tab shows and edits them);
-				// headless calls keep the params via the confirmed seed above.
-				query: confirmed.query,
-				queryVariants: confirmed.queryVariants,
-				perSource: confirmed.perSource,
+				...searchOptionsFor(confirmed),
 				sources: params.sources,
-				groupTerms: confirmed.groupTerms,
-				groupRequire: confirmed.groupRequire,
 				filters: {
-					minCites: confirmed.minCites,
-					minJournalScore: confirmed.minJournalScore,
-					yearFrom: confirmed.yearFrom,
-					yearTo: confirmed.yearTo,
-					venues: confirmed.venues,
-					venuesOther: confirmed.venuesOther,
-					venuesListed: confirmed.venuesListed,
-					authors: confirmed.authors,
-					authorsOther: confirmed.authorsOther,
-					authorsListed: confirmed.authorsListed,
+					...filtersFor(confirmed),
 					requirePdf: params.require_pdf,
 					verifiedOnly: params.verified_only,
 				},
@@ -1182,13 +1145,10 @@ export default function literatureSearch(pi: ExtensionAPI) {
 				signal,
 			});
 			let htmlPath: string | null = null;
-			let jsonPath: string | null = null;
 			try {
-				({ htmlPath, jsonPath } = writeRunOutputs(renderHtml(payload, { network: true }), payload, params.html_file));
-				// The static network page the Network column links to; written
-				// beside the results so the relative link always resolves.
-				writeNetworkPage(htmlPath);
-				diagnostics.push(`wrote HTML rendering to ${htmlPath} and JSON copy to ${jsonPath}`);
+				const written = writeSearchOutputs(payload, params.html_file);
+				htmlPath = written.htmlPath;
+				diagnostics.push(`wrote HTML rendering to ${written.htmlPath} and JSON copy to ${written.jsonPath}`);
 			} catch (error) {
 				diagnostics.push(`writing the output files failed: ${error instanceof Error ? error.message : error}`);
 			}
@@ -1205,13 +1165,11 @@ export default function literatureSearch(pi: ExtensionAPI) {
 
 	// /lit-search -- the agent-free path. Runs the SAME intake wizard and
 	// deterministic pipeline as the tool, with no agent model deciding
-	// whether or how to search. The wizard always opens on the query tab
-	// (v29.1: the command owns the dialog, no agent handoff; 2026-07-30:
-	// a passed query is prefill, not a review-page jump).
+	// whether or how to search; a passed query is prefill on the query tab.
 	pi.registerCommand("lit-search", {
 		description:
-			"Discover literature online: /lit-search [query] opens the intake wizard (query, grouping, "
-			+ "years, depth) and runs the pipeline agent-free (verified HTML/JSON, digest).",
+			"Discover literature online: /lit-search [query] opens the intake wizard (query, query variants, "
+			+ "period, count, journals, authors, filters) and runs the pipeline agent-free (verified HTML/JSON, digest).",
 		handler: async (args, ctx) => {
 			if (!ctx.hasUI) return;
 			const query = (args ?? "").trim();
@@ -1219,8 +1177,8 @@ export default function literatureSearch(pi: ExtensionAPI) {
 			// Non-TUI (web) clients render notifications as chat lines; the
 			// per-record detail (dropped/enriched/filtered ...) would flood
 			// the transcript there and is all in the HTML's dropped list
-			// anyway -- only the summary milestones get through (webui-compat
-			// round 3). The TUI keeps every line (transient status area).
+			// anyway -- only the summary milestones get through. The TUI
+			// keeps every line (transient status area).
 			const progress = (message: string) => {
 				if (ctx.mode !== "tui" && /^(dropped \[|enriched "|filtered: )/.test(message)) return;
 				ctx.ui.notify(message, "info");
@@ -1243,37 +1201,20 @@ export default function literatureSearch(pi: ExtensionAPI) {
 				return;
 			}
 			if (ctx.signal?.aborted) return;
-			// Sign of life (v30.9 field wish): pi's native working indicator
-			// exists only while the AGENT streams (v22) -- the agent-free
-			// command path shows an elapsed line in the widget instead.
+			// Sign of life: pi's native working indicator exists only while
+			// the AGENT streams -- the agent-free command path shows a pulsing
+			// elapsed line in the widget instead (1s tick, dots building 1-2-3
+			// at the END of the line).
 			const startedAt = Date.now();
-			// 1s tick with dots building up 1-2-3 (2026-08-10 user wish: the
-			// line should visibly pulse while the non-streaming run works).
 			const ticker = setInterval(() => {
 				const seconds = Math.round((Date.now() - startedAt) / 1000);
-				// Dots END the line (2026-08-10 user wish: nothing after the pulse).
 				const dots = ".".repeat(1 + (seconds % 3));
 				ctx.ui.setWidget(INTAKE_WIDGET, [`working -- ${seconds}s elapsed -- searching, verifying, enriching${dots}`]);
 			}, 1000);
 			try {
 				const payload = await runSearch({
-					query: confirmed.query,
-					queryVariants: confirmed.queryVariants,
-					perSource: confirmed.perSource,
-					groupTerms: confirmed.groupTerms,
-					groupRequire: confirmed.groupRequire,
-					filters: {
-						yearFrom: confirmed.yearFrom,
-						yearTo: confirmed.yearTo,
-						minCites: confirmed.minCites,
-						minJournalScore: confirmed.minJournalScore,
-						venues: confirmed.venues,
-						venuesOther: confirmed.venuesOther,
-						venuesListed: confirmed.venuesListed,
-						authors: confirmed.authors,
-						authorsOther: confirmed.authorsOther,
-						authorsListed: confirmed.authorsListed,
-					},
+					...searchOptionsFor(confirmed),
+					filters: filtersFor(confirmed),
 					onWarn: progress,
 					signal: ctx.signal,
 				});
@@ -1281,8 +1222,7 @@ export default function literatureSearch(pi: ExtensionAPI) {
 				ctx.ui.setWidget(INTAKE_WIDGET, undefined);
 				let htmlPath: string | null = null;
 				try {
-					({ htmlPath } = writeRunOutputs(renderHtml(payload, { network: true }), payload, undefined));
-					writeNetworkPage(htmlPath);
+					htmlPath = writeSearchOutputs(payload).htmlPath;
 				} catch (error) {
 					ctx.ui.notify(
 						`writing the output files failed: ${error instanceof Error ? error.message : error}`,
@@ -1295,29 +1235,13 @@ export default function literatureSearch(pi: ExtensionAPI) {
 						"info",
 					);
 				}
-				// Show the digest as a FULL transcript card (v30.3: the capped
-				// widget truncated real result lists -- "widget truncated" was
-				// a field complaint, not a policy; nothing is blocked). The
-				// card scrolls with the chat and is not in the LLM context.
-				// Widget fallback when pi-tui is unavailable. (An even earlier
-				// version used sendMessage with deliverAs:"nextTurn", which
-				// only QUEUES the text for the next prompt -- never rendered.)
-				// Audience "user" (v30.13 field complaint: the card showed the
-				// agent instructions "Tell the user to open the HTML ..." --
-				// those belong in the tool result, not in front of the user).
+				// The digest for the USER (no agent instructions on the card).
 				const digest = renderDigest(payload, htmlPath, "user");
-				// The entry card renders via a pi-tui entry renderer -- that
-				// exists only in TUI mode. RPC clients (web UIs) never paint
-				// custom entries, so there the capped widget + the notify above
-				// are the visible result (webui-compat, 2026-07-30).
+				// TUI: ONE custom message is display (the card renderer draws
+				// details), verbatim LLM context and /resume persistence at
+				// once; triggerTurn prompts ONE brief agent summary under the
+				// card (the note forbids re-typing identifiers/paths).
 				if (digestEntryReady && ctx.mode === "tui") {
-					// Custom message instead of a bare transcript entry
-					// (2026-08-10 user wish: a short answer should also stand
-					// in the chat): ONE message is display (the card renderer
-					// draws details), verbatim LLM context and /resume
-					// persistence at once, and triggerTurn prompts ONE brief
-					// agent summary under the card -- the 2026-08-04 synthesis
-					// pattern. The note forbids re-typing identifiers/paths.
 					pi.sendMessage({
 						customType: DIGEST_ENTRY,
 						content: `${searchTurnNote()}\n\n${digest}`,
@@ -1327,24 +1251,18 @@ export default function literatureSearch(pi: ExtensionAPI) {
 							text: digest,
 						},
 					}, { triggerTurn: true });
-					ctx.ui.setWidget(INTAKE_WIDGET, undefined);
 				} else {
 					const digestLines = digest.split("\n");
 					ctx.ui.setWidget(INTAKE_WIDGET, digestLines.length > 16
 						? [...digestLines.slice(0, 15), `... (${digestLines.length - 15} more lines -- full results in the HTML)`]
 						: digestLines);
-					// Web clients render neither widgets nor entry cards, and
-					// their notify toasts vanish after seconds -- but an AGENT
-					// answer is a real session message that every client shows
-					// and replays (fourth field round, the rpiv comparison:
-					// its results reach the chat because they flow through an
-					// agent TURN as tool results). So outside the TUI the
-					// deterministic run ends by handing the finished digest to
-					// the agent as its display layer. The SEARCH stays
-					// agent-free; the agent only presents the result. (An OK
-					// dialog tried before was rejected in the field as ugly.)
-					// This deliberately does NOT run in TUI mode -- the entry
-					// card is the display there, no LLM involved (v29.1).
+					// Web/RPC clients render neither widgets nor entry cards,
+					// and their notify toasts vanish after seconds -- but an
+					// AGENT answer is a real session message every client
+					// shows and replays. So outside the TUI the deterministic
+					// run ends by handing the finished digest to the agent as
+					// its display layer; the SEARCH stays agent-free, the
+					// agent only presents the result.
 					pi.sendMessage({
 						customType: "pi-literature-search-command-result",
 						content:

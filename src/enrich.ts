@@ -1,25 +1,25 @@
 /**
- * Deterministic metadata enrichment (Phase 5, step 3).
+ * Deterministic metadata enrichment for the search stage -- lookups at open
+ * APIs, never scraping, never an LLM. Four stages live here:
  *
- * Some search sources cannot deliver certain fields at all: arXiv, a
- * preprint server, has no citation counts and no journal; CrossRef and
- * Semantic Scholar ship MANY records without abstracts (publishers often
- * do not deposit them / may not be relayed -- measured 2026-08-10: 65%
- * of CrossRef records lacked one). For records that still miss cites,
- * venue or abstract after dedupe, one identifier lookup at OpenAlex
- * (GET api.openalex.org/works/doi:<doi>) fills the gap -- an open API, not
- * scraping, and no LLM. An abstract still missing after that is asked
- * from Semantic Scholar by DOI (2026-08-18; OpenAlex lacks abstracts for
- * many Elsevier papers that S2 carries -- such a record used to fall to
- * the abstract gate depending on which source happened to find it).
- * Only empty fields are filled, never overwritten,
- * and every filled field is recorded in `enriched` (field -> provider) so
- * both the JSON and the HTML rendering can mark the provenance. A filled
- * abstract also feeds the block labeling, which matches title+abstract.
+ *   1. enrichAll: records still missing citations, venue or abstract after
+ *      dedupe get ONE OpenAlex work lookup by DOI (arXiv records via their
+ *      DataCite DOI); an abstract still missing afterwards is asked from
+ *      Semantic Scholar by the record's own DOI.
+ *   2. addJournalScores: the journal's OpenAlex 2-yr mean citedness (open
+ *      analog of the impact factor), two batched lookups per run.
+ *   3. fetchJournalScores / fetchAuthorMetrics: the batched lookups the
+ *      wizard's journal and author pickers use.
+ *   4. addCodeLinks: a GitHub repository per paper -- from the abstract
+ *      text, else one GitHub search per arXiv id (a disclosed heuristic).
+ *
+ * Only empty fields are filled, never overwritten, and every filled field
+ * is recorded in `enriched` (field -> provider) so JSON and HTML can mark
+ * the provenance. A filled abstract also feeds the block labeling.
  */
 
 import { githubToken } from "./config.ts";
-import { retryDelayMs } from "./sources/arxiv.ts";
+import { pacedClient } from "./sources/polite.ts";
 import { reconstructAbstract } from "./sources/openalex.ts";
 import { fetchAbstractByDoi } from "./sources/semanticscholar.ts";
 import { contactMailto, userAgent, warn as defaultWarn } from "./types.ts";
@@ -31,14 +31,46 @@ const TIMEOUT_MS = 30_000;
 /** OpenAlex allows up to ~100 OR-joined values per filter; stay well under. */
 const BATCH_SIZE = 50;
 
+/** Query string for an OpenAlex request; the contact email (polite pool)
+ * rides along whenever one is configured. */
+function apiQuery(params: Record<string, string> = {}): string {
+	const mailto = contactMailto();
+	const merged = mailto ? { ...params, mailto } : params;
+	return Object.keys(merged).length ? `?${new URLSearchParams(merged)}` : "";
+}
+
+/** One OpenAlex GET; non-2xx answers throw with the status. */
+async function fetchJson(url: string): Promise<Record<string, any>> {
+	const response = await fetch(url, {
+		headers: { "User-Agent": userAgent(), Accept: "application/json" },
+		signal: AbortSignal.timeout(TIMEOUT_MS),
+	});
+	if (!response.ok) throw new Error(`OpenAlex answered HTTP ${response.status}`);
+	return (await response.json()) as Record<string, any>;
+}
+
+/** Split a list into batches of at most `size`. */
+function chunk<T>(items: T[], size: number): T[][] {
+	const chunks: T[][] = [];
+	for (let i = 0; i < items.length; i += size) chunks.push(items.slice(i, i + size));
+	return chunks;
+}
+
+/** OpenAlex ids arrive as full URLs; keep the bare id (W..., S..., A...). */
+function bareOpenAlexId(value: unknown): string {
+	return typeof value === "string" ? value.replace("https://openalex.org/", "").trim() : "";
+}
+
+/* ---------------- 1. Field enrichment (OpenAlex + Semantic Scholar) ---------------- */
+
 export interface EnrichableRecord {
 	title: string;
 	doi: string;
 	arxiv_id: string;
 	cites: number | null;
 	venue: string;
-	/** Missing abstracts are filled too since 2026-08-10 (optional so
-	 * older minimal callers/fixtures stay valid). */
+	/** Missing abstracts are filled too (optional: minimal callers and
+	 * fixtures need not carry one). */
 	abstract?: string;
 	/** OpenAlex source (journal) ID; captured at search time or filled here. */
 	venue_id?: string;
@@ -77,9 +109,8 @@ export function applyEnrichment<T extends EnrichableRecord>(
 		result.venue = venue.trim();
 		filled.push("venue");
 	}
-	// Missing abstract (2026-08-10): OpenAlex ships it as an inverted
-	// index in the SAME work object the cites/venue lookup already
-	// fetches; the reconstruction is pure string ops (openalex.ts).
+	// OpenAlex ships the abstract as an inverted index in the SAME work
+	// object; the reconstruction is pure string ops (openalex.ts).
 	const abstract = reconstructAbstract(work?.abstract_inverted_index);
 	if (!record.abstract && abstract) {
 		result.abstract = abstract;
@@ -87,14 +118,11 @@ export function applyEnrichment<T extends EnrichableRecord>(
 	}
 	// The journal ID is lookup plumbing for the journal-score stage, not
 	// user-facing metadata; filled quietly, visible in the JSON as venue_id.
-	const venueId = work?.primary_location?.source?.id;
-	if (!record.venue_id && typeof venueId === "string" && venueId.trim()) {
-		result.venue_id = venueId.replace("https://openalex.org/", "").trim();
-	}
+	const venueId = bareOpenAlexId(work?.primary_location?.source?.id);
+	if (!record.venue_id && venueId) result.venue_id = venueId;
 	if (filled.length) {
 		// MERGE with what earlier stages recorded -- overwriting the map
-		// would silently erase their provenance (design-doc find 2026-08-06,
-		// fixed 2026-08-07 with the second enrichment stage).
+		// would silently erase their provenance.
 		result.enriched = {
 			...(record as Enriched<T>).enriched,
 			...Object.fromEntries(filled.map((field) => [field, "openalex"])),
@@ -104,9 +132,10 @@ export function applyEnrichment<T extends EnrichableRecord>(
 }
 
 /**
- * Enrich all records that miss cites or venue and carry an identifier.
- * A failing lookup degrades gracefully: the record ships as delivered,
- * with a warning. Sequential requests, politeness towards the free API.
+ * Enrich all records that miss cites, venue or abstract and carry an
+ * identifier. A failing lookup degrades gracefully: the record ships as
+ * delivered, with a warning. Sequential requests, politeness towards the
+ * free APIs. The Semantic Scholar lookup is injectable for tests.
  */
 export async function enrichAll<T extends EnrichableRecord>(
 	records: T[],
@@ -128,32 +157,22 @@ export async function enrichAll<T extends EnrichableRecord>(
 		lookups++;
 		let current: Enriched<T> = record;
 		try {
-			const mailto = contactMailto();
-			const query = mailto ? `?${new URLSearchParams({ mailto })}` : "";
-			const response = await fetch(`${BASE_URL}/doi:${doi}${query}`, {
-				headers: { "User-Agent": userAgent(), Accept: "application/json" },
-				signal: AbortSignal.timeout(TIMEOUT_MS),
-			});
-			if (!response.ok) {
-				warn(`enrichment lookup for "${record.title}" answered HTTP ${response.status}; record kept as delivered`);
-			} else {
-				const work = (await response.json()) as Record<string, any>;
-				const { record: enrichedRecord, filled } = applyEnrichment(record, work);
-				if (filled.length) {
-					gained++;
-					warn(`enriched "${record.title}": ${filled.join(", ")} (openalex)`);
-				}
-				current = enrichedRecord;
+			const work = await fetchJson(`${BASE_URL}/doi:${doi}${apiQuery()}`);
+			const { record: enrichedRecord, filled } = applyEnrichment(record, work);
+			if (filled.length) {
+				gained++;
+				warn(`enriched "${record.title}": ${filled.join(", ")} (openalex)`);
 			}
+			current = enrichedRecord;
 		} catch (error) {
 			warn(`enrichment lookup for "${record.title}" failed: ${error instanceof Error ? error.message : error}; record kept as delivered`);
 		}
 		// Second abstract source: Semantic Scholar by the record's own DOI
 		// (arXiv DataCite DOIs are not asked -- arXiv records always carry
-		// their abstract). Failure keeps the record as it is, loudly.
-		// The anonymous S2 pool answers 429 for minutes at a time (measured
-		// 2026-08-10); after the first hard failure the remaining lookups of
-		// this run are skipped instead of each burning its own retries.
+		// their abstract). Failure keeps the record as it is, loudly. The
+		// anonymous S2 pool rate-limits for minutes at a time; after the
+		// first hard failure the remaining lookups of this run are skipped
+		// instead of each burning its own retries.
 		if (!current.abstract && record.doi && !s2Down) {
 			s2Lookups++;
 			try {
@@ -175,116 +194,9 @@ export async function enrichAll<T extends EnrichableRecord>(
 	return out;
 }
 
-function apiQuery(params: Record<string, string>): string {
-	const mailto = contactMailto();
-	return `?${new URLSearchParams(mailto ? { ...params, mailto } : params)}`;
-}
-
-async function fetchJson(url: string): Promise<Record<string, any>> {
-	const response = await fetch(url, {
-		headers: { "User-Agent": userAgent(), Accept: "application/json" },
-		signal: AbortSignal.timeout(TIMEOUT_MS),
-	});
-	if (!response.ok) throw new Error(`OpenAlex answered HTTP ${response.status}`);
-	return (await response.json()) as Record<string, any>;
-}
-
-function chunk<T>(items: T[], size: number): T[][] {
-	const chunks: T[][] = [];
-	for (let i = 0; i < items.length; i += size) chunks.push(items.slice(i, i + size));
-	return chunks;
-}
-
-/** What OpenAlex publishes about an author (v30.11: the wizard's author
- * list shows it next to the hit count). All plain API metadata. */
-export interface AuthorMetrics {
-	/** Total citations of everything this author published. */
-	cites: number | undefined;
-	works: number | undefined;
-	hIndex: number | undefined;
-	/** The author's main research areas: top OpenAlex topics by work count
-	 * (2026-08-10 user wish -- shown behind the h-index in the author tab).
-	 * Plain API display names, nothing derived. */
-	topics: string[] | undefined;
-}
-
-/**
- * Fetch citation counts / works / h-index for a set of OpenAlex author ids,
- * in batches -- the author-list analog of fetchJournalScores (v30.11).
- * Failures leave authors unscored, loudly; only finite API numbers land in
- * the map. Nothing here is derived, guessed or model-generated.
- */
-export async function fetchAuthorMetrics(
-	authorIds: string[],
-	warn: (message: string) => void = defaultWarn,
-): Promise<Map<string, AuthorMetrics>> {
-	const byAuthorId = new Map<string, AuthorMetrics>();
-	for (const batch of chunk([...new Set(authorIds.filter(Boolean))], BATCH_SIZE)) {
-		try {
-			const data = await fetchJson(`${AUTHORS_URL}${apiQuery({
-				filter: `ids.openalex:${batch.join("|")}`,
-				select: "id,cited_by_count,works_count,summary_stats,topics",
-				"per-page": String(BATCH_SIZE),
-			})}`);
-			for (const author of (data.results ?? []) as Array<Record<string, any>>) {
-				const id = typeof author.id === "string" ? author.id.replace("https://openalex.org/", "").trim() : "";
-				if (!id) continue;
-				const number = (value: unknown): number | undefined =>
-					typeof value === "number" && Number.isFinite(value) ? value : undefined;
-				// OpenAlex orders an author's topics by work count already
-				// (verified live 2026-08-10); the top entries are the person's
-				// main research areas across their ENTIRE work.
-				const topics = (Array.isArray(author.topics) ? author.topics : [])
-					.map((topic: Record<string, unknown>) => typeof topic?.display_name === "string" ? topic.display_name : "")
-					.filter(Boolean)
-					.slice(0, 3);
-				byAuthorId.set(id, {
-					cites: number(author.cited_by_count),
-					works: number(author.works_count),
-					hIndex: number(author?.summary_stats?.h_index),
-					topics: topics.length ? topics : undefined,
-				});
-			}
-		} catch (error) {
-			warn(`author metrics batch lookup failed: ${error instanceof Error ? error.message : error}; affected authors ship without metrics`);
-		}
-	}
-	return byAuthorId;
-}
+/* ---------------- 2. Journal-score stage ---------------- */
 
 /** Stamp each record with its journal's score. Pure; nothing overwritten. */
-/**
- * Fetch the OpenAlex 2-yr mean citedness for a set of journal ids, in
- * batches (extracted from addJournalScores in v30.8 -- the wizard's
- * journal list shows the score too). Failures leave journals unscored,
- * loudly; the map only ever contains finite numbers from the API.
- */
-export async function fetchJournalScores(
-	venueIds: string[],
-	warn: (message: string) => void = defaultWarn,
-): Promise<Map<string, number>> {
-	const scoreByVenueId = new Map<string, number>();
-	for (const batch of chunk([...new Set(venueIds.filter(Boolean))], BATCH_SIZE)) {
-		try {
-			const data = await fetchJson(`${SOURCES_URL}${apiQuery({
-				filter: `ids.openalex:${batch.join("|")}`,
-				select: "id,summary_stats",
-				"per-page": String(BATCH_SIZE),
-			})}`);
-			for (const source of (data.results ?? []) as Array<Record<string, any>>) {
-				const id = typeof source.id === "string" ? source.id.replace("https://openalex.org/", "").trim() : "";
-				const score = source?.summary_stats?.["2yr_mean_citedness"];
-				if (id && typeof score === "number" && Number.isFinite(score)) {
-					scoreByVenueId.set(id, score);
-				}
-			}
-		} catch (error) {
-			warn(`journal-score batch lookup failed: ${error instanceof Error ? error.message : error}; affected journals ship without a score`);
-		}
-	}
-	return scoreByVenueId;
-}
-
 export function applyJournalScores<T extends EnrichableRecord>(
 	records: T[],
 	scoreByVenueId: Map<string, number>,
@@ -320,10 +232,8 @@ export async function addJournalScores<T extends EnrichableRecord>(
 			})}`);
 			for (const work of (data.results ?? []) as Array<Record<string, any>>) {
 				const doi = typeof work.doi === "string" ? work.doi.replace("https://doi.org/", "").toLowerCase() : "";
-				const id = work?.primary_location?.source?.id;
-				if (doi && typeof id === "string" && id.trim()) {
-					venueIdByDoi.set(doi, id.replace("https://openalex.org/", "").trim());
-				}
+				const id = bareOpenAlexId(work?.primary_location?.source?.id);
+				if (doi && id) venueIdByDoi.set(doi, id);
 			}
 		} catch (error) {
 			warn(`journal-id batch lookup failed: ${error instanceof Error ? error.message : error}; affected records ship without a journal score`);
@@ -347,44 +257,129 @@ export async function addJournalScores<T extends EnrichableRecord>(
 	return scored;
 }
 
-/* ---------------- Code links (GitHub heuristic, 2026-08-07) ---------------- */
+/* ---------------- 3. Picker lookups: author metrics, journal scores ---------------- */
+
+/** What OpenAlex publishes about an author (the wizard's author list shows
+ * it next to the hit count). All plain API metadata. */
+export interface AuthorMetrics {
+	/** Total citations of everything this author published. */
+	cites: number | undefined;
+	works: number | undefined;
+	hIndex: number | undefined;
+	/** The author's main research areas: top OpenAlex topics by work count,
+	 * shown behind the h-index in the author tab. Plain API display names,
+	 * nothing derived. */
+	topics: string[] | undefined;
+}
+
+/**
+ * Fetch citation counts / works / h-index / top topics for a set of
+ * OpenAlex author ids, in batches. Failures leave authors unscored,
+ * loudly; only finite API numbers land in the map. Nothing here is
+ * derived, guessed or model-generated.
+ */
+export async function fetchAuthorMetrics(
+	authorIds: string[],
+	warn: (message: string) => void = defaultWarn,
+): Promise<Map<string, AuthorMetrics>> {
+	const byAuthorId = new Map<string, AuthorMetrics>();
+	for (const batch of chunk([...new Set(authorIds.filter(Boolean))], BATCH_SIZE)) {
+		try {
+			const data = await fetchJson(`${AUTHORS_URL}${apiQuery({
+				filter: `ids.openalex:${batch.join("|")}`,
+				select: "id,cited_by_count,works_count,summary_stats,topics",
+				"per-page": String(BATCH_SIZE),
+			})}`);
+			for (const author of (data.results ?? []) as Array<Record<string, any>>) {
+				const id = bareOpenAlexId(author.id);
+				if (!id) continue;
+				const number = (value: unknown): number | undefined =>
+					typeof value === "number" && Number.isFinite(value) ? value : undefined;
+				// OpenAlex orders an author's topics by work count already; the
+				// top entries are the person's main research areas across their
+				// ENTIRE work.
+				const topics = (Array.isArray(author.topics) ? author.topics : [])
+					.map((topic: Record<string, unknown>) => typeof topic?.display_name === "string" ? topic.display_name : "")
+					.filter(Boolean)
+					.slice(0, 3);
+				byAuthorId.set(id, {
+					cites: number(author.cited_by_count),
+					works: number(author.works_count),
+					hIndex: number(author?.summary_stats?.h_index),
+					topics: topics.length ? topics : undefined,
+				});
+			}
+		} catch (error) {
+			warn(`author metrics batch lookup failed: ${error instanceof Error ? error.message : error}; affected authors ship without metrics`);
+		}
+	}
+	return byAuthorId;
+}
+
+/**
+ * Fetch the OpenAlex 2-yr mean citedness for a set of journal ids, in
+ * batches (the wizard's journal list shows the score too). Failures leave
+ * journals unscored, loudly; the map only ever contains finite numbers
+ * from the API.
+ */
+export async function fetchJournalScores(
+	venueIds: string[],
+	warn: (message: string) => void = defaultWarn,
+): Promise<Map<string, number>> {
+	const scoreByVenueId = new Map<string, number>();
+	for (const batch of chunk([...new Set(venueIds.filter(Boolean))], BATCH_SIZE)) {
+		try {
+			const data = await fetchJson(`${SOURCES_URL}${apiQuery({
+				filter: `ids.openalex:${batch.join("|")}`,
+				select: "id,summary_stats",
+				"per-page": String(BATCH_SIZE),
+			})}`);
+			for (const source of (data.results ?? []) as Array<Record<string, any>>) {
+				const id = bareOpenAlexId(source.id);
+				const score = source?.summary_stats?.["2yr_mean_citedness"];
+				if (id && typeof score === "number" && Number.isFinite(score)) {
+					scoreByVenueId.set(id, score);
+				}
+			}
+		} catch (error) {
+			warn(`journal-score batch lookup failed: ${error instanceof Error ? error.message : error}; affected journals ship without a score`);
+		}
+	}
+	return scoreByVenueId;
+}
+
+/* ---------------- 4. Code links (GitHub heuristic) ---------------- */
 
 /**
  * Code-link stage: for records carrying an arXiv id, ONE GitHub repository
  * search per record (q = "<id>" in:name,description,readme) attaches the
- * best-matching repository as code_url -- the interim replacement for
- * Papers with Code (the .com site died 2025-07; the official .co revival
- * has no public API and blocks bots -- watch it, an API would replace
- * this heuristic). A HEURISTIC, disclosed as such in the HTML: the repo
- * mentions the paper, nothing here verifies it IS the paper's code.
- * Only records with an arxiv_id are looked up -- DOI-only journal papers
- * have no comparably precise search key (title search would guess;
- * doctrine forbids guessing).
+ * best-matching repository as code_url -- the stand-in for Papers with
+ * Code, which has no public API any more (an API would replace this
+ * heuristic). A HEURISTIC, disclosed as such in the HTML: the repo
+ * mentions the paper, nothing here verifies it IS the paper's code. Only
+ * records with an arxiv_id are looked up -- DOI-only journal papers have
+ * no comparably precise search key (a title search would guess).
  */
 const GITHUB_SEARCH_URL = "https://api.github.com/search/repositories";
-const GITHUB_TIMEOUT_MS = 30_000;
 /** GitHub's search rate limit is 10 requests/min unauthenticated, 30/min
- * with a token (measured live 2026-08-07: x-ratelimit-limit 10, resource
- * "search"). Module-wide pacing, spanning back-to-back runs (the arXiv
- * v30.13 pattern); 429/403 rate answers retry via the shared pure
- * retryDelayMs. */
+ * with a token. Module-wide pacing, spanning back-to-back runs; GitHub
+ * answers rate-limit violations with 403 or 429. */
 const GITHUB_SPACING_MS = 6_500;
 const GITHUB_SPACING_AUTH_MS = 2_100;
+const fetchGithub = pacedClient({
+	label: "GitHub",
+	spacingMs: () => (githubToken() ? GITHUB_SPACING_AUTH_MS : GITHUB_SPACING_MS),
+	rateLimitStatuses: [403, 429],
+});
 /** Per-run lookup cap: keeps the stage's worst case around a minute
  * (cap x 6.5s unauthenticated). Capped-out records honestly stay
  * unmarked, with a warn line naming the count. */
 export const CODE_LOOKUP_CAP = 12;
-let nextGithubRequestAt = 0;
-
-function githubSleep(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 /** Aggregator repositories (daily arXiv digests, awesome lists, survey
  * collections) mention THOUSANDS of arXiv ids in their READMEs and are
- * never the paper's code -- measured live 2026-08-07: the only hit for a
- * SAR water paper was "Robust_arXiv_daily". Matched on the repo NAME;
- * precision over recall, a skipped legitimate repo just means no link. */
+ * never the paper's code. Matched on the repo NAME; precision over
+ * recall, a skipped legitimate repo just means no link. */
 const LIST_REPO_NAME = /awesome|daily|weekly|digest|arxiv|papers?([_-]|\b)|reading|survey|collection|curated/i;
 
 /** Pick the repository URL from a GitHub search answer: the first item
@@ -439,42 +434,29 @@ export function codeLookupCandidates<T extends { arxiv_id: string; group?: strin
 }
 
 async function fetchCodeLink(arxivId: string, token: string): Promise<string | null> {
-	const spacing = token ? GITHUB_SPACING_AUTH_MS : GITHUB_SPACING_MS;
-	const bareId = bareArxivId(arxivId);
 	const params = new URLSearchParams({
-		q: `"${bareId}" in:name,description,readme`,
+		q: `"${bareArxivId(arxivId)}" in:name,description,readme`,
 		per_page: "3",
 	});
-	for (let attempt = 0; ; attempt++) {
-		const wait = nextGithubRequestAt - Date.now();
-		if (wait > 0) await githubSleep(wait);
-		nextGithubRequestAt = Date.now() + spacing;
-		const response = await fetch(`${GITHUB_SEARCH_URL}?${params}`, {
-			headers: {
-				"User-Agent": userAgent(),
-				Accept: "application/vnd.github+json",
-				...(token ? { Authorization: `Bearer ${token}` } : {}),
-			},
-			signal: AbortSignal.timeout(GITHUB_TIMEOUT_MS),
-		});
-		if (response.ok) return pickCodeRepo((await response.json()) as Record<string, any>);
-		// GitHub answers rate-limit violations with 403 or 429.
-		const rateLimited = response.status === 403 || response.status === 429;
-		const delay = rateLimited ? retryDelayMs(attempt, response.headers.get("retry-after")) : null;
-		if (delay === null) throw new Error(`GitHub answered HTTP ${response.status}`);
-		await githubSleep(delay);
-	}
+	const response = await fetchGithub(`${GITHUB_SEARCH_URL}?${params}`, {
+		headers: {
+			"User-Agent": userAgent(),
+			Accept: "application/vnd.github+json",
+			...(token ? { Authorization: `Bearer ${token}` } : {}),
+		},
+	});
+	return pickCodeRepo((await response.json()) as Record<string, any>);
 }
 
 /**
  * Attach code_url to records. Two deterministic signals, in order of
  * precision: (1) a GitHub URL the paper's own abstract names (any record,
  * zero requests, provider "abstract"); (2) a GitHub repository search per
- * arXiv id (provider "github"). Runs AFTER filters/grouping; since
- * 2026-08-10 the engine passes DROPPED records too (user wish -- their
- * code links matter as well), appended behind the kept ones so the cap
- * prefers on_target, then kept, then dropped. Failures degrade per
- * record, loudly; order and everything else ship unchanged.
+ * arXiv id (provider "github"). Runs AFTER filters/grouping; the engine
+ * passes kept AND dropped records, dropped ones appended behind, so the
+ * cap prefers on_target, then kept, then dropped. Failures degrade per
+ * record, loudly; order and everything else ship unchanged (one output
+ * per input, same order).
  */
 export async function addCodeLinks<T extends EnrichableRecord & { group?: string; abstract?: string }>(
 	records: T[],

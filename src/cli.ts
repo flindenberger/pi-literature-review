@@ -1,28 +1,17 @@
 /**
- * Standalone CLI for testing and oracle comparison. Mirrors the Python
- * oracle's contract:
+ * Standalone CLI: every stage engine without pi (development, scripting,
+ * diagnostics). Same engines as the pi tools, no agent model in the loop.
  *
- *     node src/cli.ts "<query>" [-n PER_SOURCE] [-s SOURCES] [-g GROUPS]
+ *     node src/cli.ts "<query>" [-n N] [-s SOURCES] [-g "a,b;c,d"] [...]   search (JSON, or --html/--digest)
+ *     node src/cli.ts selection <DOI-or-arXiv-ID> [more ...]                 PDF download into lit-selection/
+ *     node src/cli.ts synthesis "<question>" | --report | --session-report   grounded round / report
+ *     node src/cli.ts index [--reindex]                                      library match + embedding index
+ *     node src/cli.ts extract <file.pdf>                                     what the PDF-to-text step sees
+ *     node src/cli.ts llm-check                                              backend config + round-trip
  *
- * GROUPS are the deterministic grouping rules: term groups separated by
- * ';', terms within a group by ','. Example (the WP1 sandbar rules):
- *
- *     -g "river,fluvial;sandbar,bar;sentinel,s-1,s-2"
- *
- * Clean JSON to stdout; warnings and diagnostics to stderr. A failing
- * source degrades gracefully and never crashes the run.
- *
- * Second subcommand -- deterministic PDF retrieval into the lit-selection/ library:
- *
- *     node src/cli.ts selection <DOI-or-arXiv-ID> [more ...]
- *
- * Diagnostic subcommands for the synthesis stage -- llm-check resolves the
- * LLM backend config, then round-trips one embedding and a tiny generation
- * against the local server (the only CLI path that talks to a language
- * model); extract shows what the mechanical PDF-to-text step sees:
- *
- *     node src/cli.ts llm-check
- *     node src/cli.ts extract <file.pdf>
+ * Results go to stdout, warnings and diagnostics to stderr (see usage()
+ * for every flag). A failing search source degrades gracefully and never
+ * crashes the run.
  */
 
 import { mkdirSync, readFileSync } from "node:fs";
@@ -35,8 +24,7 @@ import { ensureIndexed, matchLibrary, realCorpusDeps, unmatchedGroups } from "./
 import { chunkPages, cleanPageText, extractPdfPages, isExtractionUsable } from "./extract.ts";
 import { renderFetchReport, runSelection } from "./selection.ts";
 import { createBackend } from "./llm.ts";
-import { runSynthesis, type SynthesisOptions } from "./synthesis.ts";
-import { renderChatDigest, renderChatReportDigest, renderDigest, renderReportDigest, renderSynthesisDigest } from "./digest.ts";
+import { renderChatDigest, renderChatReportDigest, renderDigest, renderReportDigest } from "./digest.ts";
 import { runSearch, SEARCHERS, type SearchOptions } from "./search.ts";
 import { parseGroupTerms } from "./intake.ts";
 import { writeNetworkPage } from "./network.ts";
@@ -44,7 +32,7 @@ import { outputRoot, writeRunOutputs } from "./output.ts";
 import { readCurrentScope } from "./protocol.ts";
 import { resolvePiSessionId } from "./pisession.ts";
 import type { ResultFilters, SortKey } from "./pipeline.ts";
-import { renderHtml, renderPaperChatReportHtml, renderReviewHtml, renderSynthReportHtml } from "./render.ts";
+import { renderHtml, renderPaperChatReportHtml, renderSynthReportHtml } from "./render.ts";
 import { warn } from "./types.ts";
 
 interface CliArgs {
@@ -174,8 +162,8 @@ if (process.argv[2] === "llm-check") {
 	// model exits non-zero with the server's own message.
 	const cfg = llmConfig();
 	// Name the config file first -- "where does this setting come from?" is
-	// the question every failed check raises (2026-08-11 user find). Each
-	// role prints ITS backend (they may be split since 2026-08-11).
+	// the question every failed check raises. Each role prints ITS backend
+	// (they may be split).
 	warn(`config   ${configPath()} (env PI_LITERATURE_REVIEW_* overrides)`);
 	warn(`embed    ${cfg.embedModel} (${cfg.embedApi ?? cfg.api} at ${cfg.embedBaseUrl || cfg.baseUrl})`);
 	warn(`generate ${cfg.generateModel} (${cfg.generateApi ?? cfg.api} at ${cfg.generateBaseUrl || cfg.baseUrl})`);
@@ -200,13 +188,13 @@ if (process.argv[2] === "llm-check") {
 }
 
 if (["synthesize", "chat", "synth"].includes(process.argv[2] ?? "")) {
-	warn(`the "${process.argv[2]}" subcommand is now "synthesis" (v31; "synthesize"/"chat" merged in v25) -- see usage`);
+	warn(`the "${process.argv[2]}" subcommand is now "synthesis" -- see usage`);
 	usage();
 }
 
 if (process.argv[2] === "synthesis") {
-	// The fused stage (v25): one grounded round, the composable report
-	// (--report) or the classic session report (--session-report).
+	// The synthesis stage: one grounded round, the composable report
+	// (--report) or the session report (--session-report).
 	const argv = process.argv.slice(3);
 	let question = "";
 	let paper: string | undefined;
@@ -286,8 +274,8 @@ if (process.argv[2] === "synthesis") {
 		}
 	}
 
-	// Session scoping (v23): sticky scope and session rounds belong to ONE
-	// pi session; the CLI resolves the newest session of this folder.
+	// Session scoping: sticky scope and session rounds belong to ONE pi
+	// session; the CLI resolves the newest session of this folder.
 	if (!session) {
 		session = resolvePiSessionId(process.cwd()) ?? undefined;
 		warn(session
@@ -357,7 +345,7 @@ if (process.argv[2] === "synthesis") {
 		lines.push("References (verified records):");
 		for (const reference of answer.references) {
 			const id = reference.doi || (reference.arxiv_id ? `arXiv:${reference.arxiv_id}` : reference.key);
-			lines.push(`[${reference.n}] ${reference.year ?? "n.d."} | ${id} | ${reference.title} (S. ${reference.pages.join(", ")})`);
+			lines.push(`[${reference.n}] ${reference.year ?? "n.d."} | ${id} | ${reference.title} (p. ${reference.pages.join(", ")})`);
 		}
 	}
 	lines.push("");

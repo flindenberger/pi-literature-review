@@ -45,7 +45,7 @@ const html = renderNetworkHtml();
 	assert.ok(html.includes("doi.org/10.1002/asi.4630240406"));
 }
 
-// header line: bold title, year, first three + last author (2026-08-18)
+// header line: bold title, year, first three + last author 
 {
 	assert.ok(html.includes("function seedLineHtml("));
 	assert.ok(html.includes("names.slice(0, 3).concat"));
@@ -83,7 +83,7 @@ const html = renderNetworkHtml();
 	assert.ok(html.includes("missing open citation data"));
 }
 
-// the method is NAMED with its literature (2026-08-12 user wish): both
+// the method is NAMED with its literature: both
 // classic measures, and the page explains where each one acts
 {
 	assert.ok(html.includes("Kessler 1963"));
@@ -92,7 +92,7 @@ const html = renderNetworkHtml();
 	assert.ok(html.includes("co-citation"));
 }
 
-// hover focus (2026-08-12 user wish): edges are hover targets too and the
+// hover focus: edges are hover targets too and the
 // edge tooltip states WHY the link exists
 {
 	assert.ok(html.includes("data-edge"));
@@ -100,7 +100,7 @@ const html = renderNetworkHtml();
 	assert.ok(html.includes("direct citation"));
 }
 
-// zoom + pan (2026-08-18 user wish, small screens): wheel zoom around the
+// zoom + pan (small screens): wheel zoom around the
 // cursor, drag to pan, double-click resets -- all via the viewBox, the
 // fixed 1400x900 start view stays; the status line tells the user
 {
@@ -115,7 +115,7 @@ const html = renderNetworkHtml();
 	assert.ok(html.includes("HOME_FILL"));
 }
 
-// citation direction (2026-08-18 user wish, second round): the plain view
+// citation direction: the plain view
 // shows NO arrows; two toggles draw the seed's direct citations to that
 // group as arrows (heads as own top-layer paths, never under a thick
 // line), highlight the group and fade the rest; the seed's citation edges

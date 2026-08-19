@@ -64,7 +64,7 @@ assert.deepEqual(cardLine("* An der Station **NEU** wurde"), {
 // reference line, a lone asterisk without trailing text.
 assert.deepEqual(cardLine("----"), { prefix: "", segments: [{ text: "----", bold: false }] });
 assert.equal(cardLine("**Ziel und Ansatz**").prefix, "");
-assert.equal(cardLine("[1] 2026 | 10.5194/hess-30-797-2026 | Title (S. 4)").prefix, "");
+assert.equal(cardLine("[1] 2026 | 10.5194/hess-30-797-2026 | Title (p. 4)").prefix, "");
 assert.equal(cardLine("*").prefix, "");
 
 console.log("cardtext.test.ts: all assertions passed");

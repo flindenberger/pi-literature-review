@@ -1,8 +1,8 @@
 /**
  * What a PDF viewer's "find" actually searches -- a faithful port of
  * pdf.js web/pdf_find_controller.js, read out of the RUNNING browser
- * (snap Firefox 152: omni.ja -> chrome/pdfjs/content/web/viewer.mjs) on
- * 2026-07-27, not transcribed from upstream docs.
+ * (snap Firefox 152: omni.ja -> chrome/pdfjs/content/web/viewer.mjs), not
+ * transcribed from upstream docs.
  *
  * WHY THIS EXISTS. A citation superscript carries a search phrase so the
  * viewer highlights the cited passage. The phrase must therefore be
@@ -19,7 +19,7 @@
  *     in which whitespace becomes "[ ]+" and punctuation runs may be
  *     surrounded by "[ ]*".
  *
- * Two field lessons are baked in here. (1) Approximating this was not good
+ * Two lessons are baked in here. (1) Approximating this was not good
  * enough: our own extraction resolves the ligature "fi" early, so we
  * cannot see that "of<fi>-\ncial" stays BROKEN for the viewer -- the NFKC
  * replacement of the ligature consumes the letter the hyphen repair needs,

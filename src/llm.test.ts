@@ -158,7 +158,7 @@ import {
 	]);
 }
 
-/* ---------------- per-role backend split (2026-08-11) ---------------- */
+/* ---------------- per-role backend split ---------------- */
 {
 	// Embeddings and generation may live on DIFFERENT servers (llama.cpp
 	// friendly: one llama-server holds exactly one model). Split fields
@@ -182,7 +182,7 @@ import {
 	]);
 }
 
-/* ---------------- bearer auth rides only with an apiKey (2026-08-11) ---------------- */
+/* ---------------- bearer auth rides only with an apiKey ---------------- */
 {
 	// With apiKey: every request carries the Authorization header (opens
 	// the openai dialect to remote APIs, e.g. api.openai.com embeddings).

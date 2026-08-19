@@ -7,7 +7,7 @@
  */
 
 import assert from "node:assert/strict";
-import type { ChatReport, SynthReport } from "./synthesis.ts";
+import { type ChatReport, searchSnippet, type SynthReport } from "./synthesis.ts";
 import {
 	bibtexEntry,
 	localPdfHref,
@@ -15,10 +15,7 @@ import {
 	renderPaperChatReportHtml,
 	renderSynthReportHtml,
 	type RenderPayload,
-	renderReviewHtml,
-	searchSnippet,
 } from "./render.ts";
-import type { SynthesisResult } from "./synthesis.ts";
 
 const payload: RenderPayload = {
 	query: 'sandbars & "Sentinel" <test>',
@@ -140,7 +137,7 @@ const html = renderHtml(payload);
 		},
 	});
 	assert.ok(allPicked.includes("journals: all kept"));
-	// The author picker reports the same way (v30.11).
+	// The author picker reports the same way.
 	const withAuthors = renderHtml({
 		...payload,
 		filters: {
@@ -155,18 +152,18 @@ const html = renderHtml(payload);
 // table: expected column order, sortable markup, on_target highlighting
 {
 	// The fixture has no code_url anywhere, so the Code column is absent
-	// (2026-08-10) -- the with-code header order is pinned in the code
+	// -- the with-code header order is pinned in the code
 	// column block below.
 	assert.ok(html.includes("</th><th>#</th><th>Article</th><th>Authors</th><th>Year</th><th>Journal</th><th>Journal score&sup1;</th><th>Citations</th><th>DOI</th><th class=\"no-sort\">BibTeX</th><th>Data source</th><th>Label</th>"));
 	assert.ok(html.includes('<th class="no-sort"')); // checkbox column is not sortable
 	assert.ok(html.includes('<table class="sortable records">'));
 	// Both tables share one fixed colgroup, so results and dropped columns
-	// align perfectly (2026-08-10 user wish).
+	// align perfectly.
 	assert.equal(html.split("<colgroup>").length - 1, 2);
 	assert.ok(html.includes("table.records { table-layout: fixed; }"));
-	// The search page runs wide (2026-08-10); synthesis pages keep 78rem.
+	// The search page runs wide; synthesis pages keep 78rem.
 	assert.ok(html.includes("body { max-width: 120rem; }"));
-	// The results table has its own counted heading (2026-08-10 user wish).
+	// The results table has its own counted heading.
 	assert.ok(html.includes(`<h2>Query results (${payload.results.length})</h2>`));
 	assert.ok(html.includes('<tr class="on-target">'));
 	assert.ok(html.includes('data-sort="12"'));
@@ -179,7 +176,7 @@ const html = renderHtml(payload);
 	assert.ok(html.includes(">3*<") || html.includes("3*</td>"));
 	assert.ok(html.includes("OpenAlex (api.openalex.org)"));
 	assert.ok(html.includes('data-sort="3"')); // sort key stays the bare value
-	// A looked-up abstract stars its summary too (2026-08-10).
+	// A looked-up abstract stars its summary too.
 	const enrichedAbstract = renderHtml({
 		...payload,
 		results: [{
@@ -193,9 +190,9 @@ const html = renderHtml(payload);
 	assert.ok(html.includes("<summary>Abstract</summary>")); // own abstracts stay unstarred
 }
 
-// code column (2026-08-07): GitHub link plus the heuristic footnote; a page
-// without any code_url drops the WHOLE column and its footnote (2026-08-10
-// user wish: an all-dash column with an unexplained &sup2; was noise)
+// code column: GitHub link plus the heuristic footnote; a page
+// without any code_url drops the WHOLE column and its footnote
+// (an all-dash column with an unexplained &sup2; would be noise)
 {
 	const withCode = renderHtml({
 		...payload,
@@ -207,7 +204,7 @@ const html = renderHtml(payload);
 	assert.ok(withCode.includes("&sup2; Code = "));
 	assert.ok(!html.includes("<th>Code&sup2;</th>")); // no code link anywhere -> no column
 	assert.ok(!html.includes("&sup2; Code = "));
-	// Dropped records carry code links too since 2026-08-10 (the engine
+	// Dropped records carry code links too (the engine
 	// passes them through the lookup at lowest cap priority): a link on a
 	// dropped row alone brings the column AND the footnote to BOTH tables.
 	const droppedCode = renderHtml({
@@ -223,7 +220,7 @@ const html = renderHtml(payload);
 	assert.ok(droppedCode.includes("&sup2; Code = "));
 }
 
-// network column (2026-08-12): opt-in via renderHtml options -- callers set
+// network column: opt-in via renderHtml options -- callers set
 // it exactly when they also write the network.html sidecar page, so the
 // relative link can never dangle; plain renders (old sidecars) stay free of
 // the column. DOI-carrying records link with doi AND title (title = the
@@ -234,7 +231,7 @@ const html = renderHtml(payload);
 	// Both tables carry the header (results + dropped).
 	assert.equal(withNetwork.split('<th class="no-sort">Network</th>').length - 1, 2);
 	assert.ok(withNetwork.includes('href="network.html#doi=10.1234%2Fabc&amp;title=River%20sandbar%20dynamics'));
-	// Styled like the BibTeX button (2026-08-12), but as an anchor.
+	// Styled like the BibTeX button, but as an anchor.
 	assert.ok(withNetwork.includes('<a class="graph-link"'));
 	assert.ok(withNetwork.includes(".graph-link {"));
 	// The arXiv-only record has no DOI -> title-only seed.
@@ -256,7 +253,7 @@ const html = renderHtml(payload);
 
 // journal-score footnote (&sup1;): the score COLUMN always exists, so its
 // header mark always carries the explanation -- even when no record has a
-// score (enrich:false / preprint-only runs; 2026-08-11 review find: the
+// score (enrich:false / preprint-only runs; the
 // gated footnote left an unexplained superscript, the defect class the
 // code column had already fixed)
 {
@@ -283,7 +280,7 @@ const html = renderHtml(payload);
 	assert.ok(!html.includes("<dt>Variants</dt>")); // single-query page stays clean
 }
 
-// arXiv transparency row: the expression actually sent to arXiv, per query (v18)
+// arXiv transparency row: the expression actually sent to arXiv, per query
 {
 	const single = renderHtml({
 		...payload,
@@ -301,7 +298,7 @@ const html = renderHtml(payload);
 	assert.ok(multi.includes("<dd>Q1: all:river AND all:sandbar</dd>"));
 	assert.ok(multi.includes("<dd>Q2: all:fluvial AND all:sandbar</dd>"));
 	// The row alone read as "only arXiv was searched" in the field
-	// (2026-08-06) -- the closing note names the other sources' plain-text
+	// -- the closing note names the other sources' plain-text
 	// treatment, on single- and multi-query runs alike.
 	assert.ok(single.includes("CrossRef and OpenAlex received the query text unchanged"));
 	assert.ok(multi.includes("CrossRef and OpenAlex received the query text unchanged"));
@@ -309,7 +306,7 @@ const html = renderHtml(payload);
 	assert.ok(!html.includes("received the query text unchanged")); // note rides with the row
 }
 
-// Per-source transparency + per-query grouping (2026-08-06 block search)
+// Per-source transparency + per-query grouping
 {
 	const blockRun = renderHtml({
 		...payload,
@@ -327,12 +324,12 @@ const html = renderHtml(payload);
 	assert.ok(blockRun.includes("<dd>Q2: (cnn OR &quot;deep learning&quot;) AND river</dd>"));
 	assert.ok(blockRun.includes("<dt>Sent to CrossRef</dt>"));
 	assert.ok(blockRun.includes("CrossRef offers no boolean search"));
-	// 4th source (2026-08-10): the bulk boolean expression per query plus
+	// 4th source: the bulk boolean expression per query plus
 	// the citation-sort disclosure.
 	assert.ok(blockRun.includes("<dt>Sent to Semantic Scholar</dt>"));
 	assert.ok(blockRun.includes("<dd>Q2: +(cnn | &quot;deep learning&quot;) +river</dd>"));
 	assert.ok(blockRun.includes("sorted by citation count"));
-	// PRISMA-S section (2026-08-10 user wish): the per-database rows live
+	// PRISMA-S section: the per-database rows live
 	// in a COLLAPSED details block at the end of the meta block, not in
 	// the skim path; the main dl no longer carries them.
 	assert.ok(blockRun.includes('<details class="prisma"><summary>Search documentation</summary>'));
@@ -347,7 +344,7 @@ const html = renderHtml(payload);
 	assert.ok(!blockRun.includes("received the query text unchanged"));
 }
 
-// PRISMA counts and flow (2026-08-10): raw per-source×query hits and the
+// PRISMA counts and flow: raw per-source×query hits and the
 // selection chain render inside the collapsed section; old sidecars
 // without the fields keep the section with strategies/grouping only.
 {
@@ -368,15 +365,15 @@ const html = renderHtml(payload);
 	assert.ok(withFlow.includes("<dd>Q1 arxiv: 3</dd>"));
 	assert.ok(withFlow.includes("<dd>Q2 arxiv: 2</dd>"));
 	assert.ok(withFlow.includes("raw hits per source and query, before deduplication and filtering."));
-	// The chain names its destination (user wording 2026-08-10); the
-	// earlier explaining note line is gone by user decision. A sidecar
+	// The chain names its destination (user wording); the
+	// earlier explaining note line is gone. A sidecar
 	// without the abstract-gate field renders the chain without that step.
 	assert.ok(withFlow.includes(
 		"10 record(s) identified &rarr; 2 removed as uncitable (no title or no authors) &rarr; "
 		+ "3 duplicate(s) merged &rarr; 5 screened &rarr; 3 excluded by the requested filters "
 		+ "&rarr; 2 included to the final literature list, awaiting manual selection"));
 	assert.ok(!withFlow.includes("row(s) of the dropped table"));
-	// With the abstract gate (2026-08-10) the chain carries its step.
+	// With the abstract gate the chain carries its step.
 	const withGate = renderHtml({
 		...payload,
 		flow: {
@@ -406,8 +403,8 @@ const html = renderHtml(payload);
 		],
 	});
 	assert.ok(fallback.includes("<dd>Q2: (no blocks -- query passed through unchanged)</dd>"));
-	// The label semantics ride with the per-query grouping block (2026-08-06
-	// revision: ANY confirmed query's blocks may label a record on_target).
+	// The label semantics ride with the per-query grouping block: ANY
+	// confirmed query's blocks may label a record on_target.
 	assert.ok(fallback.includes("full match of at least one of these block sets"));
 }
 
@@ -417,7 +414,7 @@ const html = renderHtml(payload);
 	assert.ok(html.includes("&sup1; Journal score = the journal's 2-year mean citedness"));
 	assert.ok(html.includes("sort-clear")); // per-column clear control in the sorter
 	assert.ok(html.includes('data-sort="0_on_target"'));
-	// Evidence line at the label (2026-08-06): the winning query and the
+	// Evidence line at the label: the winning query and the
 	// exact term that hit per block; adjacent rows carry none.
 	assert.ok(html.includes("via Q2: sandbar · river"));
 	assert.ok(html.includes('data-sort="1_adjacent"'));
@@ -436,7 +433,7 @@ const html = renderHtml(payload);
 		dropped: [],
 	});
 	assert.ok(commaStyle.includes('data-sort="kryniecka"')); // "Last, F." spelling
-	// Long author lists collapse (2026-08-10): the cell shows the first
+	// Long author lists collapse: the cell shows the first
 	// three and the last name; the middle hides behind a "+N more" toggle.
 	// Four or fewer names stay a plain join without any toggle.
 	const many = renderHtml({
@@ -456,7 +453,7 @@ const html = renderHtml(payload);
 	});
 	assert.ok(four.includes(">A One; B Two; C Three; D Four</td>"));
 	assert.ok(!four.includes('class="authors-toggle"'));
-	// dropped table (2026-08-10, second round: FULL parity with the results
+	// dropped table (FULL parity with the results
 	// table -- same headers incl. checkbox/#/Code/Label; the Label cell
 	// reads "dropped" with the reason as its dim note, keyed on the reason).
 	const droppedFull = renderHtml({
@@ -485,7 +482,7 @@ const html = renderHtml(payload);
 	assert.ok(html.includes("position: sticky; bottom: 0;"));
 }
 
-// BibTeX column (2026-08-10): deterministic entry from the record's API
+// BibTeX column: deterministic entry from the record's API
 // fields, LaTeX specials escaped, identifiers verbatim; a copy button with
 // a hidden textarea sits in BOTH tables
 {
@@ -532,7 +529,7 @@ const html = renderHtml(payload);
 	assert.ok(!noId.includes('class="pick"'));
 	assert.ok(!noId.includes('<div class="selectbar">')); // nothing fetchable, no bar
 
-	// "Select all" is independent of grouping (v30.15), bar still there
+	// "Select all" is independent of grouping, bar still there
 	const ungrouped = renderHtml({ ...payload, grouping: null });
 	assert.ok(ungrouped.includes(">Select all</button>"));
 	assert.ok(ungrouped.includes('<div class="selectbar">'));
@@ -555,7 +552,7 @@ const html = renderHtml(payload);
 	assert.ok(html.includes("Dropped records (1)"));
 	assert.ok(html.includes("Component junk"));
 	assert.ok(html.includes("empty author list"));
-	// Footnotes sit BELOW the dropped table since 2026-08-10 (user wish),
+	// Footnotes sit BELOW the dropped table (below both tables),
 	// ahead of the selection bar.
 	assert.ok(html.indexOf("&sup1; Journal score") > html.indexOf("Dropped records (1)"));
 	assert.ok(html.indexOf('<div class="selectbar">') > html.indexOf("&sup1; Journal score"));
@@ -570,112 +567,10 @@ const html = renderHtml(payload);
 	assert.ok(!bare.includes("OpenAlex (api.openalex.org)")); // no enrichment, no footnote
 }
 
-/* ---------------- renderReviewHtml ---------------- */
-
-const synthesis: SynthesisResult = {
-	question: 'How are sandbars detected? <script>alert(1)</script>',
-	generated: "2026-07-15T12:00:00Z",
-	model: "openscholar-8b",
-	embedding_model: "nomic-embed-text",
-	backend: "ollama at http://127.0.0.1:11434",
-	top_k: 8,
-	grounded: true,
-	prose: 'Detected via "S2" & <b>SAR</b> [1]. See https://evil.example [2].\n\nSecond paragraph [1].',
-	references: [
-		{ n: 1, key: "doi:10.1/x", title: "Paper <One>", authors: ["A B", "C D"], year: "2021",
-			doi: "10.1/x", arxiv_id: "", pages: [2, 5], chunk_ids: [1, 3] },
-		{ n: 2, key: "arxiv:2401.16393", title: "Paper Two", authors: [], year: null,
-			doi: "", arxiv_id: "2401.16393", pages: [1], chunk_ids: [2] },
-	],
-	chunks: [
-		{ id: 1, paper_key: "doi:10.1/x", title: "Paper <One>", page: 2, score: 0.91, text: "Excerpt <text> one." },
-		{ id: 2, paper_key: "arxiv:2401.16393", title: "Paper Two", page: 1, score: 0.52, text: "Excerpt two." },
-		{ id: 3, paper_key: "doi:10.1/x", title: "Paper <One>", page: 5, score: 0.4, text: "Excerpt three." },
-	],
-	sites: [],
-	query_variants: [],
-	lexical_terms: [],
-	lexical_added: 0,
-	invalid_markers: ["[9]"],
-	unmarked_sentences: 1,
-	stripped_reference_section: true,
-	trimmed_chunks: 0,
-	papers_matched: 2,
-	papers_cited: 2,
-	papers_uncited: [],
-	adopted_pdfs: ["2020_Found_A_paper.pdf"],
-	adoption_failures: [{ file: "alien_scan.pdf", reason: "no DOI or arXiv ID found on the first 2 pages" }],
-	unmatched_pdfs: ["alien_scan.pdf"],
-	extraction_failures: [{ file: "scan.pdf", reason: "no extractable text (likely scanned)" }],
-	raw_output: "raw",
-};
-
-{
-	const html = renderReviewHtml(synthesis);
-	// Escaping: model/question text never becomes markup.
-	assert.ok(!html.includes("<script>alert"));
-	assert.ok(html.includes("&lt;script&gt;"));
-	assert.ok(html.includes("&lt;b&gt;SAR&lt;/b&gt;"));
-	assert.ok(html.includes("Paper &lt;One&gt;"));
-	// Validated markers become in-page reference links -- the only live
-	// parts of the prose.
-	assert.ok(html.includes('<a class="cite" href="#ref-1">[1]</a>'));
-	assert.ok(html.includes('<a class="cite" href="#ref-2">[2]</a>'));
-	// A URL the model wrote stays plain text, never an href.
-	assert.ok(!html.includes('href="https://evil.example"'));
-	// Reference hrefs come only from verified identifiers.
-	assert.ok(html.includes('href="https://doi.org/10.1/x"'));
-	assert.ok(html.includes('href="https://arxiv.org/abs/2401.16393"'));
-	assert.ok(html.includes('id="ref-1"'));
-	assert.ok(html.includes("2, 5")); // pages cited
-	// Honest disclosures in the methods block.
-	assert.ok(html.includes("1 invalid citation marker(s) stripped ([9])"));
-	assert.ok(html.includes("reference section was cut"));
-	assert.ok(html.includes("alien_scan.pdf -- no DOI or arXiv ID found on the first 2 pages"));
-	assert.ok(html.includes("scan.pdf"));
-	assert.ok(html.includes("2020_Found_A_paper.pdf -- identifier found in the PDF text"));
-	// Grounded run: no warning banner; excerpt trail present.
-	assert.ok(!html.includes("UNGROUNDED"));
-	assert.ok(html.includes("Excerpt &lt;text&gt; one."));
-	assert.ok(html.includes("similarity 0.910"));
-}
-
-{
-	const html = renderReviewHtml({ ...synthesis, grounded: false, references: [] });
-	assert.ok(html.includes("UNGROUNDED DRAFT"));
-	assert.ok(html.includes("None -- no valid citations survived the gate."));
-}
-
-/* ---------------- renderReviewHtml: clickable superscripts ---------------- */
-{
-	// With citation sites and a known local PDF, markers become superscript
-	// links to the cited page; a reference without a path falls back to the
-	// in-page anchor. Marker order maps one-to-one onto sites.
-	const cited: SynthesisResult = {
-		...synthesis,
-		references: [
-			{ ...synthesis.references[0], pdf_path: "/papers/one.pdf" },
-			synthesis.references[1], // no local PDF known
-		],
-		sites: [
-			{ ref: 1, chunk_id: 1, paper_key: "doi:10.1/x", page: 2, snippet: "adaptive threshold applied" },
-			{ ref: 2, chunk_id: 2, paper_key: "arxiv:2401.16393", page: 1, snippet: null },
-			{ ref: 1, chunk_id: 3, paper_key: "doi:10.1/x", page: 5, snippet: null },
-		],
-	};
-	const html = renderReviewHtml(cited);
-	assert.ok(html.includes(
-		'<sup><a class="cite" href="file:///papers/one.pdf#page=2&amp;search=adaptive%20threshold%20applied&amp;phrase=true" target="_blank" rel="noopener">1</a></sup>',
-	));
-	assert.ok(html.includes('<sup><a class="cite" href="file:///papers/one.pdf#page=5" target="_blank" rel="noopener">1</a></sup>'));
-	assert.ok(html.includes('<a class="cite" href="#ref-2">[2]</a>')); // no path -> classic anchor
-	assert.ok(html.includes("Superscript numbers open the cited page")); // honest Chromium footnote
-}
-
 /* ---------------- localPdfHref / searchSnippet ---------------- */
 {
 	// pathToFileURL percent-encodes; page, search and phrase=true (contiguous
-	// highlight, live finding 2026-07-16) land in the fragment.
+	// highlight) land in the fragment.
 	assert.equal(
 		localPdfHref("/p/a b.pdf", 5, "term one two"),
 		"file:///p/a%20b.pdf#page=5&search=term%20one%20two&phrase=true",
@@ -733,7 +628,7 @@ const chatReport: ChatReport = {
 	},
 	rounds: [{
 		asked: "2026-07-16T09:00:00.000Z", question: "Wie funktioniert die Methode? <script>alert(1)</script>",
-		language: null, model: "chat-model", top_k: 8, grounded: true,
+		language: null, model: "chat-model", session: null, top_k: 8, grounded: true,
 		prose: "Antwort mit Marker [1] als Klartext.",
 		references: [{
 			n: 1, key: "doi:10.1234/abc", title: "River sandbar dynamics", authors: ["A. Author"],
@@ -812,7 +707,7 @@ const chatReport: ChatReport = {
 /* ---------------- chat protocol appendix: rounds with sites link too ---------------- */
 {
 	// A round recorded since v25 carries its own sites -- its markers become
-	// PDF superscripts like the summary's (field wish 2026-07-22); a round
+	// PDF superscripts like the summary's (like the summary); a round
 	// whose sites do not match its markers falls back to plain text.
 	const cited: ChatReport = {
 		...chatReport,
@@ -851,7 +746,7 @@ const chatReport: ChatReport = {
 	assert.ok(html.includes('href="file:///papers%20dir/a.pdf#page=2"'));
 }
 
-/* ---------------- renderSynthReportHtml (v25 composable report) ---------------- */
+/* ---------------- renderSynthReportHtml (composable report) ---------------- */
 
 function reportUnit(partial: Record<string, unknown>): SynthReport["units"][number] {
 	return {
@@ -918,7 +813,7 @@ const baseReport: SynthReport = {
 		sites: [{ ref: 1, chunk_id: 1, paper_key: "doi:10.1/x", page: 4, snippet: null }],
 		chunks: [
 			{ id: 1, paper_key: "doi:10.1/x", page: 4, score: 0.8, text: "Chunk two text about cameras." },
-			// Retrieved but never cited (v31.6): lands in the rest block.
+			// Retrieved but never cited: lands in the rest block.
 			{ id: 2, paper_key: "doi:10.1/x", page: 9, score: 0.7, text: "Uncited chunk text." },
 		],
 	});
@@ -999,14 +894,14 @@ const baseReport: SynthReport = {
 	const reviewUnit = reportUnit({ kind: "review", paper_base: null, question: null, format: undefined });
 	const html = renderSynthReportHtml({
 		...baseReport,
-		question: "Report: 2 Dokumente",
+		question: "Report: 2 documents",
 		scope: { papers: ["a", "b"], library: false },
 		papers: [paperOne, paperTwo],
 		units: [unitA, unitB, crossUnit, reviewUnit],
 		references: [...unitA.references, ...unitB.references],
 		include_review: true,
 	});
-	assert.ok(!html.includes('class="toc"')); // no TOC anywhere (v27 layout)
+	assert.ok(!html.includes('class="toc"')); // no TOC anywhere (layout without TOC)
 	assert.ok(html.includes('<hr class="paper">'));
 	assert.ok(html.includes("Detailfragen (paperübergreifend)"));
 	assert.ok(html.includes("Stand der Literatur"));
@@ -1056,15 +951,7 @@ const baseReport: SynthReport = {
 	assert.ok(!html.includes("**"));
 }
 
-// The wide grouping variant shows its "at least N of" form (v30.3).
-{
-	const wide = renderHtml({ ...payload, grouping: [["water"], ["mask"], ["sentinel 2"]], grouping_require: 2 });
-	assert.ok(wide.includes("at least 2 of: water | mask | sentinel 2"));
-	// Without grouping_require the classic AND expression stays.
-	assert.ok(html.includes("(river OR fluvial) AND (sandbar)"));
-}
-
-// Source failures get their own meta row (v30.1); no row when none failed.
+// Source failures get their own meta row; no row when none failed.
 {
 	assert.ok(!html.includes("Failed sources"));
 	const failed = renderHtml({

@@ -1,55 +1,24 @@
 /**
- * Native CrossRef client (replaces the paper-search engine for this source).
- *
- * GET https://api.crossref.org/works?query=...&rows=N&sort=relevance
- * mirrors the engine's request shape so results stay comparable with the
- * Python oracle. Mapping CrossRef's response onto SourceRecord happens here,
- * at the source boundary; no field is ever invented.
+ * CrossRef client. GET https://api.crossref.org/works?query=...&rows=N
+ * &sort=relevance -- a keyword relevance search (CrossRef has no boolean
+ * syntax). Mapping CrossRef's response onto SourceRecord happens here, at
+ * the source boundary; no field is ever invented.
  */
 
 import { contactMailto, type SourceRecord, type SourceScope, userAgent } from "../types.ts";
-import { retryDelayMs } from "./arxiv.ts";
+import { pacedClient } from "./polite.ts";
 
 const BASE_URL = "https://api.crossref.org/works";
-const TIMEOUT_MS = 30_000;
 
-/** CrossRef politeness (2026-08-06 field finding: a five-variant run fired
- * five requests back-to-back and the last two answered HTTP 429): the same
- * pattern as the arXiv client since v30.13 -- module-wide request spacing
- * (shared across query variants in a run AND across runs in one pi
- * session) plus a rate-limit retry that honors a sane numeric Retry-After
- * (retryDelayMs is the shared pure helper). */
-const REQUEST_SPACING_MS = 1_000;
-
-/** Earliest time the next CrossRef request may go out. */
-let nextRequestAt = 0;
-
-function sleep(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
-}
+/** Back-to-back requests (one per query variant) earn HTTP 429 from
+ * CrossRef; one second of spacing keeps multi-variant runs clean. */
+const fetchPaced = pacedClient({ label: "CrossRef", spacingMs: 1_000 });
 
 async function fetchWorks(params: URLSearchParams): Promise<Record<string, any>> {
-	for (let attempt = 0; ; attempt++) {
-		const wait = nextRequestAt - Date.now();
-		if (wait > 0) await sleep(wait);
-		nextRequestAt = Date.now() + REQUEST_SPACING_MS;
-		const response = await fetch(`${BASE_URL}?${params}`, {
-			headers: { "User-Agent": userAgent(), Accept: "application/json" },
-			signal: AbortSignal.timeout(TIMEOUT_MS),
-		});
-		if (response.ok) return (await response.json()) as Record<string, any>;
-		const rateLimited = response.status === 429 || response.status === 503;
-		const delay = rateLimited ? retryDelayMs(attempt, response.headers.get("retry-after")) : null;
-		if (delay === null) {
-			throw new Error(
-				`CrossRef answered HTTP ${response.status}`
-				+ (rateLimited && attempt
-					? ` (rate limited; ${attempt} retr${attempt === 1 ? "y" : "ies"} did not clear it)`
-					: ""),
-			);
-		}
-		await sleep(delay);
-	}
+	const response = await fetchPaced(`${BASE_URL}?${params}`, {
+		headers: { "User-Agent": userAgent(), Accept: "application/json" },
+	});
+	return (await response.json()) as Record<string, any>;
 }
 
 /** CrossRef ships title/container-title as arrays of strings. */
@@ -92,9 +61,8 @@ function stripJats(abstract: unknown): string {
 }
 
 /**
- * Concept blocks flattened for CrossRef (2026-08-06 block search): CrossRef
- * has NO boolean query syntax -- its bibliographic search is relevance
- * ranking over keywords. The honest translation of a block query is all
+ * Concept blocks flattened for CrossRef: CrossRef has NO boolean query
+ * syntax -- its bibliographic search is relevance ranking over keywords. The honest translation of a block query is all
  * its terms as flat keywords (deduplicated, order kept); the deterministic
  * post-labeling still marks which records fully match the blocks. Pure;
  * exported for offline tests. Empty = no blocks, caller keeps the raw text.
@@ -120,9 +88,9 @@ export async function searchCrossref(query: string, rows: number, scope?: Source
 		sort: "relevance",
 		order: "desc",
 	});
-	// Picked authors go into CrossRef's author search field (v30.14). The
-	// field is relevance-ranked, not boolean -- the deterministic post-filter
-	// still guarantees that only matching records survive.
+	// Picked authors go into CrossRef's author search field. The field is
+	// relevance-ranked, not boolean -- the deterministic post-filter still
+	// guarantees that only matching records survive.
 	const authorTerms = (scope?.authors ?? []).map((name) => name.trim()).filter(Boolean);
 	if (authorTerms.length) params.set("query.author", authorTerms.join(" "));
 	const mailto = contactMailto();

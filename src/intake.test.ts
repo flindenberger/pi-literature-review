@@ -7,7 +7,6 @@ import assert from "node:assert/strict";
 import {
 	alignBlocksToBase,
 	alignVariantExpression,
-	deriveCoreGroupsFromQuery,
 	deriveGroupsFromQuery,
 	formatGroupExpression,
 	isBlockExpression,
@@ -15,7 +14,6 @@ import {
 	parseGroupSpec,
 	parseGroupTerms,
 	parsePerSource,
-	parseVariantLines,
 	parseVariantSuggestions,
 	parseYearRange,
 	queryBlocks,
@@ -113,8 +111,8 @@ import {
 	assert.equal(parsePerSource("-5", 50), null);
 }
 
-// deriveGroupsFromQuery (v30): one AND group per content word; standalone
-// single chars bind to the neighbouring word (v18 arXiv rule); function
+// deriveGroupsFromQuery: one AND group per content word; standalone
+// single chars bind to the neighbouring word (arXiv rule); function
 // words drop out; the user's own boolean syntax derives nothing.
 {
 	assert.deepEqual(
@@ -140,7 +138,7 @@ import {
 	assert.deepEqual(deriveGroupsFromQuery('"river sandbar" detection'), []);
 	assert.deepEqual(deriveGroupsFromQuery(""), []);
 	assert.deepEqual(deriveGroupsFromQuery("   "), []);
-	// 2026-08-10 (prose field find): punctuation glued to a word never
+	// punctuation glued to a word never
 	// enters the term ("approach," derived as all:approach, before); inner
 	// hyphens and dots stay ("4.0"); sentence glue like "based"/"as"/
 	// "beyond" is a stopword now.
@@ -163,7 +161,7 @@ import {
 	);
 }
 
-// isProseQuery (2026-08-10): six or more derived blocks mark a prose
+// isProseQuery: six or more derived blocks mark a prose
 // sentence; the user's own boolean/quote/field syntax is never prose.
 {
 	assert.equal(isProseQuery(
@@ -175,25 +173,11 @@ import {
 	assert.equal(isProseQuery(""), false);
 }
 
-// deriveCoreGroupsFromQuery (v30.2): the broader variant drops generic
-// task/method words; domain concepts and bound phrases stay.
-{
-	assert.deepEqual(
-		deriveCoreGroupsFromQuery("Water Mask Extraction Using Sentinel 2"),
-		[["water"], ["mask"], ["sentinel 2"]],
-	);
-	assert.deepEqual(
-		deriveCoreGroupsFromQuery("Erkennung von Sandbänken in Flüssen"),
-		[["sandbänken"], ["flüssen"]],
-	);
-	// Nothing but task words: no core to anchor on -> empty (caller treats
-	// it as "no grouping").
-	assert.deepEqual(deriveCoreGroupsFromQuery("detection and classification methods"), []);
-	// User syntax still derives nothing.
-	assert.deepEqual(deriveCoreGroupsFromQuery("(a OR b) AND c"), []);
-}
+/** Text-only view of the parsed suggestions (the flag is tested separately). */
+const parseVariantLines = (raw: string, base: string, cap?: number): string[] =>
+	parseVariantSuggestions(raw, base, cap).map((entry) => entry.text);
 
-// parseVariantLines (2026-08-06): LLM suggestion output -> clean variant
+// parseVariantLines: LLM suggestion output -> clean variant
 // list. Models habitually number, bullet and quote despite instructions.
 {
 	assert.deepEqual(
@@ -220,7 +204,7 @@ import {
 	assert.deepEqual(parseVariantLines("„Wassermaske Sentinel-2“", "base"), ["Wassermaske Sentinel-2"]);
 }
 
-// sortVariantsByBreadth (2026-08-10): suggestions run narrow-to-broad no
+// sortVariantsByBreadth: suggestions run narrow-to-broad no
 // matter what order the model emitted -- fewer terms first, then fewer
 // base-foreign terms, ties keep the model's order (stable).
 {
@@ -269,7 +253,7 @@ import {
 	);
 }
 
-// alignBlocksToBase / alignVariantExpression (2026-08-07): suggestions
+// alignBlocksToBase / alignVariantExpression: suggestions
 // mirror the base query's concept order, so all variant rows share one
 // parallel structure. AND blocks are commutative -- display order only.
 {
@@ -319,10 +303,10 @@ import {
 	);
 }
 
-// isBlockExpression / queryBlocks (2026-08-06 block search): ONE structure
+// isBlockExpression / queryBlocks: ONE structure
 // per query drives the boolean fetch and the labeling.
 {
-	// Plain keywords derive one block per content word (v18/v30 rules).
+	// Plain keywords derive one block per content word (derivation rules).
 	assert.equal(isBlockExpression("water mask sentinel 2"), false);
 	assert.deepEqual(queryBlocks("Water Mask Sentinel 2"), [["water"], ["mask"], ["sentinel 2"]]);
 	// UPPERCASE operators / parentheses / the legacy a,b;c spec parse.
@@ -340,7 +324,7 @@ import {
 
 console.log("intake.test.ts: all assertions passed");
 
-// parseVariantSuggestions (2026-08-17): the model marks its arXiv/CS
+// parseVariantSuggestions: the model marks its arXiv/CS
 // phrasing with a leading "arXiv:"; the marker is stripped and carried as a
 // flag (survives bullets, dedupe and the breadth sort); unmarked lines are
 // plain; the string-only wrapper stays marker-free.

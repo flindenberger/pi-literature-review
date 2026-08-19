@@ -1,26 +1,25 @@
 /**
- * Pure state machine for the Claude-Code-style dialogs (v25 E2c) -- no pi
- * imports, fully testable offline. The TUI/RPC adapters in
- * extensions/dialogs.ts only translate key strokes to reducer events and
- * lines to themed output; every decision lives here.
+ * Pure state machine for the wizard dialogs -- no pi imports, fully
+ * testable offline. The adapter in extensions/dialogs.ts only translates
+ * key strokes to reducer events and view rows to themed output; every
+ * decision lives here: step kinds (checkbox, choice, text, form), cursor
+ * movement, typing, lazy item lists, the review page and the finish guard.
  *
- * The checkbox list is the document-scope intake (design 2026-07-21): a
- * "select all" row on top of the PDF list -- checking one paper means the
- * one-paper scope, several the selection, all of them the library. The
- * select-all row's own check mark is DERIVED from the items and never
- * stored, so items and the summary row can never disagree.
+ * Checkbox steps carry a "select all" row on top of the items whose check
+ * mark is DERIVED from the items and never stored, so items and the summary
+ * row can never disagree.
  */
 
 export interface CheckboxItem {
 	/** Stable identity returned by selection() (e.g. the PDF basename). */
 	id: string;
 	label: string;
-	/** Optional dim metadata line under the label (v31.2 user wish: the
+	/** Optional dim metadata line under the label (the
 	 * documents tab keeps the filename as the selectable row and shows
 	 * year/author/title/DOI in grey below it). View-only -- the cursor
 	 * walks the items, never these lines. */
 	description?: string;
-	/** Always selected, toggle is a no-op (2026-08-06: the query-variants
+	/** Always selected, toggle is a no-op (the query-variants
 	 * tab pins the main query as its first row -- it always runs). Locked
 	 * ids live in the selection like normal picks; init and setItems keep
 	 * that invariant. */
@@ -35,70 +34,9 @@ export interface CheckboxState {
 	selected: ReadonlySet<string>;
 }
 
-export type CheckboxEvent = "up" | "down" | "toggle" | "confirm" | "cancel";
-
-export interface CheckboxStep {
-	state: CheckboxState;
-	/** Set when the dialog is finished; absent while it stays open. */
-	done?: "confirmed" | "cancelled";
-}
-
-export function initCheckbox(items: CheckboxItem[], preselected: string[] = []): CheckboxState {
-	const known = new Set(items.map((item) => item.id));
-	return {
-		items,
-		cursor: 0,
-		selected: new Set([
-			...preselected.filter((id) => known.has(id)),
-			...items.filter((item) => item.locked).map((item) => item.id),
-		]),
-	};
-}
-
+/** True when every item is selected (the select-all row's derived mark). */
 export function allSelected(state: CheckboxState): boolean {
 	return state.items.length > 0 && state.items.every((item) => state.selected.has(item.id));
-}
-
-/** Selected ids in ITEM order (never insertion order). */
-export function selection(state: CheckboxState): string[] {
-	return state.items.filter((item) => state.selected.has(item.id)).map((item) => item.id);
-}
-
-/**
- * One key stroke. Cursor wraps; space toggles (on the select-all row: all
- * on, or all off when everything was on); enter confirms -- but an EMPTY
- * selection is not confirmable (the stroke is ignored; the scope dialog
- * has no meaningful "nothing"); escape cancels.
- */
-export function reduceCheckbox(state: CheckboxState, event: CheckboxEvent): CheckboxStep {
-	const rows = state.items.length + 1;
-	switch (event) {
-		case "up":
-			return { state: { ...state, cursor: (state.cursor + rows - 1) % rows } };
-		case "down":
-			return { state: { ...state, cursor: (state.cursor + 1) % rows } };
-		case "toggle": {
-			const selected = new Set(state.selected);
-			if (state.cursor === 0) {
-				// Select-all "off" keeps locked rows -- they are not optional.
-				if (allSelected(state)) {
-					for (const item of state.items) {
-						if (!item.locked) selected.delete(item.id);
-					}
-				} else for (const item of state.items) selected.add(item.id);
-			} else {
-				const item = state.items[state.cursor - 1];
-				if (item.locked) return { state };
-				if (selected.has(item.id)) selected.delete(item.id);
-				else selected.add(item.id);
-			}
-			return { state: { ...state, selected } };
-		}
-		case "confirm":
-			return state.selected.size ? { state, done: "confirmed" } : { state };
-		case "cancel":
-			return { state, done: "cancelled" };
-	}
 }
 
 export interface CheckboxLine {
@@ -109,7 +47,7 @@ export interface CheckboxLine {
 	dim?: boolean;
 }
 
-/** Deterministic row texts in the rpiv look: a select-all summary row on
+/** Deterministic row texts: a select-all summary row on
  * top, then numbered items -- "❯ 1. [✔] label". Pure, so the exact wording
  * is pinned by offline tests; the adapters only add colors. */
 export function checkboxLines(state: CheckboxState, selectAllLabel: string): CheckboxLine[] {
@@ -125,7 +63,7 @@ export function checkboxLines(state: CheckboxState, selectAllLabel: string): Che
 			text: `${active ? "❯ " : "  "}${String(i + 1).padStart(width)}. ${mark(state.selected.has(item.id) || item.locked === true)} ${item.label}`,
 			active,
 		});
-		// Dim metadata line, indented to the label column (v31.2); never a
+		// Dim metadata line, indented to the label column; never a
 		// cursor stop -- the item above stays the selectable row.
 		if (item.description !== undefined) {
 			lines.push({ text: `${" ".repeat(width + 8)}${item.description}`, active: false, dim: true });
@@ -135,18 +73,17 @@ export function checkboxLines(state: CheckboxState, selectAllLabel: string): Che
 }
 
 /* ------------------------------------------------------------------ *
- * Wizard -- ONE questionnaire over several steps (rpiv semantics)      *
+ * Wizard -- ONE questionnaire over several steps                       *
  * ------------------------------------------------------------------ */
 
 /**
- * The E2c field test verdict (2026-07-22) drove this layer: a CHAIN of
- * separate dialogs jumped around the screen, had no way back, and Enter
- * committed the multi-select prematurely. rpiv solves all three with ONE
- * dialog holding every question as a tab -- so does this wizard:
+ * ONE dialog holds every question as a tab (a chain of separate dialogs
+ * would jump around the screen, have no way back, and let Enter commit a
+ * multi-select prematurely):
  *   - Tab/RIGHT and Shift-Tab/LEFT move between steps (wrapping); answers
  *     are kept, so going back is free.
  *   - In a checkbox step, Space AND Enter toggle the focused row; the step
- *     commits only on the explicit next-row (rpiv's "Next" sentinel).
+ *     commits only on the explicit next-row.
  *   - A choice step answers with Enter and auto-advances.
  *   - Finishing (advancing past the LAST step) is guarded: an unanswered
  *     choice or an empty required checkbox selection jumps there instead.
@@ -156,22 +93,21 @@ export function checkboxLines(state: CheckboxState, selectAllLabel: string): Che
 
 export interface WizardChoiceOption {
 	value: string;
-	/** Main row text. A function receives the live answers (v30.5: the
+	/** Main row text. A function receives the live answers (the
 	 * grouping variants show the derived EXPRESSION as the main row, the
 	 * variant name as the dim line below). */
 	label: string | ((answers: WizardAnswers) => string);
-	/** Explanation line under the label (v30.2, the rpiv look), dim by
+	/** Explanation line under the label, dim by
 	 * default. A function receives the live answers -- the grouping
 	 * variants show the expression derived from the CURRENT query text. */
 	description?: string | ((answers: WizardAnswers) => string);
-	/** v30.4: render the description in normal (white) text instead of dim
+	/** render the description in normal (white) text instead of dim
 	 * -- for lines carrying substance (the grouping expressions), not mere
 	 * explanation. */
 	descriptionPlain?: boolean;
-	/** Free-entry option (v30): the row carries an inline text input right
+	/** Free-entry option: the row carries an inline text input right
 	 * after the label; Enter answers the step with the TYPED text instead
-	 * of `value` (empty input does not answer). Replaces the v29 pattern of
-	 * a separate greyed-out tab for the custom count. */
+	 * of `value` (empty input does not answer). */
 	freeText?: boolean;
 }
 
@@ -194,54 +130,52 @@ export type WizardStepDef =
 		/** Label of the explicit commit row ("Weiter"/"Fertig"). */
 		nextLabel: string;
 		preselected?: string[];
-		/** v30.7: an EMPTY selection is a valid answer (the journal filter:
+		/** an EMPTY selection is a valid answer (the journal filter:
 		 * nothing picked = no filter) -- the step never blocks the finish
 		 * and the review shows "(none)" instead of "(open)". */
 		optional?: boolean;
-		/** v30.7: dim line shown while items is EMPTY (lazily loaded lists:
+		/** dim line shown while items is EMPTY (lazily loaded lists:
 		 * "fetching...", "no journals found", ...); replaced together with
 		 * the items via the setItems event. */
 		emptyNote?: string;
-		/** 2026-08-10 (user wish "zu Beginn nur die Ladezeile"): while a
-		 * loader is in flight the tab renders ONLY the pulsing emptyNote --
+		/** While a loader is in flight the tab renders ONLY the pulsing
+		 * emptyNote --
 		 * no select-all, no items, no input rows -- so the load is
 		 * unmistakable. Set/cleared exclusively via the setItems event
 		 * (every dispatch without the flag clears it). Enter still advances
 		 * (the tab never blocks on the model); cursor math is untouched so
 		 * the cursor role survives the loading phase. */
 		loading?: boolean;
-		/** 2026-08-06 (query-variants tab): setItems APPENDS checked rows that
+		/** Query-variants tab: setItems APPENDS checked rows that
 		 * the new item list no longer carries (with their old label/flags)
 		 * instead of pruning them -- picked suggestions survive a
 		 * regeneration. Steps without the flag keep the pruning. */
 		keepSelected?: boolean;
-		/** 2026-08-06: an inline free-text row between the items and the Next
+		/** an inline free-text row between the items and the Next
 		 * row (the query-variants steering line). The DRAFT lives in
 		 * texts[tab]; Enter on the row COMMITS it (committedTexts + inputSeq
 		 * bump) and stays -- rawAnswers exports only the committed value (as
 		 * `<id>` plus `<id>_seq`), so an itemLoader keyed on it reloads once
 		 * per Enter, never per keystroke. */
 		input?: { id: string; label: string };
-		/** 2026-08-10 (query-variants tab, user wish "Type your own query
-		 * variant"): an inline free-text row between the items and the
+		/** Query-variants tab: an inline free-text row between the items and the
 		 * steering row. Enter ADDS the trimmed draft as a CHECKED item
 		 * (case-insensitive dedupe against existing ids just checks the
 		 * existing row) and clears the draft; with keepSelected the added
 		 * row survives regenerations like any checked pick. The draft lives
 		 * in addTexts[tab]. */
 		addInput?: { id: string; label: string };
-		/** 2026-08-06: start (and re-anchor after setItems) the cursor on the
+		/** start (and re-anchor after setItems) the cursor on the
 		 * Next row -- Enter-through must not toggle select-all on a list of
 		 * generated suggestions. */
 		cursorStart?: "next";
-		/** Step applies only while this holds over the current answers (v27:
-		 * the detail-mode tab applies only with >= 2 documents AND >= 1
-		 * question). v29: a disabled step STAYS in the tab bar greyed out
+		/** Step applies only while this holds over the current answers (* the detail-mode tab applies only with >= 2 documents AND >= 1
+		 * question). a disabled step STAYS in the tab bar greyed out
 		 * (a tab's visibility must not change while navigating) and can be
 		 * visited -- it shows disabledNote instead of its rows -- but it
 		 * never blocks the finish and is absent from summary and result. */
 		enabledIf?: (answers: WizardAnswers) => boolean;
-		/** One-line reason shown when the step is disabled (v29: grey out
+		/** One-line reason shown when the step is disabled (grey out
 		 * with a reason instead of hiding). Falls back to a generic line. */
 		disabledNote?: string;
 	}
@@ -251,15 +185,15 @@ export type WizardStepDef =
 		tab: string;
 		title: string;
 		options: WizardChoiceOption[];
-		/** v30.2: prefill for the freeText option, computed live from the
+		/** prefill for the freeText option, computed live from the
 		 * other answers while the user has not typed there (the custom
 		 * grouping expression follows the query). A typed edit owns it. */
 		customSeed?: (answers: WizardAnswers) => string;
 		/** RECOMMENDED option: the cursor starts here, but the step counts
-		 * as answered only after an explicit Enter (field decision
-		 * 2026-07-22: a recommendation must never silently be an answer). */
+		 * as answered only after an explicit Enter (a recommendation must
+		 * never silently be an answer). */
 		initial?: string;
-		/** Opt-out of the rule above (v29.1): the initial IS the answer.
+		/** Opt-out of the rule above: the initial IS the answer.
 		 * For proposal-confirm intakes (the search wizard opens on its
 		 * submit page; every step already carries the proposed value, and
 		 * one Enter runs it -- the old "Run as proposed" ergonomics). */
@@ -268,7 +202,7 @@ export type WizardStepDef =
 		disabledNote?: string;
 	}
 	| {
-		/** Single-line free-text input (v27: the questions intake joined the
+		/** Single-line free-text input (the questions intake joined the
 		 * ONE wizard). Typing appends, backspace deletes, Enter commits --
 		 * an EMPTY text is a valid answer (= "no questions"). Pasted
 		 * newlines become semicolons (the question separator). */
@@ -279,19 +213,19 @@ export type WizardStepDef =
 		/** Shown dim under the input while it is empty. */
 		placeholder?: string;
 		initial?: string;
-		/** v30: while the user has not edited THIS step, its text is computed
+		/** while the user has not edited THIS step, its text is computed
 		 * live from the other steps' answers (the search wizard derives the
 		 * grouping from the query). A provided initial or any keystroke here
 		 * makes the user's text permanent -- including clearing it. */
 		derive?: (answers: WizardAnswers) => string;
-		/** v30: plain single-line value (query, years, grouping) -- no
+		/** plain single-line value (query, years, grouping) -- no
 		 * question splitting/counting in the info line and summaries. */
 		plain?: boolean;
 		enabledIf?: (answers: WizardAnswers) => boolean;
 		disabledNote?: string;
 	}
 	| {
-		/** v30: several labeled single-line fields in ONE tab (the search
+		/** several labeled single-line fields in ONE tab (the search
 		 * wizard's optional filters). Up/Down moves between fields, typing
 		 * edits the focused one, Enter advances field-wise then leaves the
 		 * step. Every field is optional; empty = not set. Field ids join the
@@ -308,7 +242,7 @@ export type WizardStepDef =
 export interface WizardState {
 	steps: WizardStepDef[];
 	/** Current tab index; steps.length is the final SUBMIT tab (summary +
-	 * Absenden/Abbrechen, the rpiv review page). */
+	 * the submit / cancel review page). */
 	tab: number;
 	/** Per-tab cursor rows (the submit tab's cursor is 0 or 1). */
 	cursors: number[];
@@ -322,16 +256,16 @@ export interface WizardState {
 	/** Per-step form field values (empty arrays on non-form steps). */
 	formTexts: string[][];
 	/** Per-step COMMITTED inline-input value of a checkbox step's steering
-	 * row (2026-08-06); the draft stays in texts[] until Enter commits. */
+	 * row; the draft stays in texts[] until Enter commits. */
 	committedTexts: string[];
-	/** Per-step draft of a checkbox step's ADD row (2026-08-10, "type your
-	 * own query variant"); Enter turns it into a checked item and clears. */
+	/** Per-step draft of a checkbox step's ADD row ("type your own query
+	 * variant"); Enter turns it into a checked item and clears. */
 	addTexts: string[];
 	/** Per-step commit counter of the steering row -- exported to the
 	 * answers as `<id>_seq`, so re-committing the SAME text still changes
 	 * the loader key (explicit re-roll of the suggestions). */
 	inputSeq: number[];
-	/** Steps whose inline text the user owns (v30): true once edited there
+	/** Steps whose inline text the user owns: true once edited there
 	 * or seeded via initial -- derive()/customSeed() stop applying then.
 	 * Applies to text steps and to choice steps with a freeText option. */
 	dirty: boolean[];
@@ -339,32 +273,30 @@ export interface WizardState {
 	 * pure function of the answers, injected by the caller. */
 	submitNote?: (answers: WizardAnswers) => string | null;
 	/** True: advancing past the last step finishes DIRECTLY (no submit
-	 * page). For lightweight gates like the per-question confirm (v27) --
+	 * page). For lightweight gates like the per-question confirm --
 	 * the finish guard still jumps to incomplete steps first. */
 	skipSubmit?: boolean;
-	/** Dialog language of the pure-layer strings; default "en" (v30). */
+	/** Dialog language of the pure-layer strings; default "en". */
 	lang: DialogLang;
 }
 
 export interface WizardOptions {
-	/** One line above the tab bar naming the dialog you are in (v30.12
-	 * field wish: "wäre nett irgendwo zu lesen, dass ich jetzt in
-	 * lit-search bin"). Adapter-rendered; the RPC fallback prefixes its
-	 * step titles with it. */
+	/** One line above the tab bar naming the dialog you are in.
+	 * Adapter-rendered; the RPC fallback prefixes its step titles with it. */
 	header?: string;
 	submitNote?: (answers: WizardAnswers) => string | null;
 	skipSubmit?: boolean;
-	/** "submit": open ON the review page (v29.1 proposal-confirm intakes --
-	 * one Enter runs the proposal, arrows walk into the tabs to adjust).
+	/** "submit": open ON the review page (proposal-confirm intakes -- one
+	 * Enter runs the proposal, arrows walk into the tabs to adjust).
 	 * Pair with initialIsAnswer on choice steps, else the finish guard
 	 * jumps to the unanswered step. */
 	startTab?: "submit";
-	/** Dialog language; default "en" (v27: follow the chat's language;
-	 * v30 user decision: with no chat observed, the default is English). */
+	/** Dialog language; default "en" (follow the chat's language;
+	 * with no chat observed, the default is English). */
 	lang?: DialogLang;
-	/** Adapter hook (v30.7): lazily load checkbox steps' items when the user
+	/** Adapter hook: lazily load checkbox steps' items when the user
 	 * reaches their tab. The PURE layer ignores this field entirely;
-	 * extensions/dialogs.ts fetches and dispatches setItems. v30.11: a LIST
+	 * extensions/dialogs.ts fetches and dispatches setItems. a LIST
 	 * -- the search wizard lazily loads journals AND authors. */
 	itemLoaders?: WizardItemLoader[];
 }
@@ -376,7 +308,7 @@ export interface WizardItemLoader {
 	 * key re-fetches on the next visit; empty key = nothing to load. */
 	key: (answers: WizardAnswers) => string;
 	load: (answers: WizardAnswers) => Promise<CheckboxItem[]>;
-	/** v30.8: ids to precheck in the loaded list while the selection is
+	/** ids to precheck in the loaded list while the selection is
 	 * still empty (e.g. items matching an agent venues proposal). */
 	preselect?: (items: CheckboxItem[]) => string[];
 	loadingNote: string;
@@ -386,7 +318,7 @@ export interface WizardItemLoader {
 }
 
 /**
- * Dialog language (v27 user decision: the dialogs follow the CHAT's
+ * Dialog language (the dialogs follow the CHAT's
  * language instead of always speaking German). Two languages by design --
  * German default, English for English chats; any other named language
  * gets the international default.
@@ -402,11 +334,11 @@ export const DIALOG_TEXT: Record<DialogLang, {
 	submitCancelRow: string;
 	unanswered: string;
 	noQuestions: string;
-	/** Yellow warning on the review page listing still-open steps (v30.2,
-	 * the rpiv look -- shown up front instead of only jumping on Enter). */
+	/** Yellow warning on the review page listing still-open steps (shown
+	 * up front instead of only jumping on Enter). */
 	answerRemaining: (tabs: string[]) => string;
 	questionsDetected: (n: number) => string;
-	/** Overflow note of the multiline question window (v31.4). */
+	/** Overflow note of the multiline question window. */
 	linesAbove: (n: number) => string;
 	hintSubmit: string;
 	hintCheckbox: string;
@@ -459,8 +391,8 @@ export const DIALOG_TEXT: Record<DialogLang, {
 
 /** German/English detection over free chat text -- deterministic stopword
  * scoring, umlauts decide instantly; empty or tied input falls back
- * (default: English, the international default -- v30 user decision;
- * German chats flip everything to German via the observer). Pure. */
+ * (default: English, the international default; German chats flip
+ * everything to German via the observer). Pure. */
 export function detectDialogLang(texts: Array<string | undefined>, fallback: DialogLang = "en"): DialogLang {
 	const joined = texts.filter(Boolean).join(" ").toLowerCase();
 	if (!joined.trim()) return fallback;
@@ -486,35 +418,16 @@ export function detectDialogLang(texts: Array<string | undefined>, fallback: Dia
 	return germanHits > englishHits ? "de" : "en";
 }
 
-/** Map an explicit language name (the tool's `language` param, e.g.
- * "German", "english", "de") to a dialog language; undefined when nothing
- * was named. Unknown named languages get the international default. */
-export function langFromName(value: string | undefined): DialogLang | undefined {
-	const token = value?.trim().toLowerCase();
-	if (!token) return undefined;
-	if (["de", "deutsch", "german"].includes(token)) return "de";
-	return "en";
-}
-
-/** Labels of the synthetic submit tab -- the GERMAN defaults, kept as
- * named constants for existing callers/tests; language-aware code reads
- * DIALOG_TEXT instead. */
-export const SUBMIT_TAB_LABEL = DIALOG_TEXT.de.submitTab;
-export const SUBMIT_TITLE = DIALOG_TEXT.de.submitTitle;
-export const SUBMIT_ROW = DIALOG_TEXT.de.submitRow;
-export const SUBMIT_CANCEL_ROW = DIALOG_TEXT.de.submitCancelRow;
-export const UNANSWERED_MARK = DIALOG_TEXT.de.unanswered;
-
 export type WizardEvent =
 	| "up" | "down" | "left" | "right" | "toggle" | "confirm" | "cancel"
 	/** Backspace in a text step (ignored elsewhere). */
 	| "backspace"
 	/** Typed/pasted characters for a text step (ignored elsewhere). */
 	| { kind: "input"; chars: string }
-	/** v30.7: replace a checkbox step's items at runtime (lazily loaded
+	/** replace a checkbox step's items at runtime (lazily loaded
 	 * lists -- the adapter fetches, the reducer stays pure). Selections
 	 * not in the new items are pruned; the cursor is clamped. preselect
-	 * (v30.8) seeds the selection ONLY while it is empty (an agent venues
+	 * seeds the selection ONLY while it is empty (an agent venues
 	 * proposal becomes visible check marks, never overriding the user). */
 	| { kind: "setItems"; step: string; items: CheckboxItem[]; emptyNote?: string; preselect?: string[]; loading?: boolean };
 
@@ -527,7 +440,7 @@ export interface WizardStep {
 export type WizardResult = Record<string, string[] | string>;
 
 /** A choice initial that matches no option is a CUSTOM value: it lands in
- * the freeText option's input (v30, agent path with a non-preset count). */
+ * the freeText option's input (agent path with a non-preset count). */
 function choiceCursor(step: WizardStepDef & { kind: "choice" }): number {
 	const match = step.options.findIndex((option) => option.value === step.initial);
 	if (match >= 0 || step.initial === undefined) return Math.max(0, match);
@@ -575,33 +488,33 @@ export function initWizard(steps: WizardStepDef[], options?: WizardOptions): Wiz
 	};
 }
 
-/** Visible line window of a multiline question step (v31.4): with more
+/** Visible line window of a multiline question step: with more
  * lines the view shows the TAIL (the cursor lives on the last line) plus
  * an overflow note counting the lines above. */
-export const MAX_TEXT_ROWS = 8;
+const MAX_TEXT_ROWS = 8;
 
 function rowCount(step: WizardStepDef): number {
 	return step.kind === "checkbox"
 		? step.items.length + step.items.filter((item) => item.description !== undefined).length
 			+ (step.input ? 1 : 0) + (step.addInput ? 1 : 0) + 2
 			// A non-empty status note is an EXTRA dim line while items are
-			// present (2026-08-10 reload visibility); on an empty list it
+			// present (reload visibility); on an empty list it
 			// replaces the select-all row instead -- no extra height there.
 			+ (step.items.length && step.emptyNote ? 1 : 0)
-		// Plain: input + placeholder line. Multiline questions (v31.4): the
+		// Plain: input + placeholder line. Multiline questions: the
 		// line window, a possible overflow note and the count line.
 		: step.kind === "text" ? (step.plain ? 2 : MAX_TEXT_ROWS + 2)
 		: step.kind === "form" ? step.fields.length
-		// A description adds a dim explanation row under its option (v30.2).
+		// A description adds a dim explanation row under its option.
 		: step.options.length + step.options.filter((option) => option.description !== undefined).length;
 }
 
 /** CURSOR stops of a checkbox step -- distinct from rowCount, which counts
  * RENDERED lines (incl. dim description lines) for the overlay height.
- * Using rowCount as the cursor range was a latent bug (2026-08-06): items
+ * Using rowCount as the cursor range was a latent bug: items
  * with description lines produced dead cursor rows and an out-of-range
  * items[cursor-1] on Enter. Layout: select-all, items, optional ADD row
- * (2026-08-10), optional steering input row, Next. While items is EMPTY
+ *, optional steering input row, Next. While items is EMPTY
  * the select-all row is skipped in the view but keeps cursor slot 0 (the
  * view renders the emptyNote there); the remaining rows follow. */
 function checkboxNavRows(step: WizardStepDef & { kind: "checkbox" }): number {
@@ -622,14 +535,14 @@ export function checkboxAddRow(step: WizardStepDef & { kind: "checkbox" }): numb
 /** Whether the cursor sits on a TYPING row of a checkbox step (steering or
  * add row) -- the adapter routes printable input there instead of treating
  * Space as toggle (exported: the adapter must not re-derive row indexes,
- * that broke once when the add row shifted the steering row -- 2026-08-10). */
+ * that would break when the add row shifts the steering row). */
 export function checkboxTypingRow(step: WizardStepDef, cursor: number): boolean {
 	if (step.kind !== "checkbox" || step.loading) return false;
 	return (step.input !== undefined && cursor === checkboxInputRow(step))
 		|| (step.addInput !== undefined && cursor === checkboxAddRow(step));
 }
 
-/** Rendered body rows of the submit tab (v30.2 rpiv layout): two lines per
+/** Rendered body rows of the submit tab: two lines per
  * step ("● Tab" + "→ value"), an optional note line, a reserved warning
  * slot, a blank separator, then the two actionable rows. */
 function submitRowCount(state: WizardState): number {
@@ -638,7 +551,7 @@ function submitRowCount(state: WizardState): number {
 
 /** Worst-case row count across all tabs (submit tab included) -- the
  * adapter pads every render to this so the overlay never changes height
- * (the E2c layout-jump fix). */
+ * (so the box never jumps while navigating). */
 export function maxWizardRows(state: WizardState): number {
 	return Math.max(...state.steps.map(rowCount), submitRowCount(state));
 }
@@ -675,7 +588,7 @@ function rawAnswers(state: WizardState): WizardAnswers {
 }
 
 /** The text a text step SHOWS and submits (WYSIWYG): the user's own text,
- * or the live derived value while the step is untouched (v30). */
+ * or the live derived value while the step is untouched. */
 export function effectiveText(state: WizardState, index: number): string {
 	const step = state.steps[index];
 	if (step.kind !== "text") return "";
@@ -683,7 +596,7 @@ export function effectiveText(state: WizardState, index: number): string {
 	return state.texts[index];
 }
 
-/** The freeText option's inline value on a choice step (v30.2): the user's
+/** The freeText option's inline value on a choice step: the user's
  * own input, or the live customSeed while the row is untouched. */
 export function effectiveChoiceText(state: WizardState, index: number): string {
 	const step = state.steps[index];
@@ -730,7 +643,7 @@ function stepInvalid(state: WizardState, index: number): boolean {
 		: state.chosen[index] === null;
 }
 
-/** Whether the tab bar marks the step with a check (v30 field wish: a mark
+/** Whether the tab bar marks the step with a check (a mark
  * means "this carries a value that will run", NOT "this would not block" --
  * before, every text tab was checked from the start). */
 export function stepAnswered(state: WizardState, index: number): boolean {
@@ -741,7 +654,7 @@ export function stepAnswered(state: WizardState, index: number): boolean {
 		: state.chosen[index] !== null;
 }
 
-/** Next tab in the given direction. v29: disabled steps stay VISITABLE
+/** Next tab in the given direction. disabled steps stay VISITABLE
  * (they render their reason line) -- only advance() skips them, so the
  * Enter-through flow never stops on one. */
 function movedTab(state: WizardState, dir: 1 | -1): number {
@@ -749,8 +662,8 @@ function movedTab(state: WizardState, dir: 1 | -1): number {
 }
 
 /** Advance from the current step; the last enabled step leads to the
- * SUBMIT tab (never straight to done -- the user reviews first, field
- * wish 2026-07-22) -- unless skipSubmit is set (lightweight gates),
+ * SUBMIT tab (never straight to done -- the user reviews first) --
+ * unless skipSubmit is set (lightweight gates),
  * where it finishes directly through the same completeness guard. */
 function advance(state: WizardState): WizardStep {
 	let tab = state.tab;
@@ -761,7 +674,7 @@ function advance(state: WizardState): WizardStep {
 	return { state: { ...state, tab } };
 }
 
-/** Finishing (Enter on Absenden): an incomplete ENABLED step wins over the
+/** Finishing (Enter on the submit row): an incomplete ENABLED step wins over the
  * submit -- the wizard jumps there instead. */
 function finish(state: WizardState): WizardStep {
 	for (let i = 0; i < state.steps.length; i++) {
@@ -772,9 +685,9 @@ function finish(state: WizardState): WizardStep {
 
 /** Control characters never enter a text value. Single-line inputs turn
  * pasted newlines into the question separator; MULTILINE question steps
- * (v31.4) keep them -- one question per line. */
+ * keep them -- one question per line. */
 /**
- * Unwrap a bracketed-paste chunk (2026-08-07 field fix: pastes never
+ * Unwrap a bracketed-paste chunk (pastes never
  * reached the dialogs). Terminals wrap pastes as \x1b[200~<text>\x1b[201~;
  * the installed pi-tui aggregates split stdin chunks upstream
  * (stdin-buffer.js) and re-wraps the COMPLETE paste into ONE handleInput
@@ -792,7 +705,7 @@ export function pasteText(data: string): string | null {
 }
 
 /**
- * Animated ellipsis for loading notes (2026-08-10 user wish: a running
+ * Animated ellipsis for loading notes (a running
  * fetch should LOOK alive): the note's final "..." becomes 1-2-3 dots
  * cycling with the tick. Notes without an ellipsis return unchanged.
  * Pure -- the adapter owns the timer and re-renders.
@@ -822,14 +735,14 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 		: undefined;
 	const onText = current?.kind === "text";
 	const onForm = current?.kind === "form";
-	// Choice step with the cursor on a free-entry option (v30): typing edits
+	// Choice step with the cursor on a free-entry option: typing edits
 	// that option's inline value, stored in texts[tab].
 	const onFreeText = current?.kind === "choice" && current.options[cursor]?.freeText === true;
-	// Checkbox step with the cursor on the steering input row (2026-08-06):
+	// Checkbox step with the cursor on the steering input row:
 	// typing edits the DRAFT in texts[tab]; Enter commits it.
 	const onCheckboxInput = current?.kind === "checkbox" && !current.loading
 		&& current.input !== undefined && cursor === checkboxInputRow(current);
-	// Checkbox step with the cursor on the ADD row (2026-08-10): typing
+	// Checkbox step with the cursor on the ADD row: typing
 	// edits the draft in addTexts[tab]; Enter adds it as a checked item.
 	const onCheckboxAdd = current?.kind === "checkbox" && !current.loading
 		&& current.addInput !== undefined && cursor === checkboxAddRow(current);
@@ -856,14 +769,14 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 		: onCheckboxAdd ? state.addTexts[state.tab]
 		: onCheckboxInput ? state.texts[state.tab]
 		: null;
-	// Runtime item replacement (v30.7, lazily loaded checkbox lists):
+	// Runtime item replacement (lazily loaded checkbox lists):
 	// independent of the current tab; pruned selection, clamped cursor.
 	if (typeof event === "object" && event.kind === "setItems") {
 		const index = state.steps.findIndex((other) => other.id === event.step && other.kind === "checkbox");
 		if (index < 0) return { state };
 		const target = state.steps[index] as WizardStepDef & { kind: "checkbox" };
 		const selectedOld = state.selected[index];
-		// keepSelected (2026-08-06): checked rows the new list no longer
+		// keepSelected: checked rows the new list no longer
 		// carries are APPENDED with their old label/flags instead of pruned
 		// -- picked query-variant suggestions survive a regeneration (and
 		// stay visible during the loading dispatch's empty item list).
@@ -887,11 +800,11 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 		// preselect seeds only while the PRE-union selection is empty (first
 		// load); locked ids are unioned AFTERWARDS -- otherwise the locked
 		// base row would make the selection permanently non-empty and an
-		// agent proposal could never precheck (v30.8 semantics preserved).
+		// agent proposal could never precheck.
 		const seeded = [...(selectedOld.size ? [...selectedOld] : event.preselect ?? [])]
 			.filter((id) => known.has(id));
 		const selected = new Set([...seeded, ...items.filter((item) => item.locked).map((item) => item.id)]);
-		// Cursor follows its ROLE across the item swap (2026-08-06): Next row
+		// Cursor follows its ROLE across the item swap: Next row
 		// stays Next, the steering row stays the steering row -- an
 		// Enter-through user parked on Next must not land mid-list when the
 		// suggestions arrive.
@@ -941,7 +854,7 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 				return cursor === 0 ? finish(state) : { state, done: "cancelled" };
 		}
 	}
-	// A visited DISABLED step (v29): only navigation works; Enter advances
+	// A visited DISABLED step: only navigation works; Enter advances
 	// through the same skip logic as everywhere else.
 	if (!stepEnabled(state, state.tab)) {
 		switch (event) {
@@ -959,13 +872,14 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 	}
 	const step = state.steps[state.tab];
 	// Cursor range: checkbox steps use their NAV rows (description lines and
-	// the height budget stay in rowCount -- the 2026-08-06 dead-cursor fix).
+	// the height budget stay in rowCount -- else description lines become
+	// dead cursor rows).
 	const rows = step.kind === "checkbox" ? checkboxNavRows(step) : rowCount(step);
 	const withCursor = withCursorAt;
 	const toggled = (): WizardState => {
 		// Only the select-all row and real item rows carry check state --
 		// the steering input row and the Next row do not. While loading,
-		// nothing toggles (only the note is visible -- 2026-08-10).
+		// nothing toggles (only the note is visible).
 		if (step.kind !== "checkbox" || step.loading || cursor > step.items.length) return state;
 		const selected = new Set(state.selected[state.tab]);
 		if (cursor === 0) {
@@ -1000,10 +914,10 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 			if (step.kind === "checkbox") {
 				// While loading, the only visible row is the note -- Enter
 				// advances so the Enter-through flow never waits on the
-				// model (2026-08-10).
+				// model.
 				if (step.loading) return advance(state);
 				// Enter on the steering row COMMITS the draft and stays
-				// (2026-08-06): the committed value + bumped counter reach the
+				//: the committed value + bumped counter reach the
 				// answers, the itemLoader's changed key fires the regeneration
 				// on the adapter's next tick. Same text again = explicit
 				// re-roll. Checked before the empty-optional advance so
@@ -1019,7 +933,7 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 						},
 					};
 				}
-				// Enter on the ADD row (2026-08-10): the trimmed draft becomes
+				// Enter on the ADD row: the trimmed draft becomes
 				// a CHECKED item (an existing id just gets checked -- case-
 				// insensitive) and the draft clears; empty draft = no-op. With
 				// keepSelected the added row survives regenerations.
@@ -1047,19 +961,18 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 						},
 					};
 				}
-				// An empty OPTIONAL list advances from any row (v30.7: the
+				// An empty OPTIONAL list advances from any row (the
 				// lazily loaded journal list must never stall Enter-through).
 				if (step.items.length === 0 && step.optional) return advance(state);
 				// Enter toggles like Space on real rows; only the explicit
-				// next-row commits (rpiv rule -- the E2c field complaint).
+				// next-row commits.
 				// An OPTIONAL step commits empty (empty = "no filter").
 				if (cursor < rows - 1) return { state: toggled() };
 				if (state.selected[state.tab].size === 0 && !step.optional) return { state };
 				return advance(state);
 			}
 			if (step.kind === "text") {
-				// MULTILINE question steps (v31.4 user wish "jede Frage in
-				// einer Zeile"): Enter opens a new line; Enter on a BLANK
+				// MULTILINE question steps: Enter opens a new line; Enter on a BLANK
 				// last line (or on an empty step) advances -- so an untouched
 				// tab still passes with one stroke, a filled one with two.
 				if (!step.plain) {
@@ -1130,7 +1043,7 @@ export interface WizardViewRow {
 }
 
 export interface WizardView {
-	/** Tab bar entries in step order; disabled tabs stay listed (v29) and
+	/** Tab bar entries in step order; disabled tabs stay listed and
 	 * the adapter greys them out. */
 	tabs: Array<{ label: string; active: boolean; disabled?: boolean }>;
 	title: string;
@@ -1146,7 +1059,7 @@ function stepValueLabel(state: WizardState, i: number): string {
 	if (step.kind === "checkbox") {
 		const chosen = step.items.filter((item) => state.selected[i].has(item.id));
 		const all = chosen.length === step.items.length && step.items.length > 0;
-		// Optional steps (v30.7): empty is a decision, not an open question.
+		// Optional steps: empty is a decision, not an open question.
 		return chosen.length === 0 ? (step.optional ? text.noQuestions : text.unanswered)
 			: all ? `${step.selectAllLabel} (${chosen.length})`
 			: chosen.map((item) => item.label).join(", ");
@@ -1166,9 +1079,8 @@ function stepValueLabel(state: WizardState, i: number): string {
 	}
 	const chosen = step.options.find((option) => option.value === state.chosen[i]);
 	if (chosen && !chosen.freeText) {
-		// Label and description together carry the full picture (v30.2;
-		// v30.5: for the grouping variants the label IS the expression and
-		// the description names the variant).
+		// Label and description together carry the full picture (a label
+		// may be the substance and the description its explanation).
 		const answers = wizardAnswers(state);
 		const label = optionLabel(chosen, answers);
 		const description = optionDescription(chosen, answers);
@@ -1178,25 +1090,14 @@ function stepValueLabel(state: WizardState, i: number): string {
 	return state.chosen[i] ?? text.unanswered;
 }
 
-/** One summary line per ENABLED step for the submit page -- also used by
- * the fallback loop. */
-export function wizardSummaryLines(state: WizardState): string[] {
-	const lines: string[] = [];
-	state.steps.forEach((step, i) => {
-		if (!stepEnabled(state, i)) return;
-		lines.push(`${step.tab}: ${stepValueLabel(state, i)}`);
-	});
-	return lines;
-}
-
 /** Pure presentation of the current tab; the adapter only adds colors,
  * borders and the constant-height padding. */
 export function wizardView(state: WizardState): WizardView {
-	// Tab bar in the rpiv look (v30.2): steps carry a filled square once
-	// they HOLD A VALUE (v30: the old mark meant "would not block", so
-	// every text tab was checked from the start -- field complaint), an
+	// Tab bar: steps carry a filled square once they HOLD A VALUE (a mark
+	// meaning "would not block" would check every text tab from the
+	// start), an
 	// empty square while open; the review tab carries a check. Disabled
-	// steps STAY in the bar greyed out (v29: a tab's visibility must never
+	// steps STAY in the bar greyed out (a tab's visibility must never
 	// change while navigating).
 	const text = DIALOG_TEXT[state.lang];
 	const tabs = [
@@ -1213,7 +1114,7 @@ export function wizardView(state: WizardState): WizardView {
 	if (state.tab === state.steps.length) {
 		const cursor = state.cursors[state.tab];
 		const note = state.submitNote ? state.submitNote(wizardAnswers(state)) : null;
-		// The rpiv review layout: "● Tab" + "→ value" per step, the note,
+		// The review layout: "● Tab" + "→ value" per step, the note,
 		// then a WARNING listing still-open steps up front (the jump on
 		// Enter stays, but the user sees WHY before pressing it).
 		const rows: WizardViewRow[] = [];
@@ -1238,8 +1139,8 @@ export function wizardView(state: WizardState): WizardView {
 		};
 	}
 	const step = state.steps[state.tab];
-	// A visited disabled step shows its reason instead of its rows (v29).
-	// The reason is a WARNING row (v31.3 user wish): yellow with the ⚠ sign,
+	// A visited disabled step shows its reason instead of its rows.
+	// The reason is a WARNING row: yellow with the ⚠ sign,
 	// same look as the submit page's "answer remaining" line.
 	if (!stepEnabled(state, state.tab)) {
 		return {
@@ -1253,7 +1154,7 @@ export function wizardView(state: WizardState): WizardView {
 	const rows: WizardViewRow[] = [];
 	if (step.kind === "checkbox") {
 		const pushInputRow = (): void => {
-			// The steering input row (2026-08-06), form-style: label + draft.
+			// The steering input row, form-style: label + draft.
 			if (!step.input) return;
 			const active = cursor === checkboxInputRow(step);
 			const draft = state.texts[state.tab];
@@ -1263,7 +1164,7 @@ export function wizardView(state: WizardState): WizardView {
 			});
 		};
 		const pushAddRow = (): void => {
-			// The add row (2026-08-10): type an own entry, Enter checks it in.
+			// The add row: type an own entry, Enter checks it in.
 			if (!step.addInput) return;
 			const active = cursor === checkboxAddRow(step);
 			const draft = state.addTexts[state.tab];
@@ -1274,27 +1175,26 @@ export function wizardView(state: WizardState): WizardView {
 		};
 		const nextActive = cursor === checkboxNavRows(step) - 1;
 		if (step.loading) {
-			// Loading (2026-08-10 user wish): ONLY the pulsing note -- no
+			// Loading: ONLY the pulsing note -- no
 			// select-all, no rows, no inputs -- so the load is unmistakable.
 			// Enter still advances (see the confirm guard); items/selection
 			// live on untouched underneath and reappear with the swap.
 			rows.push({ text: `     ${step.emptyNote ?? ""}`, active: false, dim: true });
 		} else if (step.items.length === 0) {
-			// Lazily loaded list before/without items (v30.7): the note says
+			// Lazily loaded list before/without items: the note says
 			// why it is empty; the next-row keeps Enter-through working.
 			rows.push({ text: `     ${step.emptyNote ?? ""}`, active: false, dim: true });
 			pushAddRow();
 			pushInputRow();
 			rows.push({ text: `${nextActive ? "❯ " : "  "}   ${step.nextLabel}`, active: nextActive });
 		} else {
-			// Reload status (2026-08-10 field find: a re-load after a query
+			// Reload status (a re-load after a query
 			// edit was INVISIBLE -- kept checked rows fill the list and the
 			// note only rendered on an empty one, so the user stared at stale
 			// suggestions with no sign of work). A non-empty note now renders
 			// as a dim status line with items present too -- ABOVE the list,
-			// the same top position the empty-list note has (user wish, same
-			// day: "ganz nach oben ... so wie vorher"); the resolved setItems
-			// clears it ("" on success).
+			// the same top position the empty-list note has; the resolved
+			// setItems clears it ("" on success).
 			if (step.emptyNote) rows.push({ text: `     ${step.emptyNote}`, active: false, dim: true });
 			const checkboxState: CheckboxState = {
 				items: step.items,
@@ -1311,15 +1211,15 @@ export function wizardView(state: WizardState): WizardView {
 		if (step.plain) {
 			rows.push({ text: `❯ ${value}_`, active: true });
 			// Plain inputs (query, years, grouping) get no question counter --
-			// only the placeholder while empty (v30); the info line renders
-			// dim (v30.3 user wish: the example query in grey).
+			// only the placeholder while empty; the info line renders
+			// dim (the example query in grey).
 			rows.push({
 				text: !value ? `     ${step.placeholder ?? ""}` : "",
 				active: false,
 				dim: true,
 			});
 		} else {
-			// MULTILINE question step (v31.4): one question per line, the
+			// MULTILINE question step: one question per line, the
 			// cursor always on the last line; with many lines a window shows
 			// the tail and an overflow note counts the lines above it.
 			const lines = value.split("\n");
@@ -1361,8 +1261,8 @@ export function wizardView(state: WizardState): WizardView {
 			const chosenValue = option.freeText ? inline.trim() : option.value;
 			const chosen = state.chosen[state.tab] !== null && state.chosen[state.tab] === chosenValue ? " ✔" : "";
 			rows.push({ text: `${active ? "❯ " : "  "}${String(i + 1).padStart(width)}. ${label}${value}${chosen}`, active });
-			// The rpiv look: an explanation line under the label (v30.2) --
-			// dim, unless the option marks it as substance (v30.4: the
+			// An explanation line under the label --
+			// dim, unless the option marks it as substance (the
 			// grouping expressions render white).
 			const description = optionDescription(option, answers);
 			if (description !== undefined) {
@@ -1386,7 +1286,7 @@ export function wizardView(state: WizardState): WizardView {
 }
 
 /**
- * Questions separated by SEMICOLON or newline (v27 field decision: "one per
+ * Questions separated by SEMICOLON or newline ("one per
  * line" made no sense in a single-line terminal input; the CLI's multiline
  * habit keeps working). Blank entries vanish; leading list bullets people
  * habitually type ("- ", "* ", "1. ") are stripped; order and wording stay

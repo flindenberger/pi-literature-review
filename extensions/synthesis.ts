@@ -1,24 +1,22 @@
 /**
- * pi-literature-review Pi extension: the ONE fused stage tool
- * pi-literature-synthesis + the /lit-synthesis command (v25 E2e).
+ * Synthesis stage adapter for pi: the pi-literature-synthesis tool, the
+ * /lit-synthesis command, the paper-chat mode and the HTML-write gate.
+ * Grounded Q&A rounds and the composable report (summaries, detail
+ * questions in mode A/B, review synthesis) run the engine in
+ * src/synthesis.ts with the same citation gate.
  *
- * The former pi-literature-chat and pi-literature-synthesize tools merged
- * into one. Grounded Q&A rounds, the composable report (summaries, detail
- * questions in mode A/B, review synthesis) and the classic session report
- * all run the same fused engine in src/synthesize.ts with the same
- * citation gate.
- *
- * Dialog policy (v29, user decision 2026-07-28): the wizard belongs to the
- * /lit-synthesis COMMAND; the agent-called TOOL runs dialog-free. A chat call
- * with a settled scope answers immediately (the card shows the verbatim
- * executed question; since 2026-08-04 the agent follows up with a BRIEF
- * answer in chat instead of being terminated -- the card and the tool
- * result both carry the verbatim text, so a repeat is checkable); an unsettled
+ * Dialog policy: the wizard belongs to the /lit-synthesis COMMAND; the
+ * agent-called TOOL runs dialog-free. A chat call with a settled scope
+ * answers immediately (the card shows the verbatim executed question and
+ * the agent follows up with a BRIEF answer in chat -- card and tool result
+ * both carry the verbatim text, so a repeat is checkable); an unsettled
  * scope hands a REAL file list back to the agent (single-PDF libraries
- * resolve themselves); report-flavoured calls hand back to /lit-synthesis --
- * dialog-free AND expensive don't mix. The one dialog that can still open
- * from an agent turn is the HTML-write gate, which ASKS whether to build
- * the deterministic report instead of the agent's hand-written file.
+ * resolve themselves); report-flavoured calls hand back to /lit-synthesis
+ * -- dialog-free AND expensive don't mix. The one dialog that can still
+ * open from an agent turn is the HTML-write gate, which ASKS whether to
+ * build the deterministic report instead of the agent's hand-written file.
+ * Every grounded round arms the paper-chat mode: plain inputs then run as
+ * questions until the user types "exit".
  */
 
 import { pathToFileURL } from "node:url";
@@ -62,7 +60,7 @@ const SYNTHESIS_WIDGET = "pi-literature-review-synthesis";
 const ANSWER_ENTRY = "pi-literature-chat-answer";
 
 /** Wizard warning threshold: a mode-A report runs P x Q generation calls,
- * each minutes on a local GPU (v25 risk note). */
+ * each minutes on a local GPU. */
 export const UNIT_WARN_THRESHOLD = 15;
 
 /** True once the pi-tui entry renderer is registered (see the default
@@ -76,11 +74,9 @@ const CHAT_MODE_WIDGET = "pi-literature-review-chat-mode";
  * factory overload provides the theme). */
 let tuiText: (new (text: string) => object) | null = null;
 
-/** Paper-chat mode (2026-08-04, user decision -- the v21 idea reborn now
- * that cards + brief agent turns solve the display and liveness problems
- * that killed it in v22): armed after every GROUNDED round; while armed,
- * every plain input runs as a lit-synthesis question and the agent never
- * sees it ("exit" leaves). In-memory and session-scoped. */
+/** Paper-chat mode: armed after every GROUNDED round; while armed, every
+ * plain input runs as a lit-synthesis question and the agent never sees it
+ * ("exit" leaves). In-memory and session-scoped. */
 let chatMode: { session: string | null; label: string } | null = null;
 
 function chatModeHint(label: string): string {
@@ -89,12 +85,11 @@ function chatModeHint(label: string): string {
 		: `Paper-Chat-Modus: ${label} -- Eingaben laufen als lit-synthesis-Fragen; 'exit' beendet den Modus`;
 }
 
-/** Arm the mode + show the persistent YELLOW hint line (user condition
- * 2026-08-04: the mode is fine "wenn der Infotext gelb ist" and names the
- * way out). Warning color via the theme, plain fallback. */
+/** Arm the mode + show the persistent YELLOW hint line that names the way
+ * out. Warning color via the theme, plain fallback. */
 function armChatMode(ctx: ExtensionContext, label: string): void {
 	if (!ctx.hasUI) return;
-	chatMode = { session: sessionId(ctx), label };
+	chatMode = { session: sessionId(ctx) ?? null, label };
 	const hint = chatModeHint(label);
 	const TextComponent = tuiText;
 	if (TextComponent && ctx.mode === "tui") {
@@ -146,21 +141,21 @@ const WIDGET_MAX_LINES = 15;
  * digests -- built exclusively from verified record fields. */
 function referenceLine(reference: ReferenceEntry): string {
 	const id = reference.doi || (reference.arxiv_id ? `arXiv:${reference.arxiv_id}` : reference.key);
-	return `[${reference.n}] ${reference.year ?? "n.d."} | ${id} | ${reference.title} (S. ${reference.pages.join(", ")})`;
+	return `[${reference.n}] ${reference.year ?? "n.d."} | ${id} | ${reference.title} (p. ${reference.pages.join(", ")})`;
 }
 
 /** Page-precise file:// links under the reference lines -- CARD display
  * ONLY, never in digests or the LLM context (agents re-type paths into
- * fabricated locations, field-proven twice on 2026-08-04). Short #page
- * fragments only: the ~900-char passage-highlight links (v28) break in
- * terminal wrapping, so highlighting stays the HTML report's job.
- * References without a local pdf_path yield no link, honestly. */
+ * fabricated locations). Short #page fragments only: the long
+ * passage-highlight links break in terminal wrapping, so highlighting
+ * stays the HTML report's job. References without a local pdf_path yield
+ * no link, honestly. */
 function pageLinkLines(references: ReferenceEntry[]): string[] {
 	const lines: string[] = [];
 	for (const reference of references) {
 		if (!reference.pdf_path) continue;
 		for (const page of [...new Set(reference.pages)].sort((a, b) => a - b)) {
-			lines.push(`  [${reference.n}] S. ${page}: ${localPdfHref(reference.pdf_path, page)}`);
+			lines.push(`  [${reference.n}] p. ${page}: ${localPdfHref(reference.pdf_path, page)}`);
 		}
 	}
 	return lines;
@@ -186,8 +181,8 @@ function formatAnswerText(answer: ChatAnswer): string {
 }
 
 /** The verbatim question the engine actually ran, shown on every answer
- * card (v29: dialog-free chat calls make agent rephrasing VISIBLE instead
- * of preventing it -- /lit-synthesis <question> is the verbatim fallback). */
+ * card: dialog-free chat calls make agent rephrasing VISIBLE instead of
+ * preventing it (/lit-synthesis <question> is the verbatim fallback). */
 function executedQuestionLine(question: string): string {
 	return detectDialogLang([question], chatLangDefault()) === "en"
 		? `Question, as executed: ${question}`
@@ -196,8 +191,7 @@ function executedQuestionLine(question: string): string {
 
 /** Report body for the transcript card: unit headings + validated prose,
  * then the GLOBAL reference lines and the HTML path when one was written.
- * The card is the durable answer in the chat (v27 field fix: the report
- * lived only in a truncated, transient widget). */
+ * The card is the durable answer in the chat. */
 function formatReportText(report: SynthReport, htmlPath: string | null, withPageLinks = false): string {
 	const german = report.ui_language !== "en";
 	const parts = report.units.map((unit) => {
@@ -216,24 +210,24 @@ function formatReportText(report: SynthReport, htmlPath: string | null, withPage
 	return [
 		parts.join("\n\n----\n\n"),
 		referenceBlock,
-		// file:// URL (v31.5, same as the search card): terminals linkify
-		// it, so right-click -> open lands in the browser.
+		// file:// URL (same as the search card): terminals linkify it, so
+		// right-click -> open lands in the browser.
 		htmlPath ? `HTML-Report: ${pathToFileURL(htmlPath).href}` : "",
 	].filter(Boolean).join("\n\n");
 }
 
-/** Scope label for widgets/cards: "x.pdf" or "3 Dokumente" or "Bibliothek". */
-function scopeLabelOf(answer: ChatAnswer): string {
-	if (answer.scope === "library") return `Bibliothek (${answer.papers.length} PDFs)`;
-	return answer.papers.length === 1 ? `${answer.paper.base}.pdf` : `${answer.papers.length} Dokumente`;
+/** Scope label for widgets/cards: "x.pdf", "3 documents" or "library (N
+ * PDFs)", in the given dialog language. */
+function scopeLabel(lang: DialogLang, papers: string[], library: boolean): string {
+	const text = SYNTH_TEXT[lang];
+	if (library) return text.scopeLibraryLabel(papers.length);
+	return papers.length === 1 ? `${papers[0]}.pdf` : text.scopeDocumentsLabel(papers.length);
 }
 
 /** Agent-facing framing on TUI command-path messages: the card above the
  * agent's reply IS the full validated result; the agent adds a BRIEF
- * conversational answer on top (user decision 2026-08-04: "kurz nochmal
- * die Frage beantwortet ... die Zusammenfassung der validierten
- * Antwort"). The verbatim text below the note is the ground truth in the
- * LLM context either way. */
+ * conversational answer on top. The verbatim text below the note is the
+ * ground truth in the LLM context either way. */
 function answerTurnNote(question: string): string {
 	return "[/lit-synthesis result -- validated, code-checked; the user already sees it IN FULL as a card "
 		+ `above your reply. Reply NOW with a BRIEF direct answer (2-4 sentences) to the question "${question}", `
@@ -242,13 +236,12 @@ function answerTurnNote(question: string): string {
 		+ "verbatim; never re-type titles or identifiers. Reply in the language of the question.]";
 }
 /** Report variant: enumerate the detail questions explicitly and demand a
- * brief answer to EACH -- the first field test showed that a bare
- * "overview" instruction makes the agent summarize and skip the
- * questions. Mentioning the HTML export is FORBIDDEN outright: two field
- * tests showed the agent re-typing the path into fabricated locations
+ * brief answer to EACH (a bare "overview" instruction makes agents
+ * summarize and skip the questions). Mentioning the HTML export is
+ * FORBIDDEN outright: agents re-type the path into fabricated locations
  * even when told to copy it verbatim -- the card already carries the
- * clickable file:// link deterministically (v31.5), so the path is not
- * the agent's job (code over instructions). */
+ * clickable file:// link deterministically, so the path is not the
+ * agent's job. */
 function reportTurnNote(questions: string[]): string {
 	const ask = questions.length
 		? `First answer each of these question(s) briefly (1-2 sentences each), using the report's answer `
@@ -265,7 +258,7 @@ function reportTurnNote(questions: string[]): string {
 }
 
 /** Relay instruction for RPC/web command runs, where the agent is the
- * display layer (the round-4 search pattern). */
+ * display layer. */
 const RELAY_NOTE =
 	"A deterministic /lit-synthesis run just finished (agent-free). Present the following validated "
 	+ "result to the user NOW, EXACTLY as written -- including the [n] markers and reference lines; "
@@ -275,14 +268,14 @@ const RELAY_NOTE =
  * entry (anti-paraphrase ground truth; not in the LLM context), else the
  * capped widget. Command path (asMessage, outside any agent turn): ONE
  * custom message is display, LLM context AND session persistence at once
- * -- proven in pi's agent-session.js: role "custom" reaches the model
- * VERBATIM as a user message (convertToLlm), lands in the session file
- * and renders through the registered message renderer. With triggerTurn
- * the same message also prompts one agent turn (TUI: a brief answer
- * under the card; RPC/web: the agent IS the display). Never use
- * asMessage mid-turn: while the agent streams, sendMessage steers. */
+ * (pi delivers role "custom" to the model VERBATIM as a user message,
+ * stores it in the session file and renders it through the registered
+ * message renderer). With triggerTurn the same message also prompts one
+ * agent turn (TUI: a brief answer under the card; RPC/web: the agent IS
+ * the display). Never use asMessage mid-turn: while the agent streams,
+ * sendMessage steers. */
 function showAnswer(pi: ExtensionAPI, ctx: ExtensionContext, answer: ChatAnswer, asMessage = false): void {
-	const label = scopeLabelOf(answer);
+	const label = scopeLabel(chatLangDefault(), answer.papers.map((paper) => paper.base), answer.scope === "library");
 	const text = `${executedQuestionLine(answer.question)}\n\n${formatAnswerText(answer)}`;
 	// Page links are DISPLAY-only (card); the LLM context gets `text`.
 	const links = pageLinkLines(answer.references);
@@ -317,8 +310,7 @@ function showAnswer(pi: ExtensionAPI, ctx: ExtensionContext, answer: ChatAnswer,
 		return;
 	}
 	// Entry cards need the TUI entry renderer; RPC clients (web UIs) never
-	// paint custom entries -- there the widget is the visible answer
-	// (webui-compat, 2026-07-30).
+	// paint custom entries -- there the widget is the visible answer.
 	if (answerEntryReady && ctx.mode === "tui") {
 		pi.appendEntry(ANSWER_ENTRY, {
 			paper: label,
@@ -331,16 +323,11 @@ function showAnswer(pi: ExtensionAPI, ctx: ExtensionContext, answer: ChatAnswer,
 	}
 }
 
-/** Show the finished report as a transcript entry too (v27: the durable
- * answer in the chat, HTML export or not), else the capped widget. Returns
- * true when the fallback WIDGET carries the report (caller must not clear
- * it). */
+/** Show the finished report as a transcript entry too (the durable answer
+ * in the chat, HTML export or not), else the capped widget. Returns true
+ * when the fallback WIDGET carries the report (caller must not clear it). */
 function showReport(pi: ExtensionAPI, ctx: ExtensionContext, report: SynthReport, htmlPath: string | null, asMessage = false): boolean {
-	const label = report.scope.library
-		? `Bibliothek (${report.scope.papers.length} PDFs)`
-		: report.scope.papers.length === 1
-			? `${report.scope.papers[0]}.pdf`
-			: `${report.scope.papers.length} Dokumente`;
+	const label = scopeLabel(report.ui_language === "en" ? "en" : "de", report.scope.papers, report.scope.library);
 	const text = formatReportText(report, htmlPath);
 	// Card variant with page links (display-only; context stays path-free).
 	const displayText = formatReportText(report, htmlPath, true);
@@ -402,13 +389,11 @@ function startElapsedTicker(update: (line: string) => void): () => void {
 
 /**
  * Generator = the model currently selected in pi, called in a SEPARATE,
- * excerpts-only completion; embeddings stay on the configured local
- * embedding server. Review-genre units (mode B + review synthesis) run on
- * the pi model too since 2026-08-11 (user decision: no extra model is ever
- * a prerequisite); only an EXPLICITLY configured llm.generateModel routes
- * them to the local generator (the v24 openscholar setup, now opt-in) --
- * this backend dispatches on the model name per call, localModels empty
- * when nothing is configured.
+ * excerpts-only completion; embeddings stay on the configured embedding
+ * server. Review-genre units (mode B + review synthesis) run on the pi
+ * model too; only an EXPLICITLY configured llm.generateModel routes them
+ * to the local generator -- this backend dispatches on the model name per
+ * call, localModels empty when nothing is configured.
  */
 function piModelBackend(ctx: ExtensionContext, local: LlmBackend, localModels: string[]): LlmBackend {
 	const model = ctx.model!;
@@ -420,9 +405,9 @@ function piModelBackend(ctx: ExtensionContext, local: LlmBackend, localModels: s
 			if (options?.model && localModels.includes(options.model)) {
 				return local.generate(system, user, options, signal);
 			}
-			// pi's extension loader provides this package at runtime; imported
+			// pi's extension loader provides this module at runtime; imported
 			// lazily so the file stays loadable outside pi (smoke tests).
-			const { completeSimple } = await import("@earendil-works/pi-ai");
+			const { completeSimple } = await import("@earendil-works/pi-ai/compat");
 			const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 			if (!auth.ok) throw new Error(`no credentials for ${model.provider}/${model.id}: ${auth.error}`);
 			const response = await completeSimple(model, {
@@ -432,9 +417,10 @@ function piModelBackend(ctx: ExtensionContext, local: LlmBackend, localModels: s
 				apiKey: auth.apiKey,
 				headers: auth.headers,
 				temperature: options?.temperature,
-				// Thinking OFF and a hard output cap (field failure 2026-07-20:
-				// hidden reasoning ate the whole budget invisibly).
-				reasoning: "off",
+				// Thinking OFF and a hard output cap (hidden reasoning would eat
+				// the whole budget invisibly). No `reasoning` level = pi-ai sends
+				// no reasoning effort, which disables template thinking
+				// (enable_thinking: false for qwen-style models).
 				maxTokens: options?.maxTokens ?? OUTPUT_RESERVE_TOKENS,
 				signal,
 			});
@@ -478,13 +464,15 @@ interface ScopeItems {
 	unmatchedCount: number;
 }
 
-/** Adapter-owned dialog strings per language (v27 user decision: the
- * dialogs follow the CHAT's language -- resolved from the explicit
- * language param, else detected from the question texts; German is the
- * default and the bare-command language). */
+/** Adapter-owned dialog strings per language (the dialogs follow the
+ * chat's language -- resolved from the explicit language param, else
+ * detected from the question texts, else the observed chat language). */
 const SYNTH_TEXT: Record<DialogLang, {
-	/** Line above the tab bar: which dialog this is (v30.12). */
+	/** Line above the tab bar: which dialog this is. */
 	header: string;
+	/** Scope labels on cards and widgets. */
+	scopeLibraryLabel: (n: number) => string;
+	scopeDocumentsLabel: (n: number) => string;
 	scopeTitle: string;
 	scopeTab: string;
 	selectAll: string;
@@ -519,6 +507,8 @@ const SYNTH_TEXT: Record<DialogLang, {
 }> = {
 	de: {
 		header: "/lit-synthesis -- Literatur verstehen und zusammenfassen (Esc bricht ab)",
+		scopeLibraryLabel: (n) => `Bibliothek (${n} PDFs)`,
+		scopeDocumentsLabel: (n) => `${n} Dokumente`,
 		scopeTitle: "Über welche Dokumente möchtest du sprechen?",
 		scopeTab: "Dokumente",
 		selectAll: "Alle auswählen (ganze Bibliothek)",
@@ -553,6 +543,8 @@ const SYNTH_TEXT: Record<DialogLang, {
 	},
 	en: {
 		header: "/lit-synthesis -- understand and summarize literature (Esc cancels)",
+		scopeLibraryLabel: (n) => `library (${n} PDFs)`,
+		scopeDocumentsLabel: (n) => `${n} documents`,
 		scopeTitle: "Which documents do you want to talk about?",
 		scopeTab: "Documents",
 		selectAll: "Select all (whole library)",
@@ -587,8 +579,6 @@ const SYNTH_TEXT: Record<DialogLang, {
 	},
 };
 
-/** The HTML-write gate's question dialog (v29: the gate ASKS instead of
- * hard-blocking -- the wizard choice IS the report consent). */
 /** Embedding-model doctor strings (zero-config synthesis). Vendor
  * wording stays equal: llama.cpp and Ollama side by side; only the
  * automatic fetch is Ollama-only because llama.cpp has no pull API. */
@@ -695,6 +685,8 @@ async function ensureEmbeddingModel(ctx: ExtensionContext): Promise<boolean> {
 	}
 }
 
+/** The HTML-write gate's question dialog (the gate ASKS instead of hard-
+ * blocking -- the wizard choice IS the report consent). */
 const GATE_TEXT: Record<DialogLang, {
 	title: (path: string, label: string) => string;
 	wizard: string;
@@ -719,26 +711,22 @@ const GATE_TEXT: Record<DialogLang, {
 	},
 };
 
-/** The dim metadata line under a document row (v31.2 user wish): year -
- * first author et al. - title - identifier; only what the record carries,
- * nothing invented. */
+/** The dim metadata line under a document row: year - first author et
+ * al. - title - identifier; only what the record carries, nothing invented. */
 function paperMetaLine(entry: LibraryPaper["entry"]): string {
-	const author = entry.authors[0]
-		? `${entry.authors[0]}${entry.authors.length > 1 ? " et al." : ""}`
-		: "";
+	const authors = entry.authors ?? [];
+	const author = authors[0] ? `${authors[0]}${authors.length > 1 ? " et al." : ""}` : "";
 	const id = entry.doi || (entry.arxiv_id ? `arXiv:${entry.arxiv_id}` : "");
 	return [entry.year ?? "n.d.", author, entry.title, id].filter(Boolean).join(" - ");
 }
 
 /** Checkbox items for the scope step: EVERY PDF in the folder(s). The
- * FILENAME is the selectable row; the verified metadata sits dim below it
- * (v31.2 -- before, filename and title fought for one clipped line). PDFs
- * without a record honestly say so in their dim line. */
+ * FILENAME is the selectable row; the verified metadata sits dim below it.
+ * PDFs without a record honestly say so in their dim line. */
 function scopeItems(diagnostics: string[]): ScopeItems {
 	const match = matchLibrary(outputRoot(), (message) => diagnostics.push(message));
-	// NOT pre-clipped (v31.2 field wish "später abschneiden"): the overlay
-	// clips at the LIVE terminal width anyway, so a fixed MAX_LINE cap here
-	// only threw away text that would have fit on a wide terminal.
+	// NOT pre-clipped: the overlay clips at the LIVE terminal width anyway,
+	// so a fixed cap here would throw away text that fits a wide terminal.
 	const items: CheckboxItem[] = [
 		...match.matched.map((paper) => ({
 			id: paper.base,
@@ -781,9 +769,9 @@ function questionsOf(answers: WizardAnswers | WizardResult): string[] {
 	return parseQuestionLines(typeof value === "string" ? value : "");
 }
 
-/** The questions intake as a wizard tab (v27: joined the ONE wizard;
- * v31.4: MULTILINE -- one question per line, Enter opens the next;
- * semicolons still separate too, so pasted old-format lists keep working). */
+/** The questions intake as a wizard tab: MULTILINE -- one question per
+ * line, Enter opens the next; semicolons still separate too, so pasted
+ * lists keep working. */
 function questionsStep(initial: string | undefined, lang: DialogLang = "de"): WizardStepDef {
 	const text = SYNTH_TEXT[lang];
 	return {
@@ -840,7 +828,7 @@ function reportSteps(
 			],
 			initial: defaults.includeReview ? "yes" : "no",
 			// A "state of the literature" over ONE paper is just a weaker
-			// summary (v27 user decision) -- the tab needs several documents.
+			// summary -- the tab needs several documents.
 			enabledIf: (answers) => scopeSizeOf(answers) > 1,
 			disabledNote: text.reviewDisabled,
 		},
@@ -929,9 +917,8 @@ function reportSubmitNote(
 }
 
 /**
- * THE one wizard (v27 user decision "immer der volle Dialog"): every
- * interactive intake -- chat call, report call, bare /lit-synthesis -- opens
- * the SAME full dialog. The scope step joins in when no scope is settled
+ * THE one wizard: every interactive intake -- bare /lit-synthesis, the
+ * HTML-write gate -- opens the SAME full dialog. The scope step joins in when no scope is settled
  * yet; agent parameters, the passed question and the session's chat
  * questions only PREFILL. The submitted answers decide what runs (the
  * callers map the outcome: nothing = chat handback, exactly one question
@@ -967,8 +954,8 @@ async function synthWizard(
 		: scope === "library" ? chatPool(matchLibrary(outputRoot(), () => {})).length : scope.length;
 	const scopeSizeOf = (answers: WizardAnswers): number =>
 		staticSize ?? (Array.isArray(answers.papers) ? answers.papers.length : 0);
-	// Seeds join with newlines (v31.4: the questions tab is multiline --
-	// one question per line, exactly how the seeds should appear).
+	// Seeds join with newlines (the questions tab is multiline -- one
+	// question per line, exactly how the seeds should appear).
 	steps.push(questionsStep(seedQuestions?.join("\n"), lang));
 	steps.push(...reportSteps(scopeSizeOf, defaults, lang));
 	const answers = await runWizard(ctx, steps, signal, { submitNote: reportSubmitNote(scopeSizeOf, lang), lang, header: SYNTH_TEXT[lang].header });
@@ -996,12 +983,10 @@ interface EngineWiring {
 	generatorLine: string;
 }
 
-/** Generator resolution: explicit param > the model selected in pi >
- * the engine's config slots. Review genres run on the pi model too since
- * 2026-08-11 (user decision: everything must work with the model selected
- * in pi, no extra downloads); ONLY an explicitly configured generateModel
- * (config.json/env, e.g. a hand-imported openscholar-8b) routes them to
- * the local generator. */
+/** Generator resolution: explicit param > the model selected in pi > the
+ * engine's config slots. Review genres run on the pi model too; ONLY an
+ * explicitly configured generateModel (config.json/env) routes them to the
+ * local generator. */
 function wireEngine(ctx: ExtensionContext, paramModel: string | undefined): EngineWiring {
 	const cfg = llmConfig();
 	if (paramModel) {
@@ -1146,11 +1131,65 @@ async function runReportWithUi(
 	}
 }
 
+/** What a confirmed wizard intake resolved to. */
+type IntakeOutcome =
+	| { kind: "nothing" }
+	| { kind: "declined" }
+	| { kind: "round"; outcome: Awaited<ReturnType<typeof runRoundWithUi>> }
+	| { kind: "report"; outcome: Awaited<ReturnType<typeof runReportWithUi>> };
+
+/**
+ * Run what a confirmed wizard intake asks for -- shared by the command and
+ * the HTML-write gate: nothing chosen -> "nothing" (the caller hands the
+ * chat to the agent or blocks); exactly one question with nothing else ->
+ * a classic grounded round; anything more -> the composable report, after
+ * the unit-count warning (declined -> "declined"). One language for the
+ * whole report, following the chat.
+ */
+async function runIntake(
+	pi: ExtensionAPI,
+	ctx: ExtensionContext,
+	intake: SynthIntake,
+	lang: DialogLang,
+	onWarn: (message: string) => void,
+	diagnostics: string[],
+	signal: AbortSignal | undefined,
+	asMessage: boolean,
+): Promise<IntakeOutcome> {
+	const { scope, questions, choices } = intake;
+	if (!questions.length && choices.summary === "none" && !choices.includeReview) return { kind: "nothing" };
+	if (questions.length === 1 && choices.summary === "none" && !choices.includeReview && !choices.saveHtml) {
+		const outcome = await runRoundWithUi(pi, ctx, { question: questions[0], papers: scope, onWarn, signal, asMessage });
+		return { kind: "round", outcome };
+	}
+	const scopeSize = scope === "library" ? chatPool(matchLibrary(outputRoot(), () => {})).length : scope.length;
+	const unitCount = reportUnitCount(scopeSize, questions.length, choices);
+	if (unitCount > UNIT_WARN_THRESHOLD) {
+		const warnText = SYNTH_TEXT[lang];
+		const go = await ctx.ui.select(
+			warnText.unitWarn(unitCount),
+			[warnText.unitWarnYes, warnText.unitWarnCancel],
+			{ signal },
+		);
+		if (go !== warnText.unitWarnYes) return { kind: "declined" };
+	}
+	const outcome = await runReportWithUi(pi, ctx, {
+		papers: scope,
+		questions,
+		summary: choices.summary,
+		detailMode: choices.detailMode,
+		includeReview: choices.includeReview,
+		language: lang === "en" ? "English" : "German",
+		uiLanguage: lang,
+	}, choices.saveHtml, onWarn, diagnostics, signal, asMessage);
+	return { kind: "report", outcome };
+}
+
 /* ------------------------------------------------------------------ *
  * Registration                                                        *
  * ------------------------------------------------------------------ */
 
-/** Tool name -- also the setActiveTools identity (v29). */
+/** Tool name -- also the setActiveTools identity. */
 const TOOL_NAME = "pi-literature-synthesis";
 
 export default async function literatureSynthesis(pi: ExtensionAPI) {
@@ -1237,7 +1276,7 @@ export default async function literatureSynthesis(pi: ExtensionAPI) {
 			const diagnostics: string[] = [];
 			const report = (message: string) => {
 				diagnostics.push(message);
-				onUpdate?.({ content: [{ type: "text", text: message }] });
+				onUpdate?.({ content: [{ type: "text", text: message }], details: undefined });
 			};
 			const reply = (text: string) => ({
 				content: [{ type: "text" as const, text }],
@@ -1252,7 +1291,7 @@ export default async function literatureSynthesis(pi: ExtensionAPI) {
 				|| params.save_html !== undefined;
 			const root = outputRoot();
 
-			// v29: reports, summaries and exports run ONLY via the /lit-synthesis
+			// Reports, summaries and exports run ONLY via the /lit-synthesis
 			// command -- its wizard is the consent. A dialog-free tool call
 			// must never start a many-model-call run (dialog-free AND
 			// expensive don't mix), so a report-flavoured call is a handback.
@@ -1266,7 +1305,7 @@ export default async function literatureSynthesis(pi: ExtensionAPI) {
 			}
 
 			// The library list is the ground truth: only real filenames are
-			// accepted as scope -- an agent cannot invent documents (v29).
+			// accepted as scope -- an agent cannot invent documents.
 			const pool = chatPool(matchLibrary(root, (message) => diagnostics.push(message)));
 			if (!pool.length) {
 				return reply("The library holds no PDFs at all -- run a literature search and fetch first (or start pi in the folder containing the PDFs).");
@@ -1274,7 +1313,7 @@ export default async function literatureSynthesis(pi: ExtensionAPI) {
 			const available = pool.map((entry) => `${entry.base}.pdf`).join(", ");
 
 			// Scope: params > sticky. Everything still open is handed BACK to
-			// the chat as a real file list (v29: no dialog on the tool path;
+			// the chat as a real file list (no dialog on the tool path;
 			// /lit-synthesis is the dialog path).
 			let scope: string[] | "library" | undefined = params.library === true
 				? "library"
@@ -1307,8 +1346,8 @@ export default async function literatureSynthesis(pi: ExtensionAPI) {
 			}
 			if (!scope) {
 				if (pool.length === 1) {
-					// Nothing to decide: a one-PDF library resolves itself
-					// (v29); the card names the document.
+					// Nothing to decide: a one-PDF library resolves itself; the
+					// card names the document.
 					scope = [pool[0].base];
 					report(`single PDF in the library -- scope resolves to ${pool[0].base}.pdf`);
 				} else {
@@ -1346,12 +1385,11 @@ export default async function literatureSynthesis(pi: ExtensionAPI) {
 					+ "user can verify the backend with: node src/cli.ts llm-check",
 				);
 			}
-			// v29's terminate ("the card is the last word") is REVISED
-			// 2026-08-04, user decision: with the verbatim answer in the
-			// card AND in this tool result, the agent now answers BRIEFLY
-			// in chat (card audience) -- a full repeat stays forbidden.
-			// Without a card (RPC/web, headless, ungrounded) the digest
-			// keeps its relay instructions as the display path.
+			// With the verbatim answer in the card AND in this tool result,
+			// the agent answers BRIEFLY in chat (card audience) -- a full
+			// repeat stays forbidden. Without a card (RPC/web, headless,
+			// ungrounded) the digest keeps its relay instructions as the
+			// display path.
 			return reply(renderChatDigest(
 				outcome.answer,
 				answerEntryReady && ctx.mode === "tui" && outcome.answer.grounded ? "card" : "relay",
@@ -1360,9 +1398,9 @@ export default async function literatureSynthesis(pi: ExtensionAPI) {
 	});
 
 	// /lit-synthesis -- ONE command for the whole stage. Bare: ONE wizard
-	// (documents -> questions -> report menu -> submit, v27); a pure chat
-	// wish hands the loop to the agent (v22 doctrine). With arguments: ONE
-	// agent-free grounded round.
+	// (documents -> questions -> report menu -> submit); a pure chat wish
+	// hands the loop to the agent. With arguments: ONE agent-free grounded
+	// round.
 	pi.registerCommand("lit-synthesis", {
 		description:
 			"Chat about and report on local PDFs with verified citations. Bare /lit-synthesis runs the wizard "
@@ -1393,9 +1431,9 @@ export default async function literatureSynthesis(pi: ExtensionAPI) {
 				return;
 			}
 
-			// Everything else: the ONE full wizard (v27) -- scope step
-			// preselected with the sticky scope, a typed question seeds the
-			// questions tab; the submitted answers decide what runs.
+			// Everything else: the ONE full wizard -- scope step preselected
+			// with the sticky scope, a typed question seeds the questions tab;
+			// the submitted answers decide what runs.
 			const wizardLang = question ? detectDialogLang([question], chatLangDefault()) : chatLangDefault();
 			const intake = await synthWizard(
 				ctx,
@@ -1412,11 +1450,12 @@ export default async function literatureSynthesis(pi: ExtensionAPI) {
 				ctx.ui.notify("No PDFs in the library -- run a search and fetch first, or start pi in the papers folder.", "warning");
 				return;
 			}
-			const { scope, questions, choices } = intake;
+			const { scope } = intake;
 			writeCurrentScope(root, { papers: scope }, session, undefined, (message) => diagnostics.push(message));
-
-			if (!questions.length && choices.summary === "none" && !choices.includeReview) {
-				// Chat wish: hand the loop to the agent (v22 pattern).
+			const reportLang = detectDialogLang(intake.questions, wizardLang);
+			const result = await runIntake(pi, ctx, intake, reportLang, progress, diagnostics, ctx.signal, true);
+			if (result.kind === "nothing") {
+				// Chat wish: hand the loop to the agent.
 				const label = scope === "library" ? "the whole library" : scope.map((base) => `${base}.pdf`).join(", ");
 				pi.sendMessage({
 					customType: "pi-literature-synthesis-handoff",
@@ -1432,53 +1471,15 @@ export default async function literatureSynthesis(pi: ExtensionAPI) {
 				}, { triggerTurn: true });
 				return;
 			}
-
-			// Exactly one question with nothing else: the classic chat round.
-			if (questions.length === 1 && choices.summary === "none" && !choices.includeReview && !choices.saveHtml) {
-				const outcome = await runRoundWithUi(pi, ctx, {
-					question: questions[0],
-					papers: scope,
-					onWarn: progress,
-					signal: ctx.signal,
-					asMessage: true,
-				});
-				if ("error" in outcome) ctx.ui.notify(`chat failed: ${outcome.error}`, "error");
-				return;
-			}
-
-			const scopeSize = scope === "library" ? chatPool(matchLibrary(root, () => {})).length : scope.length;
-			const unitCount = reportUnitCount(scopeSize, questions.length, choices);
-			const reportLang = detectDialogLang(questions, wizardLang);
-			if (unitCount > UNIT_WARN_THRESHOLD) {
-				const warnText = SYNTH_TEXT[reportLang];
-				const go = await ctx.ui.select(
-					warnText.unitWarn(unitCount),
-					[warnText.unitWarnYes, warnText.unitWarnCancel],
-					{ signal: ctx.signal },
-				);
-				if (go !== warnText.unitWarnYes) return;
-			}
-
-			const outcome = await runReportWithUi(pi, ctx, {
-				papers: scope,
-				questions,
-				summary: choices.summary,
-				detailMode: choices.detailMode,
-				includeReview: choices.includeReview,
-				// ONE language for the whole report, following the chat.
-				language: reportLang === "en" ? "English" : "German",
-				uiLanguage: reportLang,
-			}, choices.saveHtml, progress, diagnostics, ctx.signal, true);
-			if ("error" in outcome) {
-				ctx.ui.notify(`report failed: ${outcome.error}`, "error");
-			}
-			// The report itself is a transcript card (showReport); no widget
-			// digest on top of it.
+			if (result.kind === "round" && "error" in result.outcome) ctx.ui.notify(`chat failed: ${result.outcome.error}`, "error");
+			if (result.kind === "report" && "error" in result.outcome) ctx.ui.notify(`report failed: ${result.outcome.error}`, "error");
+			// Round and report are transcript cards (showAnswer/showReport);
+			// a declined unit warning simply ends the command.
 		},
 	});
 
-	// v29: with an EMPTY library the tool stays deactivated, so the agent
-	// cannot stumble into it in unrelated chats (setActiveTools). Checked
+	// With an EMPTY library the tool stays deactivated, so the agent cannot
+	// stumble into it in unrelated chats (setActiveTools). Checked
 	// on session start; while inactive, every input re-checks (a fetch may
 	// have filled the library meanwhile). Best-effort: any doubt keeps the
 	// tool available -- it still answers honestly on an empty library.
@@ -1502,9 +1503,8 @@ export default async function literatureSynthesis(pi: ExtensionAPI) {
 	};
 	pi.on("session_start", () => syncToolActivation());
 
-	// The passive chat-language observer (v27) is shared package-wide since
-	// v29.1 -- it lives in dialogs.ts; every extension's dialogs read the
-	// same observation.
+	// The passive chat-language observer is shared package-wide (it lives
+	// in dialogs.ts); every extension's dialogs read the same observation.
 	installChatLangObserver(pi);
 
 	pi.on("input", () => {
@@ -1517,10 +1517,10 @@ export default async function literatureSynthesis(pi: ExtensionAPI) {
 		}
 	});
 
-	// Paper-chat mode interception (2026-08-04, user decision): while
-	// armed, a plain input IS a lit-synthesis question -- the agent never
-	// sees it, the engine + citation gate answer it (the v21 pattern
-	// reborn; commands, !bash and extension-injected inputs pass through).
+	// Paper-chat mode interception: while armed, a plain input IS a
+	// lit-synthesis question -- the agent never sees it, the engine +
+	// citation gate answer it (commands, !bash and extension-injected
+	// inputs pass through).
 	pi.on("input", async (event, ctx) => {
 		if (!chatMode) return;
 		if (event.source === "extension") return;
@@ -1558,13 +1558,12 @@ export default async function literatureSynthesis(pi: ExtensionAPI) {
 		return { action: "handled" as const };
 	});
 
-	// HTML-write gate (v23 field failure, REPURPOSED in v29): while any
-	// document scope is active in THIS session, an agent write/edit of an
-	// .html file is the classic hand-built-report failure ("baue mir eine
-	// html"). The gate no longer just blocks -- it ASKS: the default choice
-	// opens the report wizard right here (the dialog choice IS the consent
-	// the wizard otherwise gets via /lit-synthesis), "allow" lets unrelated
-	// HTML writes through, cancel/Esc blocks. Headless keeps the hard block.
+	// HTML-write gate: while any document scope is active in THIS session,
+	// an agent write/edit of an .html file is the classic hand-built-report
+	// failure. The gate ASKS: the default choice opens the report wizard
+	// right here (the dialog choice IS the consent the wizard otherwise
+	// gets via /lit-synthesis), "allow" lets unrelated HTML writes through,
+	// cancel/Esc blocks. Headless keeps the hard block.
 	pi.on("tool_call", async (event, ctx) => {
 		if (event.toolName !== "write" && event.toolName !== "edit") return;
 		// pi's write/edit accept file_path with path as a fallback alias.
@@ -1606,57 +1605,33 @@ export default async function literatureSynthesis(pi: ExtensionAPI) {
 			ctx.signal,
 		);
 		if (intake === null || intake === "empty") return { block: true, reason: blockReason };
-		const { scope, questions, choices } = intake;
-		if (!questions.length && choices.summary === "none" && !choices.includeReview) {
-			return {
-				block: true,
-				reason: "Blocked: the user chose nothing to generate. Ask what they want instead; never write "
-					+ "an HTML about the papers yourself (/lit-synthesis builds reports).",
-			};
+		const result = await runIntake(pi, ctx, intake, lang, quiet, diagnostics, ctx.signal, false);
+		switch (result.kind) {
+			case "nothing":
+				return {
+					block: true,
+					reason: "Blocked: the user chose nothing to generate. Ask what they want instead; never write "
+						+ "an HTML about the papers yourself (/lit-synthesis builds reports).",
+				};
+			case "declined":
+				return { block: true, reason: blockReason };
+			case "round":
+				return {
+					block: true,
+					reason: "error" in result.outcome
+						? `Blocked; the user ran a grounded chat round instead and it failed: ${result.outcome.error} -- report this verbatim.`
+						: "Blocked: the user ran a grounded chat round instead; its validated answer is on screen "
+							+ "as a card. Do not write an HTML yourself.",
+				};
+			case "report":
+				return {
+					block: true,
+					reason: "error" in result.outcome
+						? `Blocked; the deterministic report was attempted instead and failed: ${result.outcome.error} -- report this verbatim.`
+						: "Blocked: the deterministic report was generated instead; the result card (and the HTML path, "
+							+ "if saved) is on screen. Do not write an HTML yourself.",
+				};
 		}
-		// Exactly one question and nothing else: a grounded chat round.
-		if (questions.length === 1 && choices.summary === "none" && !choices.includeReview && !choices.saveHtml) {
-			const outcome = await runRoundWithUi(pi, ctx, {
-				question: questions[0],
-				papers: scope,
-				onWarn: quiet,
-				signal: ctx.signal,
-			});
-			return {
-				block: true,
-				reason: "error" in outcome
-					? `Blocked; the user ran a grounded chat round instead and it failed: ${outcome.error} -- report this verbatim.`
-					: "Blocked: the user ran a grounded chat round instead; its validated answer is on screen "
-						+ "as a card. Do not write an HTML yourself.",
-			};
-		}
-		const scopeSize = scope === "library" ? chatPool(matchLibrary(root, () => {})).length : scope.length;
-		const unitCount = reportUnitCount(scopeSize, questions.length, choices);
-		if (unitCount > UNIT_WARN_THRESHOLD) {
-			const warnText = SYNTH_TEXT[lang];
-			const go = await ctx.ui.select(
-				warnText.unitWarn(unitCount),
-				[warnText.unitWarnYes, warnText.unitWarnCancel],
-				{ signal: ctx.signal },
-			);
-			if (go !== warnText.unitWarnYes) return { block: true, reason: blockReason };
-		}
-		const outcome = await runReportWithUi(pi, ctx, {
-			papers: scope,
-			questions,
-			summary: choices.summary,
-			detailMode: choices.detailMode,
-			includeReview: choices.includeReview,
-			language: lang === "en" ? "English" : "German",
-			uiLanguage: lang,
-		}, choices.saveHtml, quiet, diagnostics, ctx.signal);
-		return {
-			block: true,
-			reason: "error" in outcome
-				? `Blocked; the deterministic report was attempted instead and failed: ${outcome.error} -- report this verbatim.`
-				: "Blocked: the deterministic report was generated instead; the result card (and the HTML path, "
-					+ "if saved) is on screen. Do not write an HTML yourself.",
-		};
 	});
 
 	// Rich transcript rendering for validated answers: the SAME card for

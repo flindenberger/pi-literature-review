@@ -1,22 +1,21 @@
 /**
- * Deterministic plain-text digest of a discovery payload -- the ONLY thing
- * the agent model receives as tool result.
+ * Deterministic plain-text digests -- what the agent model receives as a
+ * tool result, and what the terminal card shows, after a search, a paper
+ * chat round or a report.
  *
- * A live field test (2026-07-10, IBM Granite) showed that handing the full
- * JSON payload to a small model invites it to re-type and "complete" citation
- * data: fabricated tables, invented page numbers, reformatted author names.
- * The fix is structural, not instructional: the model never sees abstracts,
- * authors or venues at all. It gets counts, the HTML path and one copyable
- * reference line per record; the full data lives in the HTML/JSON files on
- * disk. The JSON sidecar path deliberately stays out of the digest (second
- * field test: a small model echoes it at the user, whom it does not concern);
- * the tool description tells the agent the sidecar sits next to the HTML.
+ * Handing a full JSON payload to a small model invites it to re-type and
+ * "complete" citation data (fabricated tables, invented page numbers). The
+ * fix is structural: the model never sees abstracts, authors or venues. It
+ * gets counts, the HTML path and one copyable reference line per record;
+ * the full data lives in the HTML/JSON files on disk. The JSON sidecar path
+ * stays out of the digest (small models echo it at the user). The one
+ * exception is the paper-chat answer, whose validated prose must reach the
+ * terminal and therefore travels between explicit delimiters.
  */
 
 import { pathToFileURL } from "node:url";
-import type { ChatAnswer, ChatReport, SynthReport } from "./synthesis.ts";
 import { describeFilters, describeGrouping, type RenderPayload } from "./render.ts";
-import type { ReferenceEntry, SynthesisResult } from "./synthesis.ts";
+import type { ChatAnswer, ChatReport, ReferenceEntry, SynthReport } from "./synthesis.ts";
 
 /** Safety cap (Pi docs: tools must bound their own output). An exhaustive
  * multi-variant sweep can yield hundreds of records; the digest lists at
@@ -32,11 +31,10 @@ function recordId(record: { doi: string; arxiv_id: string }): string {
 }
 
 /**
- * The digest speaks to two audiences (v30.13): "agent" (default) is the
- * tool result and carries the handling instructions for the model; "user"
- * is the /lit-search transcript card -- same facts, but instructions TO an
- * LLM have no business in front of the user (field complaint 2026-07-29:
- * the card said "Tell the user to open the HTML ...").
+ * The search digest speaks to two audiences: "agent" (default) is the tool
+ * result and carries the handling instructions for the model; "user" is the
+ * /lit-search transcript card -- same facts, but instructions TO an LLM
+ * have no business in front of the user.
  */
 export function renderDigest(
 	payload: RenderPayload,
@@ -65,31 +63,28 @@ export function renderDigest(
 		lines.push(`Query: ${payload.query}`);
 	}
 	lines.push(`Sources: ${payload.sources_used.join(", ") || "none"}`);
-	// A failed source is a fact about this run, not transient chrome
-	// (v30.1): the agent and the user must both see that results may be
-	// incomplete and which source to blame.
+	// A failed source is a fact about this run, not transient chrome: the
+	// agent and the user must both see that results may be incomplete and
+	// which source to blame.
 	for (const failure of payload.source_failures ?? []) {
 		lines.push(`SOURCE FAILED: ${failure.source} -- ${failure.error} (results may be incomplete)`);
 	}
-	// What was actually asked for (v30.13 field wish: the digest must log
-	// the dialog inputs, not just the query) -- same wording as the HTML
-	// meta block, from the same functions. Multi-query runs label per query
-	// since the block search (2026-08-06).
+	// What was actually asked for -- same wording as the HTML meta block,
+	// from the same functions. Multi-query runs label per query.
 	const groupingByQuery = payload.grouping_by_query ?? [];
 	if (groupingByQuery.length) {
 		groupingByQuery.forEach((entry, index) => lines.push(`Grouping Q${index + 1}: ${entry.groups?.length
-			? describeGrouping(entry.groups, index === 0 ? payload.grouping_require : null)
+			? describeGrouping(entry.groups)
 			: "(no blocks -- query passed through unchanged)"}`));
 	} else {
-		lines.push(`Grouping: ${describeGrouping(payload.grouping, payload.grouping_require)}`);
+		lines.push(`Grouping: ${describeGrouping(payload.grouping)}`);
 	}
 	lines.push(`Filters: ${describeFilters(payload.filters)}`);
 	if (payload.per_source) lines.push(`Records per source: ${payload.per_source}`);
-	// The HTML pointer: on the user card it moves BELOW the record list
-	// (v30.15 field wish: on a 40-record run the link drowned in the middle)
-	// and becomes a file:// URL, which terminals linkify for right-click ->
-	// open. The agent keeps the plain path up front, next to its handling
-	// instructions.
+	// The HTML pointer: on the user card it sits BELOW the record list (on
+	// a long run a mid-card link drowns) and becomes a file:// URL, which
+	// terminals linkify for right-click -> open. The agent keeps the plain
+	// path up front, next to its handling instructions.
 	const htmlBlock: string[] = [];
 	if (htmlPath) {
 		htmlBlock.push("Full sortable table (abstracts, links, dropped list):");
@@ -136,73 +131,8 @@ export function renderDigest(
 }
 
 /**
- * Digest of a synthesis run -- same philosophy as the discovery digest: the
- * agent model gets counts, the HTML path and copyable reference lines, but
- * NEVER the synthesized prose itself (it would re-type or "improve" it; the
- * review lives in the HTML file). An ungrounded run leads with the failure
- * so no model can present the draft as a finished review.
- */
-export function renderSynthesisDigest(result: SynthesisResult, htmlPath: string | null): string {
-	const lines: string[] = [];
-	if (result.grounded) {
-		lines.push(
-			`Synthesis complete: ${result.references.length} reference(s) from ${result.papers_cited} `
-			+ `of ${result.papers_matched} paper(s); ${result.chunks.length} excerpt(s) retrieved.`,
-		);
-	} else {
-		lines.push(
-			"Synthesis FAILED to ground: the model produced no valid citations. The draft was saved "
-			+ "for inspection but must NOT be presented as a literature review. Relay this to the user "
-			+ "and ask how to proceed (rephrase the question, change the paper selection or model).",
-		);
-	}
-	lines.push(`Question: ${result.question}`);
-	pushRetrievalLines(lines, result);
-	if (htmlPath) {
-		lines.push("Full review (prose, references, excerpts, method notes):");
-		lines.push(`  ${htmlPath}`);
-		lines.push("Tell the user to open the HTML file to read the review.");
-	} else {
-		lines.push("WARNING: the output files could not be written (see diagnostics).");
-	}
-	if (result.invalid_markers.length) {
-		lines.push(`Integrity: ${result.invalid_markers.length} invalid citation marker(s) were stripped from the prose.`);
-	}
-	if (result.stripped_reference_section) {
-		lines.push("Integrity: a model-written reference section was cut; references come from verified records only.");
-	}
-	if (result.adopted_pdfs.length) {
-		lines.push(
-			`Adopted ${result.adopted_pdfs.length} loose PDF(s) into the corpus (identifier found in the `
-			+ `PDF text, metadata from a verified API lookup): ${result.adopted_pdfs.join(", ")}`,
-		);
-	}
-	const adoptionReasons = new Map(result.adoption_failures.map((failure) => [failure.file, failure.reason]));
-	for (const file of result.unmatched_pdfs) {
-		lines.push(`Excluded (${adoptionReasons.get(file) ?? "no verified record"}): ${file}`);
-	}
-	for (const failure of result.extraction_failures) {
-		lines.push(`Excluded (${failure.reason}): ${failure.file}`);
-	}
-	if (result.references.length) {
-		lines.push(
-			"When referring to a reference, copy its line below EXACTLY; never re-type titles,",
-			"authors or identifiers from memory. Do not quote or summarize the review prose;",
-			"point the user at the HTML file instead.",
-		);
-		lines.push("");
-		for (const reference of result.references) {
-			const id = reference.doi || (reference.arxiv_id ? `arXiv:${reference.arxiv_id}` : reference.key);
-			const year = reference.year || "n.d.";
-			lines.push(`[${reference.n}] ${year} | ${id} | ${reference.title}`);
-		}
-	}
-	return lines.join("\n");
-}
-
-/**
- * Retrieval transparency (v24): the disclosed English query variant(s) and
- * the lexical exact-match layer. The variant is the ONE place an LLM shapes
+ * Retrieval transparency: the disclosed English query variant(s) and the
+ * lexical exact-match layer. The variant is the ONE place an LLM shapes
  * retrieval -- shown wherever the result is shown; citations are unaffected.
  */
 function pushRetrievalLines(
@@ -224,12 +154,11 @@ function pushRetrievalLines(
 /* ---------------- paper chat (pi-literature-synthesis chat mode) ---------------- */
 
 /** Reference line with the cited PDF pages: "[1] 2021 | 10.x/y | Title
- * (S. 2, 5)". "S." (Seite) by user decision -- the chat's audience reads
- * German; the pages refer to the local PDF. A paper without a verified
+ * (p. 2, 5)"; the pages refer to the local PDF. A paper without a verified
  * record (key "file:...") is cited by filename only -- honestly, with no
  * bibliographic fields to fabricate. */
 function referenceLine(reference: ReferenceEntry): string {
-	const pages = reference.pages.length ? ` (S. ${reference.pages.join(", ")})` : "";
+	const pages = reference.pages.length ? ` (p. ${reference.pages.join(", ")})` : "";
 	if (reference.key.startsWith("file:")) {
 		return `[${reference.n}] ${reference.key.slice(5)}.pdf -- UNVERIFIED, cited by filename${pages}`;
 	}
@@ -247,17 +176,16 @@ function paperLine(paper: ChatAnswer["paper"]): string {
 }
 
 /**
- * Digest of one paper-chat answer -- the ONE digest that carries prose,
- * a deliberate exception to the doctrine above: a chat answer must reach
- * the user in the terminal, so the code-validated prose travels between
- * explicit delimiters with the instruction to relay it unchanged. The
- * protocol file on disk always keeps the validated ground truth, so even
- * a paraphrasing agent cannot corrupt the record the report is built from.
+ * Digest of one paper-chat answer -- the ONE digest that carries prose: a
+ * chat answer must reach the user in the terminal, so the code-validated
+ * prose travels between explicit delimiters with the instruction to relay
+ * it unchanged. The protocol file on disk always keeps the validated ground
+ * truth, so even a paraphrasing agent cannot corrupt the record the report
+ * is built from.
  *
- * audience "card" (2026-08-04): the answer is ALREADY on screen as a
- * transcript card -- the instruction flips from relay-verbatim to a
- * BRIEF direct answer (the card stays the ground truth; a full repeat
- * would double the text on screen).
+ * audience "card": the answer is ALREADY on screen as a transcript card --
+ * the instruction flips from relay-verbatim to a BRIEF direct answer (the
+ * card stays the ground truth; a full repeat would double the text).
  */
 export function renderChatDigest(answer: ChatAnswer, audience: "relay" | "card" = "relay"): string {
 	const lines: string[] = [];
@@ -370,8 +298,8 @@ export function renderChatReportDigest(report: ChatReport, htmlPath: string | nu
 }
 
 /**
- * Digest of a composable report (v25) -- synthesis philosophy: counts, the
- * HTML path and copyable reference lines; the prose lives in the HTML.
+ * Digest of a composable report -- counts, the HTML path and copyable
+ * reference lines; the prose lives in the HTML.
  */
 export function renderReportDigest(
 	report: SynthReport,

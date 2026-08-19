@@ -1,17 +1,16 @@
 /**
- * One completion call against the model currently selected in pi
- * (2026-08-06). Extracted from the generate-half of synthesis.ts's
- * piModelBackend so other adapters (the search wizard's query-variant
- * suggestions) can make a single LLM call without wiring a full backend.
- * The call is text-shaping only -- the citation-path doctrine stands:
- * nothing this returns may ever become bibliographic data.
+ * One completion call against the model currently selected in pi -- the
+ * generate-half of synthesis.ts's piModelBackend as a standalone helper, so
+ * other adapters (the search wizard's query-variant suggestions) can make a
+ * single LLM call without wiring a full backend. The call is text-shaping
+ * only: nothing this returns may ever become bibliographic data.
  *
- * pi's extension loader provides @earendil-works/pi-ai at runtime; it is
- * imported lazily so this file stays loadable outside pi (smoke tests).
- * Thinking is OFF with a hard output cap (field failure 2026-07-20: hidden
- * reasoning ate the whole budget invisibly). Throws on missing model,
- * missing credentials, error/aborted stops and empty answer text -- the
- * caller decides how to degrade.
+ * pi's extension loader provides @earendil-works/pi-ai/compat at runtime;
+ * it is imported lazily so this file stays loadable outside pi (smoke
+ * tests). Thinking is off with a hard output cap (hidden reasoning would
+ * eat the whole budget invisibly). Throws on missing model, missing
+ * credentials, error/aborted stops and empty answer text -- the caller
+ * decides how to degrade.
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -22,7 +21,7 @@ export async function completeWithPiModel(
 ): Promise<string> {
 	const model = ctx.model;
 	if (!model) throw new Error("no model selected in pi");
-	const { completeSimple } = await import("@earendil-works/pi-ai");
+	const { completeSimple } = await import("@earendil-works/pi-ai/compat");
 	const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 	if (!auth.ok) throw new Error(`no credentials for ${model.provider}/${model.id}: ${auth.error}`);
 	const response = await completeSimple(model, {
@@ -32,7 +31,9 @@ export async function completeWithPiModel(
 		apiKey: auth.apiKey,
 		headers: auth.headers,
 		temperature: options.temperature,
-		reasoning: "off",
+		// No `reasoning` level: pi-ai then sends no reasoning effort, which
+		// disables template thinking (enable_thinking: false) -- the small
+		// suggestion call must not spend its budget on hidden reasoning.
 		maxTokens: options.maxTokens ?? 512,
 		signal: options.signal,
 	});

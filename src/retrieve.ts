@@ -1,24 +1,22 @@
 /**
- * Shared retrieval core for chat rounds, chat reports and synthesis
- * (design/2026-07-21_v24, Stage 1). A measured field failure drove it: the
- * German question "welche kameras benutzen sie?" ranked the camera chunk
- * 14/81 while its English twin ranked it 1 -- the query language, not the
- * tools, was the bottleneck. Three layers answer it:
+ * Shared retrieval core for chat rounds, session reports and the
+ * composable report. A non-English question can rank the right chunk far
+ * below its English twin (embedding models are English-centric), so three
+ * layers work together:
  *
  *   1. Query variants: the original question PLUS an English translation
- *      (one small generate() call per question). Doctrine-conform: an LLM
- *      may SHAPE queries, it never touches citations; every variant is
- *      disclosed in the digest and the HTML meta (precedent: arxiv_queries,
- *      v18). Translator failure/empty/identical -> original only, never an
- *      abort reason.
+ *      (one small generate() call per question). An LLM may SHAPE queries,
+ *      it never touches citations; every variant is disclosed in the
+ *      digest and the HTML meta. Translator failure/empty/identical ->
+ *      original only, never an abort reason.
  *   2. Embedding retrieval: ONE embed call for all variants, topKChunks per
  *      variant, deduplicated union ranked by best score.
  *   3. Lexical layer: salient terms of the ORIGINAL question(s) --
  *      capitalized words outside sentence starts, model-number tokens,
  *      quoted phrases -- exact-matched over the chunk texts by fixed code
- *      (whole-word with the v18 tolerances). Hits get guaranteed slots in
- *      the excerpt list, so an exact term like "Q1645" can never lose to
- *      embedding geometry.
+ *      (whole-word, same tolerances as the search labeling). Hits get
+ *      guaranteed slots in the excerpt list, so an exact term like "Q1645"
+ *      can never lose to embedding geometry.
  *
  * Everything here is deterministic except the translation call, whose
  * output is used as a search query only. The context-budget trim stays with
@@ -29,7 +27,7 @@ import type { PaperIndex } from "./corpus.ts";
 import type { LlmBackend } from "./llm.ts";
 
 /* ------------------------------------------------------------------ *
- * Embedding retrieval primitives -- pure (moved from synthesize.ts)   *
+ * Embedding retrieval primitives -- pure                               *
  * ------------------------------------------------------------------ */
 
 export interface RetrievedChunk {
@@ -44,9 +42,9 @@ export interface RetrievedChunk {
 	lexical?: boolean;
 	/** The salient terms that matched (set together with lexical). */
 	terms?: string[];
-	/** Leading words of `text` verified against the raw PDF text layer at
-	 * index time -- the span a PDF link may highlight. Absent on chunks
-	 * from legacy indexes and hand-built test fixtures. */
+	/** Leading words of `text` verified against the PDF viewer's text layer
+	 * at index time -- the span a PDF link may highlight. Absent on chunks
+	 * from hand-built test fixtures. */
 	phrase_words?: number;
 }
 
@@ -141,8 +139,7 @@ export const TRANSLATE_MAX_TOKENS = 256;
  * on the same model that will answer. */
 export function translateViaBackend(backend: LlmBackend, model?: string): TranslateFn {
 	// think:false -- a thinking model would spend the capped budget on
-	// hidden reasoning and return empty content (v22 failure mode, re-found
-	// live on this call 2026-07-22).
+	// hidden reasoning and return empty content.
 	return (question, signal) =>
 		backend.generate(TRANSLATE_SYSTEM_PROMPT, question,
 			{ model, temperature: 0, maxTokens: TRANSLATE_MAX_TOKENS, think: false }, signal);
@@ -192,13 +189,13 @@ export async function buildQueryVariants(
  * ------------------------------------------------------------------ */
 
 /**
- * Generic words of the READING SITUATION that are never salient terms
- * (v27 field fix): German capitalizes every noun, so the "capitalized
- * mid-sentence" heuristic below -- built for English, where that means
- * names and models -- fired on words like "Paper" and "Frage" and wasted
- * guaranteed excerpt slots on noise. Small and documented on purpose:
- * domain terms stay untouched; the LEXICAL_TERM_MAX_HITS rule remains the
- * second net. Quoted phrases BYPASS this list (explicit user intent).
+ * Generic words of the READING SITUATION that are never salient terms:
+ * German capitalizes every noun, so the "capitalized mid-sentence"
+ * heuristic below -- built for English, where that means names and models
+ * -- would fire on words like "Paper" and "Frage" and waste guaranteed
+ * excerpt slots on noise. Small and documented on purpose: domain terms
+ * stay untouched; the LEXICAL_TERM_MAX_HITS rule remains the second net.
+ * Quoted phrases BYPASS this list (explicit user intent).
  */
 export const SALIENT_STOPWORDS: ReadonlySet<string> = new Set([
 	// German interrogatives (mid-sentence, e.g. after a comma).
@@ -274,8 +271,8 @@ function escapeRegExp(value: string): string {
 	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** Whole-word, case-insensitive matcher for one term -- the v18 rules
- * (design/2026-07-14): no word character may touch the term, separators
+/** Whole-word, case-insensitive matcher for one term (the search
+ * labeling's rules): no word character may touch the term, separators
  * inside it match hyphen or whitespace interchangeably, optional plural-s. */
 export function lexicalTermPattern(term: string): RegExp | null {
 	const parts = term.split(/[-\s]+/).filter(Boolean).map(escapeRegExp);
@@ -369,8 +366,7 @@ export interface RetrieveOptions {
 	translate?: TranslateFn | null;
 	/** false: skip the lexical layer entirely. For CODE-OWNED queries (the
 	 * summary facet rubric) whose capitalized nouns are not user salience
-	 * (v27 field finding: "Forschungsziel, Methodik, ..." showed up as
-	 * word-search terms in an English report). Default true. */
+	 * and would otherwise show up as word-search terms. Default true. */
 	lexical?: boolean;
 	onWarn?: (message: string) => void;
 	signal?: AbortSignal;

@@ -1,12 +1,10 @@
 /**
- * Pure helpers for the intake dialog (parameter confirmation).
- *
- * Three field tests (2x Granite 4.1, 1x Gemini, all 2026-07-10) proved that an
- * instruction in the tool description cannot make a model ask the user intake
- * questions before searching. The confirmation therefore moved into CODE: the
- * Pi extension shows blocking terminal dialogs (ctx.ui) on every call. This
- * module holds the deterministic, UI-free pieces of that gate so they stay
- * testable and reusable by the CLI; nothing here imports Pi.
+ * Pure query-parsing helpers for the search intake: concept-block
+ * expressions ("(river OR stream) AND (mask)"), block derivation from plain
+ * keywords, year ranges, result counts, and the cleaning/ordering of
+ * LLM-suggested query variants. Shared by the search wizard
+ * (extensions/search.ts), the engine (queryBlocks) and the CLI; nothing
+ * here imports pi, nothing here calls a model.
  */
 
 /**
@@ -85,14 +83,12 @@ export function parseGroupSpec(spec: string): string[][] {
 /** Function words that never form a useful term group of their own --
  * whole-word matching would satisfy them in every abstract. English and
  * German, since queries arrive in both. Shared with the arXiv query
- * builder (v30.1 field finding: an AND clause over an everyday word like
- * "using" makes arXiv's search backend time out or 429 -- measured with
- * the same expression minus the word answering in seconds). */
+ * builder: an AND clause over an everyday word like "using" makes arXiv's
+ * search backend time out or rate-limit. */
 export const QUERY_STOPWORDS = new Set([
 	"and", "or", "of", "the", "a", "an", "in", "on", "at", "for", "with", "to", "by", "from",
 	"via", "using",
-	// 2026-08-10 field find (prose sentence typed as query): sentence glue
-	// survived into AND clauses ("all:based AND ... all:as AND ...").
+	// Sentence glue, for prose typed as a query.
 	"as", "is", "are", "be", "based", "beyond", "into", "about", "between", "within",
 	"through", "towards", "toward", "this", "that", "these", "those", "its", "their",
 	"und", "oder", "der", "die", "das", "dem", "den", "des", "ein", "eine", "einer", "eines",
@@ -102,14 +98,13 @@ export const QUERY_STOPWORDS = new Set([
 ]);
 
 /**
- * Derive term groups from a plain search query, deterministically (v30:
- * the search wizard's grouping tab follows the query live -- no LLM on the
- * command path). Every content word becomes its own AND group; standalone
- * single characters bind to the neighbouring word as one phrase term (the
- * v18 arXiv tokenization rule -- "sentinel 2" stays one concept); function
- * words drop out. A query carrying the user's own boolean syntax or quotes
- * derives nothing -- their expression is not second-guessed. Synonyms
- * (OR terms) are the user's or the agent's to add.
+ * Derive term groups from a plain search query, deterministically (no
+ * LLM). Every content word becomes its own AND group; standalone single
+ * characters bind to the neighbouring word as one phrase term ("sentinel
+ * 2" stays one concept); function words drop out. A query carrying the
+ * user's own boolean syntax or quotes derives nothing -- their expression
+ * is not second-guessed. Synonyms (OR terms) are the user's or the
+ * model's to add.
  */
 export function deriveGroupsFromQuery(query: string): string[][] {
 	const trimmed = query.trim().replace(/\s+/g, " ");
@@ -117,7 +112,7 @@ export function deriveGroupsFromQuery(query: string): string[][] {
 	if (/(^|\s)(AND|OR|NOT)(\s|$)/.test(trimmed) || trimmed.includes('"')) return [];
 	// Punctuation glued to a word ("approach," / "(components") never
 	// belongs to the term -- strip it at both ends, keep inner hyphens and
-	// dots ("sentinel-2", "4.0") intact (2026-08-10 field find).
+	// dots ("sentinel-2", "4.0") intact.
 	const tokens = trimmed.toLowerCase().split(" ")
 		.map((token) => token.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ""))
 		.filter(Boolean);
@@ -136,32 +131,6 @@ export function deriveGroupsFromQuery(query: string): string[][] {
 	return units.map((unit) => [unit.join(" ")]);
 }
 
-/** Generic task/method words (v30.2): they describe WHAT IS DONE with the
- * subject, not the subject itself. The "core concepts" grouping variant
- * drops them, so on_target requires only the domain concepts -- a broader,
- * often more useful labeling than the strict all-words variant. English
- * and German. */
-const GENERIC_TASK_WORDS = new Set([
-	"detection", "extraction", "mapping", "monitoring", "classification", "segmentation",
-	"estimation", "analysis", "assessment", "evaluation", "identification", "retrieval",
-	"measurement", "observation", "prediction", "modeling", "modelling", "method", "methods",
-	"approach", "approaches", "technique", "techniques", "study", "studies", "review", "comparison",
-	"erkennung", "extraktion", "kartierung", "überwachung", "klassifikation", "klassifizierung",
-	"segmentierung", "schätzung", "analyse", "bewertung", "auswertung", "identifikation",
-	"messung", "beobachtung", "vorhersage", "modellierung", "methode", "methoden",
-	"ansatz", "ansätze", "verfahren", "studie", "studien", "vergleich",
-]);
-
-/**
- * The broader grouping variant (v30.2): like deriveGroupsFromQuery, minus
- * generic task words -- "Water Mask Extraction Using Sentinel 2" keeps
- * (water) AND (mask) AND (sentinel 2). Falls back to [] when nothing
- * remains (all-task-word queries offer no core to anchor on).
- */
-export function deriveCoreGroupsFromQuery(query: string): string[][] {
-	return deriveGroupsFromQuery(query).filter((group) => !GENERIC_TASK_WORDS.has(group[0]));
-}
-
 /** Prefill for the year-range input: "2015-2024", "2015-", "" (no limit). */
 export function yearRangeToSpec(yearFrom?: number, yearTo?: number): string {
 	if (yearFrom === undefined && yearTo === undefined) return "";
@@ -171,24 +140,23 @@ export function yearRangeToSpec(yearFrom?: number, yearTo?: number): string {
 
 /**
  * Whether a query text is a concept-block EXPRESSION (hand- or LLM-written
- * boolean structure) rather than plain keywords (2026-08-06 block search):
- * parentheses, semicolons (the legacy a,b;c,d spec) or UPPERCASE boolean
- * operators mark it. Lowercase and/or are everyday words and stay plain.
+ * boolean structure) rather than plain keywords: parentheses, semicolons
+ * (the compact a,b;c,d spec) or UPPERCASE boolean operators mark it.
+ * Lowercase and/or are everyday words and stay plain.
  */
 export function isBlockExpression(text: string): boolean {
 	return /[();]/.test(text) || /(^|\s)(AND|OR)(\s|$)/.test(text);
 }
 
 /**
- * The concept blocks of one query (2026-08-06): the single structure that
- * BOTH drives the boolean source search (arXiv, OpenAlex) AND labels the
- * results on_target/adjacent -- search and label can no longer disagree.
- * An expression parses via parseGroupSpec ("(river OR stream) AND (mask)"),
- * plain keywords derive one block per content word (the v18/v30 rule,
- * "sentinel 2" bindings included). Queries carrying quotes or explicit
- * arXiv field syntax (all:/ti:/abs:/au:/cat:) are the user's own source
- * syntax -- hands off, no blocks (the sources then use their legacy
- * pass-through paths).
+ * The concept blocks of one query: the single structure that BOTH drives
+ * the boolean source search (arXiv, OpenAlex, Semantic Scholar) AND labels
+ * the results on_target/adjacent -- search and label cannot disagree. An
+ * expression parses via parseGroupSpec ("(river OR stream) AND (mask)"),
+ * plain keywords derive one block per content word ("sentinel 2" bindings
+ * included). Queries carrying quotes or explicit arXiv field syntax
+ * (all:/ti:/abs:/au:/cat:) are the user's own source syntax -- hands off,
+ * no blocks (the sources then pass the text through unchanged).
  */
 export function queryBlocks(text: string): string[][] {
 	if (/"|(?:^|\s)(?:all|ti|abs|au|cat):/i.test(text)) return [];
@@ -196,14 +164,12 @@ export function queryBlocks(text: string): string[][] {
 }
 
 /** Whether a plain query reads like a PROSE SENTENCE rather than keywords
- * (2026-08-10 field find: a naive user typed a full sentence into the
- * query window; word-per-block derivation turned it into an unsatisfiable
- * many-block AND chain). Deterministic: the user's own boolean/quote/
- * field syntax is never second-guessed; otherwise a derivation of
- * PROSE_BLOCK_THRESHOLD or more blocks marks prose. The wizard's variants
- * tab reacts (distillation rule in the LLM prompt, first suggestion
- * prechecked, warning under the base row). */
-export const PROSE_BLOCK_THRESHOLD = 6;
+ * (a full sentence derives into an unsatisfiable many-block AND chain).
+ * Deterministic: the user's own boolean/quote/field syntax is never
+ * second-guessed; otherwise a derivation of PROSE_BLOCK_THRESHOLD or more
+ * blocks marks prose. The wizard's variants tab reacts (distillation rule
+ * in the prompt, first suggestion prechecked, warning under the base row). */
+const PROSE_BLOCK_THRESHOLD = 6;
 export function isProseQuery(query: string): boolean {
 	if (/"|(?:^|\s)(?:all|ti|abs|au|cat):/i.test(query) || isBlockExpression(query)) return false;
 	return deriveGroupsFromQuery(query).length >= PROSE_BLOCK_THRESHOLD;
@@ -227,12 +193,11 @@ function wordMatches(a: string, b: string): boolean {
 }
 
 /**
- * Reorder a variant's concept blocks to the BASE query's concept order
- * (2026-08-07, user wish: parallel structure -- "Sentinel Water Detection"
- * should always yield sensor block first, then water block, then task
- * block, so what the model built is comparable at a glance). AND blocks
- * are commutative, so this is display order only -- fetch and labeling are
- * unchanged. A block is anchored to the FIRST base concept it shares a
+ * Reorder a variant's concept blocks to the BASE query's concept order, so
+ * every suggestion reads in parallel ("Sentinel Water Detection" always
+ * yields sensor block first, then water block, then task block) and what
+ * the model built is comparable at a glance. AND blocks are commutative,
+ * so this is display order only -- fetch and labeling are unchanged. A block is anchored to the FIRST base concept it shares a
  * word with (tolerances above); anchored blocks sort by that anchor among
  * themselves, blocks matching no base concept KEEP their position (pure
  * synonym blocks like "optical sensor OR multispectral" carry no base
@@ -268,11 +233,10 @@ export function alignVariantExpression(line: string, baseBlocks: string[][]): st
 }
 
 /**
- * Deterministic narrow-to-broad ordering of variant suggestions
- * (2026-08-10 user wish: the first rows stay close to the base query with
- * few synonyms, later rows grow freer). The prompt asks the model for this
- * staggering; this sort GUARANTEES the order regardless of what the model
- * emitted (code over instructions). Primary key: total term count across
+ * Deterministic narrow-to-broad ordering of variant suggestions: the first
+ * rows stay close to the base query with few synonyms, later rows grow
+ * freer. The prompt asks the model for this staggering; this sort
+ * GUARANTEES the order regardless of what the model emitted. Primary key: total term count across
  * the variant's blocks (fewer synonyms = narrower); secondary: number of
  * terms sharing no word with the base query (foreign terms = freer);
  * ties keep the model's order (stable). Hands-off lines (quotes / field
@@ -293,23 +257,8 @@ export function sortVariantsByBreadth(variants: string[], baseBlocks: string[][]
 		.map((entry) => entry.variant);
 }
 
-/**
- * Parse LLM-generated query-variant suggestions (2026-08-06): one query per
- * line; leading list bullets/numbering and surrounding quotes are stripped
- * (models habitually add both despite instructions); empties vanish;
- * block expressions are aligned to the base query's concept order
- * (2026-08-07) and reprinted canonically; duplicates of the base query and
- * of earlier lines drop case-insensitively; the list is capped and ordered
- * narrow-to-broad (2026-08-10, sortVariantsByBreadth). Pure -- the LLM
- * only ever SHAPES queries here, the user checks each one in the dialog
- * before it runs.
- */
-export function parseVariantLines(raw: string, baseQuery: string, cap = 8): string[] {
-	return parseVariantSuggestions(raw, baseQuery, cap).map((entry) => entry.text);
-}
-
 /** One parsed suggestion; `arxiv` marks the line the model flagged as its
- * arXiv / computer-science phrasing (2026-08-17). */
+ * arXiv / computer-science phrasing. */
 export interface VariantSuggestion {
 	text: string;
 	arxiv: boolean;
@@ -320,8 +269,16 @@ export interface VariantSuggestion {
  * label the row. Missing marker = no label, honestly. */
 const ARXIV_MARKER = /^arxiv\s*:\s*/i;
 
-/** parseVariantLines with the arXiv marker preserved as a flag (same
- * cleaning, dedupe, cap and breadth order). */
+/**
+ * Parse LLM-generated query-variant suggestions: one query per line;
+ * leading list bullets/numbering and surrounding quotes are stripped
+ * (models habitually add both despite instructions); empties vanish; the
+ * arXiv marker becomes the `arxiv` flag; block expressions are aligned to
+ * the base query's concept order and reprinted canonically; duplicates of
+ * the base query and of earlier lines drop case-insensitively; the list is
+ * capped and ordered narrow-to-broad. Pure -- the LLM only ever SHAPES
+ * queries here, the user checks each one in the dialog before it runs.
+ */
 export function parseVariantSuggestions(raw: string, baseQuery: string, cap = 8): VariantSuggestion[] {
 	const baseBlocks = queryBlocks(baseQuery.trim());
 	const seen = new Set([baseQuery.trim().toLowerCase()]);

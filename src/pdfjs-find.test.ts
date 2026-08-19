@@ -1,7 +1,7 @@
 /**
  * Offline tests for the pdf.js find replica (viewerPageTexts needs a real
  * PDF and is exercised by the live check, not here). Every expectation was
- * confirmed against the shipped viewer of Firefox 152 on 2026-07-27.
+ * confirmed against the shipped viewer of Firefox 152.
  */
 
 import assert from "node:assert/strict";
@@ -28,7 +28,7 @@ import { NFKC_NORMALIZE_CHARS, pdfjsNormalize, pdfjsQueryRegExp, viewerFindsPhra
 	assert.equal(pdfjsNormalize("demon-\nstrated"), "demonstrated");
 	assert.equal(pdfjsNormalize("Sta-\ntions"), "Stations");
 
-	// THE LIGATURE CASE (the 2026-07-27 field bug): the NFKC replacement of
+	// THE LIGATURE CASE: the NFKC replacement of
 	// "fi" is tried BEFORE the broken-word repair and consumes the letter
 	// the repair needs -- so the word stays broken for the viewer, hyphen
 	// and all. Our own extraction hides this by resolving the ligature

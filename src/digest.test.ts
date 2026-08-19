@@ -5,9 +5,8 @@
 
 import assert from "node:assert/strict";
 import type { ChatAnswer, ChatReport } from "./synthesis.ts";
-import { MAX_DIGEST_RECORDS, renderChatDigest, renderChatReportDigest, renderDigest, renderSynthesisDigest } from "./digest.ts";
+import { MAX_DIGEST_RECORDS, renderChatDigest, renderChatReportDigest, renderDigest } from "./digest.ts";
 import type { RenderPayload } from "./render.ts";
-import type { SynthesisResult } from "./synthesis.ts";
 
 function record(overrides: Record<string, unknown>) {
 	return {
@@ -71,7 +70,7 @@ function payload(overrides: Partial<RenderPayload>): RenderPayload {
 	assert.ok(!digest.includes("Remote Sensing"));
 }
 
-// Settings logging (v30.13): grouping expression, filters and depth appear;
+// Settings logging: grouping expression, filters and depth appear;
 // the "user" audience card carries NO instructions aimed at the LLM
 {
 	const p = payload({
@@ -99,7 +98,7 @@ function payload(overrides: Partial<RenderPayload>): RenderPayload {
 	// the record lines themselves stay identical for both audiences
 	assert.ok(user.includes("1. [adjacent] 2021 | 10.1234/example | A Paper"));
 
-	// Per-query grouping lines on multi-query runs (2026-08-06 block search).
+	// Per-query grouping lines on multi-query runs.
 	const perQuery = renderDigest(payload({
 		query_variants: ["(cnn OR deep learning) AND (river)"],
 		grouping: [["water"], ["mask"]],
@@ -110,7 +109,7 @@ function payload(overrides: Partial<RenderPayload>): RenderPayload {
 	}), "/x.html");
 	assert.ok(perQuery.includes("Grouping Q1: (water) AND (mask)"));
 	assert.ok(perQuery.includes("Grouping Q2: (cnn OR deep learning) AND (river)"));
-	assert.ok(!perQuery.includes("labeled against Q1")); // 2026-08-06 revision: any set labels
+	assert.ok(!perQuery.includes("labeled against Q1")); // any set labels
 	assert.ok(!perQuery.includes("\nGrouping: ")); // the single line yields to the per-query form
 	// v30.15: on the user card the HTML pointer sits BELOW the record list
 	// (a 40-record run drowned it in the middle) and is a clickable file://
@@ -195,73 +194,6 @@ function payload(overrides: Partial<RenderPayload>): RenderPayload {
 	assert.ok(!small.includes("more record(s) not listed here"));
 }
 
-/* ---------------- renderSynthesisDigest ---------------- */
-
-const synthesis: SynthesisResult = {
-	question: "How are sandbars detected?",
-	generated: "2026-07-15T12:00:00Z",
-	model: "openscholar-8b",
-	embedding_model: "nomic-embed-text",
-	backend: "ollama at http://127.0.0.1:11434",
-	top_k: 8,
-	grounded: true,
-	prose: "Detected [1]. Contracted [2].",
-	references: [
-		{ n: 1, key: "doi:10.1/x", title: "Paper One", authors: ["A B"], year: "2021",
-			doi: "10.1/x", arxiv_id: "", pages: [2], chunk_ids: [1] },
-		{ n: 2, key: "arxiv:2401.16393", title: "Paper Two", authors: [], year: null,
-			doi: "", arxiv_id: "2401.16393", pages: [1], chunk_ids: [2] },
-	],
-	chunks: [
-		{ id: 1, paper_key: "doi:10.1/x", title: "Paper One", page: 2, score: 0.9, text: "e1" },
-		{ id: 2, paper_key: "arxiv:2401.16393", title: "Paper Two", page: 1, score: 0.5, text: "e2" },
-	],
-	invalid_markers: ["[9]"],
-	unmarked_sentences: 0,
-	stripped_reference_section: false,
-	trimmed_chunks: 0,
-	papers_matched: 2,
-	papers_cited: 2,
-	papers_uncited: [],
-	adopted_pdfs: ["2020_Found_A_paper.pdf"],
-	adoption_failures: [{ file: "alien_scan.pdf", reason: "no DOI or arXiv ID found on the first 2 pages" }],
-	unmatched_pdfs: ["alien_scan.pdf"],
-	extraction_failures: [],
-	raw_output: "raw",
-};
-
-{
-	const digest = renderSynthesisDigest(synthesis, "/root/reviews/2026-07-15_q.html");
-	const lines = digest.split("\n");
-	assert.equal(lines[0], "Synthesis complete: 2 reference(s) from 2 of 2 paper(s); 2 excerpt(s) retrieved.");
-	assert.ok(digest.includes("Question: How are sandbars detected?"));
-	assert.ok(digest.includes("/root/reviews/2026-07-15_q.html"));
-	assert.ok(digest.includes("Tell the user to open the HTML file"));
-	// The prose itself NEVER enters the digest -- structural anti-fabrication.
-	assert.ok(!digest.includes("Detected [1]"));
-	// Copyable reference lines, values verbatim.
-	assert.ok(digest.includes("[1] 2021 | 10.1/x | Paper One"));
-	assert.ok(digest.includes("[2] n.d. | arXiv:2401.16393 | Paper Two"));
-	assert.ok(digest.includes("copy its line below EXACTLY"));
-	// Honesty lines: adoption outcome and the per-file exclusion reason.
-	assert.ok(digest.includes("1 invalid citation marker(s) were stripped"));
-	assert.ok(digest.includes("Adopted 1 loose PDF(s)"));
-	assert.ok(digest.includes("2020_Found_A_paper.pdf"));
-	assert.ok(digest.includes("Excluded (no DOI or arXiv ID found on the first 2 pages): alien_scan.pdf"));
-}
-
-{
-	// Ungrounded run leads with the failure; missing output path warns.
-	const digest = renderSynthesisDigest(
-		{ ...synthesis, grounded: false, references: [], papers_cited: 0 },
-		null,
-	);
-	assert.ok(digest.startsWith("Synthesis FAILED to ground"));
-	assert.ok(digest.includes("must NOT be presented as a literature review"));
-	assert.ok(digest.includes("WARNING: the output files could not be written"));
-	assert.ok(!digest.includes("[1]")); // no reference lines to copy
-}
-
 /* ---------------- renderChatDigest ---------------- */
 
 const chatAnswer: ChatAnswer = {
@@ -281,6 +213,10 @@ const chatAnswer: ChatAnswer = {
 		{ id: 1, page: 2, score: 0.91, text: "chunk one" },
 		{ id: 2, page: 5, score: 0.83, text: "chunk two" },
 	],
+	sites: [],
+	query_variants: [],
+	lexical_terms: [],
+	lexical_added: 0,
 	invalid_markers: ["[9]"],
 	unmarked_sentences: 0,
 	stripped_reference_section: false,
@@ -289,6 +225,11 @@ const chatAnswer: ChatAnswer = {
 		base: "a", key: "doi:10.1234/abc", title: "River sandbar dynamics", authors: ["A. Author"],
 		year: "2021", doi: "10.1234/abc", arxiv_id: "", pdf_path: "/papers/a.pdf", verified: true,
 	},
+	papers: [{
+		base: "a", key: "doi:10.1234/abc", title: "River sandbar dynamics", authors: ["A. Author"],
+		year: "2021", doi: "10.1234/abc", arxiv_id: "", pdf_path: "/papers/a.pdf", verified: true,
+	}],
+	scope: ["a"],
 	adopted_pdfs: [],
 	adoption_failures: [],
 	extraction_failures: [],
@@ -307,7 +248,7 @@ const chatAnswer: ChatAnswer = {
 	assert.ok(digest.includes("Paper: a.pdf -- 2021 | 10.1234/abc | River sandbar dynamics"));
 	assert.ok(digest.includes('Pass paper: "a.pdf" on every follow-up call'));
 	// Reference line carries the cited PDF pages.
-	assert.ok(digest.includes("[1] 2021 | 10.1234/abc | River sandbar dynamics (S. 2, 5)"));
+	assert.ok(digest.includes("[1] 2021 | 10.1234/abc | River sandbar dynamics (p. 2, 5)"));
 	// Integrity + protocol note; no HTML path in question mode.
 	assert.ok(digest.includes("1 invalid citation marker(s) were stripped"));
 	// v29: export wishes route to the /lit-synthesis command, never tool report mode.
@@ -318,7 +259,7 @@ const chatAnswer: ChatAnswer = {
 }
 
 {
-	// Card audience (2026-08-04): the answer is already on screen as a
+	// Card audience: the answer is already on screen as a
 	// transcript card -- the instruction flips to a BRIEF direct answer.
 	const digest = renderChatDigest(chatAnswer, "card");
 	assert.ok(digest.includes("the user ALREADY SEES it in full as a card"));
@@ -327,7 +268,7 @@ const chatAnswer: ChatAnswer = {
 	assert.ok(!digest.includes("relay to the user EXACTLY"));
 	// The verbatim prose and references still travel (context ground truth).
 	assert.ok(digest.includes("Die Methode nutzt einen adaptiven Schwellwert [1]."));
-	assert.ok(digest.includes("[1] 2021 | 10.1234/abc | River sandbar dynamics (S. 2, 5)"));
+	assert.ok(digest.includes("[1] 2021 | 10.1234/abc | River sandbar dynamics (p. 2, 5)"));
 	// Ungrounded drafts never get the card instruction, whatever the audience.
 	const draft = renderChatDigest({ ...chatAnswer, grounded: false, references: [], protocol_path: null, round: 0 }, "card");
 	assert.ok(draft.includes("--- ungrounded draft (present ONLY together with the warning above) ---"));
@@ -354,7 +295,7 @@ const chatAnswer: ChatAnswer = {
 		}],
 	});
 	assert.ok(digest.includes("Paper: report_x.pdf -- UNVERIFIED (no bibliographic record; cited by filename and page)"));
-	assert.ok(digest.includes("[1] report_x.pdf -- UNVERIFIED, cited by filename (S. 3)"));
+	assert.ok(digest.includes("[1] report_x.pdf -- UNVERIFIED, cited by filename (p. 3)"));
 	assert.ok(!digest.includes("n.d. |")); // no pseudo-bibliographic line
 }
 
@@ -371,7 +312,11 @@ const chatReport: ChatReport = {
 	grounded: true,
 	prose: "Zusammenfassung [1].",
 	references: chatAnswer.references,
+	sites: [],
 	chunks: chatAnswer.chunks,
+	query_variants: [],
+	lexical_terms: [],
+	lexical_added: 0,
 	invalid_markers: [],
 	unmarked_sentences: 1,
 	stripped_reference_section: false,
@@ -379,7 +324,7 @@ const chatReport: ChatReport = {
 	paper: chatAnswer.paper,
 	rounds: [{
 		asked: "2026-07-16T09:00:00.000Z", question: "Frage eins?", language: null, model: "chat-model",
-		top_k: 8, grounded: true, prose: "Antwort [1].", references: chatAnswer.references,
+		session: null, top_k: 8, grounded: true, prose: "Antwort [1].", references: chatAnswer.references,
 		cited_chunks: [], invalid_markers: [], unmarked_sentences: 0, stripped_reference_section: false,
 	}],
 	protocol_files: ["/chats/2026-07-16_a.json"],
@@ -396,7 +341,7 @@ const chatReport: ChatReport = {
 	assert.ok(digest.includes("Focus: Validierung"));
 	assert.ok(digest.includes("/chats/2026-07-16_Paper_chat_report_a.html"));
 	assert.ok(digest.includes("open the HTML file"));
-	assert.ok(digest.includes("[1] 2021 | 10.1234/abc | River sandbar dynamics (S. 2, 5)"));
+	assert.ok(digest.includes("[1] 2021 | 10.1234/abc | River sandbar dynamics (p. 2, 5)"));
 	// The report digest never carries the prose.
 	assert.ok(!digest.includes("Zusammenfassung [1]."));
 }

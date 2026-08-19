@@ -1,10 +1,11 @@
 /**
- * Tiny user-level config -- two settings: the contact email for Unpaywall
- * lookups and the local LLM backend for the synthesis stage. The fetch
- * dialog asks while no email is configured and offers to store it here (the
- * user may also choose per-run entry, then nothing is persisted and the
- * dialog simply asks again next time). Stored as plain JSON, file mode
- * 0600, in the platform's standard config location:
+ * Tiny user-level config: the contact email for Unpaywall lookups, two
+ * optional API keys (GitHub, Semantic Scholar) and the LLM backend for the
+ * synthesis stage. The selection dialog asks while no email is configured
+ * and offers to store it here (the user may also choose per-run entry, then
+ * nothing is persisted and the dialog simply asks again next time). Stored
+ * as plain JSON, file mode 0600, in the platform's standard config
+ * location:
  *
  *   Linux/macOS:  $XDG_CONFIG_HOME or ~/.config/pi-literature-review/config.json
  *   Windows:      %APPDATA%\pi-literature-review\config.json
@@ -42,15 +43,14 @@ export function isPlausibleMailto(value: string): boolean {
 
 interface StoredConfig {
 	mailto?: string;
-	/** Optional GitHub token for the code-link lookup (2026-08-07): raises
-	 * the search rate limit from 10 to 30 requests/min. Never required. */
+	/** Optional GitHub token for the code-link lookup: raises the search
+	 * rate limit from 10 to 30 requests/min. Never required. */
 	githubToken?: string;
-	/** Semantic Scholar API key (2026-08-10, 4th source), optional: the
-	 * anonymous shared pool is heavily contended; a free key gives a
-	 * dedicated 1 request/second. */
+	/** Optional Semantic Scholar API key: the anonymous shared pool is
+	 * heavily contended; a free key gives a dedicated 1 request/second. */
 	s2ApiKey?: string;
-	/** Local LLM backend for the synthesis/chat stages; unset fields use
-	 * defaults. chatModel is the paper-chat generator (see chatModel()). */
+	/** LLM backend for the synthesis stage; unset fields use defaults.
+	 * chatModel is the paper-chat generator (see chatModel()). */
 	llm?: Partial<LlmConfig> & { chatModel?: string };
 }
 
@@ -83,10 +83,10 @@ export function storeMailto(mailto: string): string {
 }
 
 /**
- * GitHub token for the code-link enrichment (2026-08-07), optional: the
- * lookup works unauthenticated (10 searches/min); a token raises that to
- * 30/min. Environment variable wins, then config.json {"githubToken":
- * ...}; empty string = unauthenticated. Same precedence as the mailto.
+ * GitHub token for the code-link enrichment, optional: the lookup works
+ * unauthenticated (10 searches/min); a token raises that to 30/min.
+ * Environment variable wins, then config.json {"githubToken": ...}; empty
+ * string = unauthenticated. Same precedence as the mailto.
  */
 export function githubToken(
 	env: Record<string, string | undefined> = process.env,
@@ -96,11 +96,10 @@ export function githubToken(
 }
 
 /**
- * Semantic Scholar API key (2026-08-10, 4th source), optional: without
- * one the client shares an anonymous pool that is often saturated (pure
- * 429 across minutes in the build-day probes); a free key from
- * semanticscholar.org/product/api gives a dedicated 1 request/second.
- * Same precedence as the mailto/githubToken; empty string = anonymous.
+ * Semantic Scholar API key, optional: without one the client shares an
+ * anonymous pool that is often saturated; a free key from
+ * semanticscholar.org/product/api gives a dedicated 1 request/second. Same
+ * precedence as the mailto/githubToken; empty string = anonymous.
  */
 export function s2ApiKey(
 	env: Record<string, string | undefined> = process.env,
@@ -154,45 +153,37 @@ export function llmConfig(
 	env: Record<string, string | undefined> = process.env,
 	stored: Partial<LlmConfig> = loadStoredConfig().llm ?? {},
 ): LlmConfig {
+	// Optional fields are ABSENT when unset (not undefined): a bearer token
+	// only for remote OpenAI-compatible backends (local, key-free servers
+	// stay the first choice), and the per-role backend split (embeddings
+	// and generation on different servers, e.g. two llama-server instances
+	// holding one model each; unset roles ride the shared baseUrl/api).
+	const apiKey = pick(env.PI_LITERATURE_REVIEW_LLM_API_KEY, stored.apiKey);
+	const embedBaseUrl = pick(env.PI_LITERATURE_REVIEW_EMBED_URL, stored.embedBaseUrl);
+	const embedApi = normalizeApi(env.PI_LITERATURE_REVIEW_EMBED_API) ?? normalizeApi(stored.embedApi);
+	const generateBaseUrl = pick(env.PI_LITERATURE_REVIEW_GENERATE_URL, stored.generateBaseUrl);
+	const generateApi = normalizeApi(env.PI_LITERATURE_REVIEW_GENERATE_API) ?? normalizeApi(stored.generateApi);
 	return {
 		baseUrl: pick(env.PI_LITERATURE_REVIEW_LLM_URL, stored.baseUrl, LLM_DEFAULTS.baseUrl),
 		api: normalizeApi(env.PI_LITERATURE_REVIEW_LLM_API) ?? normalizeApi(stored.api) ?? LLM_DEFAULTS.api,
 		generateModel: pick(env.PI_LITERATURE_REVIEW_LLM_MODEL, stored.generateModel, LLM_DEFAULTS.generateModel),
 		embedModel: pick(env.PI_LITERATURE_REVIEW_EMBED_MODEL, stored.embedModel, LLM_DEFAULTS.embedModel),
-		// Bearer token for REMOTE OpenAI-compatible backends (2026-08-11);
-		// no default, and the key is absent entirely when unset -- local,
-		// key-free servers stay the first choice.
-		...(pick(env.PI_LITERATURE_REVIEW_LLM_API_KEY, stored.apiKey)
-			? { apiKey: pick(env.PI_LITERATURE_REVIEW_LLM_API_KEY, stored.apiKey) }
-			: {}),
-		// Per-role backend split (2026-08-11 user wish, llama.cpp-friendly):
-		// embeddings and generation may point at different servers -- a
-		// llama-server instance holds exactly ONE model, so the shared
-		// baseUrl forced Ollama for the local pair before. All optional and
-		// absent when unset; unset roles ride the shared baseUrl/api.
-		...(pick(env.PI_LITERATURE_REVIEW_EMBED_URL, stored.embedBaseUrl)
-			? { embedBaseUrl: pick(env.PI_LITERATURE_REVIEW_EMBED_URL, stored.embedBaseUrl) }
-			: {}),
-		...((normalizeApi(env.PI_LITERATURE_REVIEW_EMBED_API) ?? normalizeApi(stored.embedApi))
-			? { embedApi: normalizeApi(env.PI_LITERATURE_REVIEW_EMBED_API) ?? normalizeApi(stored.embedApi) }
-			: {}),
-		...(pick(env.PI_LITERATURE_REVIEW_GENERATE_URL, stored.generateBaseUrl)
-			? { generateBaseUrl: pick(env.PI_LITERATURE_REVIEW_GENERATE_URL, stored.generateBaseUrl) }
-			: {}),
-		...((normalizeApi(env.PI_LITERATURE_REVIEW_GENERATE_API) ?? normalizeApi(stored.generateApi))
-			? { generateApi: normalizeApi(env.PI_LITERATURE_REVIEW_GENERATE_API) ?? normalizeApi(stored.generateApi) }
-			: {}),
+		...(apiKey ? { apiKey } : {}),
+		...(embedBaseUrl ? { embedBaseUrl } : {}),
+		...(embedApi ? { embedApi } : {}),
+		...(generateBaseUrl ? { generateBaseUrl } : {}),
+		...(generateApi ? { generateApi } : {}),
 	};
 }
 
 /**
  * The generator model the user EXPLICITLY configured (env or config.json),
  * or "" when none is set. The synthesis adapter uses this to decide where
- * review genres run (2026-08-11 user decision): with pi present, everything
- * defaults to the model selected in pi; only an explicit generateModel
- * entry routes review genres to the local generator (e.g. a hand-imported
- * openscholar-8b). The LLM_DEFAULTS fallback stays for headless/CLI runs,
- * which have no pi model to fall back to.
+ * review genres run: with pi present, everything defaults to the model
+ * selected in pi; only an explicit generateModel entry routes review genres
+ * to the local generator (e.g. a hand-imported openscholar-8b). The
+ * LLM_DEFAULTS fallback stays for headless/CLI runs, which have no pi model
+ * to fall back to.
  */
 export function configuredGenerateModel(
 	env: Record<string, string | undefined> = process.env,

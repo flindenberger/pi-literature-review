@@ -1,8 +1,8 @@
 /**
- * Deterministic pipeline over source records: filter and dedupe (this step);
- * verify and group follow in later steps. Direct port of the Python oracle
- * (pi_literature_review.py, formerly academic_discovery.py); pure functions,
- * no network, no LLM.
+ * Deterministic processing steps over source records, used by the search
+ * engine (src/search.ts): junk filter, dedupe, user filters, abstract gate,
+ * sorting and the on_target/adjacent labeling. Pure functions only -- no
+ * network, no LLM; every drop ships with its reason.
  */
 
 import type { SourceRecord } from "./types.ts";
@@ -18,11 +18,10 @@ export interface FilterResult {
 }
 
 /**
- * Drop records that cannot be cited: no title or no authors.
- *
- * These empty-field rules are proven (Phase 2) to remove the known junk --
- * the empty-title "component" record and the Sentinel Lymph Node chapter --
- * without touching real papers. Pure, no network.
+ * Drop records that cannot be cited: no title or no authors. These two
+ * empty-field rules remove the known API junk (empty-title "component"
+ * records, stray keyword matches without authors) without touching real
+ * papers.
  */
 export function filterRecords(records: SourceRecord[]): FilterResult {
 	const kept: SourceRecord[] = [];
@@ -45,8 +44,8 @@ export function filterRecords(records: SourceRecord[]): FilterResult {
  * and are ignored for identity: OSF-style "..._v1" DOI variants and arXiv
  * "...v2" IDs (seen live: 10.31227/osf.io/pz6jv vs .../pz6jv_v1 returned as
  * two records). Only the key is normalized; record fields stay untouched.
- * Exported: the fetch stage keys its lit-selection/ library the same way, so one
- * paper is never stored twice.
+ * Exported: the selection stage keys its lit-selection/ library the same
+ * way, so one paper is never stored twice.
  */
 export function identityKey(record: Pick<MergedRecord, "doi" | "arxiv_id">): string | null {
 	if (record.doi) return `doi:${record.doi.toLowerCase().replace(/_v\d+$/, "")}`;
@@ -63,18 +62,24 @@ function filledFieldCount(record: MergedRecord): number {
 	return Object.values(record).filter((value) => !isEmpty(value)).length;
 }
 
+/** Copy of `base` whose empty fields are filled from `other` (same shape);
+ * values are only copied, never rewritten. */
+function fillGaps<T extends object>(base: T, other: T): T {
+	const merged: Record<string, unknown> = { ...(base as Record<string, unknown>) };
+	for (const [key, value] of Object.entries(other)) {
+		if (isEmpty(merged[key]) && !isEmpty(value)) merged[key] = value;
+	}
+	return merged as T;
+}
+
 /**
  * Merge two records for the same paper: start from the richer one and fill
- * its gaps from the other. Values are only copied, never rewritten.
+ * its gaps from the other; citations take the higher count, sources and
+ * found_by are unioned.
  */
 function mergePair(a: MergedRecord, b: MergedRecord): MergedRecord {
 	const [base, other] = filledFieldCount(a) >= filledFieldCount(b) ? [a, b] : [b, a];
-	const merged: MergedRecord = { ...base };
-	for (const key of Object.keys(other) as Array<keyof MergedRecord>) {
-		if (isEmpty(merged[key]) && !isEmpty(other[key])) {
-			(merged as Record<string, unknown>)[key] = other[key];
-		}
-	}
+	const merged = fillGaps(base, other);
 	const counts = [a.cites, b.cites].filter((c): c is number => Number.isInteger(c));
 	merged.cites = counts.length ? Math.max(...counts) : null;
 	merged.sources = [...a.sources, ...b.sources.filter((s) => !a.sources.includes(s))];
@@ -102,13 +107,13 @@ export function dedupe(records: SourceRecord[]): MergedRecord[] {
 		if (key === null) {
 			unidentified.push(record);
 		} else if (mergedByKey.has(key)) {
-			mergedByKey.set(key, mergePair(mergedByKey.get(key) as MergedRecord, record));
+			mergedByKey.set(key, mergePair(mergedByKey.get(key)!, record));
 		} else {
 			mergedByKey.set(key, record);
 			order.push(key);
 		}
 	}
-	return [...order.map((key) => mergedByKey.get(key) as MergedRecord), ...unidentified];
+	return [...order.map((key) => mergedByKey.get(key)!), ...unidentified];
 }
 
 /**
@@ -124,8 +129,8 @@ export interface ResultFilters {
 	/** Keep records whose journal 2-yr citedness (OpenAlex, an open JIF
 	 * analog attached by enrichment) is at least this. Records WITHOUT a
 	 * score (preprints, unmatched venues) pass -- absence of the score is
-	 * not evidence against the paper (v30 user decision: filters are
-	 * strictly opt-in and never silently lose the unknown). */
+	 * not evidence against the paper; filters are strictly opt-in and never
+	 * silently lose the unknown. */
 	minJournalScore?: number;
 	/** Keep records published in [yearFrom, yearTo]. A record with unknown
 	 * year cannot prove it is in range and is dropped, with a reason. */
@@ -136,8 +141,8 @@ export interface ResultFilters {
 	 * match a venue request and are dropped, with a reason -- UNLESS
 	 * venuesOther is set (see below). */
 	venues?: string[];
-	/** v30.11: also keep records that belong to NO journal on the picker's
-	 * list -- the "Other journals/sources" row. Venue-less records (arXiv,
+	/** Also keep records that belong to NO journal on the picker's list --
+	 * the "Other journals/sources" row. Venue-less records (arXiv,
 	 * preprints) count as "other" and pass. Without venuesListed the row
 	 * cannot know what "other" excludes, so nothing is filtered at all. */
 	venuesOther?: boolean;
@@ -146,12 +151,12 @@ export interface ResultFilters {
 	 * these is "other". */
 	venuesListed?: string[];
 	/** Keep records where at least one AUTHOR NAME contains one of these
-	 * strings (case-insensitive; v30.9). Author names are API metadata;
+	 * strings (case-insensitive). Author names are API metadata;
 	 * records without any matching author are dropped, with a reason --
 	 * UNLESS authorsOther is set (see below). */
 	authors?: string[];
-	/** v30.11: also keep records by authors who are NOT on the picker's
-	 * list -- the "Other authors" row. Same shape as venuesOther. */
+	/** Also keep records by authors who are NOT on the picker's list -- the
+	 * "Other authors" row. Same shape as venuesOther. */
 	authorsOther?: boolean;
 	/** The author names the picker LISTED (its top-N facet head). */
 	authorsListed?: string[];
@@ -196,7 +201,7 @@ function filterReason(record: FilterableRecord, filters: ResultFilters): string 
 	const wantedVenues = (filters.venues ?? []).map((name) => name.trim().toLowerCase()).filter(Boolean);
 	const listedVenues = (filters.venuesListed ?? []).map((name) => name.trim().toLowerCase()).filter(Boolean);
 	// "Other journals/sources" without a list of what IS listed excludes
-	// nothing -- the venue filter is then off, honestly (v30.11).
+	// nothing -- the venue filter is then off, honestly.
 	const otherWanted = !!filters.venuesOther && listedVenues.length > 0;
 	if (wantedVenues.length || otherWanted) {
 		const venue = record.venue.trim().toLowerCase();
@@ -215,8 +220,8 @@ function filterReason(record: FilterableRecord, filters: ResultFilters): string 
 	}
 	const wantedAuthors = (filters.authors ?? []).map((name) => name.trim().toLowerCase()).filter(Boolean);
 	const listedAuthors = (filters.authorsListed ?? []).map((name) => name.trim().toLowerCase()).filter(Boolean);
-	// Same rule as the journals above (v30.11): "other authors" without a
-	// list of who IS listed excludes nobody.
+	// Same rule as the journals above: "other authors" without a list of
+	// who IS listed excludes nobody.
 	const otherAuthorsWanted = !!filters.authorsOther && listedAuthors.length > 0;
 	if (wantedAuthors.length || otherAuthorsWanted) {
 		const names = record.authors.map((author) => author.toLowerCase());
@@ -238,15 +243,12 @@ function filterReason(record: FilterableRecord, filters: ResultFilters): string 
 	return null;
 }
 
-/** Apply user filters; returns kept records and dropped ones with reasons. */
 /**
  * Records still without an abstract AFTER enrichment move to the dropped
- * list (2026-08-10 user decision "Quellen ohne Abstract sollten ohnehin
- * zu den dropped records"): the block labeling matches title+abstract, so
- * an abstract-less record cannot be judged fairly -- and since the
- * dropped table carries the full columns and checkboxes, nothing is lost,
- * only honestly set aside. The reason string is the caller's (it differs
- * with enrichment on/off). Pure.
+ * list: the block labeling matches title+abstract, so an abstract-less
+ * record cannot be judged fairly -- and since the dropped table carries
+ * the full columns and checkboxes, nothing is lost, only set aside. The
+ * reason string is the caller's (it differs with enrichment on/off). Pure.
  */
 export function dropWithoutAbstract<T extends { abstract: string }>(
 	records: T[],
@@ -261,6 +263,7 @@ export function dropWithoutAbstract<T extends { abstract: string }>(
 	return { kept, dropped };
 }
 
+/** Apply user filters; returns kept records and dropped ones with reasons. */
 export function applyFilters<T extends FilterableRecord>(
 	records: T[],
 	filters: ResultFilters,
@@ -295,10 +298,9 @@ export function sortRecords<T extends { cites: number | null; year: string | nul
  * Grouping rules: a list of term groups. A record is on_target when at
  * least one term from EVERY group appears in its title+abstract
  * (case-insensitive substring match). The rules are data, supplied per
- * query -- e.g. [["river","fluvial"],["sandbar","bar"],["sentinel"]] for
- * the WP1 sandbar topic. The CHECK is fixed deterministic code; an LLM may
- * propose the word lists (that is "labeling a group"), it never touches
- * the records.
+ * query -- e.g. [["river","fluvial"],["sandbar","bar"],["sentinel"]]. The
+ * CHECK is fixed deterministic code; an LLM may propose the word lists, it
+ * never touches the records.
  */
 export type TermGroups = string[][];
 
@@ -322,19 +324,16 @@ function escapeRegExp(value: string): string {
 }
 
 /**
- * Whole-word term matching (design/2026-07-14_v18). Substring matching let
- * "s2" hit "S2GIS" and "bar" hit "sandbar"; a term now only matches a whole
- * word: no word character may touch it on either side (explicit lookarounds
- * instead of \b, which flips at non-word term edges like "sentinel-2").
- * Exactly three tolerances, all user decisions: separators inside a term
- * match hyphen or whitespace interchangeably ("sentinel-2" finds
- * "Sentinel 2"), an optional plural-s ("sandbar" finds "sandbars" but not
- * "sandbarrier"), and the English y->ies plural on consonant+y endings
- * ("body" finds "bodies", "study" finds "studies"; 2026-08-06 field
- * evidence: "Semantic segmentation of water bodies" -- one of the user's
- * most relevant finds -- was labeled adjacent because "body" missed
- * "bodies"). No stemming, no synonyms -- those belong in the term groups,
- * visible and editable in the intake dialog.
+ * Whole-word term matching. A term only matches a whole word: no word
+ * character may touch it on either side (explicit lookarounds instead of
+ * \b, which flips at non-word term edges like "sentinel-2"), so "s2" does
+ * not hit "S2GIS" and "bar" does not hit "sandbar". Exactly three
+ * tolerances: separators inside a term match hyphen or whitespace
+ * interchangeably ("sentinel-2" finds "Sentinel 2"), an optional plural-s
+ * ("sandbar" finds "sandbars" but not "sandbarrier"), and the English
+ * y->ies plural on consonant+y endings ("body" finds "bodies"). No
+ * stemming, no synonyms -- those belong in the term groups, visible and
+ * editable in the dialog.
  */
 export function termMatches(text: string, term: string): boolean {
 	const rawParts = term.split(/[-\s]+/).filter(Boolean);
@@ -354,61 +353,20 @@ export function termMatches(text: string, term: string): boolean {
 }
 
 /**
- * Deterministic on_target/adjacent split -- fixed matching code, never an
- * LLM. By default every term group must match; minGroups relaxes that to
- * "at least this many groups" (v30.3: the wide "any two concepts"
- * variant -- (a AND b) OR (a AND c) OR (b AND c) expressed without a DNF
- * rule format). A small on_target set is correct; never padded.
- */
-export function group(
-	record: { title: string; abstract: string },
-	termGroups: TermGroups,
-	minGroups?: number,
-): "on_target" | "adjacent" {
-	const text = `${record.title} ${record.abstract}`.toLowerCase();
-	const required = Math.min(minGroups ?? termGroups.length, termGroups.length);
-	const matched = termGroups
-		.filter((groupTerms) => groupTerms.some((term) => termMatches(text, term)))
-		.length;
-	return matched >= required && required > 0 ? "on_target" : "adjacent";
-}
-
-/**
- * Stamp each record with its group; on_target first in the output. With no
- * (usable) term groups, records pass through untouched and ungrouped --
- * honest "no rules, no grouping" instead of a meaningless all-adjacent.
- */
-export function groupAll<T extends { title: string; abstract: string }>(
-	records: T[],
-	termGroups: TermGroups,
-	minGroups?: number,
-): Array<T & { group?: "on_target" | "adjacent" }> {
-	if (!termGroups.length) return records;
-	const grouped = records.map((record) => ({ ...record, group: group(record, termGroups, minGroups) }));
-	return [
-		...grouped.filter((r) => r.group === "on_target"),
-		...grouped.filter((r) => r.group === "adjacent"),
-	];
-}
-
-/**
- * Multi-query labeling (2026-08-06; revised the same day on user decision
- * "38 und 39 sind fast die wichtigsten Funde und werden als adjacent
- * betitelt"): every record is checked against the blocks of ALL confirmed
- * queries -- on_target means "full match for at least one of the questions
- * you confirmed", REGARDLESS of which query happened to surface the record
- * (found_by stays pure provenance). The first version judged only against
- * the finder's blocks, which let chance decide the label: a review found
- * only by the strict base query stayed adjacent although a variant's
- * blocks matched it fully. Accepted cost (user): a loose variant's blocks
- * now bless every record they match, whoever found it -- block quality
- * carries the precision. With no blocks anywhere records stay honestly
- * ungrouped. Ordering: on_target first, everything else in incoming order.
+ * Multi-query labeling: every record is checked against the blocks of ALL
+ * confirmed queries -- on_target means "full match for at least one of the
+ * confirmed queries", regardless of which query surfaced the record
+ * (found_by stays pure provenance). Judging only against the finder's
+ * blocks would let chance decide the label. Accepted cost: a loose
+ * variant's blocks bless every record they match, so block quality carries
+ * the precision. group_matched records which query and which term per
+ * block hit, so the page can show WHY a record is on_target. With no
+ * blocks anywhere records stay ungrouped. Ordering: on_target first,
+ * everything else in incoming order.
  */
 export function groupAcrossQueries<T extends { title: string; abstract: string }>(
 	records: T[],
 	blockSets: TermGroups[],
-	minGroups?: number,
 ): Array<T & { group?: "on_target" | "adjacent"; group_matched?: { query: number; terms: string[] } }> {
 	const sets = blockSets
 		.map((blocks, index) => ({ blocks, query: index + 1 }))
@@ -417,18 +375,13 @@ export function groupAcrossQueries<T extends { title: string; abstract: string }
 	const grouped = records.map((record) => {
 		const text = `${record.title} ${record.abstract}`.toLowerCase();
 		for (const set of sets) {
-			// Same decision as group(), but KEEPING which term hit per block:
-			// the label's evidence line must show WHY a record is on_target
-			// (2026-08-06 field lesson: homonyms like "stream" -- two-stream
-			// CNNs -- earned labels invisibly; the culprit term has to be
-			// readable on the page, not reconstructed by hand).
+			// Which term hit per block; a full set of hits = on_target.
 			const hits: string[] = [];
 			for (const groupTerms of set.blocks) {
 				const hit = groupTerms.find((term) => termMatches(text, term));
 				if (hit !== undefined) hits.push(hit);
 			}
-			const required = Math.min(minGroups ?? set.blocks.length, set.blocks.length);
-			if (required > 0 && hits.length >= required) {
+			if (hits.length === set.blocks.length) {
 				return {
 					...record,
 					group: "on_target" as const,

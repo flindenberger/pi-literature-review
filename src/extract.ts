@@ -123,7 +123,7 @@ export interface BibliographyCut {
  * Blank out the reference list of a paper. Its entries are titles of OTHER
  * work: they answer no question about THIS paper, they occupy a fifth of
  * the index, and they occasionally win an excerpt slot with a title that
- * happens to match the question (user observation 2026-07-27).
+ * happens to match the question.
  *
  * Deterministic and conservative:
  *   - the heading must stand on a LINE OF ITS OWN and sit in the last 60 %
@@ -281,7 +281,7 @@ export const PHRASE_MAX_WORDS = 200;
  * viewerPageTexts() -- an approximation of it is not good enough, see the
  * ligature case documented in pdfjs-find.ts. Pure.
  *
- * Measured 2026-07-27 on the test corpus: most excerpts are highlightable
+ * Measured on the test corpus: most excerpts are highlightable
  * in full; the rest are cut short where our cleanup removed something the
  * viewer still sees, and a small remainder gets no highlight at all --
  * there the reader still lands on the right page, which is the honest

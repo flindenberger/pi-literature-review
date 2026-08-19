@@ -1,5 +1,5 @@
 /**
- * Verification -- THE TRUST GATE. Direct port of the Python oracle.
+ * Verification -- the trust gate of the search stage.
  *
  * Every record's identifier must actually resolve before it is shown as
  * verified. DOI: HEAD https://doi.org/<doi> without following redirects; a
@@ -7,12 +7,12 @@
  * abstract page; 200 (or a redirect) means the preprint exists. Anything
  * else -- wrong status, network failure, no identifier at all -- is the gray
  * zone: verified stays false and verify_note says why. Never silently
- * confirmed. Network happens here only; requests are polite (timeout, pause,
- * User-Agent).
+ * confirmed. Requests are polite (timeout, pause, User-Agent); the HEAD
+ * function is injectable so the decision logic tests offline.
  */
 
 import type { MergedRecord } from "./pipeline.ts";
-import { userAgent, warn } from "./types.ts";
+import { errorName, userAgent, warn } from "./types.ts";
 
 export interface VerifiedRecord extends MergedRecord {
 	verified: boolean;
@@ -36,27 +36,35 @@ function explainStatus(status: number | null): string {
 	return "unexpected status";
 }
 
-/** One polite HEAD request; returns the status code, or an error note. */
-async function headStatus(url: string): Promise<{ status: number | null; note: string }> {
+/** Result of one HEAD request: the status code, or null with an error note. */
+export type HeadStatus = { status: number | null; note: string };
+export type HeadFn = (url: string, signal?: AbortSignal) => Promise<HeadStatus>;
+
+/** One polite HEAD request (per-request timeout combined with the run's
+ * abort signal when given). */
+async function headStatus(url: string, signal?: AbortSignal): Promise<HeadStatus> {
+	const timeout = AbortSignal.timeout(VERIFY_TIMEOUT_MS);
 	try {
 		const response = await fetch(url, {
 			method: "HEAD",
 			redirect: "manual",
 			headers: { "User-Agent": userAgent() },
-			signal: AbortSignal.timeout(VERIFY_TIMEOUT_MS),
+			signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
 		});
 		return { status: response.status, note: "" };
 	} catch (error) {
-		const name = error instanceof Error ? (error.cause as Error)?.name ?? error.name : "unknown";
-		return { status: null, note: `network error: ${name}` };
+		return { status: null, note: `network error: ${errorName(error)}` };
 	}
 }
 
+/** Verify ONE record's identifier (DOI first, else arXiv ID). */
 export async function verifyRecord(
 	record: Pick<MergedRecord, "doi" | "arxiv_id">,
+	head: HeadFn = headStatus,
+	signal?: AbortSignal,
 ): Promise<{ verified: boolean; note: string }> {
 	if (record.doi) {
-		const { status, note } = await headStatus(`https://doi.org/${record.doi}`);
+		const { status, note } = await head(`https://doi.org/${record.doi}`, signal);
 		if (status !== null && status >= 300 && status < 400) {
 			return { verified: true, note: "" };
 		}
@@ -67,7 +75,7 @@ export async function verifyRecord(
 		};
 	}
 	if (record.arxiv_id) {
-		const { status, note } = await headStatus(`https://arxiv.org/abs/${record.arxiv_id}`);
+		const { status, note } = await head(`https://arxiv.org/abs/${record.arxiv_id}`, signal);
 		if (status !== null && (status === 200 || (status >= 300 && status < 400))) {
 			return { verified: true, note: "" };
 		}
@@ -87,12 +95,13 @@ export async function verifyAll(
 	records: MergedRecord[],
 	onWarn: (message: string) => void = warn,
 	signal?: AbortSignal,
+	head: HeadFn = headStatus,
 ): Promise<VerifiedRecord[]> {
 	const verified: VerifiedRecord[] = [];
 	for (const [index, record] of records.entries()) {
 		if (signal?.aborted) throw new Error("search aborted during verification");
-		if (index) await new Promise((resolve) => setTimeout(resolve, VERIFY_PAUSE_MS));
-		const result = await verifyRecord(record);
+		if (index && head === headStatus) await new Promise((resolve) => setTimeout(resolve, VERIFY_PAUSE_MS));
+		const result = await verifyRecord(record, head, signal);
 		if (!result.verified) {
 			const label = record.doi || record.arxiv_id || record.title;
 			onWarn(`unverified "${label}": ${result.note}`);

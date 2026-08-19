@@ -1,10 +1,13 @@
 /**
- * Synthesis engine: answer a research question from the local, verified
- * PDF library -- grounded RAG in the OpenScholar spirit, sized for a
- * 10-100 paper corpus on a local GPU.
+ * Synthesis engine: grounded answers and reports from the local, verified
+ * PDF library (retrieval-augmented generation sized for a 10-100 paper
+ * corpus on a local GPU). Shared by the pi tool/command and the CLI.
  *
- * Pipeline: match library -> ensure embedding index -> shared retrieval
- * (query variants + embedding union + lexical layer, retrieve.ts) -> ONE
+ * Entry points: runRound (one question, one or several papers, persisted
+ * as a protocol round), runChatReport (session summary of one paper) and
+ * runReport (composable report: summaries, detail questions, review). All
+ * share the same chain: match library -> ensure embedding index -> retrieval (query
+ * variants + embedding union + lexical layer, retrieve.ts) -> ONE
  * generation pass -> deterministic citation enforcement -> paper-level
  * references.
  *
@@ -55,8 +58,8 @@ import {
 	translateViaBackend,
 } from "./retrieve.ts";
 
-// The retrieval primitives moved to retrieve.ts (v24 Stage 1); re-exported
-// so existing importers (chat.ts, tests) keep one stable surface.
+// Retrieval primitives live in retrieve.ts; re-exported so importers and
+// tests keep one stable surface.
 export {
 	cosine,
 	type QueryVariant,
@@ -74,15 +77,15 @@ export const OUTPUT_RESERVE_TOKENS = 1024;
 const CHARS_PER_TOKEN = 4;
 export const DEFAULT_TOP_K = 8;
 export const MAX_TOP_K = 20;
+/** Low sampling temperature for every genre; tone comes from the prompt. */
 const TEMPERATURE = 0.2;
 
 /**
- * Guard against an EMPTY generation (field failure 2026-07-20: a thinking
- * model spent its entire run on hidden reasoning and returned no answer
- * text at all -- the empty string then flowed through the citation gate as
- * a confusing "ungrounded draft" with nothing in it). An empty output is a
- * backend failure, not a groundable answer; fail loudly with the likely
- * cause and the ways out.
+ * Guard against an EMPTY generation: a thinking model can spend its whole
+ * token budget on hidden reasoning and return no answer text, which would
+ * otherwise flow through the citation gate as an empty "ungrounded draft".
+ * An empty output is a backend failure, not a groundable answer; fail
+ * loudly with the likely cause and the ways out.
  */
 export function requireOutput(rawOutput: string): void {
 	if (rawOutput.trim()) return;
@@ -193,6 +196,52 @@ export function enforceCitations(raw: string, chunkCount: number): CitationScan 
 	return { text, citedChunkIds, invalidMarkers, unmarkedSentences, strippedReferenceSection };
 }
 
+/**
+ * Shared tail of every generation: trim the retrieved excerpts to the
+ * context budget (lowest-ranked first, ids renumbered), run ONE generation
+ * pass, and push the raw output through the citation gate. Returns the
+ * excerpts actually shown to the model, so the caller's trail and
+ * references stay exact.
+ */
+async function generateGrounded(args: {
+	retrieved: RetrievedChunk[];
+	promptOf: (chunks: RetrievedChunk[]) => { system: string; user: string };
+	backend: LlmBackend;
+	model: string;
+	onWarn: (message: string) => void;
+	/** Status line before the generation call; receives the final excerpt count. */
+	progress?: (excerpts: number) => string;
+	abortMessage: string;
+	signal?: AbortSignal;
+}): Promise<{ retrieved: RetrievedChunk[]; trimmed: number; rawOutput: string; scan: CitationScan }> {
+	let retrieved = args.retrieved;
+	let prompt = args.promptOf(retrieved);
+	let trimmed = 0;
+	const budget = NUM_CTX - OUTPUT_RESERVE_TOKENS;
+	while (retrieved.length > 1 && promptTokens(prompt) > budget) {
+		retrieved = retrieved.slice(0, -1).map((chunk, i) => ({ ...chunk, id: i + 1 }));
+		prompt = args.promptOf(retrieved);
+		trimmed++;
+	}
+	if (trimmed) args.onWarn(`context budget: dropped the ${trimmed} lowest-ranked chunk(s) to fit ${NUM_CTX} tokens`);
+	if (args.signal?.aborted) throw new Error(args.abortMessage);
+	if (args.progress) args.onWarn(args.progress(retrieved.length));
+	// think:false -- excerpt-grounded answers need no hidden reasoning; a
+	// thinking model would burn the output budget on it (Ollama dialect
+	// only; the OpenAI dialect and the pi backend ignore the field).
+	const generateOptions: GenerateOptions = { model: args.model, numCtx: NUM_CTX, temperature: TEMPERATURE, think: false };
+	const rawOutput = await args.backend.generate(prompt.system, prompt.user, generateOptions, args.signal);
+	requireOutput(rawOutput);
+	const scan = enforceCitations(rawOutput, retrieved.length);
+	if (scan.invalidMarkers.length) {
+		args.onWarn(`stripped ${scan.invalidMarkers.length} invalid citation marker(s): ${scan.invalidMarkers.join(" ")}`);
+	}
+	if (scan.strippedReferenceSection) {
+		args.onWarn("the model wrote its own reference section; it was cut (references come from verified records only)");
+	}
+	return { retrieved, trimmed, rawOutput, scan };
+}
+
 /* ------------------------------------------------------------------ *
  * Paper-level references -- pure                                       *
  * ------------------------------------------------------------------ */
@@ -219,18 +268,13 @@ export interface ReferenceEntry {
 /**
  * FALLBACK search phrase for the PDF #search fragment: the first run of at
  * least 3 CONSECUTIVE words containing only letters/digits (capped at 5).
- * Deliberately timid, because it is a guess: phrase search matches the
- * text layer verbatim, so a single comma inside the snippet -- or a word
- * we trimmed punctuation from -- would kill the match (live finding
- * 2026-07-16).
- *
- * Since 2026-07-27 this is only the fallback. Chunks indexed by the
- * current code carry phrase_words, a length MEASURED against the raw text
- * layer, and highlightPhrase() prefers it: for the median chunk that
- * highlights the whole excerpt instead of five words. This guess still
- * serves chunks from legacy indexes and hand-built fixtures.
- * (Moved here from render.ts in E2b: the snippet is citation provenance,
- * persisted in CitationSite, not a rendering detail.)
+ * Deliberately timid, because it is a guess: the viewer's phrase search
+ * matches the text layer verbatim, so a single comma inside the snippet
+ * would kill the match. Chunks indexed by the current code carry
+ * phrase_words (a length MEASURED against the viewer's text layer) and
+ * highlightPhrase() prefers that; this guess still serves chunks from
+ * older indexes and hand-built fixtures. Lives here because the snippet is
+ * citation provenance (persisted in CitationSite), not a rendering detail.
  */
 export function searchSnippet(text: string): string | null {
 	const words = text.replace(/\[\d+\]/g, " ").split(/\s+/).filter(Boolean);
@@ -269,11 +313,10 @@ export function highlightPhrase(chunk: { text: string; phrase_words?: number }):
  * produced, and no model output flows into any field but the marker
  * positions themselves.
  *
- * Collapse rule (changed in v25 E2b): adjacent markers merge ONLY when
- * they cite the same CHUNK. The old same-paper collapse destroyed the
- * page targets ([page 4][page 18] became one number pointing nowhere
- * specific); now every kept marker still knows its page. The cost is more
- * visible markers -- a deliberate trade, evaluated in the field.
+ * Collapse rule: adjacent markers merge ONLY when they cite the same CHUNK
+ * (a same-paper collapse would destroy the page targets -- [page 4][page
+ * 18] becoming one number pointing nowhere specific); the cost is more
+ * visible markers.
  *
  * Invariant (tested): the number of markers in the returned prose equals
  * sites.length.
@@ -358,7 +401,7 @@ export interface CitedUnit {
  * order, mirrored one-to-one by the unit's sites (the buildCitations
  * invariant), so no text is ever interpreted beyond the validated markers.
  */
-export function assembleReport(units: CitedUnit[]): { units: CitedUnit[]; references: ReferenceEntry[] } {
+export function assembleReport<T extends CitedUnit>(units: T[]): { units: T[]; references: ReferenceEntry[] } {
 	const references: ReferenceEntry[] = [];
 	const numberByKey = new Map<string, number>();
 	const globalOf = (local: ReferenceEntry): number => {
@@ -394,253 +437,12 @@ export function assembleReport(units: CitedUnit[]): { units: CitedUnit[]; refere
 	return { units: rewritten, references };
 }
 
-/* ------------------------------------------------------------------ *
- * Orchestration                                                        *
- * ------------------------------------------------------------------ */
-
-export interface SynthesisOptions {
-	question: string;
-	/** Restrict to these PDF filenames (basename, with or without .pdf). */
-	papers?: string[];
-	model?: string;
-	embedModel?: string;
-	topK?: number;
-	/** Output language of the prose; default: the language of the question. */
-	language?: string;
-	/** Force re-extraction and re-embedding of every paper. */
-	reindex?: boolean;
-	root?: string;
-	onWarn?: (message: string) => void;
-	signal?: AbortSignal;
-}
-
-export interface SynthesisDeps {
-	corpus: CorpusDeps;
-	backend: LlmBackend;
-	/** Library scan; injectable so the orchestration tests offline. */
-	library?: (root: string, onWarn: (message: string) => void) => LibraryMatch;
-	/** Adoption of unmatched PDFs; injectable for offline tests. */
-	adopt?: (unmatched: string[], papersDir: string) => Promise<AdoptionResult[]>;
-	/** English-variant translator for retrieval (see retrieve.ts). Omitted:
-	 * one small generate() call on the backend; null: variant disabled. */
-	translate?: TranslateFn | null;
-}
-
-/** Full payload; written as the JSON sidecar next to the HTML. */
-export interface SynthesisResult {
-	question: string;
-	generated: string;
-	model: string;
-	embedding_model: string;
-	backend: string;
-	top_k: number;
-	grounded: boolean;
-	/** Final prose with paper-level [n] markers. */
-	prose: string;
-	references: ReferenceEntry[];
-	/** Per-marker chunk provenance in document order (one entry per marker
-	 * in the prose; drives the clickable PDF superscripts). */
-	sites: CitationSite[];
-	/** Retrieval trail: every excerpt that was in the prompt. */
-	chunks: Array<{ id: number; paper_key: string; title: string; page: number; score: number; text: string; lexical?: boolean; phrase_words?: number }>;
-	/** Queries of the ONE embed call (original + disclosed English variant). */
-	query_variants: QueryVariant[];
-	/** Salient terms the lexical layer exact-matched over the chunk texts. */
-	lexical_terms: string[];
-	/** Excerpts in the prompt only because a term matched exactly. */
-	lexical_added: number;
-	invalid_markers: string[];
-	unmarked_sentences: number;
-	stripped_reference_section: boolean;
-	/** Chunks dropped by the context-budget guard (lowest-ranked first). */
-	trimmed_chunks: number;
-	papers_matched: number;
-	papers_cited: number;
-	/** Retrieved but not cited by the model (keys, for the methods footer). */
-	papers_uncited: string[];
-	/** Loose PDFs that gained a verified identity this run (see adopt.ts). */
-	adopted_pdfs: string[];
-	/** Adoption attempts that failed, with the plain-language reason. */
-	adoption_failures: Array<{ file: string; reason: string }>;
-	/** PDFs without a verified record -- excluded, listed honestly. */
-	unmatched_pdfs: string[];
-	extraction_failures: ExtractionFailure[];
-	/** Untouched generator output, kept for inspection (sidecar only). */
-	raw_output: string;
-}
-
-function filterPapers(matched: LibraryPaper[], wanted: string[] | undefined, onWarn: (m: string) => void): LibraryPaper[] {
-	if (!wanted?.length) return matched;
-	const bases = new Set(wanted.map((name) => name.trim().replace(/\.pdf$/i, "")).filter(Boolean));
-	const kept = matched.filter((paper) => bases.has(paper.base));
-	for (const base of bases) {
-		if (!matched.some((paper) => paper.base === base)) {
-			onWarn(`requested paper not in the matched library: ${base}.pdf`);
-		}
-	}
-	return kept;
-}
-
-export async function runSynthesis(
-	options: SynthesisOptions,
-	deps?: SynthesisDeps,
-): Promise<SynthesisResult> {
-	const onWarn = options.onWarn ?? (() => {});
-	const question = options.question.trim();
-	if (!question) throw new Error("empty question");
-	const root = options.root ?? outputRoot();
-	const cfg = llmConfig();
-	const model = options.model?.trim() || cfg.generateModel;
-	const embedModel = options.embedModel?.trim() || cfg.embedModel;
-	const topK = Math.max(1, Math.min(options.topK ?? DEFAULT_TOP_K, MAX_TOP_K));
-	const backend = deps?.backend ?? createBackend({ ...cfg, generateModel: model, embedModel });
-	const corpus = deps?.corpus ?? realCorpusDeps((texts, signal) => backend.embed(texts, signal));
-
-	// 1. Library: verified papers only. Loose PDFs first get an adoption
-	// attempt (identifier from the PDF text, verified API lookup, twin on
-	// disk); whatever still has no verified identity is excluded and named.
-	const libraryFn = deps?.library ?? matchLibrary;
-	let match = libraryFn(root, onWarn);
-	const adoptedPdfs: string[] = [];
-	const adoptionFailures: Array<{ file: string; reason: string }> = [];
-	if (match.unmatched.length) {
-		onWarn(`${match.unmatched.length} PDF(s) without verified metadata -- attempting adoption (identifier lookup)`);
-		const adoptFn = deps?.adopt
-			?? ((files: string[], dir: string) => adoptUnmatched(files, dir, realAdoptDeps(), onWarn, options.signal));
-		// One adoption pass per folder (v31.1: the corpus may span several).
-		const adoptions: AdoptionResult[] = [];
-		for (const group of unmatchedGroups(match)) {
-			adoptions.push(...await adoptFn(group.files, group.dir));
-		}
-		for (const adoption of adoptions) {
-			if (adoption.status === "adopted") {
-				adoptedPdfs.push(adoption.file);
-				onWarn(`adopted ${adoption.file}: ${adoption.detail}`);
-			} else {
-				adoptionFailures.push({ file: adoption.file, reason: adoption.detail });
-				onWarn(`could not adopt ${adoption.file}: ${adoption.detail}`);
-			}
-		}
-		if (adoptedPdfs.length) match = libraryFn(root, onWarn); // new twins -> re-match
-	}
-	const { matched, unmatched } = match;
-	const papers = filterPapers(matched, options.papers, onWarn);
-	if (!papers.length) {
-		throw new Error(
-			"no papers with verified metadata in the library -- run a search and fetch first"
-			+ (adoptionFailures.length
-				? `; adoption failed for: ${adoptionFailures.map((f) => `${f.file} (${f.reason})`).join("; ")}`
-				: ""),
-		);
-	}
-
-	// 2. Index (cached unless content/model changed), then the question vector.
-	const { indexes, failures } = await ensureIndexed(papers, join(root, "lit-synthesis", "index"), embedModel, corpus, {
-		force: options.reindex,
-		onProgress: onWarn,
-		signal: options.signal,
-	});
-	if (!indexes.length) {
-		throw new Error("no paper in the selection has extractable text -- nothing to synthesize from");
-	}
-	if (options.signal?.aborted) throw new Error("synthesis aborted by the user");
-
-	// 3. Retrieval (query variants + lexical layer, see retrieve.ts) +
-	// context-budget guard (NUM_CTX minus the answer reserve).
-	const translate = deps?.translate !== undefined ? deps.translate : translateViaBackend(backend, model);
-	const retrieval = await retrieve({
-		queries: [question],
-		indexes,
-		perQueryK: topK,
-		cap: topK,
-		embed: (texts, signal) => corpus.embed(texts, signal),
-		translate,
-		onWarn,
-		signal: options.signal,
-	});
-	let retrieved = retrieval.chunks;
-	let prompt = buildPrompt(question, retrieved, options.language);
-	let trimmed = 0;
-	const budget = NUM_CTX - OUTPUT_RESERVE_TOKENS;
-	while (retrieved.length > 1 && promptTokens(prompt) > budget) {
-		retrieved = retrieved.slice(0, -1).map((chunk, i) => ({ ...chunk, id: i + 1 }));
-		prompt = buildPrompt(question, retrieved, options.language);
-		trimmed++;
-	}
-	if (trimmed) onWarn(`context budget: dropped the ${trimmed} lowest-ranked chunk(s) to fit ${NUM_CTX} tokens`);
-
-	// 4. ONE generation pass; the output is untrusted prose from here on.
-	if (options.signal?.aborted) throw new Error("synthesis aborted by the user");
-	onWarn(`generating with ${model} (${retrieved.length} excerpts; this can take a few minutes on a local GPU)`);
-	// think:false -- excerpt-grounded answers need no hidden reasoning; a
-	// thinking model would burn the output budget on it (Ollama dialect
-	// only; the OpenAI dialect and the pi backend ignore the field).
-	const generateOptions: GenerateOptions = { model, numCtx: NUM_CTX, temperature: TEMPERATURE, think: false };
-	const rawOutput = await backend.generate(prompt.system, prompt.user, generateOptions, options.signal);
-	requireOutput(rawOutput);
-
-	// 5. Trust gate: validate markers, then paper-level references from
-	// verified records only.
-	const scan = enforceCitations(rawOutput, retrieved.length);
-	if (scan.invalidMarkers.length) {
-		onWarn(`stripped ${scan.invalidMarkers.length} invalid citation marker(s): ${scan.invalidMarkers.join(" ")}`);
-	}
-	if (scan.strippedReferenceSection) {
-		onWarn("the model wrote its own reference section; it was cut (references come from verified records only)");
-	}
-	const pdfPathByKey = new Map(papers.map((paper) => [paper.key, paper.file]));
-	const { prose, references, sites } = buildCitations(scan.text, retrieved, pdfPathByKey);
-	const citedKeys = new Set(references.map((reference) => reference.key));
-	const retrievedKeys = [...new Set(retrieved.map((chunk) => chunk.paper.key))];
-
-	return {
-		question,
-		generated: new Date().toISOString(),
-		model,
-		embedding_model: embedModel,
-		backend: `${cfg.api} at ${cfg.baseUrl}`,
-		top_k: topK,
-		grounded: references.length > 0,
-		prose,
-		references,
-		sites,
-		chunks: retrieved.map((chunk) => ({
-			id: chunk.id,
-			paper_key: chunk.paper.key,
-			title: chunk.paper.title,
-			page: chunk.page,
-			score: Number(chunk.score.toFixed(4)),
-			text: chunk.text,
-			...(chunk.lexical ? { lexical: true } : {}),
-			...(chunk.phrase_words ? { phrase_words: chunk.phrase_words } : {}),
-		})),
-		query_variants: retrieval.variants,
-		lexical_terms: retrieval.lexical_terms,
-		lexical_added: retrieval.lexical_added,
-		invalid_markers: scan.invalidMarkers,
-		unmarked_sentences: scan.unmarkedSentences,
-		stripped_reference_section: scan.strippedReferenceSection,
-		trimmed_chunks: trimmed,
-		papers_matched: papers.length,
-		papers_cited: citedKeys.size,
-		papers_uncited: retrievedKeys.filter((key) => !citedKeys.has(key)),
-		adopted_pdfs: adoptedPdfs,
-		adoption_failures: adoptionFailures,
-		unmatched_pdfs: unmatched,
-		extraction_failures: failures,
-		raw_output: rawOutput,
-	};
-}
-
 /* ================================================================== *
- * Round & session-report engine -- absorbed from src/chat.ts (v25    *
- * E2d). One engine module for the ONE tool: grounded Q&A rounds      *
- * (runRound), the session report (runChatReport) and the composable  *
- * report (runReport) share retrieval, citation gate and protocol.    *
+ * Round & session-report engine: grounded Q&A rounds (runRound) and   *
+ * the session report (runChatReport) share retrieval, citation gate   *
+ * and protocol with the composable report (runReport) below.          *
  * ================================================================== */
 
-/** Explanatory tone comes from the prompt, not from sampling. */
-const ASK_TEMPERATURE = 0.2;
 /** Report retrieval: chunks fetched per session question ... */
 export const REPORT_PER_QUESTION_K = 4;
 /** ... and the cap on the union that goes into the prompt. */
@@ -725,13 +527,13 @@ export const FILE_KEY_PREFIX = "file:";
 
 /**
  * The selectable chat pool: verified papers PLUS filename-only entries for
- * PDFs without a record (user decision 2026-07-16: every PDF in the folder
- * must be choosable; when no metadata exists, citations honestly carry
- * filename and page -- nothing bibliographic is ever invented). Pure.
+ * PDFs without a record (every PDF in the folder must be choosable; when no
+ * metadata exists, citations honestly carry filename and page -- nothing
+ * bibliographic is ever invented). Pure.
  */
 export function chatPool(match: LibraryMatch): LibraryPaper[] {
-	// v31.1: unmatched files may live in different folders (library + loose
-	// PDFs in the cwd) -- each entry keeps its own path.
+	// Unmatched files may live in different folders (library + loose PDFs
+	// in the cwd) -- each entry keeps its own path.
 	const unverified = unmatchedGroups(match).flatMap(({ dir, files }) => files.map((file) => {
 		const base = file.replace(/\.pdf$/i, "");
 		return {
@@ -754,7 +556,7 @@ function availablePapers(matched: LibraryPaper[]): string {
  * papers the sorted-member scope identity, the library its fixed marker.
  * Pure; null when a named single paper is not in the pool. Exported so
  * the adapter can look up THIS session's asked questions for a scope
- * (the v27 report-wizard seed) without duplicating the naming rules.
+ * (report-wizard seed) without duplicating the naming rules.
  */
 export function scopeProtocolId(
 	scope: string[] | "library",
@@ -818,7 +620,7 @@ export async function ensureLibrary(
 		onWarn(`${match.unmatched.length} PDF(s) without verified metadata -- attempting adoption (identifier lookup)`);
 		const adoptFn = options.adopt
 			?? ((files: string[], dir: string) => adoptUnmatched(files, dir, realAdoptDeps(), onWarn, options.signal));
-		// One adoption pass per folder (v31.1: the corpus may span several).
+		// One adoption pass per folder (the corpus may span several).
 		const adoptions: AdoptionResult[] = [];
 		for (const group of unmatchedGroups(match)) {
 			adoptions.push(...await adoptFn(group.files, group.dir));
@@ -845,8 +647,7 @@ export interface ChatOptions {
 	question: string;
 	/** PDF filename in the library (basename, with or without .pdf). */
 	paper?: string;
-	/** Document scope for the round (v25 E2e): several PDFs or the whole
-	 * library. Takes precedence over paper; when both are absent the
+	/** Document scope for the round: several PDFs or the whole library. Takes precedence over paper; when both are absent the
 	 * session's sticky scope decides. Multi-paper rounds retrieve across
 	 * the scope and are protocolled under a scope identity. */
 	papers?: string[] | "library";
@@ -868,9 +669,9 @@ export interface ChatOptions {
 
 export interface ChatDeps {
 	/** Both optional: omitted pieces are wired from the local config. The
-	 * Pi adapter injects a backend whose generate() calls the model
-	 * currently selected in pi (user decision 2026-07-16), while embed()
-	 * stays on the configured local embedding server. */
+	 * pi adapter injects a backend whose generate() calls the model
+	 * currently selected in pi, while embed() stays on the configured
+	 * embedding server. */
 	corpus?: CorpusDeps;
 	backend?: LlmBackend;
 	/** Library scan; injectable so the orchestration tests offline. */
@@ -934,7 +735,7 @@ export interface ChatAnswer {
 	/** First scope paper (single-paper rounds: THE paper; kept for existing
 	 * consumers). */
 	paper: ChatPaper;
-	/** Every paper of the round's scope (v25: length > 1 on multi rounds). */
+	/** Every paper of the round's scope (length > 1 on multi rounds). */
 	papers: ChatPaper[];
 	/** The scope as remembered in the sticky marker. */
 	scope: string[] | "library";
@@ -1023,36 +824,21 @@ export async function runRound(options: ChatOptions, deps?: ChatDeps): Promise<C
 		onWarn,
 		signal: options.signal,
 	});
-	let retrieved = retrieval.chunks;
-	let prompt = buildChatPrompt(question, retrieved, options.language, multi);
-	let trimmed = 0;
-	const budget = NUM_CTX - OUTPUT_RESERVE_TOKENS;
-	while (retrieved.length > 1 && promptTokens(prompt) > budget) {
-		retrieved = retrieved.slice(0, -1).map((chunk, i) => ({ ...chunk, id: i + 1 }));
-		prompt = buildChatPrompt(question, retrieved, options.language, multi);
-		trimmed++;
-	}
-	if (trimmed) onWarn(`context budget: dropped the ${trimmed} lowest-ranked chunk(s) to fit ${NUM_CTX} tokens`);
+	// 4. ONE generation pass (budget trim, generation, citation gate);
+	// untrusted prose until the gate has run.
+	const { retrieved, trimmed, rawOutput, scan } = await generateGrounded({
+		retrieved: retrieval.chunks,
+		promptOf: (chunks) => buildChatPrompt(question, chunks, options.language, multi),
+		backend,
+		model,
+		onWarn,
+		progress: (excerpts) => `generating with ${model} (${excerpts} excerpts from `
+			+ (multi ? `${scopePapers.length} documents)` : `${paper.base}.pdf)`),
+		abortMessage: "paper chat aborted by the user",
+		signal: options.signal,
+	});
 
-	// 4. ONE generation pass; untrusted prose from here on.
-	if (options.signal?.aborted) throw new Error("paper chat aborted by the user");
-	onWarn(`generating with ${model} (${retrieved.length} excerpts from `
-		+ (multi ? `${scopePapers.length} documents)` : `${paper.base}.pdf)`));
-	// think:false -- excerpt-grounded answers need no hidden reasoning; a
-	// thinking model would burn the output budget on it (Ollama dialect
-	// only; the OpenAI dialect and the pi backend ignore the field).
-	const generateOptions: GenerateOptions = { model, numCtx: NUM_CTX, temperature: ASK_TEMPERATURE, think: false };
-	const rawOutput = await backend.generate(prompt.system, prompt.user, generateOptions, options.signal);
-	requireOutput(rawOutput);
-
-	// 5. Trust gate: validate markers, references from the verified record.
-	const scan = enforceCitations(rawOutput, retrieved.length);
-	if (scan.invalidMarkers.length) {
-		onWarn(`stripped ${scan.invalidMarkers.length} invalid citation marker(s): ${scan.invalidMarkers.join(" ")}`);
-	}
-	if (scan.strippedReferenceSection) {
-		onWarn("the model wrote its own reference section; it was cut (references come from verified records only)");
-	}
+	// 5. References from the verified records only.
 	const { prose, references, sites } = buildCitations(
 		scan.text,
 		retrieved,
@@ -1086,10 +872,9 @@ export async function runRound(options: ChatOptions, deps?: ChatDeps): Promise<C
 
 	// 6. Persist the validated round. A write failure must never lose the
 	// answer -- it degrades to a warning and protocol_path stays null.
-	// Multi-paper and library rounds are protocolled under a SCOPE identity
-	// (v25: library rounds are recorded too); the key carries the full
-	// sorted member list, so the quarantine logic keeps different scopes in
-	// different files.
+	// Multi-paper and library rounds are protocolled under a SCOPE identity;
+	// the key carries the full sorted member list, so the quarantine logic
+	// keeps different scopes in different files.
 	const citedIds = new Set(references.flatMap((reference) => reference.chunk_ids));
 	const identity: PaperIdentity = multi || libraryScope
 		? {
@@ -1231,9 +1016,8 @@ export interface ChatReport {
  * (never from the Pi chat transcript): the CURRENT session's questions
  * become the retrieval queries, the union of their best excerpts becomes
  * the context, and the same citation gate validates the prose. Rounds of
- * earlier sessions stay on disk but are never re-surfaced (user decision
- * 2026-07-21). Does NOT append to the protocol -- a report is an output,
- * not a round.
+ * earlier sessions stay on disk but are never re-surfaced. Does NOT
+ * append to the protocol -- a report is an output, not a round.
  */
 export async function runChatReport(options: ChatReportOptions, deps?: ChatDeps): Promise<ChatReport> {
 	const onWarn = options.onWarn ?? (() => {});
@@ -1306,33 +1090,17 @@ export async function runChatReport(options: ChatReportOptions, deps?: ChatDeps)
 		onWarn,
 		signal: options.signal,
 	});
-	let retrieved = retrieval.chunks;
-	let prompt = buildReportPrompt(queries, retrieved, options.language);
-	let trimmed = 0;
-	const budget = NUM_CTX - OUTPUT_RESERVE_TOKENS;
-	while (retrieved.length > 1 && promptTokens(prompt) > budget) {
-		retrieved = retrieved.slice(0, -1).map((chunk, i) => ({ ...chunk, id: i + 1 }));
-		prompt = buildReportPrompt(queries, retrieved, options.language);
-		trimmed++;
-	}
-	if (trimmed) onWarn(`context budget: dropped the ${trimmed} lowest-ranked chunk(s) to fit ${NUM_CTX} tokens`);
-
-	// 5. ONE generation pass, then the same trust gate as every answer.
-	if (options.signal?.aborted) throw new Error("paper chat report aborted by the user");
-	onWarn(`generating the report with ${model} (${retrieved.length} excerpts, ${queries.length} question(s))`);
-	// think:false -- excerpt-grounded answers need no hidden reasoning; a
-	// thinking model would burn the output budget on it (Ollama dialect
-	// only; the OpenAI dialect and the pi backend ignore the field).
-	const generateOptions: GenerateOptions = { model, numCtx: NUM_CTX, temperature: ASK_TEMPERATURE, think: false };
-	const rawOutput = await backend.generate(prompt.system, prompt.user, generateOptions, options.signal);
-	requireOutput(rawOutput);
-	const scan = enforceCitations(rawOutput, retrieved.length);
-	if (scan.invalidMarkers.length) {
-		onWarn(`stripped ${scan.invalidMarkers.length} invalid citation marker(s): ${scan.invalidMarkers.join(" ")}`);
-	}
-	if (scan.strippedReferenceSection) {
-		onWarn("the model wrote its own reference section; it was cut (references come from verified records only)");
-	}
+	// 5. ONE generation pass (budget trim, generation, citation gate).
+	const { retrieved, trimmed, rawOutput, scan } = await generateGrounded({
+		retrieved: retrieval.chunks,
+		promptOf: (chunks) => buildReportPrompt(queries, chunks, options.language),
+		backend,
+		model,
+		onWarn,
+		progress: (excerpts) => `generating the report with ${model} (${excerpts} excerpts, ${queries.length} question(s))`,
+		abortMessage: "paper chat report aborted by the user",
+		signal: options.signal,
+	});
 	const { prose, references, sites } = buildCitations(scan.text, retrieved, new Map([[paper.key, paper.file]]));
 
 	const now = deps?.now ?? (() => new Date());
@@ -1385,13 +1153,12 @@ export async function runChatReport(options: ChatReportOptions, deps?: ChatDeps)
 
 
 /* ================================================================== *
- * Composable report (v25 E2d): summaries, detail questions in two     *
- * modes, optional review synthesis -- assembled into ONE numbering    *
+ * Composable report: summaries, detail questions in two modes,        *
+ * optional review synthesis -- assembled into ONE numbering            *
  * ================================================================== */
 
-/** The six summary facets, fixed in code (user decision 2026-07-21).
- * Bilingual retrieval queries -- the rubric itself never comes from a
- * model. */
+/** The six summary facets, fixed in code. Bilingual retrieval queries --
+ * the rubric itself never comes from a model. */
 export const SUMMARY_FACETS = [
 	"research objective, aim of the study / Forschungsziel",
 	"methods, methodology, study design / Methodik",
@@ -1415,9 +1182,8 @@ export function summarySystemPrompt(format: "bullets" | "prose", language: strin
 	const style = format === "bullets"
 		? "- Write short bullet points (lines starting with \"- \") under each heading."
 		: "- Write one short prose paragraph under each heading.";
-	// Heading names in the OUTPUT language, fixed by code (v27 field
-	// finding: "translated into the output language" was ignored and German
-	// headings appeared in English reports). Unknown languages keep the
+	// Heading names in the OUTPUT language, fixed by code (models ignore a
+	// "translate the headings" instruction). Unknown languages keep the
 	// translate instruction.
 	const headings = /german|deutsch/i.test(language)
 		? ["Structure the summary under EXACTLY these six headings, in this order:",
@@ -1486,7 +1252,7 @@ export interface ReportOptions {
 	root?: string;
 	onWarn?: (message: string) => void;
 	/** Per-unit progress ("Unit 3/9: ..."; English like every status
-	 * message, v27 user decision). Defaults to onWarn. */
+	 * message). Defaults to onWarn. */
 	onProgress?: (message: string) => void;
 	signal?: AbortSignal;
 }
@@ -1546,12 +1312,12 @@ export interface SynthReport {
 }
 
 /**
- * The composable report (v25): per-paper structured summaries, detail
- * questions in mode A (per paper, didactic) or B (cross-paper), and an
- * optional review synthesis -- each unit its own retrieval + generation +
- * citation gate, all assembled into ONE global reference numbering. Runs
+ * The composable report: per-paper structured summaries, detail questions
+ * in mode A (per paper, didactic) or B (cross-paper), and an optional
+ * review synthesis -- each unit its own retrieval + generation + citation
+ * gate, all assembled into ONE global reference numbering. Runs
  * P + PxQ (or Q) + 1 generation calls; the caller shows progress and
- * warned the user beforehand when that gets large (wizard, E2e).
+ * warns the user beforehand when that gets large (wizard).
  */
 export async function runReport(options: ReportOptions, deps?: ChatDeps): Promise<SynthReport> {
 	const onWarn = options.onWarn ?? (() => {});
@@ -1651,7 +1417,6 @@ export async function runReport(options: ReportOptions, deps?: ChatDeps): Promis
 
 	// 4. One retrieval + generation + citation gate per unit.
 	const units: ReportUnit[] = [];
-	const budget = NUM_CTX - OUTPUT_RESERVE_TOKENS;
 	for (const [unitIndex, plan] of planned.entries()) {
 		if (options.signal?.aborted) throw new Error("report aborted by the user");
 		onProgress(`Unit ${unitIndex + 1}/${planned.length}: ${plan.label}`);
@@ -1682,30 +1447,18 @@ export async function runReport(options: ReportOptions, deps?: ChatDeps): Promis
 				onWarn,
 				signal: options.signal,
 			});
-		let retrieved = retrieval.chunks;
-		const promptOf = (chunks: RetrievedChunk[]): { system: string; user: string } =>
-			plan.kind === "summary" ? buildSummaryPrompt(chunks, summaryFormat!, options.language)
-			: plan.kind === "detail-per-paper" ? buildChatPrompt(plan.question!, chunks, options.language)
-			: buildPrompt(plan.question!, chunks, options.language);
-		let prompt = promptOf(retrieved);
-		let trimmed = 0;
-		while (retrieved.length > 1 && promptTokens(prompt) > budget) {
-			retrieved = retrieved.slice(0, -1).map((chunk, i) => ({ ...chunk, id: i + 1 }));
-			prompt = promptOf(retrieved);
-			trimmed++;
-		}
-		if (trimmed) onWarn(`context budget: dropped the ${trimmed} lowest-ranked chunk(s) to fit ${NUM_CTX} tokens`);
-		if (options.signal?.aborted) throw new Error("report aborted by the user");
-		const generateOptions: GenerateOptions = { model, numCtx: NUM_CTX, temperature: ASK_TEMPERATURE, think: false };
-		const rawOutput = await backend.generate(prompt.system, prompt.user, generateOptions, options.signal);
-		requireOutput(rawOutput);
-		const scan = enforceCitations(rawOutput, retrieved.length);
-		if (scan.invalidMarkers.length) {
-			onWarn(`stripped ${scan.invalidMarkers.length} invalid citation marker(s): ${scan.invalidMarkers.join(" ")}`);
-		}
-		if (scan.strippedReferenceSection) {
-			onWarn("the model wrote its own reference section; it was cut (references come from verified records only)");
-		}
+		const { retrieved, trimmed, rawOutput, scan } = await generateGrounded({
+			retrieved: retrieval.chunks,
+			promptOf: (chunks) =>
+				plan.kind === "summary" ? buildSummaryPrompt(chunks, summaryFormat!, options.language)
+				: plan.kind === "detail-per-paper" ? buildChatPrompt(plan.question!, chunks, options.language)
+				: buildPrompt(plan.question!, chunks, options.language),
+			backend,
+			model,
+			onWarn,
+			abortMessage: "report aborted by the user",
+			signal: options.signal,
+		});
 		const { prose, references, sites } = buildCitations(scan.text, retrieved, pdfPathByKey);
 		units.push({
 			kind: plan.kind,
@@ -1739,9 +1492,9 @@ export async function runReport(options: ReportOptions, deps?: ChatDeps): Promis
 
 	// 5. ONE report numbering across all units.
 	const assembled = assembleReport(units);
-	const assembledUnits = assembled.units as ReportUnit[];
+	const assembledUnits = assembled.units;
 
-	// 6. Remember the scope for the session (sticky, v23 semantics).
+	// 6. Remember the scope for the session (sticky scope).
 	const session = options.session?.trim() || null;
 	writeCurrentScope(
 		root,
@@ -1751,16 +1504,17 @@ export async function runReport(options: ReportOptions, deps?: ChatDeps): Promis
 		onWarn,
 	);
 
+	const uiLanguage = options.uiLanguage?.trim() || "de";
 	const scopeLabel = options.papers === "library"
 		? "library"
-		: scopePapers.length === 1 ? `${scopePapers[0].base}.pdf` : `${scopePapers.length} Dokumente`;
+		: scopePapers.length === 1 ? `${scopePapers[0].base}.pdf` : `${scopePapers.length} documents`;
 	const now = deps?.now ?? (() => new Date());
 	return {
 		question: `Report: ${scopeLabel}`,
 		generated: now().toISOString(),
 		backend: backend.label ?? `${cfg.api} at ${cfg.baseUrl}`,
 		embedding_model: embedModel,
-		ui_language: options.uiLanguage?.trim() || "de",
+		ui_language: uiLanguage,
 		language: options.language?.trim() || null,
 		scope: { papers: scopePapers.map((paper) => paper.base), library: options.papers === "library" },
 		questions,

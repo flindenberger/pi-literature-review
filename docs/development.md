@@ -9,7 +9,9 @@ extensions/         Pi adapters -- search.ts, selection.ts, synthesis.ts (one to
 src/                the engines, Pi-free: search pipeline, render, network graph, selection,
                     synthesis (extract, retrieve, protocol, citation gate), dialog reducer, config, CLI
 src/sources/        the four source clients (arxiv, crossref, openalex, semanticscholar)
+                    and polite.ts, the shared paced/retrying request helper
 docs/               this documentation, screenshots under docs/img/
+tsconfig.json       type-check settings (strict, NodeNext, .ts imports) for the editor and `tsc`
 ```
 
 Adapters (`extensions/`) hold everything that touches Pi: tool schemas,
@@ -28,7 +30,8 @@ Where each stage lives; the adapter/engine pair shares its basename.
 |---|---|
 | `extensions/search.ts` | the `pi-literature-search` tool + `/lit-search` command: intake wizard (tabs, variant suggestions via the Pi model, journal/author loaders), digest card |
 | `src/search.ts` | run orchestration: per source and query fetch, pipeline steps in order, payload assembly, source failures |
-| `src/sources/arxiv.ts`, `crossref.ts`, `openalex.ts`, `semanticscholar.ts` | one client per source: query building (booleans, author scope), pacing/retry, record normalization; OpenAlex also holds the facet queries and the abstract reconstruction |
+| `src/sources/arxiv.ts`, `crossref.ts`, `openalex.ts`, `semanticscholar.ts` | one client per source: query building (booleans, author scope), record normalization; OpenAlex also holds the facet queries and the abstract reconstruction |
+| `src/sources/polite.ts` | the shared politeness: per-source request spacing, timeout, retry on rate-limit answers (used by the clients and the GitHub code-link lookup) |
 | `src/pipeline.ts` | junk filter, deduplication, term matching, block labeling with evidence, the metadata filters, abstract gate |
 | `src/verify.ts` | the trust gate: DOI / arXiv ID resolution over HTTP |
 | `src/enrich.ts` | OpenAlex identifier lookup (cites, venue, abstract), journal 2-year citedness, author metrics, GitHub code links |
@@ -50,7 +53,7 @@ Where each stage lives; the adapter/engine pair shares its basename.
 | File | Holds |
 |---|---|
 | `extensions/synthesis.ts` | the `pi-literature-synthesis` tool + `/lit-synthesis` command: the wizard, answer/report cards, paper-chat mode, HTML-write gate, embedding-model doctor dialog |
-| `extensions/pi-model.ts` | one completion call on the model selected in Pi (used for suggestions and generation) |
+| `extensions/pi-model.ts` | one completion call on the model selected in Pi (used for the search wizard's variant suggestions) |
 | `src/synthesis.ts` | the engine: chat rounds, composable reports, prompts, the citation gate (marker validation, reference insertion), report assembly |
 | `src/retrieve.ts` | shared retrieval: query variants, lexical layer, embedding ranking, union |
 | `src/extract.ts` | PDF text extraction, cleanup, bibliography cut, chunking, highlight-phrase measurement |
@@ -69,7 +72,7 @@ Where each stage lives; the adapter/engine pair shares its basename.
 | `src/dialog-state.ts` + `extensions/dialogs.ts` | the tabbed wizard: pure reducer (steps, checkbox lists, forms, review page) and its Pi adapter (overlay drawing, keys, paste, RPC fallback) |
 | `src/config.ts` | the config file and environment overrides |
 | `src/cli.ts` | the standalone command line over all three engines |
-| `src/types.ts` | shared record and payload shapes |
+| `src/types.ts` | shared record shapes and small helpers (user agent, contact email, warnings) |
 | `src/cardtext.ts` | bold/bullet formatting for transcript cards |
 | `index.ts` | registers the three tools |
 
@@ -80,10 +83,23 @@ npm install            # add --no-bin-links on filesystems without symlinks (exF
 pi install /absolute/path/to/pi-literature-review
 ```
 
-Pi's extension loader provides `@earendil-works/pi-coding-agent`,
-`@earendil-works/pi-tui` and `typebox` at runtime (they are declared as
-optional peer dependencies and not installed by npm). Restart Pi after
-code changes -- `/reload` is not guaranteed for package extensions.
+At runtime Pi's extension loader provides `@earendil-works/pi-coding-agent`,
+`@earendil-works/pi-tui`, `@earendil-works/pi-ai/compat` and `typebox`
+(declared as optional peer dependencies, so a user install pulls only this
+package's own dependencies). For development they are devDependencies, so
+`npm install` in a checkout brings them in for the editor, the type check
+and the offline smoke test. Restart Pi after code changes -- `/reload` is
+not guaranteed for package extensions.
+
+## Type check
+
+```
+node node_modules/typescript/bin/tsc -p tsconfig.json
+```
+
+Strict TypeScript over `index.ts`, `src/` and `extensions/` (tests
+included); no output is emitted (Node runs the `.ts` files directly). The
+check is clean and is part of the release gate together with the tests.
 
 ## Tests
 

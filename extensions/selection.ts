@@ -1,18 +1,18 @@
 /**
- * pi-literature-review Pi extension: the pi-literature-selection tool.
+ * Selection stage adapter for pi: registers the pi-literature-selection tool
+ * and the /lit-selection command. Both download papers as PDFs into the
+ * lit-selection/ library; a model's only job is to transport identifiers
+ * (DOIs / arXiv IDs) -- from the pasted "Download these papers: ..."
+ * sentence, from digest lines or from the JSON sidecar. Resolution and
+ * download are deterministic code (src/selection.ts): record link ->
+ * Unpaywall -> arXiv, %PDF magic check, per-paper report. No LLM ever
+ * chooses, produces or repairs a download link.
  *
- * Downloads selected papers as PDFs into the shared lit-selection/ library. The
- * model's only job is to transport identifiers (DOIs / arXiv IDs) -- from
- * the user's pasted "Download these papers: ..." sentence, from digest
- * lines or from the JSON sidecar -- to this tool. Resolution and download
- * are deterministic code (src/fetch.ts): record link -> Unpaywall -> arXiv,
- * %PDF magic check, honest per-paper report. No LLM ever chooses, produces
- * or repairs a download link.
- *
- * Like the search tool, the human consent step is CODE, not instruction:
- * every call opens a blocking terminal dialog listing exactly what would be
- * downloaded (titles from the saved searches, not from the model) before
- * any network request fires.
+ * Three code gates before any network request: the identifier dialog
+ * (passed identifiers are prefill, editable), the Unpaywall email question
+ * (only while none is configured) and the consent dialog listing exactly
+ * what would be downloaded (titles from the saved searches, not from the
+ * model).
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -31,10 +31,9 @@ import { chatLangDefault, installChatLangObserver, runWizard } from "./dialogs.t
 
 const SELECTION_WIDGET = "pi-literature-review-selection";
 
-/** The bare-command identifier intake (v29.1: every bare command opens its
- * dialog directly; the agent handoff is gone). */
+/** Identifier dialog strings per dialog language. */
 const FETCH_TEXT: Record<DialogLang, {
-	/** Line above the tab bar: which dialog this is (v30.12). */
+	/** Line above the tab bar: which dialog this is. */
 	header: string;
 	idTab: string;
 	idTitle: string;
@@ -70,8 +69,7 @@ function splitIdentifiers(raw: string): string[] {
 }
 
 /** One-step wizard asking for the identifiers (same look as every other
- * intake since v29.1; skipSubmit -- one Enter finishes). Since 2026-07-30
- * (user decision, search-wizard precedent) it opens on EVERY interactive
+ * intake; skipSubmit -- one Enter finishes). It opens on EVERY interactive
  * run: passed identifiers arrive as PREFILL, editable, never silently
  * skipped past the user. Null on cancel. */
 async function identifiersDialog(
@@ -88,7 +86,7 @@ async function identifiersDialog(
 		title: text.idTitle,
 		placeholder: text.idPlaceholder,
 		...(prefill?.trim() ? { initial: prefill.trim() } : {}),
-		// v30: identifiers are no questions -- no "N question(s)" counter.
+		// Identifiers are no questions -- no "N question(s)" counter.
 		plain: true,
 	}];
 	const result = await runWizard(ctx, steps, signal, { lang, header: text.header, skipSubmit: true });
@@ -108,7 +106,7 @@ function clip(line: string): string {
 
 /**
  * While no contact email is configured (env var or stored config), every
- * fetch run asks -- with an explanation of WHY the email exists at all, and
+ * download run asks -- with an explanation of WHY the email exists at all, and
  * with per-run entry as a first-class choice (some users prefer typing it
  * each time over persisting it; choosing "without Unpaywall" is not
  * remembered either, so the question simply returns next run). Returns the
@@ -147,9 +145,9 @@ async function mailtoDialog(
 			return "";
 		}
 		// Cancel/empty input falls through to the "continue without
-		// Unpaywall" path below (webui-compat: RPC web clients report an
-		// empty submit as cancelled; aborting the whole download over the
-		// optional email would be out of proportion either way).
+		// Unpaywall" path below (RPC web clients report an empty submit as
+		// cancelled; aborting the whole download over the optional email
+		// would be out of proportion either way).
 		const email = await ctx.ui.input("Contact email (e.g. name@example.org)", undefined, { signal });
 		const trimmed = (email ?? "").trim();
 		if (!trimmed || !isPlausibleMailto(trimmed)) {
@@ -201,7 +199,7 @@ async function fetchConsentDialog(
 	}
 	ctx.ui.setWidget(SELECTION_WIDGET, [
 		`Download ${identifiers.length} paper(s) as PDF`,
-		`Library:  ${root}/papers`,
+		`Library:  ${root}/lit-selection`,
 		"Sources:  record link, Unpaywall, arXiv (legal open access only)",
 		...shown,
 	]);
@@ -211,14 +209,54 @@ async function fetchConsentDialog(
 			"Cancel",
 		], { signal });
 		if (choice === undefined || choice === "Cancel") {
-			diagnostics.push("fetch dialog: cancelled by the user");
+			diagnostics.push("consent dialog: cancelled by the user");
 			return false;
 		}
-		diagnostics.push("fetch dialog: confirmed by the user");
+		diagnostics.push("consent dialog: confirmed by the user");
 		return true;
 	} finally {
 		ctx.ui.setWidget(SELECTION_WIDGET, undefined);
 	}
+}
+
+/** Outcome of the gated run shared by the tool and the command. */
+type SelectionOutcome =
+	| { status: "cancelled"; where: "Unpaywall email" | "confirmation" }
+	| { status: "aborted" }
+	| { status: "done"; report: string };
+
+/**
+ * The gates and the download, shared by the tool and the /lit-selection
+ * command: Unpaywall email (while none is configured), consent dialog,
+ * abort check, then runSelection. Headless callers (no UI) skip the
+ * dialogs. The caller turns the outcome into its own wording.
+ */
+async function gatedSelection(
+	ctx: ExtensionContext,
+	identifiers: string[],
+	diagnostics: string[],
+	signal: AbortSignal | undefined,
+	onWarn: (message: string) => void,
+): Promise<SelectionOutcome> {
+	let runMailto: string | undefined;
+	if (ctx.hasUI && !contactMailto()) {
+		const answer = await mailtoDialog(ctx, diagnostics, signal);
+		if (answer === null) return { status: "cancelled", where: "Unpaywall email" };
+		runMailto = answer;
+	}
+	if (ctx.hasUI) {
+		if (!(await fetchConsentDialog(ctx, identifiers, diagnostics, signal))) {
+			return { status: "cancelled", where: "confirmation" };
+		}
+	} else {
+		diagnostics.push("consent dialog: skipped (no interactive UI)");
+	}
+	if (signal?.aborted) {
+		diagnostics.push("run aborted before any download started");
+		return { status: "aborted" };
+	}
+	const { results, papersDir } = await runSelection({ identifiers, mailto: runMailto, onWarn, signal });
+	return { status: "done", report: renderFetchReport(results, papersDir) };
 }
 
 export default function literatureSelection(pi: ExtensionAPI) {
@@ -227,7 +265,7 @@ export default function literatureSelection(pi: ExtensionAPI) {
 	installChatLangObserver(pi);
 	pi.registerTool({
 		name: "pi-literature-selection",
-		label: "Literature Fetch",
+		label: "Literature Selection",
 		description:
 			"Download papers as PDFs into the local lit-selection/ library. Use this tool WHENEVER the user asks to " +
 			"download, fetch or save papers or PDFs -- including the pasted sentence \"Download these papers: ...\" " +
@@ -258,26 +296,25 @@ export default function literatureSelection(pi: ExtensionAPI) {
 			// double as live updates in the UI during longer download runs.
 			const report = (message: string) => {
 				diagnostics.push(message);
-				onUpdate?.({ content: [{ type: "text", text: message }] });
+				onUpdate?.({ content: [{ type: "text", text: message }], details: undefined });
 			};
+			const cancelled = (where: string) => ({
+				content: [{
+					type: "text" as const,
+					text: `The user cancelled this download run in the ${where} dialog. Nothing was `
+						+ "downloaded. Ask the user what they want to change before downloading again.",
+				}],
+				details: { diagnostics },
+			});
 			let identifiers = params.identifiers.map((s) => s.trim()).filter(Boolean);
-			// The identifier dialog opens on EVERY interactive run (user
-			// decision 2026-07-30, search-wizard precedent: proposals are
-			// prefill, never a silent jump past the user); headless callers
-			// keep the parameter-only path.
+			// The identifier dialog opens on EVERY interactive run (passed
+			// identifiers are prefill, never a silent jump past the user);
+			// headless callers keep the parameter-only path.
 			if (ctx.hasUI) {
 				const typed = await identifiersDialog(ctx, signal, identifiers.join(" "));
 				if (typed === null) {
 					diagnostics.push("identifier dialog: cancelled by the user");
-					return {
-						content: [{
-							type: "text",
-							text:
-								"The user cancelled this fetch run in the identifier dialog. Nothing was " +
-								"downloaded. Ask the user what they want to change before fetching again.",
-						}],
-						details: { diagnostics },
-					};
+					return cancelled("identifier");
 				}
 				identifiers = typed;
 				diagnostics.push(`identifier dialog: confirmed (${identifiers.length} identifier(s))`);
@@ -288,68 +325,22 @@ export default function literatureSelection(pi: ExtensionAPI) {
 					details: { diagnostics },
 				};
 			}
-
-			// Unpaywall email: ask (with explanation) while none is configured.
-			let runMailto: string | undefined;
-			if (ctx.hasUI && !contactMailto()) {
-				const answer = await mailtoDialog(ctx, diagnostics, signal);
-				if (answer === null) {
-					return {
-						content: [{
-							type: "text",
-							text:
-								"The user cancelled this fetch run in the Unpaywall email dialog. Nothing was " +
-								"downloaded. Ask the user what they want to change before fetching again.",
-						}],
-						details: { diagnostics },
-					};
-				}
-				runMailto = answer;
-			}
-
-			// Code-enforced consent: list exactly what would be downloaded --
-			// titles come from the saved searches on disk, not from the model.
-			if (ctx.hasUI) {
-				if (!(await fetchConsentDialog(ctx, identifiers, diagnostics, signal))) {
-					return {
-						content: [{
-							type: "text",
-							text:
-								"The user cancelled this fetch run in the confirmation dialog. Nothing was " +
-								"downloaded. Ask the user what they want to change before fetching again.",
-						}],
-						details: { diagnostics },
-					};
-				}
-			} else {
-				diagnostics.push("fetch dialog: skipped (no interactive UI)");
-			}
-			if (signal?.aborted) {
-				diagnostics.push("run aborted before any download started");
+			const outcome = await gatedSelection(ctx, identifiers, diagnostics, signal, report);
+			if (outcome.status === "cancelled") return cancelled(outcome.where);
+			if (outcome.status === "aborted") {
 				return {
-					content: [{ type: "text", text: "The fetch run was aborted before any download started." }],
+					content: [{ type: "text", text: "The download run was aborted before any download started." }],
 					details: { diagnostics },
 				};
 			}
-
-			const { results, papersDir } = await runSelection({
-				identifiers,
-				mailto: runMailto,
-				onWarn: report,
-				signal,
-			});
-			return {
-				content: [{ type: "text", text: renderFetchReport(results, papersDir) }],
-				details: { diagnostics },
-			};
+			return { content: [{ type: "text", text: outcome.report }], details: { diagnostics } };
 		},
 	});
 
-	// /lit-selection -- the agent-free path. The user pastes identifiers, or the
-	// whole "Download these papers: ..." sentence copied from the search
-	// page; the identifier dialog opens on EVERY run, pasted identifiers
-	// prefilled (v29.1: the command owns the dialog; 2026-07-30: args are
-	// prefill, never a skip). The SAME Unpaywall-email and consent dialogs
+	// /lit-selection -- the agent-free path. The user pastes identifiers, or
+	// the whole "Download these papers: ..." sentence copied from the search
+	// page; the identifier dialog opens on EVERY run with the pasted
+	// identifiers prefilled. The SAME Unpaywall-email and consent dialogs
 	// gate the download.
 	pi.registerCommand("lit-selection", {
 		description:
@@ -358,48 +349,31 @@ export default function literatureSelection(pi: ExtensionAPI) {
 			+ "either way, with passed identifiers prefilled.",
 		handler: async (args, ctx) => {
 			if (!ctx.hasUI) return;
-			// The dialog opens with or without args (user decision 2026-07-30):
-			// pasted identifiers arrive as prefill, editable before anything runs.
+			// The dialog opens with or without args: pasted identifiers arrive
+			// as prefill, editable before anything runs.
 			const typed = await identifiersDialog(ctx, ctx.signal, splitIdentifiers(args ?? "").join(" "));
 			if (typed === null) return; // cancelled
 			if (!typed.length) {
 				ctx.ui.notify(FETCH_TEXT[chatLangDefault()].noIds, "warning");
 				return;
 			}
-			const identifiers = typed;
 			const diagnostics: string[] = [];
 			const progress = (message: string) => ctx.ui.notify(message, "info");
-			// Unpaywall email: ask (with explanation) while none is configured.
-			let runMailto: string | undefined;
-			if (!contactMailto()) {
-				const answer = await mailtoDialog(ctx, diagnostics, ctx.signal);
-				if (answer === null) {
-					ctx.ui.notify("Download cancelled.", "info");
+			try {
+				const outcome = await gatedSelection(ctx, typed, diagnostics, ctx.signal, progress);
+				if (outcome.status === "cancelled") {
+					ctx.ui.notify("Download cancelled -- nothing was downloaded.", "info");
 					return;
 				}
-				runMailto = answer;
-			}
-			if (!(await fetchConsentDialog(ctx, identifiers, diagnostics, ctx.signal))) {
-				ctx.ui.notify("Download cancelled -- nothing was downloaded.", "info");
-				return;
-			}
-			if (ctx.signal?.aborted) return;
-			try {
-				const { results, papersDir } = await runSelection({
-					identifiers,
-					mailto: runMailto,
-					onWarn: progress,
-					signal: ctx.signal,
-				});
-				// Show the per-paper report in the widget: reliable and immediate.
-				// (sendMessage with deliverAs:"nextTurn" only queues it for the next
-				// prompt, so it never rendered.)
-				const reportLines = renderFetchReport(results, papersDir).split("\n");
+				if (outcome.status === "aborted") return;
+				// Show the per-paper report in the widget (capped; the full
+				// report is what the widget lines are cut from).
+				const reportLines = outcome.report.split("\n");
 				ctx.ui.setWidget(SELECTION_WIDGET, reportLines.length > 16
 					? [...reportLines.slice(0, 15), `... (${reportLines.length - 15} more lines)`]
 					: reportLines);
 			} catch (error) {
-				ctx.ui.notify(`Fetch failed: ${error instanceof Error ? error.message : error}`, "error");
+				ctx.ui.notify(`Download failed: ${error instanceof Error ? error.message : error}`, "error");
 			}
 		},
 	});

@@ -10,7 +10,7 @@
  *   2. look the identifier up at the open APIs (OpenAlex for DOIs, the
  *      arXiv API for arXiv IDs) -- a successful by-identifier lookup is the
  *      verification: the API resolved exactly this identity,
- *   3. write the metadata twin next to the PDF (same format fetch writes),
+ *   3. write the metadata twin next to the PDF (same format the selection stage writes),
  *      so the library matcher picks the paper up like any fetched one.
  * A PDF whose text names no identifier, or whose identifier the APIs do
  * not know, stays excluded -- honestly, with the reason. THE ONE INVIOLABLE

@@ -1,24 +1,24 @@
 /**
- * Deterministic PDF retrieval -- the Phase 3 engine behind pi-literature-selection.
+ * Selection engine: deterministic PDF download behind pi-literature-selection.
  *
- * Input is a list of identifiers (DOIs / arXiv IDs); the model only ever
- * transports them, it never chooses, produces or repairs a download link.
- * Each identifier runs through a fixed resolver chain -- pdf_url from the
- * saved search records (JSON sidecars), then Unpaywall (OurResearch's index
- * of legal open-access copies; requires PI_LITERATURE_REVIEW_MAILTO), then
- * the arXiv PDF endpoint -- and the first source that answers with real PDF
- * bytes (%PDF magic check) is saved to the shared lit-selection/ library, one file
- * per paper, keyed like dedupe so the same paper is never stored twice.
- * Whatever has no free copy is reported with its publisher link ("obtain via
- * authorized access"), never fetched from gray sources. Honest per-paper
- * report, nothing fails silently.
+ * Input is a list of identifiers (DOIs / arXiv IDs); a language model only
+ * ever transports them, it never chooses, produces or repairs a download
+ * link. Each identifier runs through a fixed resolver chain -- pdf_url from
+ * the saved search records (lit-search/*.json), then Unpaywall (index of
+ * legal open-access copies; needs a contact email), then the arXiv PDF
+ * endpoint -- and the first source answering with real PDF bytes (%PDF
+ * magic check) is saved to the lit-selection/ library, one file per paper,
+ * keyed like dedupe so the same paper is never stored twice. Papers without
+ * a free copy are reported with their publisher link ("obtain via
+ * authorized access"), never fetched from gray sources. Per-paper report,
+ * nothing fails silently. Shared by the pi tool/command and the CLI.
  */
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { identityKey } from "./pipeline.ts";
 import { outputRoot } from "./output.ts";
-import { contactMailto, firstAuthorLastName, userAgent } from "./types.ts";
+import { contactMailto, errorName, firstAuthorLastName, userAgent } from "./types.ts";
 
 const DOWNLOAD_TIMEOUT_MS = 30_000; // per GET request
 const FETCH_PAUSE_MS = 300; // between papers; stay polite to the free servers
@@ -78,7 +78,7 @@ function asciiPart(value: string): string {
 		.replaceAll("ä", "ae").replaceAll("ö", "oe").replaceAll("ü", "ue")
 		.replaceAll("Ä", "Ae").replaceAll("Ö", "Oe").replaceAll("Ü", "Ue")
 		.replaceAll("ß", "ss")
-		.normalize("NFD").replace(/[̀-ͯ]/g, "")
+		.normalize("NFD").replace(/[\u0300-\u036f]/g, "")
 		.replace(/[^A-Za-z0-9]+/g, "_")
 		.replace(/^_+|_+$/g, "");
 }
@@ -431,8 +431,7 @@ async function downloadPdfReal(
 		}
 		return { ok: true, bytes: new Uint8Array(await response.arrayBuffer()) };
 	} catch (error) {
-		const name = error instanceof Error ? (error.cause as Error)?.name ?? error.name : "unknown";
-		return { ok: false, reason: `network error: ${name}` };
+		return { ok: false, reason: `network error: ${errorName(error)}` };
 	}
 }
 
@@ -444,7 +443,7 @@ async function unpaywallPdfUrlReal(
 	if (!mailto) {
 		return {
 			url: null,
-			note: "Unpaywall skipped: no contact email configured (the fetch dialog can store one; "
+			note: "Unpaywall skipped: no contact email configured (the /lit-selection dialog can store one; "
 				+ "PI_LITERATURE_REVIEW_MAILTO also works)",
 		};
 	}
@@ -464,8 +463,7 @@ async function unpaywallPdfUrlReal(
 			?? null;
 		return url ? { url } : { url: null, note: "Unpaywall: no open copy listed" };
 	} catch (error) {
-		const name = error instanceof Error ? (error.cause as Error)?.name ?? error.name : "unknown";
-		return { url: null, note: `Unpaywall network error: ${name}` };
+		return { url: null, note: `Unpaywall network error: ${errorName(error)}` };
 	}
 }
 
@@ -473,9 +471,9 @@ export interface SelectionRunOptions {
 	identifiers: string[];
 	/** Data root; defaults to outputRoot() (lit-selection/ lands next to lit-search/). */
 	root?: string;
-	/** Contact email for Unpaywall, valid for THIS run only (the fetch
-	 * dialog's "this run only" answer). Default: the configured email
-	 * (env var, else the stored config value). */
+	/** Contact email for Unpaywall, valid for THIS run only (the dialog's
+	 * "this run only" answer). Default: the configured email (env var,
+	 * else the stored config value). */
 	mailto?: string;
 	onWarn?: (message: string) => void;
 	/** Abort signal from the agent (Esc): stops between papers and kills the

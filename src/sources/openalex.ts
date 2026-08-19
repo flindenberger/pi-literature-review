@@ -1,12 +1,10 @@
 /**
- * Native OpenAlex client (replaces the paper-search engine for this source).
- *
- * GET https://api.openalex.org/works?search=...&per-page=N mirrors the
- * engine's request shape. OpenAlex ships abstracts as an inverted index
- * (word -> positions); reconstruction below is a deterministic reassembly of
- * API data. The DOI comes only from the API's doi field -- never scraped out
- * of text. Unlike the engine we also map the venue
- * (primary_location.source.display_name); it too is plain API metadata.
+ * OpenAlex client: the works search (boolean block search in the search
+ * parameter, optional author filter) and the facet pre-queries behind the
+ * wizard's journal and author pickers. OpenAlex ships abstracts as an
+ * inverted index (word -> positions); reconstruction below is a
+ * deterministic reassembly of API data. The DOI comes only from the API's
+ * doi field -- never scraped out of text; the venue is plain API metadata.
  */
 
 import { contactMailto, type SourceRecord, type SourceScope, userAgent } from "../types.ts";
@@ -15,8 +13,8 @@ const BASE_URL = "https://api.openalex.org/works";
 const TIMEOUT_MS = 30_000;
 
 /** Rebuild the abstract text from OpenAlex's inverted index. String ops
- * only. Exported since 2026-08-10: the enrichment stage fills missing
- * abstracts from the same work objects. */
+ * only; the enrichment stage fills missing abstracts from the same work
+ * objects. */
 export function reconstructAbstract(invertedIndex: unknown): string {
 	if (!invertedIndex || typeof invertedIndex !== "object") return "";
 	const positioned: Array<[number, string]> = [];
@@ -45,8 +43,8 @@ export function buildAuthorSearchFilter(authors: string[] | undefined): string {
 }
 
 /**
- * Concept blocks as an OpenAlex boolean search string (2026-08-06 block
- * search). OpenAlex supports full boolean queries in its search parameter:
+ * Concept blocks as an OpenAlex boolean search string. OpenAlex supports
+ * full boolean queries in its search parameter:
  * UPPERCASE AND/OR/NOT, parentheses, quoted phrases (stemming and stopword
  * removal still apply on their side). Multi-word terms are quoted so they
  * match as phrases. Pure; exported for offline tests. Empty result = no
@@ -73,9 +71,9 @@ export async function searchOpenalex(query: string, rows: number, scope?: Source
 		search: buildBlockSearch(scope?.blocks) || query,
 		"per-page": String(Math.min(rows, 200)),
 	});
-	// Picked authors narrow the fetch itself (v30.14): OpenAlex then returns
-	// per-page papers BY those authors on the topic instead of the global
-	// relevance head the post-filter would decimate.
+	// Picked authors narrow the fetch itself: OpenAlex then returns per-page
+	// papers BY those authors on the topic instead of the global relevance
+	// head the post-filter would decimate.
 	const authorFilter = buildAuthorSearchFilter(scope?.authors);
 	if (authorFilter) params.set("filter", authorFilter);
 	const mailto = contactMailto();
@@ -131,26 +129,22 @@ export async function searchOpenalex(query: string, rows: number, scope?: Source
 }
 
 /** One bucket of a facet query below: plain API metadata. Journals and
- * authors share the shape (v30.11: the author picker mirrors the journal
- * picker). */
+ * authors share the shape. */
 export interface Facet {
 	/** OpenAlex id -- a source id ("S43295729", feeds the journal score
-	 * lookup, v30.8) or an author id ("A5059343226", feeds the author
-	 * metrics lookup, v30.11). */
+	 * lookup) or an author id ("A5059343226", feeds the author metrics
+	 * lookup). */
 	id: string;
 	name: string;
 	count: number;
 }
 
-/** Kept for the journal call sites: journals were the first facet (v30.6). */
-export type JournalFacet = Facet;
-
 /**
  * Parse the group_by buckets of an OpenAlex works response into facets
- * (v30.6: the wizard's "choose journals from a list" option; v30.11: the
- * same for authors). Pure and exported for offline tests. Buckets without a
- * display name (works without a source, e.g. some preprints) are dropped;
- * order is by count descending, deterministic tie-break by name.
+ * (the wizard's journal and author pickers). Pure and exported for offline
+ * tests. Buckets without a display name (works without a source, e.g. some
+ * preprints) are dropped; order is by count descending, deterministic
+ * tie-break by name.
  */
 export function parseFacets(data: unknown, limit: number): Facet[] {
 	const buckets = Array.isArray((data as Record<string, any>)?.group_by)
@@ -167,9 +161,9 @@ export function parseFacets(data: unknown, limit: number): Facet[] {
 		.slice(0, Math.max(1, limit));
 }
 
-/** The listed head of a facet query plus everything behind it (v30.11:
- * the picker shows an explicit "other ..." row, so selecting every row
- * really means "no filter"). */
+/** The listed head of a facet query plus everything behind it (the picker
+ * shows an explicit "other ..." row, so selecting every row really means
+ * "no filter"). */
 export interface FacetPage {
 	listed: Facet[];
 	/** Works matching the query that sit OUTSIDE the listed facets:
@@ -199,11 +193,10 @@ export function parseFacetPage(data: unknown, limit: number): FacetPage {
 	return { listed, otherCount: Math.max(0, total - listedSum) };
 }
 
-/** Scope of a facet pre-query (v30.13): the picker lists must reflect the
- * run the user is configuring -- search period and picked journals included
- * -- not the query text alone. Field finding 2026-07-29: the top authors
- * over ALL years and journals hardly ever appear in a small, scoped run's
- * result table, which made the author list look unrelated to the search. */
+/** Scope of a facet pre-query: the picker lists must reflect the run the
+ * user is configuring -- search period and picked journals included -- not
+ * the query text alone (the top authors over ALL years and journals hardly
+ * ever appear in a small, scoped run's result table). */
 export interface FacetScope {
 	yearFrom?: number;
 	yearTo?: number;
@@ -229,7 +222,7 @@ export function buildFacetFilter(scope: FacetScope): string {
  */
 async function facetPage(query: string, groupBy: string, limit: number, scope?: FacetScope): Promise<FacetPage> {
 	// NO per-page here: sending it alongside group_by makes OpenAlex return
-	// a single bucket (measured 2026-07-28); bare group_by returns 200.
+	// a single bucket; bare group_by returns 200.
 	const params = new URLSearchParams({ search: query, group_by: groupBy });
 	const filter = buildFacetFilter(scope ?? {});
 	if (filter) params.set("filter", filter);
@@ -245,15 +238,15 @@ async function facetPage(query: string, groupBy: string, limit: number, scope?: 
 	return parseFacetPage(await response.json(), limit);
 }
 
-/** Which journals do results for this query appear in (v30.6; v30.13:
- * scoped to the wizard's live search period). */
+/** Which journals do results for this query appear in (scoped to the
+ * wizard's live search period). */
 export function journalFacets(query: string, limit: number, scope?: FacetScope): Promise<FacetPage> {
 	return facetPage(query, "primary_location.source.id", limit, scope);
 }
 
-/** Which authors publish the results for this query (v30.11) -- the same
- * mechanics as the journal list, one request; v30.13: scoped to the live
- * period AND the picked journals. */
+/** Which authors publish the results for this query -- the same mechanics
+ * as the journal list, one request; scoped to the live period AND the
+ * picked journals. */
 export function authorFacets(query: string, limit: number, scope?: FacetScope): Promise<FacetPage> {
 	return facetPage(query, "authorships.author.id", limit, scope);
 }

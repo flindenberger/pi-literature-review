@@ -1,5 +1,5 @@
 /**
- * Offline tests for the pure CrossRef helpers (2026-08-06 block search).
+ * Offline tests for the pure CrossRef helpers.
  * Run: node src/sources/crossref.test.ts
  */
 

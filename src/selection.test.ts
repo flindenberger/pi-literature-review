@@ -302,4 +302,4 @@ function makeDeps(overrides: Partial<FetchDeps> = {}): {
 	assert.ok(!report.toLowerCase().includes("legal")); // neutral wording, per user decision
 }
 
-console.log("fetch.test.ts: all assertions passed");
+console.log("selection.test.ts: all assertions passed");

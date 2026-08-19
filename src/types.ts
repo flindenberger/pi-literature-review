@@ -1,8 +1,9 @@
 /**
- * Shared shapes and helpers for the pi-literature-review pipeline.
- *
- * Every field in a SourceRecord traces to a search-API response, or it does
- * not exist. Nothing is invented: missing stays missing (empty string / null).
+ * Shared record shapes and small helpers used across all stages (version,
+ * contact email, user agent, stderr warnings, error names, author last
+ * names). Every field in a SourceRecord traces to a search-API response, or
+ * it does not exist. Nothing is invented: missing stays missing (empty
+ * string / null).
  */
 
 import { storedMailto } from "./config.ts";
@@ -28,20 +29,20 @@ export interface SourceRecord {
 }
 
 /**
- * Scope pushed into the SOURCE query itself (v30.14 user decision): picked
- * author names narrow what a source FETCHES, not only what survives the
- * post-filter -- a small run can then actually contain the wanted authors'
- * papers. Every source maps it onto its own author search field; an empty
- * scope leaves the request byte-identical to a scopeless one.
+ * Scope pushed into the SOURCE query itself: picked author names narrow
+ * what a source FETCHES, not only what survives the post-filter -- a small
+ * run can then actually contain the wanted authors' papers. Every source
+ * maps it onto its own author search field; an empty scope leaves the
+ * request byte-identical to a scopeless one.
  */
 export interface SourceScope {
 	authors?: string[];
-	/** Concept blocks of THIS query (2026-08-06 block search): OR-linked
-	 * synonyms per block, AND between blocks. Boolean-capable sources
-	 * (arXiv, OpenAlex) send them as a real boolean expression; CrossRef
-	 * (no boolean support) flattens the terms into its relevance keyword
-	 * search. The same blocks label the results on_target/adjacent, so the
-	 * search and the label can never disagree. Absent: legacy behavior. */
+	/** Concept blocks of THIS query: OR-linked synonyms per block, AND
+	 * between blocks. Boolean-capable sources (arXiv, OpenAlex, Semantic
+	 * Scholar) send them as a real boolean expression; CrossRef (no boolean
+	 * support) flattens the terms into its relevance keyword search. The
+	 * same blocks label the results on_target/adjacent, so the search and
+	 * the label can never disagree. Absent: the plain query text is sent. */
 	blocks?: string[][];
 }
 
@@ -51,7 +52,7 @@ export const VERSION = "0.1.0";
  * Polite User-Agent. The contact address is configurable and defaults to
  * none: no personal data ships in the code. Sources, in order: the
  * PI_LITERATURE_REVIEW_MAILTO environment variable (override), then the
- * email stored via the fetch dialog (src/config.ts). It opts search APIs
+ * email stored via the selection dialog (src/config.ts). It opts search APIs
  * like CrossRef into their "polite pool" and enables Unpaywall lookups.
  */
 export function contactMailto(): string {
@@ -67,6 +68,14 @@ export function userAgent(): string {
 
 export function warn(message: string): void {
 	process.stderr.write(`pi-literature-review: ${message}\n`);
+}
+
+/** Short name of a failed request's error (the underlying cause's name when
+ * Node wraps it, e.g. "TimeoutError", "AbortError", "ECONNREFUSED"). */
+export function errorName(error: unknown): string {
+	if (!(error instanceof Error)) return "unknown";
+	const cause = error.cause;
+	return cause instanceof Error ? cause.name : error.name;
 }
 
 /**

@@ -1,17 +1,15 @@
 /**
  * Session protocol and sticky scope -- the code-validated record of a
- * reading session, extracted from chat.ts (v25 E2a) so the coming fusion
- * engine (chat rounds, multi-paper reports, library reviews) shares ONE
- * persistence layer.
+ * reading session, shared by chat rounds, multi-paper reports and library
+ * reviews.
  *
  * Everything in a protocol file has passed the citation gate; nothing
- * comes from the Pi chat transcript. Files are per paper and day under
- * <root>/chats/; a file that is corrupt or records a different paper
- * identity is never overwritten (quarantine to _2/_3 suffixes). The
- * sticky marker chats/current-scope.json remembers the session's document
- * selection (one paper, several, or the whole library) and only counts
- * inside the pi session that wrote it (v23 decision). The legacy
- * current-paper.json marker is still read for one release.
+ * comes from the pi chat transcript. Files are per paper (or scope) and
+ * day under lit-synthesis/protocols/; a file that is corrupt or records a
+ * different paper identity is never overwritten (quarantine to _2/_3
+ * suffixes). The sticky marker current-scope.json remembers the session's
+ * document selection (one paper, several, or the whole library) and only
+ * counts inside the pi session that wrote it.
  */
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -19,13 +17,13 @@ import { dirname, join } from "node:path";
 
 import type { ReferenceEntry } from "./synthesis.ts";
 
-/** Schema 2 (v25): rounds MAY carry a scope and citation sites. Files
- * written under schema 1 are still read; the fields are additive. */
+/** Schema 2: rounds MAY carry a scope and citation sites. Files written
+ * under schema 1 are still read; the fields are additive. */
 export const PROTOCOL_SCHEMA = 2;
 
 /** Where one citation marker in the prose points: the exact chunk behind
- * it, resolved by code (never by the model). Groundwork for the clickable
- * PDF superscripts (v25 E2b). */
+ * it, resolved by code (never by the model). Drives the clickable PDF
+ * superscripts. */
 export interface CitationSite {
 	/** Paper-level reference number the marker shows ([n]). */
 	ref: number;
@@ -33,8 +31,9 @@ export interface CitationSite {
 	chunk_id: number;
 	paper_key: string;
 	page: number;
-	/** Clean-word snippet for the PDF text highlight. */
-	snippet: string;
+	/** Phrase for the PDF text highlight; null when no safe phrase exists
+	 * (the link then opens the page without a highlight). */
+	snippet: string | null;
 }
 
 /** The session's document selection: named PDF basenames or the whole
@@ -58,8 +57,7 @@ export interface Round {
 	grounded: boolean;
 	prose: string;
 	references: ReferenceEntry[];
-	/** Per-marker chunk provenance in document order (schema 2, filled from
-	 * E2b on). */
+	/** Per-marker chunk provenance in document order (schema 2). */
 	sites?: CitationSite[];
 	/** Only the excerpts the answer actually cites (bounds file growth;
 	 * a report re-retrieves, so nothing is lost). */
@@ -140,11 +138,6 @@ export function currentScopePath(root: string): string {
 	return join(root, "lit-synthesis", "protocols", "current-scope.json");
 }
 
-/** The pre-v25 single-paper marker; read as a fallback for one release. */
-export function legacyCurrentPaperPath(root: string): string {
-	return join(root, "lit-synthesis", "protocols", "current-paper.json");
-}
-
 export interface CurrentScope {
 	papers: ScopeSelection;
 }
@@ -161,13 +154,10 @@ function validScope(value: unknown): ScopeSelection | null {
 
 /**
  * The sticky selection: set after every successful round (and by the
- * picker), used whenever a call names no documents -- a weak agent model
- * then only has to transport the user's question (user decision
- * 2026-07-16). SESSION-SCOPED (user decision 2026-07-21): the marker only
- * counts inside the pi session that wrote it. Null when unset, unreadable,
- * or written by a different session. When no current-scope.json exists at
- * all, the legacy current-paper.json {base, session} is consulted with the
- * same session rule and mapped to a one-paper scope.
+ * wizard), used whenever a call names no documents -- a weak agent model
+ * then only has to transport the user's question. SESSION-SCOPED: the
+ * marker only counts inside the pi session that wrote it. Null when unset,
+ * unreadable, or written by a different session.
  */
 export function readCurrentScope(
 	root: string,
@@ -176,30 +166,18 @@ export function readCurrentScope(
 ): CurrentScope | null {
 	if (!session) return null;
 	const raw = deps.read(currentScopePath(root));
-	if (raw !== null) {
-		try {
-			const parsed = JSON.parse(raw) as { papers?: unknown; session?: unknown } | null;
-			const papers = validScope(parsed?.papers);
-			return papers && parsed?.session === session ? { papers } : null;
-		} catch {
-			return null;
-		}
-	}
-	// Legacy marker (pre-v25); same session semantics, one-paper scope.
+	if (raw === null) return null;
 	try {
-		const parsed = JSON.parse(deps.read(legacyCurrentPaperPath(root)) ?? "null") as
-			| { base?: unknown; session?: unknown }
-			| null;
-		if (!parsed || typeof parsed.base !== "string" || !parsed.base.trim()) return null;
-		return parsed.session === session ? { papers: [parsed.base.trim()] } : null;
+		const parsed = JSON.parse(raw) as { papers?: unknown; session?: unknown } | null;
+		const papers = validScope(parsed?.papers);
+		return papers && parsed?.session === session ? { papers } : null;
 	} catch {
 		return null;
 	}
 }
 
-/** The scope's single paper, when it is exactly one -- the only form the
- * classic chat path can act on (multi-paper and library scopes become
- * actionable with the fusion engine, E2d). */
+/** The scope's single paper, when it is exactly one (the session report
+ * covers exactly one paper). */
 export function singlePaperOf(scope: CurrentScope | null): string | null {
 	if (!scope || scope.papers === "library") return null;
 	return scope.papers.length === 1 ? scope.papers[0] : null;
@@ -294,9 +272,9 @@ function escapeRegExp(value: string): string {
 }
 
 /**
- * The protocol rounds of ONE pi session for this paper (user decision
- * 2026-07-21: reports cover only the current session; earlier sessions stay
- * on disk as ground truth but are never re-surfaced). The scan still spans
+ * The protocol rounds of ONE pi session for this paper (reports cover only
+ * the current session; earlier sessions stay on disk as ground truth but
+ * are never re-surfaced). The scan still spans
  * all day files -- /resume keeps the session id, so "chat on Tuesday, report
  * on Wednesday" works within the resumed session. Filenames are matched with
  * an anchored pattern so report sidecars and other papers sharing a name

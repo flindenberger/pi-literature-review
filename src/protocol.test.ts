@@ -1,9 +1,8 @@
 /**
- * Offline tests for the protocol/sticky-scope layer (extracted from
- * chat.ts, v25 E2a). Centerpieces: the append quarantine (corrupt or
- * foreign files are never overwritten), session-scoped round loading, the
- * generalized sticky scope with its legacy current-paper fallback, and
- * schema 2 reading schema 1. No filesystem, no network.
+ * Offline tests for the protocol/sticky-scope layer. Centerpieces: the
+ * append quarantine (corrupt or foreign files are never overwritten),
+ * session-scoped round loading, the sticky scope, and schema 2 reading
+ * schema 1. No filesystem, no network.
  */
 
 import assert from "node:assert/strict";
@@ -11,7 +10,6 @@ import {
 	appendRound,
 	type CurrentScope,
 	currentScopePath,
-	legacyCurrentPaperPath,
 	loadRounds,
 	type PaperIdentity,
 	type Protocol,
@@ -90,7 +88,7 @@ const protocolOf = (date: string, rounds: Round[], key = paperA.key): string => 
 	assert.deepEqual(protocol.rounds.map((round) => round.question), ["Frage eins?", "Frage zwei?"]);
 }
 {
-	// A schema-1 file (pre-v25) is still readable and appendable; it keeps
+	// A schema-1 file is still readable and appendable; it keeps
 	// its schema on append -- the new fields are additive, a bump would
 	// quarantine every existing protocol.
 	const { deps, files } = memoryDeps();
@@ -165,7 +163,6 @@ const protocolOf = (date: string, rounds: Round[], key = paperA.key): string => 
 /* ---------------- sticky scope: session semantics ---------------- */
 {
 	assert.equal(currentScopePath("/root"), "/root/lit-synthesis/protocols/current-scope.json");
-	assert.equal(legacyCurrentPaperPath("/root"), "/root/lit-synthesis/protocols/current-paper.json");
 
 	const { deps, files } = memoryDeps();
 	// Round-trip; only the matching session reads it back.
@@ -192,29 +189,10 @@ const protocolOf = (date: string, rounds: Round[], key = paperA.key): string => 
 	}, (m) => warnings.push(m));
 	assert.ok(warnings.some((m) => m.includes("could not remember") && m.includes("disk full")));
 }
-{
-	// Legacy fallback: with NO current-scope.json, the pre-v25 marker is
-	// still honored (one release), same session rule, one-paper scope.
-	const { deps, files } = memoryDeps();
-	files.set("/lit-synthesis/protocols/current-paper.json", JSON.stringify({ base: "a", session: "s1" }));
-	assert.deepEqual(readCurrentScope("/", "s1", deps), { papers: ["a"] });
-	assert.equal(readCurrentScope("/", "s2", deps), null);
-	// Once a scope file EXISTS, the legacy marker is never consulted again
-	// (it is older by construction; resurrecting it would replay the v23
-	// stale-selection bug).
-	writeCurrentScope("/", { papers: ["b"] }, "s2", deps);
-	assert.equal(readCurrentScope("/", "s1", deps), null);
-	assert.deepEqual(readCurrentScope("/", "s2", deps), { papers: ["b"] });
-	// Legacy marker without a session field never matches (migration path).
-	const legacyOnly = memoryDeps();
-	legacyOnly.files.set("/lit-synthesis/protocols/current-paper.json", JSON.stringify({ base: "a" }));
-	assert.equal(readCurrentScope("/", "s1", legacyOnly.deps), null);
-}
-
 /* ---------------- singlePaperOf ---------------- */
 {
 	assert.equal(singlePaperOf({ papers: ["a"] }), "a");
-	assert.equal(singlePaperOf({ papers: ["a", "b"] }), null); // multi needs the fusion engine
+	assert.equal(singlePaperOf({ papers: ["a", "b"] }), null);
 	assert.equal(singlePaperOf({ papers: "library" } satisfies CurrentScope), null);
 	assert.equal(singlePaperOf(null), null);
 }

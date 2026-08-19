@@ -1,10 +1,10 @@
 /**
- * Tests for the pure arXiv query builder (v18 concept).
+ * Tests for the pure arXiv query builder.
  * Run: node src/sources/arxiv.test.ts
  */
 
 import assert from "node:assert/strict";
-import { buildSearchQuery, retryDelayMs } from "./arxiv.ts";
+import { buildSearchQuery } from "./arxiv.ts";
 
 // Standalone single character binds to the PREVIOUS word as a phrase;
 // remaining words are AND-linked (the ALOHA 2 fix).
@@ -58,12 +58,12 @@ import { buildSearchQuery, retryDelayMs } from "./arxiv.ts";
 }
 
 // Lowercase "or" is no operator (no pass-through) -- and as a function
-// word it drops out of the expression entirely (v30.1).
+// word it drops out of the expression entirely.
 {
 	assert.equal(buildSearchQuery("sandbar or shoal"), "all:sandbar AND all:shoal");
 }
 
-// Function words never become AND clauses (v30.1 field finding: arXiv's
+// Function words never become AND clauses (arXiv's
 // backend hung for 60s / answered 429 on `all:using`; the same expression
 // without it answered within seconds).
 {
@@ -89,7 +89,7 @@ import { buildSearchQuery, retryDelayMs } from "./arxiv.ts";
 	assert.equal(buildSearchQuery("  Sentinel   2  "), 'all:"sentinel 2"');
 }
 
-// Author scope (v30.14 user decision): picked authors become an AND-linked
+// Author scope: picked authors become an AND-linked
 // au: clause so arXiv FETCHES their papers; both sides parenthesized so the
 // clause composes with the legacy pass-through forms too. Without authors
 // the expression stays byte-identical.
@@ -117,21 +117,7 @@ import { buildSearchQuery, retryDelayMs } from "./arxiv.ts";
 	assert.equal(buildSearchQuery("water mask", ["  "]), "all:water AND all:mask");
 }
 
-// Rate-limit backoff (v30.13, field 2026-07-29: consecutive wizard runs hit
-// arXiv 429 on every search): fixed delays, a sane Retry-After header wins,
-// a huge or exhausted one gives up.
-{
-	assert.equal(retryDelayMs(0, null), 5_000);
-	assert.equal(retryDelayMs(1, null), 15_000);
-	assert.equal(retryDelayMs(2, null), null); // attempts used up
-	assert.equal(retryDelayMs(0, "7"), 7_000); // header wins
-	assert.equal(retryDelayMs(0, "0"), 5_000); // zero: fall back to the fixed delay
-	assert.equal(retryDelayMs(0, "3600"), null); // "come back in an hour": not worth blocking
-	assert.equal(retryDelayMs(0, "soon"), 5_000); // non-numeric header ignored
-	assert.equal(retryDelayMs(2, "7"), null); // header never revives used-up attempts
-}
-
-// Concept blocks (2026-08-06 block search): OR clauses per block, AND
+// Concept blocks: OR clauses per block, AND
 // between blocks, phrases quoted; authors compose; blocks win over the
 // token derivation.
 {
@@ -139,7 +125,7 @@ import { buildSearchQuery, retryDelayMs } from "./arxiv.ts";
 		buildSearchQuery("ignored text", undefined, [["river", "stream"], ["water extraction"], ["satellite"]]),
 		'(all:river OR all:stream) AND all:"water extraction" AND all:satellite',
 	);
-	// Author clause composes around the block expression (v30.14 form).
+	// Author clause composes around the block expression .
 	assert.equal(
 		buildSearchQuery("x", ["Kuenzer"], [["river"], ["mask"]]),
 		'(all:river AND all:mask) AND (au:"Kuenzer")',

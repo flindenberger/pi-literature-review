@@ -43,8 +43,8 @@ const paperB: PaperIndex["paper"] = {
 const indexA: PaperIndex = {
 	schema: INDEX_SCHEMA, chunking: CHUNK_SIGNATURE, sha256: "hash-a", embedding_model: "fake-embed", paper: paperA,
 	chunks: [
-		{ id: 0, page: 2, text: "Sandbars were mapped with Sentinel-2 imagery.", embedding: [1, 0] },
-		{ id: 1, page: 5, text: "Alternate bars appear along the Vistula reach.", embedding: [0.9, 0.1] },
+		{ id: 0, page: 2, text: "Sandbars were mapped with Sentinel-2 imagery.", embedding: [1, 0], phrase_words: 0 },
+		{ id: 1, page: 5, text: "Alternate bars appear along the Vistula reach.", embedding: [0.9, 0.1], phrase_words: 0 },
 	],
 };
 const indexB: PaperIndex = {
@@ -52,14 +52,14 @@ const indexB: PaperIndex = {
 	chunks: [
 		// Deliberately the best global match for the test question vector:
 		// if retrieval were corpus-wide, THIS chunk would win.
-		{ id: 0, page: 1, text: "Rio Negro water surfaces contracted during the drought.", embedding: [1, 0.05] },
+		{ id: 0, page: 1, text: "Rio Negro water surfaces contracted during the drought.", embedding: [1, 0.05], phrase_words: 0 },
 	],
 };
 // A PDF without a verified record, indexed under its filename identity.
 const indexC: PaperIndex = {
 	schema: INDEX_SCHEMA, chunking: CHUNK_SIGNATURE, sha256: "hash-c", embedding_model: "fake-embed",
 	paper: { key: "file:c", title: "", authors: [], year: null, doi: "", arxiv_id: "" },
-	chunks: [{ id: 0, page: 3, text: "Filename-only content about cameras.", embedding: [1, 0] }],
+	chunks: [{ id: 0, page: 3, text: "Filename-only content about cameras.", embedding: [1, 0], phrase_words: 0 }],
 };
 
 const library: LibraryMatch = {
@@ -289,8 +289,8 @@ function makeRound(question: string, session: string | null = null): Round {
 		}),
 		/no PDFs in the library/,
 	);
-	// EMPTY generation is a backend failure, not a groundable answer (field
-	// failure 2026-07-20: a thinking model returned zero answer text; the
+	// EMPTY generation is a backend failure, not a groundable answer (a
+	// thinking model can return zero answer text; the
 	// empty string must not flow through the citation gate as an empty
 	// "ungrounded draft").
 	const { deps: emptyDeps } = makeDeps("  \n ");
@@ -381,17 +381,15 @@ function makeRound(question: string, session: string | null = null): Round {
 	assert.ok(warnings.some((m) => m.includes("could not persist") && m.includes("disk full")));
 }
 
-/* ---------------- sticky scope (session-scoped, legacy fallback) ---------------- */
+/* ---------------- sticky scope (session-scoped) ---------------- */
 {
 	const { deps, files } = makeDeps("Antwort [1].");
-	// Pre-v25 marker: with no current-scope.json yet, the legacy file still
-	// resolves the paper (read for one more release).
-	files.set("/lit-synthesis/protocols/current-paper.json", JSON.stringify({ base: "a", session: "s1" }));
+	files.set("/lit-synthesis/protocols/current-scope.json", JSON.stringify({ papers: ["a"], session: "s1" }));
 	// No paper option, SAME session: the sticky marker resolves it.
 	const result = await runRound({ question: "q", root: "/", session: "s1", model: "fake-gen", embedModel: "fake-embed" }, deps);
 	assert.equal(result.paper.base, "a");
-	// A DIFFERENT session must not inherit the marker (bug 2026-07-21: the
-	// selection survived pi restarts) -- nor may a session-less call.
+	// A DIFFERENT session must not inherit the marker (the selection must
+	// not survive pi restarts) -- nor may a session-less call.
 	await assert.rejects(
 		() => runRound({ question: "q", root: "/", session: "s2", model: "fake-gen", embedModel: "fake-embed" }, deps),
 		/no paper selected/,
@@ -400,17 +398,16 @@ function makeRound(question: string, session: string | null = null): Round {
 		() => runRound({ question: "q", root: "/", model: "fake-gen", embedModel: "fake-embed" }, deps),
 		/no paper selected/,
 	);
-	// An explicit paper wins over the marker and re-stamps the NEW scope
-	// marker for ITS session (the legacy file is left behind, never re-read
-	// once a scope file exists).
+	// An explicit paper wins over the marker and re-stamps the scope marker
+	// for ITS session.
 	const explicit = await runRound({ question: "q", paper: "b", root: "/", session: "s2", model: "fake-gen", embedModel: "fake-embed" }, deps);
 	assert.equal(explicit.paper.base, "b");
 	assert.deepEqual(JSON.parse(files.get("/lit-synthesis/protocols/current-scope.json")!), { papers: ["b"], session: "s2" });
 }
 {
-	// A legacy marker without a session field never matches (migration path).
+	// A marker without a session field never matches.
 	const { deps, files } = makeDeps("never reached");
-	files.set("/lit-synthesis/protocols/current-paper.json", JSON.stringify({ base: "a" }));
+	files.set("/lit-synthesis/protocols/current-scope.json", JSON.stringify({ papers: ["a"] }));
 	await assert.rejects(
 		() => runRound({ question: "q", root: "/", session: "s1", embedModel: "fake-embed" }, deps),
 		/no paper selected/,
@@ -419,7 +416,7 @@ function makeRound(question: string, session: string | null = null): Round {
 {
 	// A corrupt marker falls back to the honest missing-paper error.
 	const { deps, files } = makeDeps("never reached");
-	files.set("/lit-synthesis/protocols/current-paper.json", "{ garbage");
+	files.set("/lit-synthesis/protocols/current-scope.json", "{ garbage");
 	await assert.rejects(
 		() => runRound({ question: "q", root: "/", session: "s1", embedModel: "fake-embed" }, deps),
 		/no paper selected/,
@@ -500,7 +497,7 @@ function makeRound(question: string, session: string | null = null): Round {
 		schema: PROTOCOL_SCHEMA, base: "a", date: "2026-07-15",
 		paper: { key: paperA.key, title: paperA.title, authors: paperA.authors, year: paperA.year, doi: paperA.doi, arxiv_id: "" },
 		// Rounds of an earlier session and legacy session-less rounds sit in
-		// the SAME file -- the report must ignore them (bug 2026-07-21: old
+		// the SAME file -- the report must ignore them (old
 		// questions resurfaced in every report).
 		rounds: [
 			makeRound("Frage eins?", "s1"), makeRound("Frage zwei?", "s1"), makeRound("Frage eins?", "s1"),
@@ -534,7 +531,7 @@ function makeRound(question: string, session: string | null = null): Round {
 	assert.equal(report.rounds.length, 3);
 	assert.ok(report.rounds.every((round) => round.session === "s1"));
 	assert.deepEqual(report.protocol_files, ["/lit-synthesis/protocols/2026-07-15_a.json"]);
-	assert.equal((JSON.parse(files.get("/lit-synthesis/protocols/2026-07-15_a.json")!) as ChatProtocol).rounds.length, 5);
+	assert.equal((JSON.parse(files.get("/lit-synthesis/protocols/2026-07-15_a.json")!) as Protocol).rounds.length, 5);
 	// Determinism: an identical second run retrieves the identical excerpts.
 	const again = await runChatReport({
 		question: "Fokus: Validierung?", paper: "a.pdf", session: "s1", root: "/", model: "fake-gen", embedModel: "fake-embed",
@@ -565,7 +562,7 @@ function makeRound(question: string, session: string | null = null): Round {
 		schema: PROTOCOL_SCHEMA, base: "a", date: "2026-07-15",
 		paper: { key: paperA.key, title: paperA.title, authors: paperA.authors, year: paperA.year, doi: paperA.doi, arxiv_id: "" },
 		rounds: [makeRound("Alte Frage?", "s0")],
-	} satisfies ChatProtocol));
+	} satisfies Protocol));
 	const warnings: string[] = [];
 	const report = await runChatReport({
 		paper: "a", session: "s1", root: "/", model: "fake-gen", embedModel: "fake-embed",
@@ -696,7 +693,7 @@ function makeRound(question: string, session: string | null = null): Round {
 	assert.ok(generateCalls[0].system.includes("literature review")); // synthesis genre
 	const cited = new Set(report.units[0].chunks.map((chunk) => chunk.paper_key));
 	assert.ok(cited.size >= 1); // cross-paper retrieval ran over ALL indexes
-	assert.equal(report.question, "Report: 2 Dokumente");
+	assert.equal(report.question, "Report: 2 documents");
 	assert.equal(report.detail_mode, "cross-paper");
 }
 
