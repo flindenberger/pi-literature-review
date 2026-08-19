@@ -69,6 +69,15 @@ questions) is submitted to that provider -- check permissions and licensing
 of your documents first. The local, key-free setup is the default and the
 first choice of this package.
 
+## Thinking
+
+All model calls of the synthesis stage and the search wizard's
+variant suggestions run with hidden reasoning disabled and an output cap
+(see [Synthesis -- Thinking is off](synthesis.md#thinking-is-off-for-these-calls));
+there is no setting to enable it. The Ollama dialect receives
+`think: false`; a llama.cpp model served through Pi needs a `models.json`
+provider with `compat.thinkingFormat` so Pi can switch thinking off.
+
 ## Error messages
 
 When the embedding backend is unreachable, the message names the ROLE

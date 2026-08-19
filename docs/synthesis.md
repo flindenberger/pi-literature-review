@@ -84,6 +84,32 @@ OpenScholar-8B GGUF imported into Ollama); the report names the model that
 ran. Embeddings always run on the embedding backend -- see
 [Configuration](configuration.md).
 
+### Thinking is off for these calls
+
+Every model call of this stage -- answers, summaries, report units, the
+review synthesis, the English retrieval variant -- and the query-variant
+suggestions of the search wizard run with hidden reasoning ("thinking")
+disabled and a fixed output cap. Two reasons: the calls are excerpt-bound
+(answer only from the numbered excerpts, cite by number), so reasoning adds
+nothing; and a thinking model can spend a capped call's entire budget on
+hidden reasoning and return no answer text at all. This is not a
+configurable option. The agent's own chat turns in Pi are unaffected and
+follow the thinking level selected there.
+
+How it is sent depends on the backend: on the model selected in Pi, no
+reasoning level is passed and Pi's model layer turns that into the
+provider's "off" (OpenAI-style APIs: `reasoning.effort: none`; Anthropic:
+no thinking block; Qwen-style chat templates: `enable_thinking: false`); on
+the Ollama dialect of the configured backend, `think: false`; the
+OpenAI-compatible dialect relies on the server's configuration.
+
+One prerequisite for llama.cpp served through Pi: the model must be
+registered in Pi WITH metadata (a `models.json` provider carrying
+`compat.thinkingFormat`, e.g. `qwen-chat-template`). The quick form
+`provider=URL` registers it without, and thinking then cannot be switched
+off by any client -- the symptom is "the model returned no answer text
+(stop reason: length; it produced only hidden reasoning)".
+
 ## Command line
 
 ```
