@@ -96,12 +96,10 @@ hidden reasoning and return no answer text at all. This is not a
 configurable option. The agent's own chat turns in Pi are unaffected and
 follow the thinking level selected there.
 
-How it is sent depends on the backend: on the model selected in Pi, no
-reasoning level is passed and Pi's model layer turns that into the
-provider's "off" (OpenAI-style APIs: `reasoning.effort: none`; Anthropic:
-no thinking block; Qwen-style chat templates: `enable_thinking: false`); on
-the Ollama dialect of the configured backend, `think: false`; the
-OpenAI-compatible dialect relies on the server's configuration.
+This holds for every provider reachable through Pi (cloud APIs included):
+Pi's model layer translates "no reasoning level" into the provider's own
+off-switch; the Ollama dialect of the configured backend receives
+`think: false`.
 
 One prerequisite for llama.cpp served through Pi: the model must be
 registered in Pi WITH metadata (a `models.json` provider carrying
