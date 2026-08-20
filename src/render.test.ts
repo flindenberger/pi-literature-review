@@ -963,4 +963,19 @@ const baseReport: SynthReport = {
 	assert.ok(failed.includes("arxiv: timeout &lt;60s&gt; (results may be incomplete)"));
 }
 
+// Failed abstract lookups get their own meta row (2026-08-20: a
+// rate-limited Semantic Scholar pool dropped 11 records as "no abstract"
+// with no trace on the page); no row when none failed.
+{
+	assert.ok(!html.includes("Failed lookups"));
+	const failed = renderHtml({
+		...payload,
+		abstract_lookup_failures: [{ source: "semanticscholar", error: "HTTP 429 <pool>", records: 11 }],
+	});
+	assert.ok(failed.includes("<dt>Failed lookups</dt>"));
+	assert.ok(failed.includes(
+		"semanticscholar abstract lookup: HTTP 429 &lt;pool&gt; (11 record(s) affected -- their abstracts may exist; they sit in the dropped table)",
+	));
+}
+
 console.log("render.test.ts: all assertions passed");

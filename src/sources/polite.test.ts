@@ -39,6 +39,18 @@ import { pacedClient, retryDelayMs } from "./polite.ts";
 		// Retry-After 1 keeps the test fast (1s + 1s backoff before giving up).
 		globalThis.fetch = (async () => new Response("", { status: answers.shift() ?? 200, headers: { "retry-after": "1" } })) as typeof fetch;
 		await assert.rejects(() => noRetry("https://example.invalid/d"), /rate limited; 2 retries did not clear it\) -- get a key/);
+		// retry:false = ONE attempt: a rate-limit answer throws immediately
+		// (no backoff sleeps), for callers probing an already-limited source.
+		let calls = 0;
+		globalThis.fetch = (async () => {
+			calls++;
+			return new Response("", { status: 429, headers: { "retry-after": "1" } });
+		}) as typeof fetch;
+		await assert.rejects(
+			() => noRetry("https://example.invalid/e", {}, { retry: false }),
+			/Test API answered HTTP 429 -- get a key/,
+		);
+		assert.equal(calls, 1);
 	} finally {
 		globalThis.fetch = realFetch;
 	}

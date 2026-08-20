@@ -49,19 +49,21 @@ export interface PacedClientOptions {
 	rateLimitHint?: string;
 }
 
-export type PacedFetch = (url: string, init?: RequestInit) => Promise<Response>;
+export type PacedFetch = (url: string, init?: RequestInit, opts?: { retry?: boolean }) => Promise<Response>;
 
 /**
  * A paced, retrying fetch for ONE source. Every call waits for the spacing,
  * sends the request with the timeout, retries rate-limit answers via
  * retryDelayMs, returns the response on success (or a passed status) and
- * throws on anything else.
+ * throws on anything else. `retry: false` sends a SINGLE attempt: a caller
+ * that already saw this source rate-limit can keep probing cheaply (a 429
+ * answer is fast; it is the backoff sleeps that cost the run minutes).
  */
 export function pacedClient(options: PacedClientOptions): PacedFetch {
 	const rateLimitStatuses = options.rateLimitStatuses ?? [429, 503];
 	const passStatuses = options.passStatuses ?? [];
 	let nextRequestAt = 0;
-	return async (url, init = {}) => {
+	return async (url, init = {}, opts = {}) => {
 		for (let attempt = 0; ; attempt++) {
 			const wait = nextRequestAt - Date.now();
 			if (wait > 0) await sleep(wait);
@@ -70,7 +72,9 @@ export function pacedClient(options: PacedClientOptions): PacedFetch {
 			const response = await fetch(url, { ...init, signal: init.signal ?? AbortSignal.timeout(TIMEOUT_MS) });
 			if (response.ok || passStatuses.includes(response.status)) return response;
 			const rateLimited = rateLimitStatuses.includes(response.status);
-			const delay = rateLimited ? retryDelayMs(attempt, response.headers.get("retry-after")) : null;
+			const delay = rateLimited && opts.retry !== false
+				? retryDelayMs(attempt, response.headers.get("retry-after"))
+				: null;
 			if (delay === null) {
 				throw new Error(
 					`${options.label} answered HTTP ${response.status}`

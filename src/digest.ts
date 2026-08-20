@@ -69,6 +69,11 @@ export function renderDigest(
 	for (const failure of payload.source_failures ?? []) {
 		lines.push(`SOURCE FAILED: ${failure.source} -- ${failure.error} (results may be incomplete)`);
 	}
+	// A failed abstract lookup is equally a fact about the run: its records
+	// sit in the dropped table although their abstracts may exist.
+	for (const failure of payload.abstract_lookup_failures ?? []) {
+		lines.push(`ABSTRACT LOOKUP FAILED: ${failure.source} -- ${failure.error} (${failure.records} record(s) dropped without abstract; their abstracts may exist -- rerun later or configure an API key)`);
+	}
 	// What was actually asked for -- same wording as the HTML meta block,
 	// from the same functions. Multi-query runs label per query.
 	const groupingByQuery = payload.grouping_by_query ?? [];

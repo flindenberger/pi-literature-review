@@ -66,6 +66,7 @@ export interface RenderPayload {
 	/** Sources that errored during the run (null: none failed); a failed
 	 * source must stay visible on the page. */
 	source_failures?: Array<{ source: string; error: string }> | null;
+	abstract_lookup_failures?: Array<{ source: string; error: string; records: number }> | null;
 	/** Boolean expression actually sent to arXiv per query (null: arXiv unused). */
 	arxiv_queries?: string[] | null;
 	/** Boolean block search actually sent to OpenAlex per query. */
@@ -822,6 +823,15 @@ export function renderHtml(payload: RenderPayload, options?: { network?: boolean
 			.map((f) => `<dd>${esc(f.source)}: ${esc(f.error)} (results may be incomplete)</dd>`)
 			.join("")}`
 		: "";
+	// Same honesty for failed abstract lookups: the affected records sit in
+	// the dropped table with a "lookup failed" reason -- this row explains
+	// why and that their abstracts may exist regardless.
+	const lookupFailures = payload.abstract_lookup_failures ?? [];
+	const lookupFailureRows = lookupFailures.length
+		? `\n<dt>Failed lookups</dt>${lookupFailures
+			.map((f) => `<dd>${esc(f.source)} abstract lookup: ${esc(f.error)} (${f.records} record(s) affected -- their abstracts may exist; they sit in the dropped table)</dd>`)
+			.join("")}`
+		: "";
 
 	// The selection bar sits BELOW both tables and covers them both (the
 	// select script collects every input.pick on the page).
@@ -882,7 +892,7 @@ body { max-width: 120rem; }
 <dl class="meta">
 <dt>Query</dt><dd>${esc(queryLabel)}</dd>${variantRows}
 <dt>Generated</dt><dd>${esc(payload.generated)} (UTC)</dd>
-<dt>Sources</dt><dd>${esc(payload.sources_used.join(", ")) || "none reachable"}</dd>${sourceFailureRows}${
+<dt>Sources</dt><dd>${esc(payload.sources_used.join(", ")) || "none reachable"}</dd>${sourceFailureRows}${lookupFailureRows}${
 	payload.per_source ? `\n<dt>Records per source</dt><dd>${esc(payload.per_source)}</dd>` : ""}
 <dt>Filters</dt><dd>${esc(describeFilters(payload.filters))}</dd>
 <dt>Sort</dt><dd>${esc(payload.sort ?? "source order")}</dd>

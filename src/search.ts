@@ -177,7 +177,13 @@ export async function runSearch(options: SearchOptions) {
 	// The journal-score stage rides on the same switch: enrich: false turns
 	// off all OpenAlex lookups beyond the search itself.
 	aborted();
-	const enriched = options.enrich === false ? verified : await enrichAll(verified, warn);
+	const enrichment = options.enrich === false ? null : await enrichAll(verified, warn);
+	const enriched = enrichment ? enrichment.records : verified;
+	// Failed Semantic Scholar abstract lookups, by DOI: they word the drop
+	// reason honestly ("failed", not "delivered none") and land in the
+	// payload -- a transient warn() alone would make the failure
+	// undiagnosable from the sidecar afterwards.
+	const s2Failures = enrichment?.s2AbstractFailures ?? new Map<string, string>();
 	aborted();
 	const scored = options.enrich === false ? enriched : await addJournalScores(enriched, warn);
 
@@ -185,12 +191,12 @@ export async function runSearch(options: SearchOptions) {
 	// cannot be judged by the block labeling (title-only matching
 	// under-matches systematically) and moves to the dropped table --
 	// visible and selectable there, never silently gone.
-	const abstractGate = dropWithoutAbstract(
-		scored,
+	const abstractGate = dropWithoutAbstract(scored, (record) =>
 		options.enrich === false
 			? "no abstract (sources delivered none; enrichment disabled)"
-			: "no abstract (sources, the OpenAlex and the Semantic Scholar lookup delivered none)",
-	);
+			: s2Failures.has(record.doi)
+				? "no abstract (sources and the OpenAlex lookup delivered none; the Semantic Scholar lookup failed -- the abstract may exist)"
+				: "no abstract (sources, the OpenAlex and the Semantic Scholar lookup delivered none)");
 	for (const { record, reason } of abstractGate.dropped) {
 		warn(`dropped "${record.title}": ${reason}`);
 	}
@@ -261,6 +267,17 @@ export async function runSearch(options: SearchOptions) {
 		// Requested depth, logged by digest and HTML meta.
 		per_source: perSource,
 		source_failures: sourceFailures.length ? sourceFailures : null,
+		// Failed abstract lookups are a fact about this run, like a failed
+		// source: without this field a rate-limited Semantic Scholar pool is
+		// invisible in the sidecar and its drops read as "the source has no
+		// abstract". One entry per provider (only S2 looks up abstracts today).
+		abstract_lookup_failures: s2Failures.size
+			? [{
+				source: "semanticscholar",
+				error: s2Failures.values().next().value ?? "",
+				records: s2Failures.size,
+			}]
+			: null,
 		// Per-source transparency (PRISMA-S: document the strategy per
 		// database): the expression each source ACTUALLY received, per
 		// query. arXiv = boolean all:-syntax incl. the au: author clause;

@@ -408,6 +408,19 @@ function record(overrides: Partial<SourceRecord>): SourceRecord {
 	assert.ok(dropped.every((d) => d.reason === "no abstract (sources, the OpenAlex and the Semantic Scholar lookup delivered none)"));
 }
 
+// abstract gate with a per-record reason function (a failed Semantic
+// Scholar lookup must read "lookup failed", not "delivered none")
+{
+	const { dropped } = dropWithoutAbstract(
+		[
+			{ title: "failed-lookup", abstract: "" },
+			{ title: "answered-empty", abstract: "" },
+		],
+		(record) => (record.title === "failed-lookup" ? "lookup failed" : "delivered none"),
+	);
+	assert.deepEqual(dropped.map((d) => d.reason), ["lookup failed", "delivered none"]);
+}
+
 // sort: descending, unknown values last, input untouched
 {
 	const input = [

@@ -95,24 +95,25 @@ export function abstractLookupUrl(doi: string): string {
  * OpenAlex lookup in enrichment (OpenAlex carries no abstract for many
  * Elsevier papers that Semantic Scholar does have). Same pacing, key and
  * retry mechanics as the search; an unknown DOI (HTTP 404) is null, not an
- * error.
+ * error. `retry: false` = one attempt without backoff sleeps, for callers
+ * that already saw the pool rate-limit and keep probing cheaply.
  */
-export async function fetchAbstractByDoi(doi: string): Promise<string | null> {
-	const data = await fetchS2(abstractLookupUrl(doi), s2ApiKey());
+export async function fetchAbstractByDoi(doi: string, opts: { retry?: boolean } = {}): Promise<string | null> {
+	const data = await fetchS2(abstractLookupUrl(doi), s2ApiKey(), opts);
 	const abstract = typeof data?.abstract === "string" ? data.abstract.trim() : "";
 	return abstract || null;
 }
 
 /** One paced, retrying GET with the optional API key; null on 404 (the
  * bulk search never 404s, the abstract lookup does for unknown DOIs). */
-async function fetchS2(url: string, apiKey: string): Promise<Record<string, any> | null> {
+async function fetchS2(url: string, apiKey: string, opts: { retry?: boolean } = {}): Promise<Record<string, any> | null> {
 	const response = await fetchPaced(url, {
 		headers: {
 			"User-Agent": userAgent(),
 			Accept: "application/json",
 			...(apiKey ? { "x-api-key": apiKey } : {}),
 		},
-	});
+	}, opts);
 	if (response.status === 404) return null;
 	return (await response.json()) as Record<string, any>;
 }

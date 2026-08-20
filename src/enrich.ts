@@ -131,6 +131,16 @@ export function applyEnrichment<T extends EnrichableRecord>(
 	return { record: result, filled };
 }
 
+export interface EnrichmentResult<T> {
+	records: Array<Enriched<T>>;
+	/** DOI -> error message for records whose Semantic Scholar abstract
+	 * lookup FAILED (rate limit, network); empty when every lookup answered.
+	 * The caller words the abstract-gate drop reason and the payload's
+	 * failure entry from this -- a failed lookup must never read as
+	 * "the source has no abstract". */
+	s2AbstractFailures: Map<string, string>;
+}
+
 /**
  * Enrich all records that miss cites, venue or abstract and carry an
  * identifier. A failing lookup degrades gracefully: the record ships as
@@ -140,14 +150,15 @@ export function applyEnrichment<T extends EnrichableRecord>(
 export async function enrichAll<T extends EnrichableRecord>(
 	records: T[],
 	warn: (message: string) => void = defaultWarn,
-	abstractLookup: (doi: string) => Promise<string | null> = fetchAbstractByDoi,
-): Promise<Array<Enriched<T>>> {
+	abstractLookup: (doi: string, opts?: { retry?: boolean }) => Promise<string | null> = fetchAbstractByDoi,
+): Promise<EnrichmentResult<T>> {
 	const out: Array<Enriched<T>> = [];
 	let lookups = 0;
 	let gained = 0;
 	let s2Lookups = 0;
 	let s2Gained = 0;
-	let s2Down = false;
+	let s2Degraded = false;
+	const s2AbstractFailures = new Map<string, string>();
 	for (const record of records) {
 		const doi = lookupDoi(record);
 		if (doi === null || !needsEnrichment(record)) {
@@ -171,27 +182,37 @@ export async function enrichAll<T extends EnrichableRecord>(
 		// (arXiv DataCite DOIs are not asked -- arXiv records always carry
 		// their abstract). Failure keeps the record as it is, loudly. The
 		// anonymous S2 pool rate-limits for minutes at a time; after the
-		// first hard failure the remaining lookups of this run are skipped
-		// instead of each burning its own retries.
-		if (!current.abstract && record.doi && !s2Down) {
+		// first hard failure every remaining lookup is still TRIED, but only
+		// once, without the backoff sleeps -- a blocked pool then costs
+		// seconds instead of minutes, and if it opens up mid-run the later
+		// records still get their abstracts. Every failure is recorded so
+		// the drop reason and the payload can say "lookup failed" instead of
+		// "delivered none".
+		if (!current.abstract && record.doi) {
 			s2Lookups++;
 			try {
-				const abstract = await abstractLookup(record.doi);
+				const abstract = await abstractLookup(record.doi, { retry: !s2Degraded });
 				if (abstract) {
 					s2Gained++;
 					current = { ...current, abstract, enriched: { ...current.enriched, abstract: "semanticscholar" } };
 					warn(`enriched "${record.title}": abstract (semanticscholar)`);
 				}
 			} catch (error) {
-				s2Down = true;
-				warn(`abstract lookup at Semantic Scholar for "${record.title}" failed: ${error instanceof Error ? error.message : error}; record kept as delivered, further Semantic Scholar abstract lookups skipped this run`);
+				s2AbstractFailures.set(record.doi, error instanceof Error ? error.message : String(error));
+				if (!s2Degraded) {
+					s2Degraded = true;
+					warn(`abstract lookup at Semantic Scholar for "${record.title}" failed: ${s2AbstractFailures.get(record.doi)}; record kept as delivered, the remaining lookups of this run are tried once each without retries`);
+				}
 			}
 		}
 		out.push(current);
 	}
 	if (lookups) warn(`enrichment: ${lookups} lookup(s), ${gained} record(s) gained fields`);
-	if (s2Lookups) warn(`abstract lookups at Semantic Scholar: ${s2Lookups}, ${s2Gained} abstract(s) filled`);
-	return out;
+	if (s2Lookups) {
+		warn(`abstract lookups at Semantic Scholar: ${s2Lookups}, ${s2Gained} abstract(s) filled`
+			+ (s2AbstractFailures.size ? `, ${s2AbstractFailures.size} lookup(s) failed` : ""));
+	}
+	return { records: out, s2AbstractFailures };
 }
 
 /* ---------------- 2. Journal-score stage ---------------- */

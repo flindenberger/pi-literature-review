@@ -248,17 +248,18 @@ function filterReason(record: FilterableRecord, filters: ResultFilters): string 
  * list: the block labeling matches title+abstract, so an abstract-less
  * record cannot be judged fairly -- and since the dropped table carries
  * the full columns and checkboxes, nothing is lost, only set aside. The
- * reason string is the caller's (it differs with enrichment on/off). Pure.
+ * reason is the caller's (it differs with enrichment on/off); a function
+ * words it per record (e.g. "lookup failed" vs "delivered none"). Pure.
  */
 export function dropWithoutAbstract<T extends { abstract: string }>(
 	records: T[],
-	reason: string,
+	reason: string | ((record: T) => string),
 ): { kept: T[]; dropped: Array<{ record: T; reason: string }> } {
 	const kept: T[] = [];
 	const dropped: Array<{ record: T; reason: string }> = [];
 	for (const record of records) {
 		if (record.abstract.trim()) kept.push(record);
-		else dropped.push({ record, reason });
+		else dropped.push({ record, reason: typeof reason === "string" ? reason : reason(record) });
 	}
 	return { kept, dropped };
 }

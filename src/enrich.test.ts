@@ -21,8 +21,12 @@ const base = {
 // lookup is asked from Semantic Scholar by DOI (injected here; stubbed
 // OpenAlex fetch delivers cites+venue but no abstract); provenance
 // "semanticscholar"; a record whose OpenAlex answer carries the abstract
-// never asks S2; arXiv-only records (no own DOI) never ask S2 either;
-// a failing S2 lookup keeps the record, loudly.
+// never asks S2; arXiv-only records (no own DOI) never ask S2 either.
+// A failing S2 lookup keeps the record and DEGRADES the run: every later
+// lookup is still tried, but with retry:false (single attempt, no backoff
+// sleeps), a recovered pool still fills later records, and every failed
+// DOI lands in s2AbstractFailures so the caller can word the drop reason
+// as "lookup failed" instead of "delivered none".
 {
 	const realFetch = globalThis.fetch;
 	globalThis.fetch = (async (url: unknown) => {
@@ -33,25 +37,31 @@ const base = {
 		return new Response(JSON.stringify({ cited_by_count: 5, primary_location: { source: { display_name: "V" } } }), { status: 200 });
 	}) as typeof fetch;
 	try {
-		const asked: string[] = [];
-		const lookup = async (doi: string) => {
-			asked.push(doi);
-			if (doi === "10.1/fail") throw new Error("boom");
-			return doi === "10.1/s2" ? "From S2." : null;
+		const asked: Array<{ doi: string; retry: boolean | undefined }> = [];
+		const lookup = async (doi: string, opts?: { retry?: boolean }) => {
+			asked.push({ doi, retry: opts?.retry });
+			if (doi === "10.1/fail" || doi === "10.1/alsofail") throw new Error("boom");
+			return doi === "10.1/s2" || doi === "10.1/late" ? "From S2." : null;
 		};
 		const warnings: string[] = [];
-		const out = await enrichAll([
+		const { records: out, s2AbstractFailures } = await enrichAll([
 			{ title: "S2", doi: "10.1/s2", arxiv_id: "", cites: null, venue: "", abstract: "" },
 			{ title: "None", doi: "10.1/none", arxiv_id: "", cites: null, venue: "", abstract: "" },
 			{ title: "OA", doi: "10.1/withabs", arxiv_id: "", cites: null, venue: "", abstract: "" },
 			{ title: "Arx", doi: "", arxiv_id: "2401.00001", cites: null, venue: "", abstract: "" },
 			{ title: "Fail", doi: "10.1/fail", arxiv_id: "", cites: null, venue: "", abstract: "" },
-			{ title: "After", doi: "10.1/after", arxiv_id: "", cites: null, venue: "", abstract: "" },
+			{ title: "AlsoFail", doi: "10.1/alsofail", arxiv_id: "", cites: null, venue: "", abstract: "" },
+			{ title: "Late", doi: "10.1/late", arxiv_id: "", cites: null, venue: "", abstract: "" },
 		], (m) => warnings.push(m), lookup);
-		// the failure trips the breaker: "After" is not asked any more
-		assert.deepEqual(asked, ["10.1/s2", "10.1/none", "10.1/fail"]);
-		assert.equal(out[5].abstract, "");
-		assert.equal(out[5].cites, 5);
+		// the first failure degrades instead of skipping: every later record
+		// is still asked, but with retry:false; a recovered pool fills "Late"
+		assert.deepEqual(asked, [
+			{ doi: "10.1/s2", retry: true },
+			{ doi: "10.1/none", retry: true },
+			{ doi: "10.1/fail", retry: true },
+			{ doi: "10.1/alsofail", retry: false },
+			{ doi: "10.1/late", retry: false },
+		]);
 		assert.equal(out[0].abstract, "From S2.");
 		assert.equal(out[0].enriched?.abstract, "semanticscholar");
 		assert.equal(out[0].enriched?.cites, "openalex");
@@ -60,8 +70,14 @@ const base = {
 		assert.equal(out[2].enriched?.abstract, "openalex");
 		assert.equal(out[4].abstract, "");
 		assert.equal(out[4].cites, 5);
-		assert.ok(warnings.some((m) => m.includes("abstract lookup at Semantic Scholar for \"Fail\" failed: boom") && m.includes("skipped this run")));
-		assert.ok(warnings.some((m) => m.includes("abstract lookups at Semantic Scholar: 3, 1 abstract(s) filled")));
+		assert.equal(out[6].abstract, "From S2.");
+		assert.equal(out[6].enriched?.abstract, "semanticscholar");
+		assert.deepEqual([...s2AbstractFailures.entries()], [["10.1/fail", "boom"], ["10.1/alsofail", "boom"]]);
+		// first failure warns loudly and announces the degraded mode; later
+		// failures are counted, not repeated
+		assert.ok(warnings.some((m) => m.includes("abstract lookup at Semantic Scholar for \"Fail\" failed: boom") && m.includes("tried once each without retries")));
+		assert.equal(warnings.filter((m) => m.includes("abstract lookup at Semantic Scholar for")).length, 1);
+		assert.ok(warnings.some((m) => m.includes("abstract lookups at Semantic Scholar: 5, 2 abstract(s) filled, 2 lookup(s) failed")));
 	} finally {
 		globalThis.fetch = realFetch;
 	}

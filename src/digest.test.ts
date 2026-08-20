@@ -382,4 +382,18 @@ const chatReport: ChatReport = {
 	assert.ok(allFailed.includes("Sources: none"));
 }
 
+// Failed abstract lookups stay visible too (2026-08-20: a rate-limited
+// Semantic Scholar pool was invisible after the run and its drops read as
+// "the source has no abstract").
+{
+	const digest = renderDigest(
+		payload({ abstract_lookup_failures: [{ source: "semanticscholar", error: "HTTP 429", records: 11 }] }),
+		"/data/queries/x.html",
+	);
+	assert.ok(digest.includes(
+		"ABSTRACT LOOKUP FAILED: semanticscholar -- HTTP 429 (11 record(s) dropped without abstract; their abstracts may exist -- rerun later or configure an API key)",
+	));
+	assert.ok(!renderDigest(payload({}), "/data/queries/x.html").includes("ABSTRACT LOOKUP FAILED"));
+}
+
 console.log("digest.test.ts: all assertions passed");
