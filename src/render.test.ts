@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import { type ChatReport, searchSnippet, type SynthReport } from "./synthesis.ts";
 import {
 	bibtexEntry,
+	filterExclusionBreakdown,
 	localPdfHref,
 	renderHtml,
 	renderPaperChatReportHtml,
@@ -335,7 +336,7 @@ const html = renderHtml(payload);
 	assert.ok(blockRun.includes('<details class="prisma"><summary>Search documentation</summary>'));
 	const mainMeta = blockRun.slice(0, blockRun.indexOf('<details class="prisma">'));
 	assert.ok(!mainMeta.includes("Sent to arXiv"));
-	assert.ok(!mainMeta.includes("<dt>Grouping</dt>"));
+	assert.ok(!mainMeta.includes("<dt>Targeting</dt>"));
 	// Per-query grouping rows replace the single line.
 	assert.ok(blockRun.includes("<dd>Q1: (water) AND (mask)</dd>"));
 	assert.ok(blockRun.includes("<dd>Q2: (cnn OR deep learning) AND (river)</dd>"));
@@ -365,13 +366,23 @@ const html = renderHtml(payload);
 	assert.ok(withFlow.includes("<dd>Q1 arxiv: 3</dd>"));
 	assert.ok(withFlow.includes("<dd>Q2 arxiv: 2</dd>"));
 	assert.ok(withFlow.includes("raw hits per source and query, before deduplication and filtering."));
-	// The chain names its destination (user wording); the
-	// earlier explaining note line is gone. A sidecar
+	// The chain ends "remaining / dropped" -- the records are pipeline
+	// survivors awaiting the human's pick, not PRISMA-"included".
+	// It sits in the ALWAYS-VISIBLE head block, REPLACES the Results line
+	// there (same numbers twice) and ends with the label/verification
+	// summary; the collapsed section no longer repeats it. A sidecar
 	// without the abstract-gate field renders the chain without that step.
-	assert.ok(withFlow.includes(
-		"10 record(s) identified &rarr; 2 removed as uncitable (no title or no authors) &rarr; "
-		+ "3 duplicate(s) merged &rarr; 5 screened &rarr; 3 excluded by the requested filters "
-		+ "&rarr; 2 included to the final literature list, awaiting manual selection"));
+	const flowHead = withFlow.slice(0, withFlow.indexOf('<details class="prisma">'));
+	assert.ok(flowHead.includes(
+		"<dt>Screening flow</dt><dd>10 record(s) identified &rarr; 2 removed as uncitable (no title or no authors) &rarr; "
+		+ "3 duplicate(s) merged &rarr; 5 screened &rarr; 3 excluded by the user filters "
+		+ "&rarr; 2 record(s) remaining (1 on_target, 1 adjacent; 1/2 verified), 1 dropped</dd>"));
+	// A dim note right under the chain: both tables stay selectable.
+	assert.ok(flowHead.includes("Papers of both tables (results and dropped) can still be selected and downloaded."));
+	assert.ok(!flowHead.includes("<dt>Results</dt>"));
+	// (the SVG's aria-label still says "Screening flow diagram" -- only the
+	// chain row itself must not repeat inside the section)
+	assert.ok(!withFlow.slice(withFlow.indexOf('<details class="prisma">')).includes("<dt>Screening flow</dt>"));
 	assert.ok(!withFlow.includes("row(s) of the dropped table"));
 	// With the abstract gate the chain carries its step.
 	const withGate = renderHtml({
@@ -389,10 +400,12 @@ const html = renderHtml(payload);
 	});
 	assert.ok(singleQuery.includes("<dd>openalex: 4</dd>"));
 	// Old sidecar without counts/flow: the section still holds the
-	// strategy and grouping rows, no identified/flow rows.
+	// strategy and grouping rows, no identified rows -- and the head block
+	// falls back to the classic Results line instead of the chain.
 	assert.ok(html.includes('<details class="prisma">'));
 	assert.ok(!html.includes("<dt>Records identified</dt>"));
-	assert.ok(!html.includes("<dt>Flow</dt>"));
+	assert.ok(!html.includes("Screening flow"));
+	assert.ok(html.includes("<dt>Results</dt>"));
 	// A query without blocks says where its labels came from.
 	const fallback = renderHtml({
 		...payload,
@@ -949,6 +962,87 @@ const baseReport: SynthReport = {
 	assert.ok(html.includes("<strong>1. Satellite Imagery</strong>"));
 	assert.ok(html.includes("<li><strong>SPOT4:</strong> high resolution"));
 	assert.ok(!html.includes("**"));
+}
+
+// PRISMA polish (2026-08-20): the collapsed documentation section holds
+// four always-visible levels; the excluded counts split "no abstract
+// available" from "abstract retrieval failed" and break the filter
+// exclusions down per filter (all derived from the recorded drop
+// reasons); the identifier-verification line comes from the real counts;
+// the flow diagram is a standalone SVG offered as a download; the
+// closing sentence claims provenance support, not PRISMA compliance.
+{
+	const junkRecord = payload.dropped[0].record;
+	const prismaHtml = renderHtml({
+		...payload,
+		arxiv_queries: ["all:sandbar"],
+		flow: {
+			identified: 10, junk_removed: 1, duplicates_removed: 2,
+			screened: 7, no_abstract_removed: 3, excluded_by_filters: 2, included: 2,
+		},
+		dropped: [
+			{ reason: "empty author list", record: junkRecord },
+			{ reason: "no abstract (sources, the OpenAlex and the Semantic Scholar lookup delivered none)", record: junkRecord },
+			{ reason: "no abstract (sources and the OpenAlex lookup delivered none; the Semantic Scholar lookup failed -- the abstract may exist)", record: junkRecord },
+			{ reason: "no abstract (sources and the OpenAlex lookup delivered none; the Semantic Scholar lookup failed -- the abstract may exist)", record: junkRecord },
+			{ reason: "filtered: published 2015, before requested 2017", record: junkRecord },
+			{ reason: "filtered: 3 citation(s) < requested minimum 5", record: junkRecord },
+		],
+	});
+	assert.ok(prismaHtml.includes("<h3>Search strategy</h3>"));
+	assert.ok(prismaHtml.includes("<h3>Database-specific search translation</h3>"));
+	assert.ok(prismaHtml.includes("<h3>Retrieval and screening</h3>"));
+	assert.ok(prismaHtml.includes("<dd>no abstract available: 1</dd>"));
+	assert.ok(prismaHtml.includes("abstract retrieval failed: 2"));
+	assert.ok(prismaHtml.includes("user filters: 2 (publication year: 1, minimum citations: 1)"));
+	// The chain carries the same breakdown inline ("N by <filter>").
+	assert.ok(prismaHtml.includes("2 excluded by the user filters (1 by publication year, 1 by minimum citations)"));
+	assert.ok(prismaHtml.includes("<dt>User filters</dt>"));
+	assert.ok(!prismaHtml.includes("Eligibility filters"));
+	// The dropped table says its rows stay selectable; the diagram caption
+	// says the same for the excluded numbers.
+	assert.ok(prismaHtml.includes("every row stays selectable"));
+	assert.ok(prismaHtml.includes("Excluded records remain listed and selectable in the dropped table."));
+	// "Verification" and not "Identifier verification": the dt column is
+	// 8.5rem wide -- the long label wrapped and shoved the Targeting row.
+	assert.ok(prismaHtml.includes("<dt>Verification</dt>"));
+	assert.ok(prismaHtml.includes("1 of 2 retained record(s)"));
+	assert.ok(prismaHtml.includes('<svg xmlns="http://www.w3.org/2000/svg"'));
+	assert.ok(prismaHtml.includes("Records found"));
+	assert.ok(!prismaHtml.includes("eligible for manual selection"));
+	assert.ok(prismaHtml.includes('download="prisma_flow.svg"'));
+	assert.ok(prismaHtml.includes("data:image/svg+xml"));
+	assert.ok(prismaHtml.includes("provide the search provenance needed to support"));
+	assert.ok(!prismaHtml.includes("the material a PRISMA-2020/PRISMA-S methods section documents"));
+	// Limitations only when a source or lookup actually failed.
+	assert.ok(!prismaHtml.includes("<h3>Limitations</h3>"));
+	const withLimitations = renderHtml({
+		...payload,
+		abstract_lookup_failures: [{ source: "semanticscholar", error: "HTTP 429", records: 2 }],
+	});
+	assert.ok(withLimitations.includes("<h3>Limitations</h3>"));
+	// No flow (old sidecar) -> no diagram, no excluded rows.
+	assert.ok(!html.includes("<svg xmlns"));
+	assert.ok(!html.includes("<dt>Records excluded</dt>"));
+}
+
+// filterExclusionBreakdown: first matching category wins, output follows
+// the fixed category order, unknown wordings land in "other".
+{
+	assert.deepEqual(filterExclusionBreakdown([
+		"filtered: 3 citation(s) < requested minimum 5",
+		"filtered: published 1998, before requested 2017",
+		"filtered: publication year unknown, cannot prove it is in the requested range",
+		"filtered: venue \"X\" matches none of the requested venues",
+		"filtered: no author matches Kuenzer",
+		"filtered: something new"
+	]), [
+		{ label: "publication year", count: 2 },
+		{ label: "minimum citations", count: 1 },
+		{ label: "journal selection", count: 1 },
+		{ label: "author selection", count: 1 },
+		{ label: "other", count: 1 },
+	]);
 }
 
 // Source failures get their own meta row; no row when none failed.

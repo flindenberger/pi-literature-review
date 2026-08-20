@@ -80,7 +80,7 @@ function payload(overrides: Partial<RenderPayload>): RenderPayload {
 		results: [record({ group: "adjacent" })],
 	});
 	const agent = renderDigest(p, "/x.html");
-	assert.ok(agent.includes("Grouping: (water) AND (mask OR extraction)"));
+	assert.ok(agent.includes("Targeting: (water) AND (mask OR extraction)"));
 	assert.ok(agent.includes("min. citations: 5"));
 	assert.ok(agent.includes("year from: 2022"));
 	assert.ok(agent.includes("authors: Kuenzer"));
@@ -89,7 +89,7 @@ function payload(overrides: Partial<RenderPayload>): RenderPayload {
 	assert.ok(agent.includes("Do not build your own table"));
 
 	const user = renderDigest(p, "/x.html", "user");
-	assert.ok(user.includes("Grouping: (water) AND (mask OR extraction)"));
+	assert.ok(user.includes("Targeting: (water) AND (mask OR extraction)"));
 	assert.ok(user.includes("Records per source: 15"));
 	assert.ok(user.includes("Open it in a browser to review and select papers."));
 	assert.ok(!user.includes("Tell the user"));
@@ -107,10 +107,10 @@ function payload(overrides: Partial<RenderPayload>): RenderPayload {
 			{ query: "(cnn OR deep learning) AND (river)", groups: [["cnn", "deep learning"], ["river"]] },
 		],
 	}), "/x.html");
-	assert.ok(perQuery.includes("Grouping Q1: (water) AND (mask)"));
-	assert.ok(perQuery.includes("Grouping Q2: (cnn OR deep learning) AND (river)"));
+	assert.ok(perQuery.includes("Targeting Q1: (water) AND (mask)"));
+	assert.ok(perQuery.includes("Targeting Q2: (cnn OR deep learning) AND (river)"));
 	assert.ok(!perQuery.includes("labeled against Q1")); // any set labels
-	assert.ok(!perQuery.includes("\nGrouping: ")); // the single line yields to the per-query form
+	assert.ok(!perQuery.includes("\nTargeting: ")); // the single line yields to the per-query form
 	// v30.15: on the user card the HTML pointer sits BELOW the record list
 	// (a 40-record run drowned it in the middle) and is a clickable file://
 	// URL; the agent keeps the plain path ABOVE its record lines.

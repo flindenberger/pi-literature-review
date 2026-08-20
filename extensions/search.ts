@@ -282,7 +282,7 @@ const SEARCH_TEXT: Record<DialogLang, {
 		header: "/lit-search -- Literatursuche (Esc bricht ab)",
 		queryTab: "Suchanfrage",
 		queryTitle: "Bitte formuliere eine Suchanfrage.",
-		queryPlaceholder: "z. B. sandbar detection rivers Sentinel-2",
+		queryPlaceholder: "z. B. satellite field data fusion river hydraulics",
 		variantsTab: "Query-Varianten",
 		variantsTitle: "Query-Varianten (optional): Konzeptblock-Suchen, vorgeschlagen vom in pi gewählten "
 			+ "Modell -- Synonyme mit OR innerhalb eines Konzepts, AND dazwischen (die Blockbau-Methode "
@@ -356,7 +356,7 @@ const SEARCH_TEXT: Record<DialogLang, {
 		header: "/lit-search -- literature search (Esc cancels)",
 		queryTab: "Query",
 		queryTitle: "Please formulate a search query.",
-		queryPlaceholder: "e.g. sandbar detection rivers Sentinel-2",
+		queryPlaceholder: "e.g. satellite field data fusion river hydraulics",
 		variantsTab: "Query variants",
 		variantsTitle: "Query variants (optional): concept-block searches suggested by the model selected "
 			+ "in pi -- OR synonyms within a concept, AND between concepts (the building-blocks method of "

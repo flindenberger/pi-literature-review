@@ -699,6 +699,117 @@ for (const toggle of document.querySelectorAll("a.authors-toggle")) {
  * network.html BESIDE this page -- callers set it exactly when they also
  * write that file (writeNetworkPage), so the link can never dangle;
  * re-renders of old sidecars without the flag stay column-free. */
+
+/**
+ * Per-filter exclusion counts, derived from the recorded drop reasons --
+ * no payload change needed, so any sidecar with reasons gets the
+ * breakdown. Each reason lands in its first matching category; wordings
+ * no category knows count as "other". Pure, exported for tests.
+ */
+export function filterExclusionBreakdown(reasons: string[]): Array<{ label: string; count: number }> {
+	const categories: Array<{ label: string; match: (reason: string) => boolean }> = [
+		{ label: "publication year", match: (r) => r.includes("published ") || r.includes("publication year unknown") },
+		{ label: "minimum citations", match: (r) => r.includes("citation(s) <") },
+		{ label: "minimum journal score", match: (r) => r.includes("journal score") },
+		{ label: "journal selection", match: (r) => r.includes("venue") },
+		{ label: "author selection", match: (r) => r.includes("author") },
+		{ label: "PDF required", match: (r) => r.includes("no direct PDF link") },
+		{ label: "verified identifiers only", match: (r) => r.includes("identifier did not verify") },
+	];
+	const counts = new Map<string, number>();
+	for (const reason of reasons) {
+		const label = categories.find((category) => category.match(reason))?.label ?? "other";
+		counts.set(label, (counts.get(label) ?? 0) + 1);
+	}
+	const order = [...categories.map((c) => c.label), "other"];
+	return order.filter((label) => counts.has(label)).map((label) => ({ label, count: counts.get(label)! }));
+}
+
+/** Numbers behind the screening-flow diagram; the abstract split and the
+ * filter breakdown come from the recorded drop reasons. */
+export interface FlowDiagramExtras {
+	abstractNone: number;
+	abstractFailed: number;
+	filterBreakdown: Array<{ label: string; count: number }>;
+}
+
+/**
+ * PRISMA-2020-style screening-flow diagram as a standalone SVG string
+ * (xmlns included, so the same string works inline AND as a downloadable
+ * file). Deterministic boxes from the recorded counts: main column
+ * identified -> screened -> eligible, side boxes for the removals with
+ * the abstract split and per-filter counts. No language model anywhere.
+ */
+export function flowDiagramSvg(
+	flow: NonNullable<RenderPayload["flow"]>,
+	extras: FlowDiagramExtras,
+): string {
+	const LINE = 17;
+	const PAD = 9;
+	const MAIN_X = 20;
+	const MAIN_W = 320;
+	const SIDE_X = 400;
+	const SIDE_W = 330;
+	const WIDTH = 750;
+	const mainCx = MAIN_X + MAIN_W / 2;
+
+	const excludedTotal = (flow.no_abstract_removed ?? 0) + flow.excluded_by_filters;
+	const side1Lines = [
+		"Records removed before screening",
+		`uncitable (no title or no authors): n = ${flow.junk_removed}`,
+		`duplicate records merged: n = ${flow.duplicates_removed}`,
+	];
+	const side2Lines = [`Records excluded: n = ${excludedTotal}`];
+	if (extras.abstractNone) side2Lines.push(`no abstract available: n = ${extras.abstractNone}`);
+	if (extras.abstractFailed) side2Lines.push(`abstract retrieval failed: n = ${extras.abstractFailed}`);
+	if (flow.excluded_by_filters) {
+		side2Lines.push(`user filters: n = ${flow.excluded_by_filters}`);
+		for (const entry of extras.filterBreakdown) side2Lines.push(` ${entry.label}: n = ${entry.count}`);
+	}
+	const boxes = [
+		{ x: MAIN_X, w: MAIN_W, lines: ["Records identified", `n = ${flow.identified}`] },
+		{ x: SIDE_X, w: SIDE_W, lines: side1Lines },
+		{ x: MAIN_X, w: MAIN_W, lines: ["Records screened", `n = ${flow.screened}`] },
+		{ x: SIDE_X, w: SIDE_W, lines: side2Lines },
+		{ x: MAIN_X, w: MAIN_W, lines: ["Records found", `n = ${flow.included}`] },
+	] as Array<{ x: number; w: number; lines: string[]; y?: number; h?: number }>;
+	for (const box of boxes) box.h = PAD * 2 + box.lines.length * LINE;
+
+	// Main boxes stack down the left; each side box sits in the gap to its
+	// right, and the gap grows with the side box so nothing overlaps.
+	boxes[0].y = 10;
+	boxes[1].y = boxes[0].y! + boxes[0].h! + 14;
+	boxes[2].y = boxes[1].y! + boxes[1].h! + 14;
+	boxes[3].y = boxes[2].y! + boxes[2].h! + 14;
+	boxes[4].y = boxes[3].y! + boxes[3].h! + 14;
+	const height = boxes[4].y! + boxes[4].h! + 10;
+
+	const boxSvg = boxes.map((box) => {
+		const text = box.lines.map((line, i) =>
+			`<tspan x="${box.x + PAD}" dy="${i === 0 ? 0 : LINE}"${i === 0 ? ' font-weight="600"' : ""}>${esc(line)}</tspan>`).join("");
+		return `<rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" rx="3" fill="#f1f1ec" stroke="#c9c9c2"/>`
+			+ `<text x="${box.x + PAD}" y="${box.y! + PAD + 12}" font-family="system-ui, sans-serif" font-size="13" fill="#1c1c1c">${text}</text>`;
+	}).join("\n");
+
+	// One vertical spine through the main column, horizontal branches into
+	// the side boxes at their vertical centre.
+	const arrow = (x1: number, y1: number, x2: number, y2: number) =>
+		`<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#6b6b6b" stroke-width="1.3" marker-end="url(#pf-arrow)"/>`;
+	const arrows = [
+		arrow(mainCx, boxes[0].y! + boxes[0].h!, mainCx, boxes[2].y! - 2),
+		arrow(mainCx, boxes[1].y! + boxes[1].h! / 2, SIDE_X - 3, boxes[1].y! + boxes[1].h! / 2),
+		arrow(mainCx, boxes[2].y! + boxes[2].h!, mainCx, boxes[4].y! - 2),
+		arrow(mainCx, boxes[3].y! + boxes[3].h! / 2, SIDE_X - 3, boxes[3].y! + boxes[3].h! / 2),
+	].join("\n");
+
+	return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${WIDTH} ${height}" width="${WIDTH}" height="${height}" role="img" aria-label="Screening flow diagram">
+<defs><marker id="pf-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#6b6b6b"/></marker></defs>
+<rect width="${WIDTH}" height="${height}" fill="#fdfdfc"/>
+${boxSvg}
+${arrows}
+</svg>`;
+}
+
 export function renderHtml(payload: RenderPayload, options?: { network?: boolean }): string {
 	const results = payload.results;
 	const onTarget = results.filter((r) => r.group === "on_target").length;
@@ -790,12 +901,12 @@ export function renderHtml(payload: RenderPayload, options?: { network?: boolean
 	// sidecars keep the one-line form.
 	const groupingByQuery = payload.grouping_by_query ?? [];
 	const groupingRows = groupingByQuery.length
-		? `\n<dt>Grouping</dt>${groupingByQuery
+		? `\n<dt>Targeting</dt>${groupingByQuery
 			.map((entry, i) => `<dd>Q${i + 1}: ${esc(entry.groups?.length
 				? describeGrouping(entry.groups)
 				: "(no blocks -- query passed through unchanged)")}</dd>`)
 			.join("")}<dd><span class="note">on_target = full match of at least one of these block sets, regardless of which query found the record.</span></dd>`
-		: `\n<dt>Grouping</dt><dd>${esc(describeGrouping(payload.grouping))}</dd>`;
+		: `\n<dt>Targeting</dt><dd>${esc(describeGrouping(payload.grouping))}</dd>`;
 	// PRISMA-S documentation, collapsed at the END of the meta block: the
 	// per-database strategies, raw counts, flow chain and labeling rule are
 	// expert info -- out of the skim path, one click away. Old sidecars
@@ -805,14 +916,59 @@ export function renderHtml(payload: RenderPayload, options?: { network?: boolean
 			.map((entry) => `<dd>${queryLabels.size > 1 ? `${queryLabels.get(entry.query) ?? "?"} ` : ""}${esc(entry.source)}: ${entry.count}</dd>`)
 			.join("")}<dd><span class="note">raw hits per source and query, before deduplication and filtering.</span></dd>`
 		: "";
-	// The chain's last step names its destination (a bare "3 included" is
-	// easily read as "included into the dropped list").
+	// The chain's last step names its destination honestly: these records
+	// are pipeline survivors ELIGIBLE for the human's selection, not yet
+	// "included" in the PRISMA sense (that decision is the reader's). The
+	// chain lives in the ALWAYS-VISIBLE skim block and REPLACES the old
+	// Results line there (they told the same numbers twice); the label
+	// summary rides at the chain's end. Old sidecars without flow keep the
+	// Results line.
 	const flow = payload.flow;
+	// Screening breakdown, derived from the recorded drop reasons (works
+	// for any sidecar; old reason wordings simply land in one bucket): the
+	// abstract removals split into "none exists at the sources" vs "the
+	// lookup failed" -- methodically different facts -- and the filter
+	// exclusions split per filter.
+	const dropReasons = payload.dropped.map((entry) => entry.reason);
+	const abstractReasons = dropReasons.filter((r) => r.startsWith("no abstract"));
+	const abstractFailed = abstractReasons.filter((r) => r.includes("lookup failed")).length;
+	const abstractNone = abstractReasons.length - abstractFailed;
+	const filterCategories = filterExclusionBreakdown(dropReasons.filter((r) => r.startsWith("filtered: ")));
+	const flowSummary = `(${payload.grouping?.length
+		? `${onTarget} on_target, ${results.length - onTarget} adjacent; `
+		: ""}${verifiedCount}/${results.length} verified)`;
+	// The chain ends with what the two tables actually show ("remaining" /
+	// "dropped" -- the dropped count is the table's real row count), and a
+	// dim note says that BOTH stay selectable; the diagram's last box says
+	// "Records found" for the same reason (dropped rows are selectable
+	// too, so nothing here is "included" or exclusively eligible). The
+	// filter step carries its per-filter breakdown inline.
 	const flowRow = flow
-		? `\n<dt>Flow</dt><dd>${flow.identified} record(s) identified &rarr; ${flow.junk_removed} removed as uncitable (no title or no authors) &rarr; ${flow.duplicates_removed} duplicate(s) merged &rarr; ${flow.screened} screened${
+		? `\n<dt>Screening flow</dt><dd>${flow.identified} record(s) identified &rarr; ${flow.junk_removed} removed as uncitable (no title or no authors) &rarr; ${flow.duplicates_removed} duplicate(s) merged &rarr; ${flow.screened} screened${
 			typeof flow.no_abstract_removed === "number"
 				? ` &rarr; ${flow.no_abstract_removed} removed without abstract`
-				: ""} &rarr; ${flow.excluded_by_filters} excluded by the requested filters &rarr; ${flow.included} included to the final literature list, awaiting manual selection</dd>`
+				: ""} &rarr; ${flow.excluded_by_filters} excluded by the user filters${
+			filterCategories.length ? ` (${esc(filterCategories.map((c) => `${c.count} by ${c.label}`).join(", "))})` : ""} &rarr; ${flow.included} record(s) remaining ${flowSummary}, ${payload.dropped.length} dropped</dd><dd><span class="note">Papers of both tables (results and dropped) can still be selected and downloaded.</span></dd>`
+		: "";
+	const excludedRows = flow && (abstractReasons.length || flow.excluded_by_filters)
+		? `\n<dt>Records excluded</dt>`
+			+ (abstractNone ? `<dd>no abstract available: ${abstractNone}</dd>` : "")
+			+ (abstractFailed ? `<dd>abstract retrieval failed: ${abstractFailed} (their abstracts may exist -- see the failed-lookups note)</dd>` : "")
+			+ (flow.excluded_by_filters
+				? `<dd>user filters: ${flow.excluded_by_filters}${
+					filterCategories.length ? ` (${esc(filterCategories.map((c) => `${c.label}: ${c.count}`).join(", "))})` : ""}</dd>`
+				: "")
+		: "";
+	// The verify stage is the trust gate of the whole citation story --
+	// worth its own line in the methods material, from the real numbers.
+	const verificationRow = results.length
+		? `\n<dt>Verification</dt><dd>${verifiedCount} of ${results.length} retained record(s) carry an identifier that resolved via HTTP at doi.org / arxiv.org; unverified records are flagged in the table.</dd>`
+		: "";
+	// The flow diagram renders from the same counts; the download link
+	// carries the identical standalone SVG for reuse in a manuscript.
+	const diagramSvg = flow ? flowDiagramSvg(flow, { abstractNone, abstractFailed, filterBreakdown: filterCategories }) : "";
+	const diagramBlock = diagramSvg
+		? `\n${diagramSvg}\n<p class="meta"><a class="flow-download" download="prisma_flow.svg" href="data:image/svg+xml;charset=utf-8,${encodeURIComponent(diagramSvg)}">Download diagram (SVG)</a> -- screening flow of this search run, PRISMA-2020 style; full-text assessment happens during the manual selection and is not part of this run. Excluded records remain listed and selectable in the dropped table.</p>`
 		: "";
 	// Honest degradation stays visible: a source that errored is listed with
 	// its reason -- the results may be incomplete and the page must say so,
@@ -861,9 +1017,9 @@ ${results.map((record, index) => resultRow(record, index, columns)).join("\n")}
 
 	const droppedSection = payload.dropped.length
 		? `<h2>Dropped records (${payload.dropped.length})</h2>
-<p class="meta">Removed by the junk filter or by the requested metadata filters -- nothing disappears silently,
-the Label column carries each reason. Same columns as the results table; tick dropped papers too, the download
-request below includes them.</p>
+<p class="meta">Removed by the screening steps or by your filters -- nothing disappears silently, the Label
+column carries each reason, and every row stays selectable: tick dropped papers too, the download request
+below includes them. Same columns as the results table.</p>
 <table class="sortable records">
 ${resultColgroup(withCode, withNetwork)}
 <thead>${resultHeaders(withCode, withNetwork)}</thead>
@@ -885,6 +1041,14 @@ ${payload.dropped.map((entry, index) => droppedRow(entry, index, columns)).join(
    room; smaller windows stay responsive. The synthesis/report pages keep
    the narrower width for reading prose. */
 body { max-width: 120rem; }
+/* The search-documentation section: four always-visible levels behind ONE
+   collapsed summary; the flow diagram scales down on narrow windows. */
+details.prisma h3 { font-size: 0.95rem; margin: 1.1rem 0 0.3rem; }
+details.prisma svg { max-width: 100%; height: auto; margin-top: 0.4rem; }
+a.flow-download { display: inline-block; font-size: 0.78rem; padding: 0.15rem 0.5rem;
+    background: #f1f1ec; border: 1px solid #c9c9c2; border-radius: 3px;
+    color: #1c1c1c; text-decoration: none; }
+a.flow-download:hover { background: #e6e6df; }
 </style>
 </head>
 <body>
@@ -894,15 +1058,31 @@ body { max-width: 120rem; }
 <dt>Generated</dt><dd>${esc(payload.generated)} (UTC)</dd>
 <dt>Sources</dt><dd>${esc(payload.sources_used.join(", ")) || "none reachable"}</dd>${sourceFailureRows}${lookupFailureRows}${
 	payload.per_source ? `\n<dt>Records per source</dt><dd>${esc(payload.per_source)}</dd>` : ""}
-<dt>Filters</dt><dd>${esc(describeFilters(payload.filters))}</dd>
-<dt>Sort</dt><dd>${esc(payload.sort ?? "source order")}</dd>
-<dt>Results</dt><dd>${results.length}${groupSummary}; ${verifiedCount}/${results.length} identifiers verified; ${payload.dropped.length} dropped</dd>
+<dt>User filters</dt><dd>${esc(describeFilters(payload.filters))}</dd>
+<dt>Sort</dt><dd>${esc(payload.sort ?? "source order")}</dd>${flowRow || `
+<dt>Results</dt><dd>${results.length}${groupSummary}; ${verifiedCount}/${results.length} identifiers verified; ${payload.dropped.length} dropped</dd>`}
 </dl>
 <details class="prisma"><summary>Search documentation</summary>
-<dl class="meta">${arxivQueryRows}${openalexQueryRows}${crossrefQueryRows}${semanticscholarQueryRows}${identifiedRows}${flowRow}${groupingRows}
-</dl>
-<p class="meta">The exact search strategy per database (as sent, per query), the raw hit counts, the
-selection flow and the labeling rule -- the material a PRISMA-2020/PRISMA-S methods section documents.</p>
+<h3>Search strategy</h3>
+<dl class="meta">
+<dt>Search date</dt><dd>${esc(payload.generated)} (UTC)</dd>
+<dt>Query</dt><dd>${esc(queryLabel)}</dd>${variantRows}
+<dt>Databases</dt><dd>${esc(payload.sources_used.join(", ")) || "none reachable"}</dd>${
+	payload.per_source ? `\n<dt>Requested depth</dt><dd>${esc(payload.per_source)} record(s) per source and query</dd>` : ""}
+<dt>User filters</dt><dd>${esc(describeFilters(payload.filters))}</dd>
+</dl>${
+	arxivQueryRows || openalexQueryRows || crossrefQueryRows || semanticscholarQueryRows
+		? `\n<h3>Database-specific search translation</h3>\n<dl class="meta">${arxivQueryRows}${openalexQueryRows}${crossrefQueryRows}${semanticscholarQueryRows}\n</dl>`
+		: ""}
+<h3>Retrieval and screening</h3>
+<dl class="meta">${identifiedRows}${excludedRows}${verificationRow}${groupingRows}
+</dl>${diagramBlock}${
+	sourceFailureRows || lookupFailureRows
+		? `\n<h3>Limitations</h3>\n<dl class="meta">${sourceFailureRows}${lookupFailureRows}\n</dl>`
+		: ""}
+<p class="meta">The recorded search strategy, database-specific translations, raw retrieval counts, selection
+flow, exclusion reasons and labeling rule provide the search provenance needed to support
+PRISMA-S / PRISMA-2020 reporting.</p>
 </details>
 ${resultsTable}
 ${droppedSection}${enrichmentFootnote}${scoreFootnote}${codeFootnote}${networkFootnote}${selectBar}

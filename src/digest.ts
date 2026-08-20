@@ -78,13 +78,13 @@ export function renderDigest(
 	// from the same functions. Multi-query runs label per query.
 	const groupingByQuery = payload.grouping_by_query ?? [];
 	if (groupingByQuery.length) {
-		groupingByQuery.forEach((entry, index) => lines.push(`Grouping Q${index + 1}: ${entry.groups?.length
+		groupingByQuery.forEach((entry, index) => lines.push(`Targeting Q${index + 1}: ${entry.groups?.length
 			? describeGrouping(entry.groups)
 			: "(no blocks -- query passed through unchanged)"}`));
 	} else {
-		lines.push(`Grouping: ${describeGrouping(payload.grouping)}`);
+		lines.push(`Targeting: ${describeGrouping(payload.grouping)}`);
 	}
-	lines.push(`Filters: ${describeFilters(payload.filters)}`);
+	lines.push(`User filters: ${describeFilters(payload.filters)}`);
 	if (payload.per_source) lines.push(`Records per source: ${payload.per_source}`);
 	// The HTML pointer: on the user card it sits BELOW the record list (on
 	// a long run a mid-card link drowns) and becomes a file:// URL, which
