@@ -217,6 +217,7 @@ const SEARCH_TEXT: Record<DialogLang, {
 	journalTab: string;
 	journalTitle: string;
 	journalSelectAll: string;
+	journalAllSelected: string;
 	journalNext: string;
 	/** List entry suffix: hit count plus the OpenAlex 2-yr citedness when
 	 * the journal has one (pre-formatted with one decimal -- "3.0"). */
@@ -227,6 +228,7 @@ const SEARCH_TEXT: Record<DialogLang, {
 	authorTab: string;
 	authorTitle: string;
 	authorSelectAll: string;
+	authorAllSelected: string;
 	/** List entry suffix: hits for THIS query plus the author's OpenAlex
 	 * totals (citations, h-index, topics) where the API has them. */
 	authorItem: (count: number, metrics: Partial<AuthorMetrics>) => string;
@@ -284,21 +286,20 @@ const SEARCH_TEXT: Record<DialogLang, {
 		countMax: `${MAX_PER_SOURCE} (Limit)`,
 		countCustom: "Eigene Anzahl:",
 		journalTab: "Journals",
-		journalTitle: `Journal-Filter (optional): die Top-${JOURNAL_PICK_LIMIT}-Journals zu dieser Suchanfrage `
-			+ "im gewählten Zeitraum (OpenAlex), darunter alle übrigen als eine Zeile. Nichts ausgewählt = "
-			+ "kein Filter, alles ausgewählt = ebenfalls kein Filter.",
-		journalSelectAll: "Alle auswählen (kein Filter)",
+		journalTitle: `Journals (optional): die ${JOURNAL_PICK_LIMIT} häufigsten Journals zu dieser Anfrage und `
+			+ "diesem Zeitraum. Alle sind drin -- Haken entfernen schließt ein Journal aus.",
+		journalSelectAll: "Alle auswählen",
+		journalAllSelected: "Alle Journals drin (Enter: alle abwählen)",
 		journalNext: "Weiter",
 		journalItem: (count, score) =>
 			`(${count} Treffer${score !== undefined ? ` · 2-Jahres-Rate ${score}` : ""})`,
 		journalOther: "Andere Journals/Quellen (hier nicht gelistet)",
 		authorTab: "Autoren",
-		authorTitle: `Autorenfilter (optional): die Top-${AUTHOR_PICK_LIMIT}-Autoren zu Suchanfrage, Zeitraum `
-			+ "und Journal-Auswahl (OpenAlex), darunter alle übrigen als eine Zeile. Ausgewählte Namen fließen "
-			+ "direkt in die Quellen-Suche ein (die Suche holt dann Papers DIESER Personen zum Thema). Zitationen, "
-			+ "h-Index und Schwerpunkte gelten für das GESAMTE Werk der Person, nicht für diese Treffer. Nichts "
-			+ "oder alles ausgewählt = kein Filter.",
-		authorSelectAll: "Alle auswählen (kein Filter)",
+		authorTitle: `Autoren (optional): die ${AUTHOR_PICK_LIMIT} häufigsten Autoren zu Anfrage, Zeitraum und `
+			+ "Journals. Alle sind drin -- Haken entfernen schließt die Paper dieser Person aus. Zitationen und "
+			+ "h-Index gelten für das Gesamtwerk.",
+		authorSelectAll: "Alle auswählen",
+		authorAllSelected: "Alle Autoren drin (Enter: alle abwählen)",
 		authorItem: (count, metrics) =>
 			`(${count} Treffer${metrics.cites !== undefined ? ` · ${metrics.cites} Zitationen` : ""}`
 			+ `${metrics.hIndex !== undefined ? ` · h-Index ${metrics.hIndex}` : ""}`
@@ -358,21 +359,20 @@ const SEARCH_TEXT: Record<DialogLang, {
 		countMax: `${MAX_PER_SOURCE} (limit)`,
 		countCustom: "Custom count:",
 		journalTab: "Journals",
-		journalTitle: `Journal filter (optional): the top ${JOURNAL_PICK_LIMIT} journals for this query `
-			+ "within the chosen period (OpenAlex), with everything else as one row below them. Nothing "
-			+ "selected = no filter, everything selected = no filter either.",
-		journalSelectAll: "Select all (no filter)",
+		journalTitle: `Journals (optional): the ${JOURNAL_PICK_LIMIT} most frequent journals for this query and `
+			+ "period. All are included -- untick a journal to exclude it.",
+		journalSelectAll: "Select all",
+		journalAllSelected: "All journals included (Enter: deselect all)",
 		journalNext: "Next",
 		journalItem: (count, score) =>
 			`(${count} hits${score !== undefined ? ` · 2-yr rate ${score}` : ""})`,
 		journalOther: "Other journals/sources (not listed here)",
 		authorTab: "Authors",
-		authorTitle: `Author filter (optional): the top ${AUTHOR_PICK_LIMIT} authors for this query, period `
-			+ "and journal selection (OpenAlex), with everyone else as one row below them. Picked names feed "
-			+ "directly into the source queries (the search then fetches THESE authors' papers on the topic). "
-			+ "Citations, h-index and focus areas cover the author's ENTIRE work, not these records. Nothing "
-			+ "or everything selected = no filter.",
-		authorSelectAll: "Select all (no filter)",
+		authorTitle: `Authors (optional): the ${AUTHOR_PICK_LIMIT} most frequent authors for this query, period `
+			+ "and journals. All are included -- untick an author to exclude their papers. Citations and "
+			+ "h-index cover their whole work.",
+		authorSelectAll: "Select all",
+		authorAllSelected: "All authors included (Enter: deselect all)",
 		authorItem: (count, metrics) =>
 			`(${count} hits${metrics.cites !== undefined ? ` · ${metrics.cites} citations` : ""}`
 			+ `${metrics.hIndex !== undefined ? ` · h-index ${metrics.hIndex}` : ""}`
@@ -604,12 +604,14 @@ async function intakeWizard(
 		{
 			// Journal filter: the top journals for this query load INTO the
 			// tab (one OpenAlex facet query, fired when the tab is reached --
-			// see itemLoader below); an empty selection means no filter, so
-			// Enter-through stays one stroke. An agent venues proposal arrives
-			// as prechecked rows.
+			// see itemLoader below) as an EXCLUSION list: every row arrives
+			// checked, unticking excludes; all or none checked = no filter,
+			// and the cursor starts on Next so Enter-through stays one
+			// stroke. An agent venues proposal arrives as a checked whitelist.
 			kind: "checkbox", id: "journals", tab: text.journalTab, title: text.journalTitle,
-			items: [], selectAllLabel: text.journalSelectAll, nextLabel: text.journalNext,
-			optional: true, emptyNote: text.journalLoading,
+			items: [], selectAllLabel: text.journalSelectAll, allSelectedLabel: text.journalAllSelected,
+			nextLabel: text.journalNext, optional: true, emptyNote: text.journalLoading,
+			defaultAll: true, cursorStart: "next",
 		},
 		{
 			// Author filter: the same mechanics as the journal tab -- the top
@@ -618,8 +620,9 @@ async function intakeWizard(
 			// h-index, topics). A typed name in the Filters tab still works
 			// for anyone outside this head.
 			kind: "checkbox", id: "author_pick", tab: text.authorTab, title: text.authorTitle,
-			items: [], selectAllLabel: text.authorSelectAll, nextLabel: text.journalNext,
-			optional: true, emptyNote: text.authorLoading,
+			items: [], selectAllLabel: text.authorSelectAll, allSelectedLabel: text.authorAllSelected,
+			nextLabel: text.journalNext, optional: true, emptyNote: text.authorLoading,
+			defaultAll: true, cursorStart: "next",
 		},
 		{
 			kind: "form", id: "filters", tab: text.filterTab, title: text.filterTitle,

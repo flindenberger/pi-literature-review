@@ -43,8 +43,13 @@ language (German/English).
 - **Journals / Authors** -- the top journals and authors OpenAlex holds
   for this query, loaded as checkbox lists with hit counts, the journal's
   2-year citedness (open impact-factor analog) and the author's citations
-  and h-index; an "Other ..." row keeps everything unlisted, so all rows
-  checked = no filter. Picked authors are pushed into the source queries.
+  and h-index, plus an "Other ..." row for everything unlisted. Both lists
+  are EXCLUSION lists: every row arrives checked (all included), unticking
+  a row excludes it; all or none checked = no filter. Removals survive a
+  reload of the list (period or journal change), new rows arrive checked;
+  an agent venues/authors proposal arrives as a checked whitelist instead.
+  When only listed authors remain checked (the "Other" row unticked), the
+  picked names are pushed into the source queries.
 - **Filters** -- optional: minimum citations, author-name substring.
 - **Confirm** -- what the tabs show is what runs.
 

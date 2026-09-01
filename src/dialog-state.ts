@@ -50,11 +50,17 @@ export interface CheckboxLine {
 /** Deterministic row texts: a select-all summary row on
  * top, then numbered items -- "❯ 1. [✔] label". Pure, so the exact wording
  * is pinned by offline tests; the adapters only add colors. */
-export function checkboxLines(state: CheckboxState, selectAllLabel: string, spaced = false): CheckboxLine[] {
+export function checkboxLines(
+	state: CheckboxState,
+	selectAllLabel: string,
+	spaced = false,
+	allSelectedLabel?: string,
+): CheckboxLine[] {
 	const mark = (checked: boolean): string => (checked ? "[✔]" : "[ ]");
 	const width = String(state.items.length).length;
+	const all = allSelected(state);
 	const lines: CheckboxLine[] = [{
-		text: `${state.cursor === 0 ? "❯ " : "  "}   ${mark(allSelected(state))} ${selectAllLabel}`,
+		text: `${state.cursor === 0 ? "❯ " : "  "}   ${mark(all)} ${all && allSelectedLabel ? allSelectedLabel : selectAllLabel}`,
 		active: state.cursor === 0,
 	}];
 	state.items.forEach((item, i) => {
@@ -128,9 +134,25 @@ export type WizardStepDef =
 		title: string;
 		items: CheckboxItem[];
 		selectAllLabel: string;
+		/** Exclusion-list steps (defaultAll): the head row's label while
+		 * EVERYTHING is checked ("All journals included (Enter: deselect
+		 * all)"); selectAllLabel shows otherwise. */
+		allSelectedLabel?: string;
 		/** Label of the explicit commit row ("Weiter"/"Fertig"). */
 		nextLabel: string;
 		preselected?: string[];
+		/** EXCLUSION list: items arrive CHECKED (the journal/author
+		 * filters -- everything is in, unticking excludes). setItems keeps
+		 * a memory of unticked ids (excludedIds) so a reload -- including
+		 * the empty loading swap -- never re-checks what the user removed;
+		 * new rows arrive checked. A preselect (agent proposal) still wins
+		 * on the first load: only the proposed rows are checked. The step
+		 * counts as answered only while SOME rows are unticked; all or
+		 * none checked both read "all (no filter)" in the review. */
+		defaultAll?: boolean;
+		/** Unticked ids remembered across setItems (defaultAll only);
+		 * maintained by the reducer. */
+		excludedIds?: string[];
 		/** an EMPTY selection is a valid answer (the journal filter:
 		 * nothing picked = no filter) -- the step never blocks the finish
 		 * and the review shows "(none)" instead of "(open)". */
@@ -368,6 +390,9 @@ export const DIALOG_TEXT: Record<DialogLang, {
 	submitCancelRow: string;
 	unanswered: string;
 	noQuestions: string;
+	/** Exclusion-list review values: nothing excluded / the excluded rows. */
+	allKept: string;
+	excluded: (labels: string[]) => string;
 	/** Yellow warning on the review page listing still-open steps (shown
 	 * up front instead of only jumping on Enter). */
 	answerRemaining: (tabs: string[]) => string;
@@ -390,6 +415,8 @@ export const DIALOG_TEXT: Record<DialogLang, {
 		submitCancelRow: "Abbrechen",
 		unanswered: "(offen)",
 		noQuestions: "(keine)",
+		allKept: "alle (kein Filter)",
+		excluded: (labels) => `ausgeschlossen: ${labels.join(", ")}`,
 		answerRemaining: (tabs) => `⚠ Vor dem Absenden noch beantworten: ${tabs.join(", ")}`,
 		questionsDetected: (n) => `${n} Frage(n) erkannt`,
 		linesAbove: (n) => `(… ${n} weitere Zeile(n) oben)`,
@@ -409,6 +436,8 @@ export const DIALOG_TEXT: Record<DialogLang, {
 		submitCancelRow: "Cancel",
 		unanswered: "(open)",
 		noQuestions: "(none)",
+		allKept: "all (no filter)",
+		excluded: (labels) => `excluded: ${labels.join(", ")}`,
 		answerRemaining: (tabs) => `⚠ Answer remaining questions before submitting: ${tabs.join(", ")}`,
 		questionsDetected: (n) => `${n} question(s) recognized`,
 		linesAbove: (n) => `(… ${n} more line(s) above)`,
@@ -492,6 +521,7 @@ export function initWizard(steps: WizardStepDef[], options?: WizardOptions): Wiz
 		selected: steps.map((step) => {
 			if (step.kind !== "checkbox") return new Set<string>();
 			const known = new Set(step.items.map((item) => item.id));
+			if (step.defaultAll && !step.preselected?.length) return new Set(known);
 			return new Set([
 				...(step.preselected ?? []).filter((id) => known.has(id)),
 				...step.items.filter((item) => item.locked).map((item) => item.id),
@@ -744,7 +774,11 @@ function stepInvalid(state: WizardState, index: number): boolean {
  * before, every text tab was checked from the start). */
 export function stepAnswered(state: WizardState, index: number): boolean {
 	const step = state.steps[index];
-	return step.kind === "checkbox" ? state.selected[index].size > 0
+	return step.kind === "checkbox"
+		? (step.defaultAll
+			// Exclusion list: all or none checked = no filter = no value.
+			? state.selected[index].size > 0 && state.selected[index].size < step.items.length
+			: state.selected[index].size > 0)
 		: step.kind === "text" ? effectiveText(state, index).trim() !== ""
 		: step.kind === "form" ? state.formTexts[index].some((value) => value.trim() !== "")
 		: state.chosen[index] !== null;
@@ -887,10 +921,19 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 			: [];
 		const items = [...event.items, ...orphans];
 		const known = new Set(items.map((item) => item.id));
+		// Exclusion-list memory: every OLD row that is unticked joins it, a
+		// re-checked row leaves it -- so the loading swap (empty items)
+		// carries the user's removals over to the resolved list.
+		const excluded = new Set(target.excludedIds ?? []);
+		for (const item of target.items) {
+			if (selectedOld.has(item.id)) excluded.delete(item.id);
+			else excluded.add(item.id);
+		}
 		const steps = state.steps.map((other, i) => (i === index && other.kind === "checkbox"
 			? {
 				...other,
 				items,
+				...(other.defaultAll ? { excludedIds: [...excluded] } : {}),
 				// Any dispatch without the flag CLEARS loading -- the
 				// resolved/failed swaps need no extra bookkeeping.
 				loading: event.loading === true,
@@ -904,7 +947,11 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 		// agent proposal could never precheck.
 		const seeded = [...(selectedOld.size ? [...selectedOld] : event.preselect ?? [])]
 			.filter((id) => known.has(id));
-		const selected = new Set([...seeded, ...items.filter((item) => item.locked).map((item) => item.id)]);
+		// defaultAll: a proposal (preselect) is a whitelist on the first
+		// load; otherwise everything not remembered as unticked is checked.
+		const selected = target.defaultAll && !(event.preselect?.length && !selectedOld.size && !excluded.size)
+			? new Set(items.filter((item) => !excluded.has(item.id) || item.locked).map((item) => item.id))
+			: new Set([...seeded, ...items.filter((item) => item.locked).map((item) => item.id)]);
 		// Cursor follows its ROLE across the item swap: Next row
 		// stays Next, the steering row stays the steering row -- an
 		// Enter-through user parked on Next must not land mid-list when the
@@ -1184,6 +1231,11 @@ function stepValueLabel(state: WizardState, i: number): string {
 	if (step.kind === "checkbox") {
 		const chosen = step.items.filter((item) => state.selected[i].has(item.id));
 		const all = chosen.length === step.items.length && step.items.length > 0;
+		if (step.defaultAll) {
+			// Exclusion list: name what is OUT; all or none = no filter.
+			const out = step.items.filter((item) => !state.selected[i].has(item.id));
+			return chosen.length === 0 || all ? text.allKept : text.excluded(out.map((item) => item.label));
+		}
 		// Optional steps: empty is a decision, not an open question.
 		return chosen.length === 0 ? (step.optional ? text.noQuestions : text.unanswered)
 			: all ? `${step.selectAllLabel} (${chosen.length})`
@@ -1334,7 +1386,7 @@ export function wizardView(state: WizardState): WizardView {
 				cursor,
 				selected: state.selected[state.tab],
 			};
-			rows.push(...checkboxLines(checkboxState, step.selectAllLabel, step.spaced === true));
+			rows.push(...checkboxLines(checkboxState, step.selectAllLabel, step.spaced === true, step.allSelectedLabel));
 			pushAddRow();
 			pushInputRow();
 			rows.push({ text: `${nextActive ? "❯ " : "  "}   ${step.nextLabel}`, active: nextActive });

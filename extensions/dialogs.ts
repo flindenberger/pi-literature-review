@@ -81,6 +81,8 @@ interface CheckboxListOptions {
 	items: CheckboxItem[];
 	/** Label of the derived summary row, e.g. "Select all". */
 	selectAllLabel: string;
+	/** Head-row label while everything is checked (exclusion lists). */
+	allSelectedLabel?: string;
 	/** Ids to preselect (e.g. the session's sticky scope). */
 	preselected?: string[];
 	lang?: DialogLang;
@@ -107,7 +109,7 @@ async function checkboxSelectLoop(
 	for (;;) {
 		const all = shown.length > 0 && shown.every((item) => selected.has(item.id));
 		const rows = [
-			`[${all ? "x" : " "}] ${options.selectAllLabel}`,
+			`[${all ? "x" : " "}] ${all && options.allSelectedLabel ? options.allSelectedLabel : options.selectAllLabel}`,
 			// The select-loop has no dim second line; the description joins
 			// the row so the metadata survives the fallback.
 			...shown.map((item) =>
@@ -609,12 +611,16 @@ async function wizardSelectLoop(
 				}
 			}
 			const loaderPreselect = loader?.preselect ? loader.preselect(items) : undefined;
+			// Exclusion lists start fully checked (a proposal stays a whitelist).
 			const preselected = Array.isArray(answers[step.id]) ? (answers[step.id] as string[])
-				: loaderPreselect ?? step.preselected;
+				: loaderPreselect?.length ? loaderPreselect
+				: step.defaultAll ? items.map((item) => item.id)
+				: step.preselected;
 			const picked = await checkboxSelectLoop(ctx, {
 				title: stepTitle,
 				items,
 				selectAllLabel: step.selectAllLabel,
+				...(step.allSelectedLabel ? { allSelectedLabel: step.allSelectedLabel } : {}),
 				preselected,
 				lang,
 				signal,

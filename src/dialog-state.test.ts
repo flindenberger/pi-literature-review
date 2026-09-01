@@ -21,6 +21,7 @@ import {
 	wizardAnswers,
 	wizardResult,
 	wizardView,
+	stepAnswered,
 	wrapLine,
 } from "./dialog-state.ts";
 
@@ -1093,6 +1094,64 @@ function drive(
 		{ kind: "setItems", step: "variants", items: [{ id: "v1", label: "x" }], emptyNote: "" },
 	] as never).state;
 	assert.ok(wizardView(compact).rows.every((row) => row.text !== ""));
+}
+
+/* -------- defaultAll: exclusion list (journals/authors tabs) -------- */
+{
+	const steps: WizardStepDef[] = [{
+		kind: "checkbox", id: "journals", tab: "Journals", title: "?",
+		items: [], selectAllLabel: "Select all", allSelectedLabel: "All journals included (Enter: deselect all)",
+		nextLabel: "Next", optional: true, emptyNote: "loading", defaultAll: true, cursorStart: "next",
+	}];
+	const rs = { id: "Remote Sensing", label: "Remote Sensing (1739)" };
+	const water = { id: "Water", label: "Water (91)" };
+	const other = { id: "__other__", label: "Other journals" };
+	// First load: everything arrives CHECKED, the head row carries the
+	// all-label, the cursor sits on Next, the tab is NOT answered and the
+	// review reads "all (no filter)".
+	let { state } = drive(initWizard(steps), [
+		{ kind: "setItems", step: "journals", items: [rs, water, other], emptyNote: "" },
+	] as never);
+	assert.deepEqual([...state.selected[0]].sort(), ["Remote Sensing", "Water", "__other__"]);
+	assert.equal(state.cursors[0], 4); // Next row
+	assert.ok(wizardView(state).rows.some((row) => row.text.includes("[✔] All journals included (Enter: deselect all)")));
+	assert.equal(stepAnswered(state, 0), false);
+	assert.ok(summaryLines(state).some((line) => line === "Journals: all (no filter)"));
+	// Untick Water (row 2): answered, review names the exclusion, head
+	// row falls back to the plain select-all label.
+	state = { ...state, cursors: state.cursors.map(() => 2) };
+	({ state } = drive(state, ["toggle"]));
+	assert.deepEqual([...state.selected[0]].sort(), ["Remote Sensing", "__other__"]);
+	assert.equal(stepAnswered(state, 0), true);
+	assert.ok(summaryLines(state).some((line) => line === "Journals: excluded: Water (91)"));
+	assert.ok(wizardView(state).rows.some((row) => row.text.includes("[ ] Select all")));
+	// Reload through the empty loading swap: the removal survives, a NEW
+	// row arrives checked.
+	const sensors = { id: "Sensors", label: "Sensors (40)" };
+	({ state } = drive(state, [
+		{ kind: "setItems", step: "journals", items: [], loading: true, emptyNote: "loading" },
+		{ kind: "setItems", step: "journals", items: [rs, sensors, water, other], emptyNote: "" },
+	] as never));
+	assert.deepEqual([...state.selected[0]].sort(), ["Remote Sensing", "Sensors", "__other__"]);
+	// Re-checking Water clears the memory on the next reload.
+	state = { ...state, cursors: state.cursors.map(() => 3) };
+	({ state } = drive(state, ["toggle", { kind: "setItems", step: "journals", items: [rs, water, other], emptyNote: "" }] as never));
+	assert.deepEqual([...state.selected[0]].sort(), ["Remote Sensing", "Water", "__other__"]);
+	// Head row toggles everything off: all-or-none both read "no filter",
+	// the step is not answered; Enter-through still finishes.
+	state = { ...state, cursors: state.cursors.map(() => 0) };
+	({ state } = drive(state, ["toggle"]));
+	assert.equal(state.selected[0].size, 0);
+	assert.equal(stepAnswered(state, 0), false);
+	assert.ok(summaryLines(state).some((line) => line === "Journals: all (no filter)"));
+	assert.equal(drive({ ...state, cursors: state.cursors.map((value, i) => (i === 0 ? 4 : value)) }, ["confirm", "confirm"]).done, "confirmed");
+	// A proposal (preselect) on the FIRST load is a whitelist, not all.
+	const proposed = drive(initWizard(steps), [
+		{ kind: "setItems", step: "journals", items: [], loading: true, emptyNote: "loading" },
+		{ kind: "setItems", step: "journals", items: [rs, water, other], emptyNote: "", preselect: ["Water"] },
+	] as never).state;
+	assert.deepEqual([...proposed.selected[0]], ["Water"]);
+	assert.equal(stepAnswered(proposed, 0), true);
 }
 
 console.log("dialog-state tests passed");
