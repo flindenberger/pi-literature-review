@@ -50,7 +50,7 @@ export interface CheckboxLine {
 /** Deterministic row texts: a select-all summary row on
  * top, then numbered items -- "❯ 1. [✔] label". Pure, so the exact wording
  * is pinned by offline tests; the adapters only add colors. */
-export function checkboxLines(state: CheckboxState, selectAllLabel: string): CheckboxLine[] {
+export function checkboxLines(state: CheckboxState, selectAllLabel: string, spaced = false): CheckboxLine[] {
 	const mark = (checked: boolean): string => (checked ? "[✔]" : "[ ]");
 	const width = String(state.items.length).length;
 	const lines: CheckboxLine[] = [{
@@ -59,6 +59,7 @@ export function checkboxLines(state: CheckboxState, selectAllLabel: string): Che
 	}];
 	state.items.forEach((item, i) => {
 		const active = state.cursor === i + 1;
+		if (spaced) lines.push({ text: "", active: false });
 		lines.push({
 			text: `${active ? "❯ " : "  "}${String(i + 1).padStart(width)}. ${mark(state.selected.has(item.id) || item.locked === true)} ${item.label}`,
 			active,
@@ -165,6 +166,11 @@ export type WizardStepDef =
 		 * row survives regenerations like any checked pick. The draft lives
 		 * in addTexts[tab]. */
 		addInput?: { id: string; label: string };
+		/** One blank rendered line before every item and before each input
+		 * row -- air between wide, wrapping rows (the query-variants tab).
+		 * Rendered lines only, never cursor stops; single-line lists stay
+		 * compact without it. */
+		spaced?: boolean;
 		/** start (and re-anchor after setItems) the cursor on the
 		 * Next row -- Enter-through must not toggle select-all on a list of
 		 * generated suggestions. */
@@ -235,6 +241,34 @@ export type WizardStepDef =
 		tab: string;
 		title: string;
 		fields: Array<{ id: string; label: string; initial?: string }>;
+		/** Dynamically GROWING labeled fields BEFORE the static fields (the
+		 * search wizard's keyword blocks): ids `${idPrefix}_1..n`, labels via
+		 * label(n). An explicit ADD row sits under the grow fields (label =
+		 * addLabel); Enter there appends the next empty field, up to max --
+		 * the row hides at the cap. Grow-only: emptied fields never collapse
+		 * mid-edit, they drop out at serialization. When static fields
+		 * follow, a blank separator line divides them from the grow section
+		 * (the separator is never a cursor stop; the add row is one while
+		 * shown). */
+		grow?: {
+			idPrefix: string;
+			label: (n: number) => string;
+			/** The add row's visible label ("+ Add keyword block"). */
+			addLabel: string;
+			/** Grow fields visible at start (before any initial seeding). */
+			min: number;
+			/** Hard cap; also the height budget for maxWizardRows. */
+			max: number;
+			/** Prefill, one value per grow field (agent block proposal). */
+			initial?: string[];
+		};
+		/** Status line under the fields, pure over the live field values;
+		 * warn renders yellow. The row is height-reserved whenever note is
+		 * defined and is never a cursor stop. */
+		note?: (values: string[]) => { text: string; warn?: boolean } | null;
+		/** Review-page value line over the live field values (the composed
+		 * query); without it the fields join as "Label value · ...". */
+		summary?: (values: string[]) => string;
 		enabledIf?: (answers: WizardAnswers) => boolean;
 		disabledNote?: string;
 	};
@@ -471,8 +505,16 @@ export function initWizard(steps: WizardStepDef[], options?: WizardOptions): Wiz
 			: step.kind === "choice" && step.initial !== undefined
 				&& !step.options.some((option) => option.value === step.initial) ? step.initial
 			: "")),
-		formTexts: steps.map((step) =>
-			(step.kind === "form" ? step.fields.map((field) => field.initial ?? "") : [])),
+		formTexts: steps.map((step) => {
+			if (step.kind !== "form") return [];
+			const staticInit = step.fields.map((field) => field.initial ?? "");
+			if (!step.grow) return staticInit;
+			// Grow seeding: initial values (capped), padded to min empty
+			// fields -- further fields come only through the add row.
+			const seeded = (step.grow.initial ?? []).slice(0, step.grow.max);
+			while (seeded.length < step.grow.min) seeded.push("");
+			return [...seeded, ...staticInit];
+		}),
 		committedTexts: steps.map(() => ""),
 		addTexts: steps.map(() => ""),
 		inputSeq: steps.map(() => 0),
@@ -497,6 +539,8 @@ function rowCount(step: WizardStepDef): number {
 	return step.kind === "checkbox"
 		? step.items.length + step.items.filter((item) => item.description !== undefined).length
 			+ (step.input ? 1 : 0) + (step.addInput ? 1 : 0) + 2
+			// Spaced lists: a blank line per item and per input row.
+			+ (step.spaced ? step.items.length + (step.input ? 1 : 0) + (step.addInput ? 1 : 0) : 0)
 			// A non-empty status note is an EXTRA dim line while items are
 			// present (reload visibility); on an empty list it
 			// replaces the select-all row instead -- no extra height there.
@@ -504,9 +548,61 @@ function rowCount(step: WizardStepDef): number {
 		// Plain: input + placeholder line. Multiline questions: the
 		// line window, a possible overflow note and the count line.
 		: step.kind === "text" ? (step.plain ? 2 : MAX_TEXT_ROWS + 2)
-		: step.kind === "form" ? step.fields.length
+		// A grow form budgets its WORST CASE (all grow fields added, plus
+		// the add-row slot and the blank separator before static fields) so
+		// the overlay height never changes while fields are added; the note
+		// row is height-reserved whenever defined.
+		: step.kind === "form"
+			? (step.grow ? step.grow.max + 1 + (step.fields.length ? 1 : 0) : 0)
+				+ step.fields.length + (step.note ? 1 : 0)
 		// A description adds a dim explanation row under its option.
 		: step.options.length + step.options.filter((option) => option.description !== undefined).length;
+}
+
+/** The CURRENT labeled fields of a form step: grow fields first
+ * (`${idPrefix}_1..n` from the live value count), then the static fields.
+ * The single source for ids/labels -- answers, result, view, review line
+ * and the RPC menu all build on it, so their indexes can never diverge. */
+export function formFieldDefs(
+	step: Extract<WizardStepDef, { kind: "form" }>,
+	values: string[],
+): Array<{ id: string; label: string }> {
+	if (!step.grow) return step.fields;
+	const grown = Math.max(0, values.length - step.fields.length);
+	const grow = step.grow;
+	return [
+		...Array.from({ length: grown }, (_, n) => ({
+			id: `${grow.idPrefix}_${n + 1}`,
+			label: grow.label(n + 1),
+		})),
+		...step.fields,
+	];
+}
+
+/** Cursor row of a grow form's ADD row -- right under the grow fields,
+ * before the static ones; -1 without grow or at the cap (the row hides). */
+function formAddRow(step: Extract<WizardStepDef, { kind: "form" }>, values: string[]): number {
+	if (!step.grow) return -1;
+	const grown = values.length - step.fields.length;
+	return grown < step.grow.max ? grown : -1;
+}
+
+/** Cursor stops of a form step: one per field plus the add row while
+ * shown. The blank separator and the note row are rendered lines only. */
+function formNavRows(step: Extract<WizardStepDef, { kind: "form" }>, values: string[]): number {
+	return values.length + (formAddRow(step, values) >= 0 ? 1 : 0);
+}
+
+/** The formTexts index a form cursor row edits; -1 on the add row (typing
+ * is inert there, Enter adds a field). */
+function formFieldIndex(
+	step: Extract<WizardStepDef, { kind: "form" }>,
+	values: string[],
+	cursor: number,
+): number {
+	const addRow = formAddRow(step, values);
+	if (addRow < 0 || cursor < addRow) return cursor;
+	return cursor === addRow ? -1 : cursor - 1;
 }
 
 /** CURSOR stops of a checkbox step -- distinct from rowCount, which counts
@@ -577,7 +673,7 @@ function rawAnswers(state: WizardState): WizardAnswers {
 		} else if (step.kind === "text") {
 			answers[step.id] = state.texts[i];
 		} else if (step.kind === "form") {
-			step.fields.forEach((field, f) => {
+			formFieldDefs(step, state.formTexts[i]).forEach((field, f) => {
 				answers[field.id] = state.formTexts[i][f] ?? "";
 			});
 		} else {
@@ -754,17 +850,22 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 		texts: state.texts.map((prev, i) => (i === state.tab ? value : prev)),
 		dirty: state.dirty.map((prev, i) => (i === state.tab ? true : prev)),
 	});
+	// The form cursor may sit on the ADD row (no field there): editing maps
+	// through formFieldIndex, -1 means no edit target.
+	const formIndex = current?.kind === "form"
+		? formFieldIndex(current, state.formTexts[state.tab], cursor)
+		: -1;
 	const withFormText = (value: string): WizardState => ({
 		...state,
 		formTexts: state.formTexts.map((fields, i) =>
-			(i === state.tab ? fields.map((prev, f) => (f === cursor ? value : prev)) : fields)),
+			(i === state.tab ? fields.map((prev, f) => (f === formIndex ? value : prev)) : fields)),
 	});
 	const withAddText = (value: string): WizardState => ({
 		...state,
 		addTexts: state.addTexts.map((prev, i) => (i === state.tab ? value : prev)),
 	});
 	const editedValue = onText ? effectiveText(state, state.tab)
-		: onForm ? state.formTexts[state.tab][cursor] ?? ""
+		: onForm ? (formIndex >= 0 ? state.formTexts[state.tab][formIndex] ?? "" : null)
 		: onFreeText ? effectiveChoiceText(state, state.tab)
 		: onCheckboxAdd ? state.addTexts[state.tab]
 		: onCheckboxInput ? state.texts[state.tab]
@@ -871,10 +972,12 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 		}
 	}
 	const step = state.steps[state.tab];
-	// Cursor range: checkbox steps use their NAV rows (description lines and
-	// the height budget stay in rowCount -- else description lines become
-	// dead cursor rows).
-	const rows = step.kind === "checkbox" ? checkboxNavRows(step) : rowCount(step);
+	// Cursor range: checkbox and form steps use their NAV rows (fields plus
+	// the add row on grow forms; separator/note rows and the height budget
+	// stay in rowCount -- else dim lines become dead cursor rows).
+	const rows = step.kind === "checkbox" ? checkboxNavRows(step)
+		: step.kind === "form" ? formNavRows(step, state.formTexts[state.tab])
+		: rowCount(step);
 	const withCursor = withCursorAt;
 	const toggled = (): WizardState => {
 		// Only the select-all row and real item rows carry check state --
@@ -987,12 +1090,34 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 				return advance(state); // empty text is a valid answer
 			}
 			if (step.kind === "form") {
-				// Enter on a FILLED field walks to the next one; Enter on an
-				// empty field (or the last) leaves the step -- so the
-				// Enter-through flow passes an untouched filter tab with ONE
-				// stroke (every field is optional, empty means "filter off").
-				const filled = (state.formTexts[state.tab][cursor] ?? "").trim() !== "";
-				if (filled && cursor < rows - 1) return { state: withCursor(cursor + 1) };
+				const values = state.formTexts[state.tab];
+				const addRow = formAddRow(step, values);
+				// Enter on the ADD row appends one empty grow field. It takes
+				// the add row's spot (the row moves below, or hides at the
+				// cap), so the unchanged cursor lands on the new field.
+				if (cursor === addRow) {
+					const grown = values.length - step.fields.length;
+					return {
+						state: {
+							...state,
+							formTexts: state.formTexts.map((fields, i) =>
+								(i === state.tab
+									? [...fields.slice(0, grown), "", ...fields.slice(grown)]
+									: fields)),
+						},
+					};
+				}
+				// Enter on a FILLED field walks to the next one -- SKIPPING the
+				// add row (Enter-through must never add a block by accident);
+				// Enter on an empty field (or the last) leaves the step, so an
+				// untouched tab passes with ONE stroke (every field is
+				// optional, empty means "filter off").
+				const index = formFieldIndex(step, values, cursor);
+				const filled = (values[index] ?? "").trim() !== "";
+				if (filled && cursor < rows - 1) {
+					const next = cursor + 1 === addRow ? cursor + 2 : cursor + 1;
+					if (next < rows) return { state: withCursor(next) };
+				}
 				return advance(state);
 			}
 			const option = step.options[cursor];
@@ -1021,7 +1146,7 @@ export function wizardResult(state: WizardState): WizardResult {
 		} else if (step.kind === "text") {
 			result[step.id] = effectiveText(state, i);
 		} else if (step.kind === "form") {
-			step.fields.forEach((field, f) => {
+			formFieldDefs(step, state.formTexts[i]).forEach((field, f) => {
 				result[field.id] = state.formTexts[i][f] ?? "";
 			});
 		} else {
@@ -1071,7 +1196,13 @@ function stepValueLabel(state: WizardState, i: number): string {
 		return questions.length ? questions.join(" · ") : text.noQuestions;
 	}
 	if (step.kind === "form") {
-		const set = step.fields
+		// An injected summary (the composed query) beats the field join --
+		// the review page must show what actually runs (WYSIWYG).
+		if (step.summary) {
+			const line = step.summary(state.formTexts[i]).trim();
+			return line ? line : text.noQuestions;
+		}
+		const set = formFieldDefs(step, state.formTexts[i])
 			.map((field, f) => ({ field, value: (state.formTexts[i][f] ?? "").trim() }))
 			.filter((entry) => entry.value !== "")
 			.map((entry) => `${entry.field.label} ${entry.value}`);
@@ -1156,6 +1287,7 @@ export function wizardView(state: WizardState): WizardView {
 		const pushInputRow = (): void => {
 			// The steering input row, form-style: label + draft.
 			if (!step.input) return;
+			if (step.spaced) rows.push({ text: "", active: false });
 			const active = cursor === checkboxInputRow(step);
 			const draft = state.texts[state.tab];
 			rows.push({
@@ -1166,6 +1298,7 @@ export function wizardView(state: WizardState): WizardView {
 		const pushAddRow = (): void => {
 			// The add row: type an own entry, Enter checks it in.
 			if (!step.addInput) return;
+			if (step.spaced) rows.push({ text: "", active: false });
 			const active = cursor === checkboxAddRow(step);
 			const draft = state.addTexts[state.tab];
 			rows.push({
@@ -1201,7 +1334,7 @@ export function wizardView(state: WizardState): WizardView {
 				cursor,
 				selected: state.selected[state.tab],
 			};
-			rows.push(...checkboxLines(checkboxState, step.selectAllLabel));
+			rows.push(...checkboxLines(checkboxState, step.selectAllLabel, step.spaced === true));
 			pushAddRow();
 			pushInputRow();
 			rows.push({ text: `${nextActive ? "❯ " : "  "}   ${step.nextLabel}`, active: nextActive });
@@ -1240,14 +1373,46 @@ export function wizardView(state: WizardState): WizardView {
 			});
 		}
 	} else if (step.kind === "form") {
-		step.fields.forEach((field, i) => {
-			const active = cursor === i;
-			const value = state.formTexts[state.tab][i] ?? "";
+		const values = state.formTexts[state.tab];
+		const defs = formFieldDefs(step, values);
+		const grown = step.grow ? values.length - step.fields.length : 0;
+		const addRow = formAddRow(step, values);
+		const pushField = (i: number, row: number): void => {
+			const active = cursor === row;
 			rows.push({
-				text: `${active ? "❯ " : "  "}${field.label}: ${value}${active ? "_" : ""}`,
+				text: `${active ? "❯ " : "  "}${defs[i].label}: ${values[i] ?? ""}${active ? "_" : ""}`,
 				active,
 			});
-		});
+		};
+		for (let i = 0; i < grown; i++) pushField(i, i);
+		if (step.grow) {
+			// The explicit add row under the grow fields; hides at the cap.
+			if (addRow >= 0) {
+				const active = cursor === addRow;
+				rows.push({
+					text: `${active ? "❯ " : "  "}   ${step.grow.addLabel}`,
+					active,
+					...(active ? {} : { dim: true }),
+				});
+			}
+			// Blank separator before the static fields (never a cursor stop).
+			if (step.fields.length) rows.push({ text: "", active: false });
+		}
+		const offset = addRow >= 0 ? 1 : 0;
+		for (let i = grown; i < defs.length; i++) pushField(i, i + offset);
+		// Reserved status row under the fields (the both-filled warning):
+		// present whenever note is defined so the footprint stays constant
+		// while the warning toggles; never a cursor stop.
+		if (step.note) {
+			const note = step.note(values);
+			rows.push(note
+				? {
+					text: `   ${note.warn ? "⚠ " : ""}${note.text}`,
+					active: false,
+					...(note.warn ? { warn: true } : { dim: true }),
+				}
+				: { text: "", active: false, dim: true });
+		}
 	} else {
 		const width = String(step.options.length).length;
 		const answers = wizardAnswers(state);
@@ -1283,6 +1448,40 @@ export function wizardView(state: WizardState): WizardView {
 			: step.kind === "form" ? text.hintForm
 			: text.hintChoice,
 	};
+}
+
+/**
+ * Width-aware word wrap for ONE dialog line: continuation lines carry a
+ * hanging indent (the line's leading whitespace + 4, so wrapped query
+ * variants read as one entry), words stay whole where possible (a token
+ * longer than the room is cut hard). Very narrow widths fall back to a
+ * hard "…" clip -- wrapping cannot help there. The overlay adapter wraps
+ * every title/body row with this instead of clipping, so long block
+ * expressions stay fully readable in narrow terminals.
+ */
+export function wrapLine(text: string, width: number): string[] {
+	if (width <= 10) {
+		return [width > 1 && text.length > width ? `${text.slice(0, width - 1)}…` : text];
+	}
+	if (text.length <= width) return [text];
+	const lead = /^\s*/.exec(text)?.[0].length ?? 0;
+	const indent = " ".repeat(Math.min(lead + 4, width - 10));
+	const lines: string[] = [];
+	let rest = text;
+	let first = true;
+	for (;;) {
+		const room = first ? width : width - indent.length;
+		if (rest.length <= room) {
+			lines.push(first ? rest : indent + rest);
+			break;
+		}
+		let cut = rest.lastIndexOf(" ", room);
+		if (cut <= 0) cut = room;
+		lines.push(first ? rest.slice(0, cut) : indent + rest.slice(0, cut));
+		rest = rest.slice(cut).replace(/^ +/, "");
+		first = false;
+	}
+	return lines;
 }
 
 /**

@@ -35,9 +35,11 @@ import {
 	type WizardOptions,
 	type WizardResult,
 	type WizardStepDef,
+	type WizardView,
 	wizardAnswers,
 	wizardResult,
 	wizardView,
+	wrapLine,
 } from "../src/dialog-state.ts";
 
 /** The few adapter-owned strings, per dialog language (dialogs follow
@@ -281,11 +283,22 @@ async function wizardOverlay(
 			maybeLoadItems();
 			return {
 				render(width: number): string[] {
-					// Recomputed per render: lazily loaded items can grow the
-					// tallest step after mount.
-					const bodyRows = maxWizardRows(state);
 					const clip = (line: string): string => (width > 1 && line.length > width ? `${line.slice(0, width - 1)}…` : line);
 					const view = wizardView(state);
+					// Long title/body rows WRAP instead of clipping (query
+					// variants are wide block expressions -- a hard clip made
+					// them unreadable in narrow terminals). The pad target is
+					// the TALLEST tab's wrapped height at this width, floored by
+					// the row budget, so the box never changes height while
+					// navigating; it can still grow when loaded items or added
+					// fields grow the content (recomputed per render).
+					const measure = (v: WizardView): number =>
+						wrapLine(v.title, width).length
+						+ v.rows.reduce((n, row) => n + wrapLine(row.text, width).length, 0);
+					let target = 1 + maxWizardRows(state);
+					for (let t = 0; t <= state.steps.length; t++) {
+						target = Math.max(target, measure(t === state.tab ? view : wizardView({ ...state, tab: t })));
+					}
 					const rule = paint("borderAccent", "─".repeat(Math.max(1, width)));
 					// The tab bar: arrows at both ends, the active tab bracketed
 					// + accent, disabled tabs parenthesized + dim (greyed out,
@@ -309,18 +322,23 @@ async function wizardOverlay(
 					// dialog: the overlay is anchored to the bottom of the
 					// terminal, far from the command the user typed -- so it
 					// says where you are.
+					const titleLines = wrapLine(view.title, width).map((line) => paint("accent", line));
 					const lines: string[] = options?.header
-						? [paint("accent", clip(options.header)), rule, tabBar, "", paint("accent", clip(view.title))]
-						: [rule, tabBar, "", paint("accent", clip(view.title))];
+						? [paint("accent", clip(options.header)), rule, tabBar, "", ...titleLines]
+						: [rule, tabBar, "", ...titleLines];
+					let body = 0;
 					for (const row of view.rows) {
-						lines.push(row.active ? paint("accent", clip(row.text))
-							: row.warn ? paint("warning", clip(row.text))
-							: row.dim ? paint("dim", clip(row.text))
-							: clip(row.text));
+						for (const line of wrapLine(row.text, width)) {
+							lines.push(row.active ? paint("accent", line)
+								: row.warn ? paint("warning", line)
+								: row.dim ? paint("dim", line)
+								: line);
+							body += 1;
+						}
 					}
-					// Constant footprint: pad to the tallest step so the box
-					// never changes height while navigating.
-					for (let i = view.rows.length; i < bodyRows; i++) lines.push("");
+					// Constant footprint: pad to the tallest wrapped tab so the
+					// box never changes height while navigating.
+					for (let i = titleLines.length + body; i < target; i++) lines.push("");
 					lines.push(rule, paint("dim", clip(view.hint)));
 					return lines;
 				},
@@ -416,13 +434,46 @@ async function wizardSelectLoop(
 			for (const field of step.fields) {
 				if (field.initial !== undefined) answers[field.id] = field.initial;
 			}
+			step.grow?.initial?.slice(0, step.grow.max).forEach((value, n) => {
+				answers[`${step.grow!.idPrefix}_${n + 1}`] = value;
+			});
 		}
 	}
+	// The CURRENT labeled fields of a form step, grow fields resolved from
+	// the answers so far (overlay parity with formFieldDefs): all filled
+	// grow fields plus one empty trailing row -- editing that row and the
+	// reopened menu showing the next empty one IS the growing affordance
+	// here.
+	const formFields = (
+		step: WizardStepDef & { kind: "form" },
+	): Array<{ id: string; label: string }> => {
+		if (!step.grow) return step.fields;
+		const grow = step.grow;
+		let filled = 0;
+		for (let n = grow.max; n >= 1; n--) {
+			const value = answers[`${grow.idPrefix}_${n}`];
+			if (typeof value === "string" && value.trim() !== "") {
+				filled = n;
+				break;
+			}
+		}
+		const visible = Math.min(grow.max, Math.max(grow.min, filled + 1));
+		return [
+			...Array.from({ length: visible }, (_, n) => ({
+				id: `${grow.idPrefix}_${n + 1}`,
+				label: grow.label(n + 1),
+			})),
+			...step.fields,
+		];
+	};
+	const formValues = (step: WizardStepDef & { kind: "form" }): string[] =>
+		formFields(step).map((field) =>
+			(typeof answers[field.id] === "string" ? (answers[field.id] as string) : ""));
 	const liveAnswers = (): WizardAnswers => {
 		const live: WizardAnswers = {};
 		for (const step of steps) {
 			if (step.kind === "form") {
-				for (const field of step.fields) {
+				for (const field of formFields(step)) {
 					const value = answers[field.id];
 					live[field.id] = typeof value === "string" ? value : "";
 				}
@@ -485,7 +536,13 @@ async function wizardSelectLoop(
 					return `${step.tab}: ${questions.length ? questions.join(" · ") : text.noQuestions}`;
 				}
 				if (step.kind === "form") {
-					const set = step.fields
+					// An injected summary (the composed query) beats the field
+					// join -- review parity with the overlay's stepValueLabel.
+					if (step.summary) {
+						const line = step.summary(formValues(step)).trim();
+						return `${step.tab}: ${line ? line : text.noQuestions}`;
+					}
+					const set = formFields(step)
 						.map((field) => ({ field, value: typeof answers[field.id] === "string" ? (answers[field.id] as string).trim() : "" }))
 						.filter((entry) => entry.value !== "")
 						.map((entry) => `${entry.field.label} ${entry.value}`);
@@ -594,13 +651,22 @@ async function wizardSelectLoop(
 			// advances.
 			let formResult: "advance" | "back" | null = null;
 			for (;;) {
-				const rows = step.fields.map((field) => {
+				// Grow forms rebuild their field list per menu round -- filling
+				// the trailing empty row makes the next one appear on reopen.
+				const fields = formFields(step);
+				const rows = fields.map((field) => {
 					const value = typeof answers[field.id] === "string" ? (answers[field.id] as string).trim() : "";
 					return `${field.label}: ${value !== "" ? value : adapterText.formOff}`;
 				});
 				rows.push(adapterText.formDoneRow);
 				if (index > 0) rows.push(backRow);
-				const picked = await ctx.ui.select(stepTitle, rows, { signal });
+				// The status note (both-filled warning) rides in the menu title.
+				const note = step.note?.(formValues(step)) ?? null;
+				const picked = await ctx.ui.select(
+					note ? `${stepTitle} -- ${note.text}` : stepTitle,
+					rows,
+					{ signal },
+				);
 				if (picked === undefined) return null; // select cancel stays a wizard cancel
 				if (picked === backRow) {
 					formResult = "back";
@@ -610,9 +676,11 @@ async function wizardSelectLoop(
 					formResult = "advance";
 					break;
 				}
-				const field = step.fields[rows.indexOf(picked)];
+				const field = fields[rows.indexOf(picked)];
 				if (!field) continue;
-				const current = typeof answers[field.id] === "string" ? (answers[field.id] as string) : field.initial ?? "";
+				// Field initials are already seeded into answers above, so the
+				// stored value is the only source here (grow fields carry none).
+				const current = typeof answers[field.id] === "string" ? (answers[field.id] as string) : "";
 				const edited = await ctx.ui.editor(`${stepTitle} -- ${field.label}`, current);
 				// Cancel/empty-save keeps the previous value (clearing a set
 				// field: save whitespace -- consumers trim before parsing).
@@ -685,6 +753,9 @@ function dropDisabled(
 		if (enabled(i)) continue;
 		if (step.kind === "form") {
 			for (const field of step.fields) delete answers[field.id];
+			if (step.grow) {
+				for (let n = 1; n <= step.grow.max; n++) delete answers[`${step.grow.idPrefix}_${n}`];
+			}
 		} else {
 			delete answers[step.id];
 		}

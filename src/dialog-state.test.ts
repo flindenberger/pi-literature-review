@@ -21,6 +21,7 @@ import {
 	wizardAnswers,
 	wizardResult,
 	wizardView,
+	wrapLine,
 } from "./dialog-state.ts";
 
 /** "Tab: value" lines of the review page, read off wizardView at the submit tab. */
@@ -40,6 +41,28 @@ const items = [
 	{ id: "b", label: "2024_Wagner_Amazon.pdf" },
 	{ id: "c", label: "2026_Blanch_Water_Level.pdf" },
 ];
+
+/* ---------------- wrapLine ---------------- */
+{
+	// Short lines pass through; long lines wrap at word boundaries with a
+	// hanging indent (leading whitespace + 4).
+	assert.deepEqual(wrapLine("short", 40), ["short"]);
+	assert.deepEqual(wrapLine("", 40), [""]);
+	const wrapped = wrapLine(" 2. [ ] (satellite OR Landsat) AND (water body OR surface water)", 40);
+	assert.ok(wrapped.length > 1);
+	assert.ok(wrapped.every((line) => line.length <= 40), "every line fits the width");
+	assert.ok(wrapped.slice(1).every((line) => line.startsWith("     ")), "hanging indent = lead + 4");
+	// No content lost, no words torn at the seams (a mid-token cut would
+	// re-join with a stray space and fail the comparison).
+	assert.equal(wrapped.map((line) => line.trim()).join(" "), "2. [ ] (satellite OR Landsat) AND (water body OR surface water)");
+	// A token longer than the room is cut hard instead of looping.
+	const monster = wrapLine(`x ${"y".repeat(100)}`, 20);
+	assert.ok(monster.length > 1);
+	assert.ok(monster.every((line) => line.length <= 20));
+	// Very narrow widths fall back to the hard clip.
+	assert.deepEqual(wrapLine("abcdefghijkl", 8), ["abcdefg…"]);
+	assert.deepEqual(wrapLine("abc", 8), ["abc"]);
+}
 
 /* ---------------- parseQuestionLines ---------------- */
 {
@@ -647,6 +670,94 @@ function drive(
 	assert.equal(skipped.state.tab, 1);
 }
 
+{
+	// Grow form (the query tab's keyword blocks): min fields at the start,
+	// an explicit ADD row under them appends more (up to max, then it
+	// hides), a blank separator divides grow and static fields; note row
+	// reserved, summary wins the review line.
+	const steps: WizardStepDef[] = [{
+		kind: "form", id: "query", tab: "Query", title: "Query",
+		grow: { idPrefix: "qb", label: (n) => `Block ${n}`, addLabel: "+ Add block", min: 2, max: 4 },
+		fields: [{ id: "free", label: "Free text" }],
+		note: (values) => (values[values.length - 1]?.trim() !== "" && values.slice(0, -1).some((value) => value.trim() !== "")
+			? { text: "free text wins", warn: true }
+			: null),
+		summary: (values) => values.filter((value) => value.trim() !== "").join(" AND "),
+	}];
+	let state = initWizard(steps);
+	// min grow fields plus the static field; ids follow the live count.
+	assert.deepEqual(state.formTexts[0], ["", "", ""]);
+	assert.deepEqual(wizardResult(state), { qb_1: "", qb_2: "", free: "" });
+	let rows = wizardView(state).rows;
+	assert.equal(rows[0].text, "❯ Block 1: _");
+	assert.equal(rows[1].text, "  Block 2: ");
+	assert.ok(rows[2].text.includes("+ Add block")); // the add row
+	assert.ok(rows[2].dim); // dim while not focused
+	assert.equal(rows[3].text, ""); // blank separator before the static field
+	assert.equal(rows[4].text, "  Free text: ");
+	// The note row is reserved (empty) while the warning is off.
+	assert.equal(rows.length, 6);
+	assert.equal(rows[5].text, "");
+	// Height budget = WORST CASE (max grow + add slot + separator + static
+	// + note), stable while fields are added (submit page: 1 step x 2 + 4
+	// = 6 rows -- smaller).
+	assert.equal(maxWizardRows(state), 8);
+	// Typing fills the focused field; nothing spawns by itself.
+	({ state } = drive(state, [{ kind: "input", chars: "satellite" }]));
+	assert.deepEqual(state.formTexts[0], ["satellite", "", ""]);
+	({ state } = drive(state, ["confirm"])); // filled -> next field
+	assert.equal(state.cursors[0], 1);
+	// Enter on a filled last grow field SKIPS the add row (Enter-through
+	// must never add a block by accident) and lands on the free text.
+	({ state } = drive(state, [{ kind: "input", chars: "fusion" }, "confirm"]));
+	assert.equal(state.cursors[0], 3);
+	assert.deepEqual(state.formTexts[0], ["satellite", "fusion", ""]);
+	// The add row: typing is inert there; Enter appends one empty grow
+	// field, which takes the add row's spot (cursor lands on it).
+	({ state } = drive(state, ["up"])); // free text -> add row
+	assert.equal(state.cursors[0], 2);
+	({ state } = drive(state, [{ kind: "input", chars: "zzz" }]));
+	assert.deepEqual(state.formTexts[0], ["satellite", "fusion", ""]); // inert
+	({ state } = drive(state, ["confirm"]));
+	assert.deepEqual(state.formTexts[0], ["satellite", "fusion", "", ""]);
+	assert.equal(state.cursors[0], 2); // on the new Block 3
+	assert.deepEqual(wizardResult(state), { qb_1: "satellite", qb_2: "fusion", qb_3: "", free: "" });
+	assert.equal(maxWizardRows(state), 8); // unchanged by the add
+	// At the cap the add row hides; emptied fields never collapse.
+	({ state } = drive(state, [{ kind: "input", chars: "deep" }, "down", "confirm"])); // add Block 4 (max)
+	assert.equal(state.formTexts[0].length, 5); // 4 grow + free
+	assert.ok(!wizardView(state).rows.some((row) => row.text.includes("+ Add block")));
+	({ state } = drive(state, ["confirm"])); // Enter on empty Block 4 leaves
+	assert.equal(state.tab, 1);
+	state = { ...state, tab: 0 }; // cursor still on Block 4
+	({ state } = drive(state, [{ kind: "input", chars: "x" }, "backspace"])); // filled then emptied
+	assert.equal(state.formTexts[0].length, 5);
+	// The separator/note rows are no cursor stops: down from the free text
+	// wraps to Block 1.
+	({ state } = drive(state, ["down"])); // Block 4 -> free text
+	assert.equal(state.cursors[0], 4);
+	({ state } = drive(state, ["down"]));
+	assert.equal(state.cursors[0], 0);
+	// Both filled -> warn row; summary shows the injected composed line.
+	({ state } = drive(state, ["down", "down", "down", "down", { kind: "input", chars: "a sentence" }]));
+	rows = wizardView(state).rows;
+	assert.ok(rows[rows.length - 1].warn);
+	assert.ok(rows[rows.length - 1].text.includes("⚠ free text wins"));
+	assert.ok(summaryLines(state).some((line) =>
+		line === "Query: satellite AND fusion AND deep AND a sentence"));
+	// Untouched tab passes with ONE Enter (empty first field leaves).
+	const through = drive(initWizard(steps), ["confirm", "confirm"]);
+	assert.equal(through.done, "confirmed");
+	// grow.initial seeds the fields (padded to min; no extra empty field --
+	// more blocks come through the add row).
+	const seeded = initWizard([{
+		...steps[0],
+		grow: { idPrefix: "qb", label: (n) => `Block ${n}`, addLabel: "+ Add block", min: 2, max: 4, initial: ["a OR b", "c"] },
+	} as WizardStepDef]);
+	assert.deepEqual(seeded.formTexts[0], ["a OR b", "c", ""]);
+	assert.deepEqual(wizardResult(seeded), { qb_1: "a OR b", qb_2: "c", free: "" });
+}
+
 /* -------- locked rows (the variants tab's base query) -------- */
 {
 	const lockedItems = [
@@ -944,6 +1055,44 @@ function drive(
 	assert.equal(animateEllipsis("a ... b ...", 0), "a ... b .");
 	// No ellipsis: unchanged at every tick.
 	assert.equal(animateEllipsis("no journals found", 5), "no journals found");
+}
+
+
+/* -------- spaced checkbox list: blank lines are render-only -------- */
+{
+	const steps: WizardStepDef[] = [{
+		kind: "checkbox", id: "variants", tab: "V", title: "?",
+		items: [], selectAllLabel: "All", nextLabel: "Next",
+		optional: true, keepSelected: true, cursorStart: "next", spaced: true,
+		addInput: { id: "variants_own", label: "Own" },
+		input: { id: "variants_hint", label: "Steer" },
+	}];
+	const { state } = drive(initWizard(steps), [
+		{ kind: "setItems", step: "variants", items: [
+			{ id: "__base__", label: "water (main query)", locked: true, description: "(water)" },
+			{ id: "v1", label: "surface water extraction" },
+		], emptyNote: "" },
+	] as never);
+	// Cursor rows are untouched by the spacing: 0 all, 1-2 items, 3 add,
+	// 4 steer, 5 Next.
+	assert.equal(state.cursors[0], 5);
+	assert.equal(checkboxTypingRow(state.steps[0], 3), true);
+	assert.equal(checkboxTypingRow(state.steps[0], 4), true);
+	// Rendered: a blank line before every item and before each input row;
+	// the description stays glued to its item; no blank is ever active.
+	const texts = wizardView(state).rows.map((row) => row.text.trim());
+	assert.deepEqual(texts, [
+		"[ ] All",
+		"", "1. [✔] water (main query)", "(water)",
+		"", "2. [ ] surface water extraction",
+		"", "Own:", "", "Steer:", "❯    Next",
+	]);
+	assert.ok(wizardView(state).rows.every((row) => row.text !== "" || !row.active));
+	// Without the flag the same list renders compact.
+	const compact = drive(initWizard([{ ...steps[0], spaced: false } as WizardStepDef]), [
+		{ kind: "setItems", step: "variants", items: [{ id: "v1", label: "x" }], emptyNote: "" },
+	] as never).state;
+	assert.ok(wizardView(compact).rows.every((row) => row.text !== ""));
 }
 
 console.log("dialog-state tests passed");

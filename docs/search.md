@@ -13,18 +13,31 @@ language (German/English).
 
 ![Query variants tab](img/search-variants-tab.png)
 
-- **Query** -- keywords derive one concept block per word; a block
-  expression typed by hand (`(river OR fluvial) AND (sandbar)`) is used as
-  written; quotes and arXiv field syntax pass through untouched.
+- **Query** -- a keyword-block form: one concept per field ("Keyword block
+  1: satellite imagery"), synonyms within a field separated by OR or comma;
+  the blocks are AND-linked, five fields show by default and an "Add
+  keyword block" row appends more (up to eight). Separated by a blank line,
+  a free-text field takes a sentence or your own syntax instead -- when
+  filled it IS the query (a warning shows while both are
+  set): plain keywords derive one concept block per word, a hand-typed
+  block expression (`(river OR fluvial) AND (sandbar)`) is used as written,
+  quotes and arXiv field syntax pass through untouched.
 - **Query variants** -- one call to the model selected in Pi suggests up to
-  six alternative searches as concept-block boolean queries (OR-synonyms
+  four alternative searches as concept-block boolean queries (OR-synonyms
   within a concept, AND between concepts), staggered narrow to broad, in
-  the base query's concept order; one row is a computer-science phrasing
+  the base query's concept order; when the base query is a block expression
+  (hand-built blocks) the suggestions keep its block count and concepts and
+  vary only the synonyms; one row is a computer-science phrasing
   tagged "arXiv/CS phrasing" (arXiv barely indexes domain jargon). The main
   query is locked and always runs; every checked row runs as an additional
-  search in the same run. Add row: type your own variant. Steering row:
-  type a direction, Enter regenerates; checked rows survive. No model: the
-  tab offers only the main query.
+  search in the same run; arXiv and OpenAlex receive each row as a real
+  boolean query, duplicates across rows are removed, and every record is
+  labeled against the blocks of ALL confirmed rows (on_target = full match
+  of at least one). Add row: type your own variant. Steering row: type a
+  direction, Enter regenerates four fresh suggestions; checked rows
+  survive (the row carries a reload sign). Rows are separated by blank
+  lines. No model: the tab offers
+  only the main query.
 - **Search period** -- last 5/10/20 years, all years, or `2015-2024`.
 - **Records** -- per source: 5, 15, 50 (the politeness cap), or custom.
 - **Journals / Authors** -- the top journals and authors OpenAlex holds

@@ -163,6 +163,46 @@ export function queryBlocks(text: string): string[][] {
 	return isBlockExpression(text) ? parseGroupSpec(text) : deriveGroupsFromQuery(text);
 }
 
+/** Query composed from the wizard's block form; `bothFilled` flags the
+ * conflicting state (free text AND blocks entered -- free text wins, the
+ * dialog shows a warning). */
+export interface BlockFormQuery {
+	query: string;
+	bothFilled: boolean;
+}
+
+/**
+ * Compose the search query from the wizard's keyword-block form. A filled
+ * free-text field IS the query (blocks ignored, bothFilled set when any
+ * block is also filled); otherwise the non-empty block fields serialize to
+ * "(b1) AND (b2) ...". Within one field, OR or commas separate synonyms
+ * (a stray AND inside a field is read as synonyms too -- one field is one
+ * concept by definition). The output is always parenthesized, so
+ * queryBlocks() round-trips it to exactly the entered blocks: search and
+ * labeling see what the tab showed. Everything empty -> "".
+ */
+export function queryFromBlockAnswers(blocks: string[], freeText: string): BlockFormQuery {
+	const free = freeText.trim();
+	const groups = blocks
+		.map((field) => parseGroupSpec(field).flat())
+		.filter((group) => group.length);
+	if (free) return { query: free, bothFilled: groups.length > 0 };
+	return { query: formatGroupExpression(groups), bothFilled: false };
+}
+
+/**
+ * Split a query prefill (agent param, /lit-search argument) for the block
+ * form: a block expression becomes one "a OR b" line per block; plain
+ * keywords, prose and hands-off syntax (quotes, arXiv field prefixes)
+ * return null and belong in the free-text field verbatim.
+ */
+export function blocksForEditing(query: string): string[] | null {
+	if (/"|(?:^|\s)(?:all|ti|abs|au|cat):/i.test(query)) return null;
+	if (!isBlockExpression(query)) return null;
+	const lines = parseGroupSpec(query).map((group) => group.join(" OR "));
+	return lines.length ? lines : null;
+}
+
 /** Whether a plain query reads like a PROSE SENTENCE rather than keywords
  * (a full sentence derives into an unsatisfiable many-block AND chain).
  * Deterministic: the user's own boolean/quote/field syntax is never
@@ -304,6 +344,92 @@ export function parseVariantSuggestions(raw: string, baseQuery: string, cap = 8)
 	}
 	return sortVariantsByBreadth(variants, baseBlocks)
 		.map((text) => ({ text, arxiv: flags.get(text.toLowerCase()) === true }));
+}
+
+/** The variant generator only SHAPES queries (the one allowed LLM
+ * contribution besides word lists) -- prompts pinned here, English like all
+ * model-facing chrome. The suggestions are CONCEPT-BLOCK boolean queries
+ * (the systematic-review building-blocks method): OR-synonyms per concept,
+ * AND between concepts -- sent as real boolean queries to the sources and
+ * labeling their own finds. Every rule below exists because a model broke
+ * it in the field; code enforces the structural ones afterwards
+ * (breadth order, block order). */
+export const VARIANT_SYSTEM_PROMPT =
+	"You build concept-block search queries for academic literature databases (the systematic-review "
+	+ "building-blocks method). You only shape search queries; you never produce citations, paper "
+	+ "titles, authors or any bibliographic data.";
+export function variantPrompt(query: string, hint: string, count: number, prose: boolean): string {
+	// A base query that is itself a block expression is the user's (or the
+	// agent's) own hand-built structure -- suggestions must preserve it and
+	// vary only the synonym sets. Mutually exclusive with `prose` by
+	// construction (isProseQuery is false for block expressions).
+	const baseBlocks = queryBlocks(query);
+	const blockFaithful = isBlockExpression(query) && baseBlocks.length >= 1;
+	return [
+		`Base query: ${query}`,
+		hint ? `User steering hint (follow it): ${hint}` : "",
+		"",
+		`Suggest ${count} alternative searches for the same information need, each as a CONCEPT-BLOCK boolean query.`,
+		blockFaithful
+			? `Format per line: exactly ${baseBlocks.length} concept block(s) joined with AND; each block is 1-4 synonyms joined with OR, in parentheses.`
+			: "Format per line: 2-4 concept blocks joined with AND; each block is 1-4 synonyms joined with OR, in parentheses.",
+		"Example: (river OR fluvial OR river channel) AND (water extraction OR water mapping) AND (satellite OR remote sensing)",
+		blockFaithful
+			? "The base query is a hand-built block structure. Preserve it in EVERY suggestion: the SAME "
+			+ "number of concept blocks, in the same order, each block covering the SAME concept as the "
+			+ "corresponding base block. Never add, drop, merge or split blocks and never move a concept "
+			+ "between blocks. Vary ONLY the OR synonym sets inside each block, widening them per the "
+			+ "staggering rule below. The one arXiv-marked line is exempt from this rule and follows its "
+			+ "own instruction instead."
+			: "",
+		// Prose base: the first line must DISTILL the sentence, not vary it
+		// -- it arrives prechecked in the tab and carries the default run.
+		prose
+			? "The base query reads like a prose sentence, not a keyword query. Your FIRST suggestion must be a "
+			+ "faithful distillation of exactly that sentence into concept blocks: cover its core concepts, "
+			+ "invent no new aspects, drop only filler words."
+			: "",
+		// Staggered breadth: code sorts afterwards (sortVariantsByBreadth);
+		// this rule makes the model GENERATE across the whole range.
+		"Identify the core concepts of the base query. Stagger the suggestions from narrow to broad: the "
+		+ "first one or two stay CLOSE to the base query's own words with at most 1-2 synonyms per block; "
+		+ "later suggestions widen the synonym sets and may explore subtopics, established domain terms "
+		+ "and method names.",
+		// Parallel block order: code aligns afterwards wherever a block shares
+		// a word with a base concept (alignBlocksToBase); this rule covers
+		// pure-synonym blocks that carry no base word.
+		"Order the blocks by the base query's concept order in EVERY suggestion: the block covering the base "
+		+ "query's first concept comes first, and so on (base 'Sentinel Water Detection': sensor block, then "
+		+ "water block, then task block).",
+		// Sense and precision: broad homonym blocks ("channel"/"stream")
+		// both FETCH noise and LABEL it on_target, but anchoring EVERYTHING
+		// into phrases starves the blocks and models drift in sense.
+		"Keep the base query's technical SENSE: infer what ambiguous terms mean from the other concepts "
+		+ "and stay in that sense in every suggestion (e.g. next to 'water body' and 'satellite', "
+		+ "'extraction' means extracting water surfaces from imagery, NOT water withdrawal or pumping).",
+		"Silently correct obvious typos in the base query instead of copying them.",
+		"Mix breadth and precision WITHIN a block: broad words that are unambiguous in this domain may "
+		+ "stand alone (satellite, river, water body); words with other technical meanings (channel, "
+		+ "stream, band, body alone) appear only as anchored phrases (river channel, stream network, "
+		+ "water body). One block may hold the task words (extraction OR mapping OR segmentation), but "
+		+ "every OTHER block must pin the topic unambiguously.",
+		// arXiv is a physics/CS/math preprint server: domain jargon yields
+		// nothing there, the same need in computer-vision terms does. One
+		// suggestion per round speaks that dialect; it runs against all
+		// sources like any other and its Q-label shows what arXiv answered.
+		// Code sorts by breadth afterwards, so the row may not stay last.
+		"Make EXACTLY ONE suggestion (the last line) a computer-science / preprint-server phrasing of the "
+		+ "same need, the way arXiv machine-learning and computer-vision papers describe it: generic method "
+		+ "words (segmentation OR extraction OR mapping OR detection, deep learning, CNN, SAR) instead of "
+		+ "field jargon, the object as 'water body' or 'surface water', and the sensor block as an OR "
+		+ "list of plain sensor names (satellite OR remote sensing OR Sentinel OR Landsat OR SAR); keep it "
+		+ "to 3 blocks, no multi-word specialist phrases, and do NOT reuse the base query's specialist "
+		+ "terms in it. Start exactly that line with the marker 'arXiv: ' (only that line carries a marker).",
+		"Prefer English terms (the databases index English metadata); if the base query is in another language, "
+		+ "translate the concepts to English.",
+		"Multi-word terms as plain words, NO quotation marks, no field prefixes.",
+		"Output exactly one suggestion per line. No numbering, no bullets, no explanations.",
+	].filter(Boolean).join("\n");
 }
 
 /**

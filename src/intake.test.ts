@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import {
 	alignBlocksToBase,
 	alignVariantExpression,
+	blocksForEditing,
 	deriveGroupsFromQuery,
 	formatGroupExpression,
 	isBlockExpression,
@@ -17,7 +18,9 @@ import {
 	parseVariantSuggestions,
 	parseYearRange,
 	queryBlocks,
+	queryFromBlockAnswers,
 	sortVariantsByBreadth,
+	variantPrompt,
 	yearRangeToSpec,
 } from "./intake.ts";
 
@@ -322,8 +325,6 @@ const parseVariantLines = (raw: string, base: string, cap?: number): string[] =>
 	assert.deepEqual(queryBlocks("ti:flood mapping"), []);
 }
 
-console.log("intake.test.ts: all assertions passed");
-
 // parseVariantSuggestions: the model marks its arXiv/CS
 // phrasing with a leading "arXiv:"; the marker is stripped and carried as a
 // flag (survives bullets, dedupe and the breadth sort); unmarked lines are
@@ -339,3 +340,76 @@ console.log("intake.test.ts: all assertions passed");
 	assert.ok(parseVariantLines(raw, "sandbar detection").every((line) => !/^arxiv:/i.test(line)));
 	assert.deepEqual(parseVariantSuggestions("plain line", "base").map((entry) => entry.arxiv), [false]);
 }
+
+// queryFromBlockAnswers: the query tab's block form -> one query string.
+// Blocks serialize parenthesized; a filled free text IS the query.
+{
+	assert.deepEqual(
+		queryFromBlockAnswers(["satellite imagery OR remote sensing", "data fusion"], ""),
+		{ query: "(satellite imagery OR remote sensing) AND (data fusion)", bothFilled: false },
+	);
+	// Commas separate synonyms too; empty/whitespace fields drop out.
+	assert.deepEqual(
+		queryFromBlockAnswers(["river, fluvial", "  ", "sandbar"], ""),
+		{ query: "(river OR fluvial) AND (sandbar)", bothFilled: false },
+	);
+	// A single block keeps its parentheses (round-trips as an expression).
+	assert.equal(queryFromBlockAnswers(["deep learning"], "").query, "(deep learning)");
+	// A stray AND inside one field reads as synonyms -- one field is one
+	// concept by definition.
+	assert.equal(queryFromBlockAnswers(["a AND b"], "").query, "(a OR b)");
+	// Everything empty -> empty query (the submit mapping cancels honestly).
+	assert.deepEqual(queryFromBlockAnswers(["", " "], " "), { query: "", bothFilled: false });
+	// Filled free text wins verbatim; blocks alongside flag the warning.
+	assert.deepEqual(
+		queryFromBlockAnswers(["satellite"], " water mapping from space "),
+		{ query: "water mapping from space", bothFilled: true },
+	);
+	assert.deepEqual(
+		queryFromBlockAnswers(["", ""], "water mapping"),
+		{ query: "water mapping", bothFilled: false },
+	);
+	// Round-trip: queryBlocks over the serialized form yields exactly the
+	// entered blocks (search and labeling see what the tab showed), and
+	// re-serializing is byte-stable (loader keys must not churn).
+	const composed = queryFromBlockAnswers(["satellite OR remote sensing", "data fusion"], "").query;
+	assert.deepEqual(queryBlocks(composed), [["satellite", "remote sensing"], ["data fusion"]]);
+	assert.equal(
+		queryFromBlockAnswers(queryBlocks(composed).map((group) => group.join(" OR ")), "").query,
+		composed,
+	);
+}
+
+// blocksForEditing: prefill routing for the block form -- expressions
+// split into one line per block, everything else belongs in free text.
+{
+	assert.deepEqual(blocksForEditing("(river OR fluvial) AND (sandbar)"), ["river OR fluvial", "sandbar"]);
+	assert.deepEqual(blocksForEditing("river,fluvial;sandbar"), ["river OR fluvial", "sandbar"]);
+	assert.equal(blocksForEditing("water mask satellite"), null); // plain keywords
+	assert.equal(blocksForEditing('"water mask" AND satellite'), null); // hands-off quotes
+	assert.equal(blocksForEditing("ti:water AND abs:mask"), null); // arXiv field syntax
+	assert.equal(blocksForEditing(""), null);
+}
+
+// variantPrompt: the block-faithful branch pins the block count for
+// expression bases (user-authored structure), stays absent for plain and
+// prose bases, and never touches the arXiv-line rule.
+{
+	const faithful = variantPrompt("(river OR stream) AND (sandbar)", "", 6, false);
+	assert.ok(faithful.includes("exactly 2 concept block(s)"));
+	assert.ok(faithful.includes("SAME number of concept blocks"));
+	assert.ok(faithful.includes("arXiv: "), "arXiv marker rule kept");
+	assert.ok(faithful.includes("exempt from this rule"));
+	const plain = variantPrompt("water mask satellite", "", 6, false);
+	assert.ok(!plain.includes("SAME number of concept blocks"));
+	assert.ok(plain.includes("2-4 concept blocks"));
+	const prose = variantPrompt("i would like papers about water mapping from satellites", "", 6, true);
+	assert.ok(prose.includes("faithful distillation"));
+	assert.ok(!prose.includes("SAME number of concept blocks"));
+	// Hands-off syntax (quotes) yields no blocks -> never block-faithful.
+	assert.ok(!variantPrompt('"water mask" AND satellite', "", 6, false).includes("SAME number of concept blocks"));
+	// The steering hint rides as its own line.
+	assert.ok(variantPrompt("x", "more deep learning", 6, false).includes("more deep learning"));
+}
+
+console.log("intake.test.ts: all assertions passed");

@@ -13,8 +13,9 @@
  * Parameter confirmation is code, not instruction: every interactive call
  * opens the blocking wizard -- models skip "ask the user first"
  * instructions, but they cannot skip a dialog the tool itself puts between
- * them and the search. The wizard always starts on the query tab (a
- * proposal arrives as prefill); a bare /lit-search starts there empty.
+ * them and the search. The wizard always starts on the query tab -- a
+ * keyword-block form (one concept per growing field, free text below); a
+ * proposed query arrives as prefill, a bare /lit-search starts empty.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -30,6 +31,8 @@ import { renderDigest } from "../src/digest.ts";
 import { DEFAULT_PER_SOURCE, MAX_PER_SOURCE, runSearch, SEARCHERS, type SearchOptions, type SearchPayload } from "../src/search.ts";
 import type { ResultFilters } from "../src/pipeline.ts";
 import {
+	type BlockFormQuery,
+	blocksForEditing,
 	formatGroupExpression,
 	isProseQuery,
 	parsePerSource,
@@ -37,6 +40,9 @@ import {
 	type VariantSuggestion,
 	parseYearRange,
 	queryBlocks,
+	queryFromBlockAnswers,
+	VARIANT_SYSTEM_PROMPT,
+	variantPrompt,
 	yearRangeToSpec,
 } from "../src/intake.ts";
 import { writeRunOutputs } from "../src/output.ts";
@@ -63,77 +69,35 @@ const AUTHOR_OTHER_ID = "__other_authors__";
 /** Sentinel id of the LOCKED base-query row in the variants tab; variant
  * ids are the query strings themselves, so this cannot collide with one. */
 const VARIANT_BASE_ID = "__base_query__";
-/** How many LLM suggestions the variants tab asks for per generation
- * (block expressions are wide rows -- six keep the tab readable). */
-const VARIANT_SUGGESTION_LIMIT = 6;
-/** The variant generator only SHAPES queries (the one allowed LLM
- * contribution besides word lists) -- prompts pinned here, English like all
- * model-facing chrome. The suggestions are CONCEPT-BLOCK boolean queries
- * (the systematic-review building-blocks method): OR-synonyms per concept,
- * AND between concepts -- sent as real boolean queries to the sources and
- * labeling their own finds. Every rule below exists because a model broke
- * it in the field; code enforces the structural ones afterwards
- * (breadth order, block order). */
-const VARIANT_SYSTEM_PROMPT =
-	"You build concept-block search queries for academic literature databases (the systematic-review "
-	+ "building-blocks method). You only shape search queries; you never produce citations, paper "
-	+ "titles, authors or any bibliographic data.";
-function variantPrompt(query: string, hint: string, count: number, prose: boolean): string {
-	return [
-		`Base query: ${query}`,
-		hint ? `User steering hint (follow it): ${hint}` : "",
-		"",
-		`Suggest ${count} alternative searches for the same information need, each as a CONCEPT-BLOCK boolean query.`,
-		"Format per line: 2-4 concept blocks joined with AND; each block is 1-4 synonyms joined with OR, in parentheses.",
-		"Example: (river OR fluvial OR river channel) AND (water extraction OR water mapping) AND (satellite OR remote sensing)",
-		// Prose base: the first line must DISTILL the sentence, not vary it
-		// -- it arrives prechecked in the tab and carries the default run.
-		prose
-			? "The base query reads like a prose sentence, not a keyword query. Your FIRST suggestion must be a "
-			+ "faithful distillation of exactly that sentence into concept blocks: cover its core concepts, "
-			+ "invent no new aspects, drop only filler words."
-			: "",
-		// Staggered breadth: code sorts afterwards (sortVariantsByBreadth);
-		// this rule makes the model GENERATE across the whole range.
-		"Identify the core concepts of the base query. Stagger the suggestions from narrow to broad: the "
-		+ "first two stay CLOSE to the base query's own words with at most 1-2 synonyms per block; later "
-		+ "suggestions widen the synonym sets and may explore subtopics, established domain terms and "
-		+ "method names.",
-		// Parallel block order: code aligns afterwards wherever a block shares
-		// a word with a base concept (alignBlocksToBase); this rule covers
-		// pure-synonym blocks that carry no base word.
-		"Order the blocks by the base query's concept order in EVERY suggestion: the block covering the base "
-		+ "query's first concept comes first, and so on (base 'Sentinel Water Detection': sensor block, then "
-		+ "water block, then task block).",
-		// Sense and precision: broad homonym blocks ("channel"/"stream")
-		// both FETCH noise and LABEL it on_target, but anchoring EVERYTHING
-		// into phrases starves the blocks and models drift in sense.
-		"Keep the base query's technical SENSE: infer what ambiguous terms mean from the other concepts "
-		+ "and stay in that sense in every suggestion (e.g. next to 'water body' and 'satellite', "
-		+ "'extraction' means extracting water surfaces from imagery, NOT water withdrawal or pumping).",
-		"Silently correct obvious typos in the base query instead of copying them.",
-		"Mix breadth and precision WITHIN a block: broad words that are unambiguous in this domain may "
-		+ "stand alone (satellite, river, water body); words with other technical meanings (channel, "
-		+ "stream, band, body alone) appear only as anchored phrases (river channel, stream network, "
-		+ "water body). One block may hold the task words (extraction OR mapping OR segmentation), but "
-		+ "every OTHER block must pin the topic unambiguously.",
-		// arXiv is a physics/CS/math preprint server: domain jargon yields
-		// nothing there, the same need in computer-vision terms does. One
-		// suggestion per round speaks that dialect; it runs against all
-		// sources like any other and its Q-label shows what arXiv answered.
-		// Code sorts by breadth afterwards, so the row may not stay last.
-		"Make EXACTLY ONE suggestion (the last line) a computer-science / preprint-server phrasing of the "
-		+ "same need, the way arXiv machine-learning and computer-vision papers describe it: generic method "
-		+ "words (segmentation OR extraction OR mapping OR detection, deep learning, CNN, SAR) instead of "
-		+ "field jargon, the object as 'water body' or 'surface water', and the sensor block as an OR "
-		+ "list of plain sensor names (satellite OR remote sensing OR Sentinel OR Landsat OR SAR); keep it "
-		+ "to 3 blocks, no multi-word specialist phrases, and do NOT reuse the base query's specialist "
-		+ "terms in it. Start exactly that line with the marker 'arXiv: ' (only that line carries a marker).",
-		"Prefer English terms (the databases index English metadata); if the base query is in another language, "
-		+ "translate the concepts to English.",
-		"Multi-word terms as plain words, NO quotation marks, no field prefixes.",
-		"Output exactly one suggestion per line. No numbering, no bullets, no explanations.",
-	].filter(Boolean).join("\n");
+/** How many LLM suggestions the variants tab asks for per generation:
+ * four (1-2 close to the base query, 1-2 wider, one arXiv/CS phrasing)
+ * keep the tab readable -- block expressions are wide rows -- and the
+ * steering row regenerates for more while checked rows survive. */
+const VARIANT_SUGGESTION_LIMIT = 4;
+// VARIANT_SYSTEM_PROMPT and variantPrompt live in src/intake.ts (pure
+// string builders, pinned offline); the prompt turns block-faithful by
+// itself when the base query is a block expression.
+/** The query tab's keyword-block form: five fields shown by default (an
+ * add row appends more, up to QUERY_BLOCK_MAX -- SLR practice caps useful
+ * AND chains well below that; more blocks dilute every search) plus the
+ * free-text field. */
+const QUERY_BLOCK_MIN = 5;
+const QUERY_BLOCK_MAX = 8;
+/** The LIVE query composed from the query tab's form answers: block
+ * fields query_block_1..max plus the free-text field (a filled free text
+ * wins). The single source of truth -- the loader keys, the base row, the
+ * facet requests and the submit mapping all read the query through it. */
+function composedQuery(answers: Record<string, unknown>): BlockFormQuery {
+	return queryFromBlockAnswers(
+		Array.from({ length: QUERY_BLOCK_MAX }, (_, n) => String(answers[`query_block_${n + 1}`] ?? "")),
+		String(answers.query_free ?? ""),
+	);
+}
+/** The same composition over the form step's raw value array (grow fields
+ * first, the free-text field last) -- what the step's note and summary
+ * callbacks receive. */
+function queryFromValues(values: string[]): BlockFormQuery {
+	return queryFromBlockAnswers(values.slice(0, -1), values[values.length - 1] ?? "");
 }
 /** The locked base-query row of the variants tab, built from the LIVE
  * query text: label + suffix, the derived concept-block chain (or an
@@ -209,7 +173,14 @@ const SEARCH_TEXT: Record<DialogLang, {
 	header: string;
 	queryTab: string;
 	queryTitle: string;
-	queryPlaceholder: string;
+	/** Label of the n-th keyword-block field on the query tab. */
+	queryBlockLabel: (n: number) => string;
+	/** The add row under the block fields (Enter appends the next one). */
+	queryAddBlock: string;
+	/** Label of the free-text field under the blocks. */
+	queryFreeLabel: string;
+	/** Warning while blocks AND free text are filled (free text wins). */
+	queryBothFilled: string;
 	/** Query-variants tab: locked base query on top, LLM suggestions as
 	 * checkable rows, a steering input row at the bottom. */
 	variantsTab: string;
@@ -281,20 +252,20 @@ const SEARCH_TEXT: Record<DialogLang, {
 	de: {
 		header: "/lit-search -- Literatursuche (Esc bricht ab)",
 		queryTab: "Suchanfrage",
-		queryTitle: "Bitte formuliere eine Suchanfrage.",
-		queryPlaceholder: "z. B. satellite field data fusion river hydraulics",
+		queryTitle: "Suchanfrage als Keyword-Blöcke: ein Konzept pro Block "
+			+ "(z. B. Block 1: satellite imagery, Block 2: data fusion, ...).",
+		queryBlockLabel: (n) => `Keyword-Block ${n}`,
+		queryAddBlock: "+ Keyword-Block hinzufügen (Enter)",
+		queryFreeLabel: "Freitext (Satz / eigene Syntax statt Blöcken)",
+		queryBothFilled: "Freitext ist die Hauptanfrage -- die Keyword-Blöcke werden ignoriert",
 		variantsTab: "Query-Varianten",
-		variantsTitle: "Query-Varianten (optional): Konzeptblock-Suchen, vorgeschlagen vom in pi gewählten "
-			+ "Modell -- Synonyme mit OR innerhalb eines Konzepts, AND dazwischen (die Blockbau-Methode "
-			+ "systematischer Reviews). Angehakte Zeilen laufen als ZUSÄTZLICHE Suchen im selben Lauf; "
-			+ "arXiv/OpenAlex erhalten sie als echte Boolesche Anfrage, Dubletten werden entfernt, und "
-			+ "jeder Treffer wird gegen die Blöcke der Variante etikettiert, die ihn fand (Q1/Q2 ...). "
-			+ "Die Hauptanfrage läuft immer. Steuerzeile unten: Richtung eintippen, Enter erzeugt neue "
-			+ "Vorschläge (angehakte Zeilen bleiben erhalten).",
+		variantsTitle: "Query-Varianten (optional): das Modell schlägt alternative Suchen vor (Synonyme mit OR, "
+			+ "Konzepte mit AND). Angehakte Zeilen laufen zusätzlich zur Hauptanfrage; jeder Treffer zeigt, "
+			+ "welche Suche ihn fand (Q1, Q2 ...).",
 		variantsSelectAll: "Alle auswählen",
 		variantsBaseSuffix: "(Hauptanfrage, läuft immer)",
-		variantsSteerLabel: "Neue Query-Varianten generieren (Enter drücken; optional Richtung eintippen)",
-		variantsOwnLabel: "Eigene Query-Variante eintippen (Enter fügt hinzu)",
+		variantsSteerLabel: "↻ Neue Query-Varianten generieren (Enter drücken; optional Richtung eintippen)",
+		variantsOwnLabel: "+ Eigene Variante eintippen (Enter fügt hinzu)",
 		variantsLoading: "generiere Suchvorschläge ...",
 		variantsIdle: "wartet auf eine Suchanfrage",
 		variantsNoneFound: "keine brauchbaren Vorschläge -- Hauptanfrage läuft trotzdem",
@@ -355,19 +326,20 @@ const SEARCH_TEXT: Record<DialogLang, {
 	en: {
 		header: "/lit-search -- literature search (Esc cancels)",
 		queryTab: "Query",
-		queryTitle: "Please formulate a search query.",
-		queryPlaceholder: "e.g. satellite field data fusion river hydraulics",
+		queryTitle: "Query as keyword blocks: one concept per block "
+			+ "(e.g. block 1: satellite imagery, block 2: data fusion, ...).",
+		queryBlockLabel: (n) => `Keyword block ${n}`,
+		queryAddBlock: "+ Add keyword block (Enter)",
+		queryFreeLabel: "Free text (sentence / own syntax instead of blocks)",
+		queryBothFilled: "Free text set as main query, keyword blocks will be ignored",
 		variantsTab: "Query variants",
-		variantsTitle: "Query variants (optional): concept-block searches suggested by the model selected "
-			+ "in pi -- OR synonyms within a concept, AND between concepts (the building-blocks method of "
-			+ "systematic reviews). Checked rows run as ADDITIONAL searches in the same run; arXiv/OpenAlex "
-			+ "receive them as real boolean queries, duplicates are removed, and each record is labeled "
-			+ "against the blocks of the variant that found it (Q1/Q2 ...). The main query always runs. "
-			+ "Steering row below: type a direction, Enter generates new suggestions (checked rows survive).",
+		variantsTitle: "Query variants (optional): the model suggests alternative searches (synonyms with OR, "
+			+ "concepts with AND). Checked rows are searched in addition to the main query; every result "
+			+ "shows which search found it (Q1, Q2 ...).",
 		variantsSelectAll: "Select all",
 		variantsBaseSuffix: "(main query, always searched)",
-		variantsSteerLabel: "Generate new query variants (press Enter; optionally type a direction)",
-		variantsOwnLabel: "Type your own query variant (Enter adds)",
+		variantsSteerLabel: "↻ Generate new query variants (press Enter; optionally type a direction)",
+		variantsOwnLabel: "+ Type your own variant (Enter adds)",
 		variantsLoading: "generating search suggestions ...",
 		variantsIdle: "waiting for a search query",
 		variantsNoneFound: "no usable suggestions -- the main query still runs",
@@ -489,12 +461,14 @@ function writeSearchOutputs(payload: SearchPayload, htmlFile?: string): { htmlPa
 /**
  * Code-enforced intake: a blocking wizard the MODEL cannot skip or answer,
  * run on EVERY interactive call (the same one-overlay wizard as
- * /lit-synthesis). It always starts on the query tab: a proposed query
- * arrives as PREFILL, the user walks the tabs to the submit page; bare
- * /lit-search starts the same way with an empty query. Esc cancels the run
- * before any network call. Values are WYSIWYG: what a tab shows at submit
- * time is what runs -- clearing the years means all years, and an empty
- * query at submit cancels honestly on every path. Tabs: query; query
+ * /lit-synthesis). It always starts on the query tab -- a keyword-block
+ * FORM (growing concept fields, free text below; a proposed query arrives
+ * as PREFILL, block expressions split into the fields) -- and the user
+ * walks the tabs to the submit page; bare /lit-search starts the same way
+ * empty. Esc cancels the run before any network call. Values are WYSIWYG:
+ * what a tab shows at submit time is what runs -- clearing the years means
+ * all years, and an empty query at submit cancels honestly on every path.
+ * Tabs: query (block form); query
  * variants (locked base row, LLM concept-block suggestions loaded when
  * reached, steering row regenerates, checked rows run as additional
  * queries -- blocks drive the boolean fetch AND the labeling, derived per
@@ -556,11 +530,31 @@ async function intakeWizard(
 	};
 	const scopeKey = (scope: FacetScope): string =>
 		`${scope.yearFrom ?? ""}:${scope.yearTo ?? ""}:${(scope.sourceIds ?? []).join("|")}`;
+	// Query prefill routing: a block expression splits into the block
+	// fields (one "a OR b" line per block); plain keywords, prose and
+	// hands-off syntax land in the free-text field verbatim.
+	const prefillBlocks = query.trim() ? blocksForEditing(query) : null;
 	const steps: WizardStepDef[] = [
 		{
-			kind: "text", id: "query", tab: text.queryTab, title: text.queryTitle, plain: true,
-			placeholder: text.queryPlaceholder,
-			...(query.trim() ? { initial: query } : {}),
+			// Query tab as a keyword-block form (the building-blocks method as
+			// the PRIMARY input): grow fields hold one concept each, the add
+			// row under them appends more; the free-text field below carries
+			// sentences and hand syntax instead and wins when filled (the
+			// note row warns while both are set). The composed query is
+			// exactly what the tabs, sources and labeling see.
+			kind: "form", id: "query", tab: text.queryTab, title: text.queryTitle,
+			grow: {
+				idPrefix: "query_block", label: text.queryBlockLabel, addLabel: text.queryAddBlock,
+				min: QUERY_BLOCK_MIN, max: QUERY_BLOCK_MAX,
+				...(prefillBlocks ? { initial: prefillBlocks } : {}),
+			},
+			fields: [{
+				id: "query_free", label: text.queryFreeLabel,
+				...(query.trim() && !prefillBlocks ? { initial: query.trim() } : {}),
+			}],
+			note: (values) =>
+				(queryFromValues(values).bothFilled ? { text: text.queryBothFilled, warn: true } : null),
+			summary: (values) => queryFromValues(values).query,
 		},
 		{
 			// Query-variants tab: the locked base query on top, LLM phrasing
@@ -571,7 +565,7 @@ async function intakeWizard(
 			// keepSelected).
 			kind: "checkbox", id: "variants", tab: text.variantsTab, title: text.variantsTitle,
 			items: [], selectAllLabel: text.variantsSelectAll, nextLabel: text.journalNext,
-			optional: true, emptyNote: text.variantsIdle, keepSelected: true, cursorStart: "next",
+			optional: true, emptyNote: text.variantsIdle, keepSelected: true, cursorStart: "next", spaced: true,
 			// Own-variant row: typed text + Enter joins the list as a checked
 			// row and runs like any confirmed variant.
 			addInput: { id: "variants_own", label: text.variantsOwnLabel },
@@ -661,7 +655,7 @@ async function intakeWizard(
 			// explaining dim line, and the tab stays passable with one Enter.
 			step: "variants",
 			key: (answers) => {
-				const live = String(answers.query ?? "").trim().toLowerCase();
+				const live = composedQuery(answers).query.toLowerCase();
 				if (!live) return "";
 				return `${live}|${String(answers.variants_hint ?? "")}|${String(answers.variants_hint_seq ?? "0")}`;
 			},
@@ -669,7 +663,7 @@ async function intakeWizard(
 			// the boolean sources receive and what labels its finds; a
 			// failure/none note takes the line instead.
 			load: async (answers) => {
-				const liveQuery = String(answers.query ?? "").trim();
+				const liveQuery = composedQuery(answers).query;
 				const hint = String(answers.variants_hint ?? "").trim();
 				// Prose sentence as base: the prompt demands a faithful
 				// distillation as the FIRST line; after the breadth sort the
@@ -732,10 +726,10 @@ async function intakeWizard(
 			failedNote: text.variantsFailed,
 		}, {
 			step: "journals",
-			key: (answers) => `${String(answers.query ?? "").trim().toLowerCase()}|${scopeKey(liveYearScope(answers))}`,
+			key: (answers) => `${composedQuery(answers).query.toLowerCase()}|${scopeKey(liveYearScope(answers))}`,
 			load: async (answers) => {
 				const page = await journalFacets(
-					String(answers.query ?? "").trim(), JOURNAL_PICK_LIMIT, liveYearScope(answers),
+					composedQuery(answers).query, JOURNAL_PICK_LIMIT, liveYearScope(answers),
 				);
 				const scores = await fetchJournalScores(page.listed.map((facet) => facet.id), () => {});
 				// Remember what the list SHOWED: the "other" row is defined
@@ -774,10 +768,10 @@ async function intakeWizard(
 			// one batched author lookup for the open metrics. Scoped by the
 			// live period AND the picked journals.
 			step: "author_pick",
-			key: (answers) => `${String(answers.query ?? "").trim().toLowerCase()}|${
+			key: (answers) => `${composedQuery(answers).query.toLowerCase()}|${
 				scopeKey({ ...liveYearScope(answers), sourceIds: livePickedSourceIds(answers) })}`,
 			load: async (answers) => {
-				const page = await authorFacets(String(answers.query ?? "").trim(), AUTHOR_PICK_LIMIT, {
+				const page = await authorFacets(composedQuery(answers).query, AUTHOR_PICK_LIMIT, {
 					...liveYearScope(answers),
 					sourceIds: livePickedSourceIds(answers),
 				});
@@ -814,8 +808,10 @@ async function intakeWizard(
 	}
 	const values: IntakeValues = { ...proposed, query };
 	// WYSIWYG: the query the tab shows at submit is the query that runs --
-	// and an EMPTY query cancels honestly on every path.
-	values.query = typeof result.query === "string" ? result.query.trim() : "";
+	// the same composition the loaders and the summary line used live (free
+	// text wins, else the blocks serialize) -- and an EMPTY query cancels
+	// honestly on every path.
+	values.query = composedQuery(result).query;
 	if (!values.query) {
 		ctx.ui.notify(text.noQuery, "warning");
 		diagnostics.push("intake dialog: submitted without a query");
@@ -923,8 +919,14 @@ async function intakeWizard(
 		values.venuesOther = undefined;
 		values.venuesListed = undefined;
 	}
+	// "Edited" compares against the COMPOSED prefill: a block-expression
+	// proposal is canonicalized on its way into the fields (uniform
+	// parens/OR), so the raw param string would read as an edit.
+	const prefillComposed = prefillBlocks
+		? queryFromBlockAnswers(prefillBlocks, "").query
+		: query.trim();
 	diagnostics.push(
-		values.query === query
+		values.query === prefillComposed
 			? "intake dialog: confirmed"
 			: "intake dialog: confirmed, query edited by the user",
 	);
@@ -1013,8 +1015,10 @@ export default function literatureSearch(pi: ExtensionAPI) {
 			'river sandbars via Sentinel: [["river","fluvial"],["sandbar","bar"],["sentinel","s-1","s-2"]]. Your ' +
 			"proposal is used as passed and becomes the BASE query's concept blocks: it labels on_target/adjacent " +
 			"AND is sent as a boolean block search to sources that support it (arXiv, OpenAlex; CrossRef gets the " +
-			"flat terms). Without one the blocks derive deterministically from the confirmed query. There is no " +
-			"grouping dialog step. " +
+			"flat terms). Without one the blocks derive deterministically from the confirmed query. The wizard's " +
+			"query tab shows the query as editable keyword-block fields (one concept per field, AND between them) " +
+			"plus a free-text field; a block expression passed as query prefills the block fields, anything else " +
+			"prefills the free text. " +
 			"If results disappoint, refine group_terms or filters in a new call; NEVER pad the list with loosely " +
 			"related papers to reach a count.",
 		promptSnippet:
