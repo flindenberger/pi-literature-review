@@ -313,13 +313,31 @@ function metadataCells(record: RenderRecord): string[] {
 	];
 }
 
+/** Link label for the Code cell, derived from the URL's host -- the
+ * abstract may name repositories on hosts beyond GitHub. Unknown hosts
+ * fall back to a generic label; old sidecars (GitHub-only) render
+ * unchanged. Pure, exported for tests. */
+export function codeLinkLabel(url: string): string {
+	const host = /^https?:\/\/(?:www\.)?([^/]+)/i.exec(url)?.[1]?.toLowerCase() ?? "";
+	const labels: Record<string, string> = {
+		"github.com": "GitHub",
+		"gitlab.com": "GitLab",
+		"bitbucket.org": "Bitbucket",
+		"codeberg.org": "Codeberg",
+		"huggingface.co": "Hugging Face",
+		"zenodo.org": "Zenodo",
+		"osf.io": "OSF",
+	};
+	return labels[host] ?? "Code";
+}
+
 /** The Code cell, shared by BOTH tables: sort key 0/1 so the first header
  * click puts records WITH code on top. Only present when the page has any
  * code link at all. */
 function codeCells(record: RenderRecord, withCode: boolean): string[] {
 	if (!withCode) return [];
 	return [cell(record.code_url ? "0" : "1",
-		record.code_url ? link(safeHref(record.code_url), "GitHub") : "&mdash;")];
+		record.code_url ? link(safeHref(record.code_url), codeLinkLabel(record.code_url)) : "&mdash;")];
 }
 
 /** The Network cell: a link into the static network.html written NEXT TO
@@ -852,7 +870,7 @@ export function renderHtml(payload: RenderPayload, options?: { network?: boolean
 		? `\n<p class="meta">Network = opens a citation-context graph of the paper in a new tab: its references and citing works, related by the classic bibliometric similarity measures (bibliographic coupling, Kessler 1963; co-citation analysis, Small 1973 -- the graph page explains how each is used). The page fetches this live from the open OpenAlex API when opened (internet needed then; only the paper's DOI or title is sent, never paper content) and involves no language model.</p>`
 		: "";
 	const codeFootnote = withCode
-		? `\n<p class="meta">&sup2; Code = a GitHub repository found deterministically: preferably the URL the paper's own abstract names, else the best-matching repository from one GitHub search per arXiv id (the repository mentions the id in its name, description or README; aggregator/reading-list repositories are skipped). The search path is a heuristic pointer to likely code, not a verified artifact link -- follow it and judge; journal papers whose abstract names no repository are not looked up. Recorded in the JSON as <code>code_url</code>, provenance in <code>enriched</code> (abstract | github).</p>`
+		? `\n<p class="meta">&sup2; Code = a repository found deterministically: preferably the code URL the paper's own abstract names (GitHub, GitLab, Bitbucket, Codeberg, Hugging Face, Zenodo, OSF), else the best-matching repository from one GitHub search per record -- by arXiv id, or by DOI for journal papers (the repository mentions the identifier in its name, description or README; aggregator/reading-list repositories and repositories created more than a year after the paper are skipped, and a DOI match is only linked when the repository owner's name matches an author). The search path is a heuristic pointer to likely code, not a verified artifact link -- follow it and judge. Recorded in the JSON as <code>code_url</code>, provenance in <code>enriched</code> (abstract | github).</p>`
 		: "";
 
 	const variants = payload.query_variants ?? [];

@@ -174,6 +174,12 @@ export type WizardStepDef =
 		 * instead of pruning them -- picked suggestions survive a
 		 * regeneration. Steps without the flag keep the pruning. */
 		keepSelected?: boolean;
+		/** Query-variants tab: rows carry the run's Q labels -- the locked
+		 * base row is Q1 (the main query), each CHECKED row becomes Q2.. in
+		 * list order, matching the HTML report's numbering; unchecked rows
+		 * carry none (they will not run). Display-only, live-renumbering
+		 * (WYSIWYG); the review page numbers the same way. */
+		queryNumbers?: boolean;
 		/** an inline free-text row between the items and the Next
 		 * row (the query-variants steering line). The DRAFT lives in
 		 * texts[tab]; Enter on the row COMMITS it (committedTexts + inputSeq
@@ -261,6 +267,9 @@ export type WizardStepDef =
 		kind: "form";
 		id: string;
 		tab: string;
+		/** Review-page label when it should differ from the tab ("Query"
+		 * tab, but "Main query" on the confirm page next to the variants). */
+		reviewLabel?: string;
 		title: string;
 		fields: Array<{ id: string; label: string; initial?: string }>;
 		/** Dynamically GROWING labeled fields BEFORE the static fields (the
@@ -325,6 +334,11 @@ export interface WizardState {
 	 * or seeded via initial -- derive()/customSeed() stop applying then.
 	 * Applies to text steps and to choice steps with a freeText option. */
 	dirty: boolean[];
+	/** Checkbox steps the user has COMMITTED with Enter (the Next row, or
+	 * Enter-through on a loading/empty tab). Exclusion lists (defaultAll)
+	 * count as answered once committed even without a filter -- their tab
+	 * square otherwise never fills ("all kept" is a decision too). */
+	committed: boolean[];
 	/** Optional computed line on the submit page (e.g. "~6 Modellaufrufe");
 	 * pure function of the answers, injected by the caller. */
 	submitNote?: (answers: WizardAnswers) => string | null;
@@ -546,6 +560,7 @@ export function initWizard(steps: WizardStepDef[], options?: WizardOptions): Wiz
 			return [...seeded, ...staticInit];
 		}),
 		committedTexts: steps.map(() => ""),
+		committed: steps.map(() => false),
 		addTexts: steps.map(() => ""),
 		inputSeq: steps.map(() => 0),
 		dirty: steps.map((step) => (step.kind === "text" && step.initial !== undefined)
@@ -668,11 +683,14 @@ export function checkboxTypingRow(step: WizardStepDef, cursor: number): boolean 
 		|| (step.addInput !== undefined && cursor === checkboxAddRow(step));
 }
 
-/** Rendered body rows of the submit tab: two lines per
- * step ("● Tab" + "→ value"), an optional note line, a reserved warning
- * slot, a blank separator, then the two actionable rows. */
+/** Rendered body rows of the submit tab: per step one "● Tab" line plus
+ * its value line(s) (plain checkbox steps list each checked item on its
+ * own line), an optional note line, a reserved warning slot, a blank
+ * separator, then the two actionable rows. Disabled steps count too --
+ * this is the worst-case height budget, not the live view. */
 function submitRowCount(state: WizardState): number {
-	return state.steps.length * 2 + (state.submitNote ? 1 : 0) + 4;
+	const review = state.steps.reduce((n, _, i) => n + 1 + stepValueLines(state, i).length, 0);
+	return review + (state.submitNote ? 1 : 0) + 4;
 }
 
 /** Worst-case row count across all tabs (submit tab included) -- the
@@ -776,8 +794,12 @@ export function stepAnswered(state: WizardState, index: number): boolean {
 	const step = state.steps[index];
 	return step.kind === "checkbox"
 		? (step.defaultAll
-			// Exclusion list: all or none checked = no filter = no value.
-			? state.selected[index].size > 0 && state.selected[index].size < step.items.length
+			// Exclusion list: SOME rows unticked = a filter = a value; a
+			// committed tab (Enter on Next) counts too -- "all kept" is a
+			// decision, and the square never filling read as "never dealt
+			// with" (user wish 2026-09-02).
+			? (state.selected[index].size > 0 && state.selected[index].size < step.items.length)
+				|| state.committed[index]
 			: state.selected[index].size > 0)
 		: step.kind === "text" ? effectiveText(state, index).trim() !== ""
 		: step.kind === "form" ? state.formTexts[index].some((value) => value.trim() !== "")
@@ -1062,10 +1084,18 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 			return { state: toggled() };
 		case "confirm": {
 			if (step.kind === "checkbox") {
+				// Enter-advancing a checkbox tab marks it COMMITTED -- the
+				// exclusion lists' tab square fills on "Next" even when the
+				// selection means "no filter" (user wish 2026-09-02: an empty
+				// square forever read as "never dealt with").
+				const advanceCommitted = (): WizardStep => advance({
+					...state,
+					committed: state.committed.map((prev, i) => (i === state.tab ? true : prev)),
+				});
 				// While loading, the only visible row is the note -- Enter
 				// advances so the Enter-through flow never waits on the
 				// model.
-				if (step.loading) return advance(state);
+				if (step.loading) return advanceCommitted();
 				// Enter on the steering row COMMITS the draft and stays
 				//: the committed value + bumped counter reach the
 				// answers, the itemLoader's changed key fires the regeneration
@@ -1113,13 +1143,13 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 				}
 				// An empty OPTIONAL list advances from any row (the
 				// lazily loaded journal list must never stall Enter-through).
-				if (step.items.length === 0 && step.optional) return advance(state);
+				if (step.items.length === 0 && step.optional) return advanceCommitted();
 				// Enter toggles like Space on real rows; only the explicit
 				// next-row commits.
 				// An OPTIONAL step commits empty (empty = "no filter").
 				if (cursor < rows - 1) return { state: toggled() };
 				if (state.selected[state.tab].size === 0 && !step.optional) return { state };
-				return advance(state);
+				return advanceCommitted();
 			}
 			if (step.kind === "text") {
 				// MULTILINE question steps: Enter opens a new line; Enter on a BLANK
@@ -1224,22 +1254,51 @@ export interface WizardView {
 	hint: string;
 }
 
+/** The run's Q labels on a queryNumbers checkbox step: the locked base
+ * row is Q1 (the main query), each CHECKED row becomes Q2.. in list
+ * order -- exactly the numbering the engine and the HTML report use
+ * (wizardResult exports checked ids in items order). Unchecked rows
+ * carry no number (they will not run), so the numbering shifts live
+ * with the selection (WYSIWYG). Pure, display-only. */
+export function withQueryNumbers(items: CheckboxItem[], selected: ReadonlySet<string>): CheckboxItem[] {
+	let next = 2;
+	return items.map((item) => {
+		if (item.locked) return { ...item, label: `Q1: ${item.label}` };
+		if (!selected.has(item.id)) return item;
+		return { ...item, label: `Q${next++}: ${item.label}` };
+	});
+}
+
+/** The review-page value of one step, one line per entry: plain checkbox
+ * steps list each checked item on its own line (query variants are wide
+ * block expressions -- a comma join was unreadable), and LOCKED rows (the
+ * always-searched main query) are not answers, so they stay off the
+ * review. Everything else is the single stepValueLabel line. */
+function stepValueLines(state: WizardState, i: number): string[] {
+	const step = state.steps[i];
+	if (step.kind === "checkbox" && !step.defaultAll) {
+		const text = DIALOG_TEXT[state.lang];
+		const items = step.queryNumbers ? withQueryNumbers(step.items, state.selected[i]) : step.items;
+		const chosen = items.filter((item) => !item.locked && state.selected[i].has(item.id));
+		// Optional steps: empty is a decision, not an open question.
+		if (chosen.length === 0) return [step.optional ? text.noQuestions : text.unanswered];
+		return chosen.map((item) => item.label);
+	}
+	return [stepValueLabel(state, i)];
+}
+
 /** The review-page value of one step, as a single line. */
 function stepValueLabel(state: WizardState, i: number): string {
 	const text = DIALOG_TEXT[state.lang];
 	const step = state.steps[i];
 	if (step.kind === "checkbox") {
+		// Non-defaultAll checkbox steps render one line per checked item
+		// via stepValueLines; only exclusion lists have a one-line summary.
 		const chosen = step.items.filter((item) => state.selected[i].has(item.id));
 		const all = chosen.length === step.items.length && step.items.length > 0;
-		if (step.defaultAll) {
-			// Exclusion list: name what is OUT; all or none = no filter.
-			const out = step.items.filter((item) => !state.selected[i].has(item.id));
-			return chosen.length === 0 || all ? text.allKept : text.excluded(out.map((item) => item.label));
-		}
-		// Optional steps: empty is a decision, not an open question.
-		return chosen.length === 0 ? (step.optional ? text.noQuestions : text.unanswered)
-			: all ? `${step.selectAllLabel} (${chosen.length})`
-			: chosen.map((item) => item.label).join(", ");
+		// Exclusion list: name what is OUT; all or none = no filter.
+		const out = step.items.filter((item) => !state.selected[i].has(item.id));
+		return chosen.length === 0 || all ? text.allKept : text.excluded(out.map((item) => item.label));
 	}
 	if (step.kind === "text") {
 		const value = effectiveText(state, i);
@@ -1303,8 +1362,11 @@ export function wizardView(state: WizardState): WizardView {
 		const rows: WizardViewRow[] = [];
 		state.steps.forEach((step, i) => {
 			if (!stepEnabled(state, i)) return;
-			rows.push({ text: `  ● ${step.tab}`, active: false, dim: true });
-			rows.push({ text: `    → ${stepValueLabel(state, i)}`, active: false });
+			const label = step.kind === "form" && step.reviewLabel ? step.reviewLabel : step.tab;
+			rows.push({ text: `  ● ${label}`, active: false, dim: true });
+			for (const line of stepValueLines(state, i)) {
+				rows.push({ text: `    → ${line}`, active: false });
+			}
 		});
 		if (note) rows.push({ text: `  ${note}`, active: false, dim: true });
 		const open = state.steps.filter((_, i) => stepInvalid(state, i)).map((step) => step.tab);
@@ -1382,7 +1444,7 @@ export function wizardView(state: WizardState): WizardView {
 			// setItems clears it ("" on success).
 			if (step.emptyNote) rows.push({ text: `     ${step.emptyNote}`, active: false, dim: true });
 			const checkboxState: CheckboxState = {
-				items: step.items,
+				items: step.queryNumbers ? withQueryNumbers(step.items, state.selected[state.tab]) : step.items,
 				cursor,
 				selected: state.selected[state.tab],
 			};

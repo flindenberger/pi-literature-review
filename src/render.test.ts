@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import { type ChatReport, searchSnippet, type SynthReport } from "./synthesis.ts";
 import {
 	bibtexEntry,
+	codeLinkLabel,
 	filterExclusionBreakdown,
 	localPdfHref,
 	renderHtml,
@@ -219,6 +220,26 @@ const html = renderHtml(payload);
 	assert.ok(droppedCode.includes('<a href="https://github.com/acme/dropped-net" target="_blank" rel="noopener">GitHub</a>'));
 	assert.equal(droppedCode.split("<th>Code&sup2;</th>").length - 1, 2);
 	assert.ok(droppedCode.includes("&sup2; Code = "));
+	// The footnote discloses the field-measured guards (2026-09-02).
+	assert.ok(withCode.includes("created more than a year after the paper are skipped"));
+	assert.ok(withCode.includes("owner's name matches an author"));
+}
+
+// code cell label follows the link's host (2026-09-02: the abstract may
+// name repositories beyond GitHub); unknown hosts get a generic label,
+// old GitHub-only sidecars render unchanged (pinned above).
+{
+	assert.equal(codeLinkLabel("https://github.com/a/b"), "GitHub");
+	assert.equal(codeLinkLabel("https://www.gitlab.com/a/b"), "GitLab");
+	assert.equal(codeLinkLabel("https://zenodo.org/records/123"), "Zenodo");
+	assert.equal(codeLinkLabel("https://huggingface.co/a/b"), "Hugging Face");
+	assert.equal(codeLinkLabel("https://example.org/a/b"), "Code");
+	const gitlabCode = renderHtml({
+		...payload,
+		results: [{ ...payload.results[0], code_url: "https://gitlab.com/acme/river-net" }],
+		dropped: [],
+	});
+	assert.ok(gitlabCode.includes('<a href="https://gitlab.com/acme/river-net" target="_blank" rel="noopener">GitLab</a>'));
 }
 
 // network column: opt-in via renderHtml options -- callers set

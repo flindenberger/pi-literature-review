@@ -22,6 +22,7 @@ import {
 	wizardResult,
 	wizardView,
 	stepAnswered,
+	withQueryNumbers,
 	wrapLine,
 } from "./dialog-state.ts";
 
@@ -780,6 +781,114 @@ function drive(
 	({ state } = drive(state, ["toggle"])); // all "off" keeps locked
 	assert.deepEqual([...state.selected[0]], ["base"]);
 	assert.ok(wizardView(state).rows.some((row) => row.text.includes("[✔] water mask")));
+}
+
+/* -------- review page: locked rows off, one line per variant, reviewLabel -------- */
+{
+	// 2026-09-02 (user screenshot): the confirm page repeated the main
+	// query under "Query variants" (the locked base row is always checked)
+	// and comma-joined wide block expressions into one unreadable line.
+	// Pinned: locked rows never appear as review values, each checked item
+	// gets its OWN "→" line, and a form step's reviewLabel replaces its
+	// tab label on the review page only.
+	const steps: WizardStepDef[] = [
+		{
+			kind: "form", id: "query", tab: "Query", reviewLabel: "Main query", title: "?",
+			fields: [{ id: "q", label: "Query" }],
+			summary: (values) => values[0] ?? "",
+		},
+		{
+			kind: "checkbox", id: "variants", tab: "Query variants", title: "?",
+			items: [
+				{ id: "base", label: "(water) AND (river) (main query, always searched)", locked: true },
+				{ id: "v1", label: "(water OR lake) AND (river)" },
+				{ id: "v2", label: "(surface water) AND (stream)" },
+			],
+			selectAllLabel: "All", nextLabel: "Next", optional: true,
+		},
+	];
+	let { state } = drive(initWizard(steps), [{ kind: "input", chars: "(water) AND (river)" }]);
+	// Over to the variants tab, then check both variants (nav rows:
+	// select-all 0, base 1, v1 2, v2 3).
+	({ state } = drive(state, ["right", "down", "down", "toggle", "down", "toggle"]));
+	const review = wizardView({ ...state, tab: steps.length }).rows.map((row) => row.text);
+	assert.ok(review.some((line) => line.includes("● Main query")));
+	assert.ok(!review.some((line) => line.includes("● Query\b")));
+	assert.ok(review.some((line) => line === "    → (water OR lake) AND (river)"));
+	assert.ok(review.some((line) => line === "    → (surface water) AND (stream)"));
+	// The locked base row is not an answer -- it must not reappear.
+	assert.ok(!review.some((line) => line.includes("always searched")));
+	// Height budget counts the extra value lines (1 form line + 2 variant
+	// lines + 2 tab lines + warning slot + blank + 2 actions = 9).
+	assert.equal(maxWizardRows(state), 9);
+	// Unchecking everything: the optional step honestly reads "(none)".
+	({ state } = drive(state, ["toggle", "up", "toggle"]));
+	const emptied = wizardView({ ...state, tab: steps.length }).rows.map((row) => row.text);
+	assert.ok(emptied.some((line) => line === "    → (none)"));
+}
+
+/* -------- Q labels on the variants tab and the review page -------- */
+{
+	// 2026-09-02 (user wish): rows carry the run's Q wording -- the locked
+	// base row is Q1, checked rows become Q2.. in LIST order (the order
+	// wizardResult exports), unchecked rows carry no number, and the
+	// numbering shifts live with the selection (a static position number
+	// would lie about the run whenever a middle row stays unchecked).
+	const items = [
+		{ id: "base", label: "(water) AND (river)", locked: true },
+		{ id: "v1", label: "(water OR lake) AND (river)" },
+		{ id: "v2", label: "(surface water) AND (stream)" },
+	];
+	assert.deepEqual(
+		withQueryNumbers(items, new Set(["base", "v2"])).map((item) => item.label),
+		["Q1: (water) AND (river)", "(water OR lake) AND (river)", "Q2: (surface water) AND (stream)"],
+	);
+	assert.deepEqual(
+		withQueryNumbers(items, new Set(["base", "v1", "v2"])).map((item) => item.label),
+		["Q1: (water) AND (river)", "Q2: (water OR lake) AND (river)", "Q3: (surface water) AND (stream)"],
+	);
+	const steps: WizardStepDef[] = [{
+		kind: "checkbox", id: "variants", tab: "Query variants", title: "?",
+		items, selectAllLabel: "All", nextLabel: "Next", optional: true, queryNumbers: true,
+	}];
+	// v2 checked, v1 not: the tab shows Q1/Q2, the review lists "Q2: ..."
+	let { state } = drive(initWizard(steps), ["down", "down", "down", "toggle"]);
+	const rows = wizardView(state).rows.map((row) => row.text);
+	assert.ok(rows.some((line) => line.includes("[✔] Q1: (water) AND (river)")));
+	assert.ok(rows.some((line) => line.includes("[ ] (water OR lake) AND (river)")));
+	assert.ok(rows.some((line) => line.includes("[✔] Q2: (surface water) AND (stream)")));
+	const review = wizardView({ ...state, tab: steps.length }).rows.map((row) => row.text);
+	assert.ok(review.some((line) => line === "    → Q2: (surface water) AND (stream)"));
+	assert.ok(!review.some((line) => line.includes("Q1:"))); // base stays off the review
+}
+
+/* -------- defaultAll tab square fills on commit -------- */
+{
+	// 2026-09-02 (user find): the journals/authors squares NEVER filled --
+	// all-or-none checked means "no filter", so the old answered rule left
+	// them empty forever. Now Enter on the Next row (or Enter-through on a
+	// loading/empty tab) marks the step COMMITTED and the square fills;
+	// plain tab navigation (left/right) does not.
+	const steps: WizardStepDef[] = [
+		{
+			kind: "checkbox", id: "journals", tab: "Journals", title: "?",
+			items: [{ id: "a", label: "Water (91)" }, { id: "b", label: "Sensors (44)" }],
+			selectAllLabel: "All", nextLabel: "Next", optional: true,
+			defaultAll: true, cursorStart: "next",
+		},
+		{ kind: "text", id: "q", tab: "T", title: "?", plain: true },
+	];
+	let { state } = drive(initWizard(steps), []);
+	assert.equal(stepAnswered(state, 0), false); // untouched: no value
+	({ state } = drive(state, ["right", "left"]));
+	assert.equal(stepAnswered(state, 0), false); // navigation is not a commit
+	({ state } = drive(state, ["confirm"])); // cursor starts on Next -> commit
+	assert.equal(state.tab, 1);
+	assert.equal(stepAnswered(state, 0), true); // committed: square fills
+	// A real exclusion still counts as before, commit or not.
+	let excluded = initWizard(steps);
+	({ state: excluded } = drive(excluded, ["up", "up", "toggle"])); // untick item b
+	assert.equal(stepAnswered(excluded, 0), true);
 }
 
 /* ---- checkbox cursor vs description lines ---- */

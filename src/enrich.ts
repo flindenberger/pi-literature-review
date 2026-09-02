@@ -10,8 +10,9 @@
  *      analog of the impact factor), two batched lookups per run.
  *   3. fetchJournalScores / fetchAuthorMetrics: the batched lookups the
  *      wizard's journal and author pickers use.
- *   4. addCodeLinks: a GitHub repository per paper -- from the abstract
- *      text, else one GitHub search per arXiv id (a disclosed heuristic).
+ *   4. addCodeLinks: a code repository per paper -- from the abstract
+ *      text, else one guarded GitHub search per arXiv id or DOI (a
+ *      disclosed heuristic).
  *
  * Only empty fields are filled, never overwritten, and every filled field
  * is recorded in `enriched` (field -> provider) so JSON and HTML can mark
@@ -372,14 +373,20 @@ export async function fetchJournalScores(
 /* ---------------- 4. Code links (GitHub heuristic) ---------------- */
 
 /**
- * Code-link stage: for records carrying an arXiv id, ONE GitHub repository
- * search per record (q = "<id>" in:name,description,readme) attaches the
- * best-matching repository as code_url -- the stand-in for Papers with
- * Code, which has no public API any more (an API would replace this
- * heuristic). A HEURISTIC, disclosed as such in the HTML: the repo
- * mentions the paper, nothing here verifies it IS the paper's code. Only
- * records with an arxiv_id are looked up -- DOI-only journal papers have
- * no comparably precise search key (a title search would guess).
+ * Code-link stage: ONE GitHub repository search per record (q = "<key>"
+ * in:name,description,readme, key = bare arXiv id or, for journal papers,
+ * the DOI) attaches the best-matching repository as code_url -- the
+ * stand-in for Papers with Code, which has no public API any more (an API
+ * would replace this heuristic). A HEURISTIC, disclosed as such in the
+ * HTML: the repo mentions the paper, nothing here verifies it IS the
+ * paper's code. Field-measured guards keep it honest: repositories
+ * created more than a year after the paper are skipped (third-party
+ * reimplementations appear years later; author repos appear with the
+ * paper), and a DOI match is only linked when the repository owner's
+ * name matches an author (DOIs in READMEs are usually citations, not the
+ * authors' code -- the owner name separated correct from wrong picks
+ * perfectly in the field test; arXiv-id matches skip the owner rule
+ * because author repos there often live under organization accounts).
  */
 const GITHUB_SEARCH_URL = "https://api.github.com/search/repositories";
 /** GitHub's search rate limit is 10 requests/min unauthenticated, 30/min
@@ -403,60 +410,145 @@ export const CODE_LOOKUP_CAP = 12;
  * recall, a skipped legitimate repo just means no link. */
 const LIST_REPO_NAME = /awesome|daily|weekly|digest|arxiv|papers?([_-]|\b)|reading|survey|collection|curated/i;
 
-/** Pick the repository URL from a GitHub search answer: the first item
- * (GitHub's best-match ranking) with a usable html_url whose name does
- * not look like an aggregator/reading-list repo. Pure. */
-export function pickCodeRepo(data: Record<string, any>): string | null {
-	const item = ((data?.items ?? []) as Array<Record<string, any>>)
-		.find((entry) => typeof entry?.html_url === "string" && entry.html_url.startsWith("https://")
-			&& !LIST_REPO_NAME.test(String(entry?.name ?? "")));
+/** The paper a search answer is judged against, plus how strictly. */
+export interface CodePaperContext {
+	year: string | null;
+	title: string;
+	/** Author display names; consulted only when requireOwner is set. */
+	authors?: string[];
+	/** DOI path: a pick must have an owner matching an author name. */
+	requireOwner?: boolean;
+}
+
+/** Repository created more than a year AFTER the paper = almost certainly
+ * a third-party reimplementation or a project merely citing it (field-
+ * measured: correct picks were created in the paper's year -1..0, wrong
+ * ones 2-11 years later). No lower bound: code precedes publication, and
+ * preprint->journal delay stretches the gap. Unreadable year on either
+ * side disables the gate -- absence is not evidence. */
+function createdTooLate(createdAt: unknown, year: string | null): boolean {
+	const paperYear = Number.parseInt(year ?? "", 10);
+	const created = typeof createdAt === "string" ? Number.parseInt(createdAt.slice(0, 4), 10) : NaN;
+	if (!Number.isFinite(paperYear) || !Number.isFinite(created)) return false;
+	return created > paperYear + 1;
+}
+
+/** Repo-name tokens for the title check: split on separators and
+ * camelCase, keep tokens of at least 4 characters, lowercased. */
+function repoNameTokens(name: string): string[] {
+	const tokens: string[] = [];
+	for (const part of name.split(/[-_.\s]+/)) {
+		tokens.push(...(part.match(/[A-Z]?[a-z]+|[A-Z]+(?![a-z])|\d+/g) ?? []));
+	}
+	return tokens.map((token) => token.toLowerCase()).filter((token) => token.length >= 4);
+}
+
+/** Does the repository owner's login look like one of the authors?
+ * Two login patterns cover the field-measured correct picks: a name
+ * part of at least 4 characters contained in the login (IamShubhamGupto
+ * ~ "Shubham Gupta", connorlee77 ~ "Connor Lee"), or the classic
+ * initial+surname login (kvos ~ "Kilian Vos"). Shorter fragments are
+ * skipped -- too many false matches. Pure. */
+export function ownerMatchesAuthor(login: string, authors: string[]): boolean {
+	const lower = login.toLowerCase();
+	if (!lower) return false;
+	for (const author of authors) {
+		const parts = author.toLowerCase().split(/[^a-z]+/).filter(Boolean);
+		for (const part of parts) {
+			if (part.length >= 4 && lower.includes(part)) return true;
+		}
+		if (parts.length >= 2) {
+			const initialSurname = parts[0][0] + parts[parts.length - 1];
+			if (initialSurname.length >= 4 && lower.includes(initialSurname)) return true;
+		}
+	}
+	return false;
+}
+
+/** Pick the repository URL from a GitHub search answer, judged against
+ * the paper: usable html_url, not an aggregator/reading-list name, not
+ * created long after the paper, owner matching an author when the
+ * context demands it (DOI path). Among the survivors, one whose name
+ * shares a word with the paper title wins (the method name usually IS
+ * the repo name); otherwise GitHub's best-match order stands -- the
+ * title check is a preference, never a requirement (correct repos
+ * without a title word exist). Pure. */
+export function pickCodeRepo(data: Record<string, any>, paper: CodePaperContext): string | null {
+	const survivors = ((data?.items ?? []) as Array<Record<string, any>>)
+		.filter((entry) => typeof entry?.html_url === "string" && entry.html_url.startsWith("https://")
+			&& !LIST_REPO_NAME.test(String(entry?.name ?? ""))
+			&& !createdTooLate(entry?.created_at, paper.year)
+			&& (!paper.requireOwner || ownerMatchesAuthor(String(entry?.owner?.login ?? ""), paper.authors ?? [])));
+	const title = paper.title.toLowerCase();
+	const titled = survivors.find((entry) =>
+		repoNameTokens(String(entry?.name ?? "")).some((token) => title.includes(token)));
+	const item = titled ?? survivors[0];
 	return item ? (item.html_url as string) : null;
 }
 
+/** Non-GitHub hosts the abstract may name a repository or code archive
+ * on: git forges need owner/repo (an owner-only profile link is no
+ * repository), Hugging Face allows model/dataset paths, Zenodo a record
+ * id, OSF a short id. The URL ships as found (minus trailing
+ * .git/punctuation); GitHub keeps its canonical owner/repo rebuild
+ * below. */
+const OTHER_CODE_HOSTS = /https?:\/\/(?:www\.)?(?:(?:gitlab\.com|bitbucket\.org|codeberg\.org)\/[\w.-]+\/[\w.-]+|huggingface\.co\/(?:datasets\/)?[\w.-]+(?:\/[\w.-]+)?|zenodo\.org\/records?\/\w+|osf\.io\/\w+)/i;
+
 /**
- * A GitHub repository the paper's own ABSTRACT names (many papers write
- * "code available at https://github.com/...") -- the most precise code
- * signal there is, straight from the search API's record, zero requests.
- * Trailing .git and punctuation stripped. Pure.
+ * A repository the paper's own ABSTRACT names (many papers write "code
+ * available at https://github.com/...") -- the most precise code signal
+ * there is, straight from the search API's record, zero requests. A
+ * GitHub link wins when several hosts appear (code host over archive);
+ * trailing .git and punctuation stripped. Pure.
  */
 export function codeUrlFromAbstract(abstract: string | undefined): string | null {
 	const match = /https?:\/\/(?:www\.)?github\.com\/([\w.-]+)\/([\w.-]+)/i.exec(abstract ?? "");
-	if (!match) return null;
-	const repo = match[2].replace(/\.git$/i, "").replace(/[.,;:!?]+$/, "");
-	return repo ? `https://github.com/${match[1]}/${repo}` : null;
+	if (match) {
+		const repo = match[2].replace(/\.git$/i, "").replace(/[.,;:!?]+$/, "");
+		if (repo) return `https://github.com/${match[1]}/${repo}`;
+	}
+	const other = OTHER_CODE_HOSTS.exec(abstract ?? "");
+	if (!other) return null;
+	return other[0].replace(/\.git$/i, "").replace(/[.,;:!?]+$/, "");
 }
 
-/** The version-free arXiv id -- the GitHub search key; also the dedupe
- * key of the lookup stage (the same paper may enter twice, e.g. junk
- * drops collected per query variant before deduplication). Pure. */
+/** The version-free arXiv id -- the most precise GitHub search key. Pure. */
 export function bareArxivId(arxivId: string): string {
 	return arxivId.replace(/v\d+$/i, "");
 }
 
-/** Which records get a lookup: arxiv_id holders, on_target ones first
- * (the cap should spend its budget on the labeled hits), one candidate
- * per bare arXiv id (a duplicate would burn a capped slot on an
+/** A record's GitHub search key: the bare arXiv id when present, else its
+ * DOI (journal papers; the stricter DOI pick rules apply). Also the
+ * dedupe key of the lookup stage (the same paper may enter twice, e.g.
+ * junk drops collected per query variant before deduplication). Pure. */
+export function codeSearchKey(record: { arxiv_id: string; doi?: string }): string {
+	return record.arxiv_id ? bareArxivId(record.arxiv_id) : (record.doi ?? "");
+}
+
+/** Which records get a lookup: arxiv_id or doi holders, on_target ones
+ * first (the cap should spend its budget on the labeled hits), one
+ * candidate per search key (a duplicate would burn a capped slot on an
  * identical search), capped. Pure; stable within each priority class. */
-export function codeLookupCandidates<T extends { arxiv_id: string; group?: string }>(
+export function codeLookupCandidates<T extends { arxiv_id: string; doi?: string; group?: string }>(
 	records: T[],
 	cap: number = CODE_LOOKUP_CAP,
 ): T[] {
-	const withId = records.filter((record) => record.arxiv_id);
+	const withKey = records.filter((record) => codeSearchKey(record));
 	const seen = new Set<string>();
 	return [
-		...withId.filter((record) => record.group === "on_target"),
-		...withId.filter((record) => record.group !== "on_target"),
+		...withKey.filter((record) => record.group === "on_target"),
+		...withKey.filter((record) => record.group !== "on_target"),
 	].filter((record) => {
-		const id = bareArxivId(record.arxiv_id);
-		if (seen.has(id)) return false;
-		seen.add(id);
+		const key = codeSearchKey(record);
+		if (seen.has(key)) return false;
+		seen.add(key);
 		return true;
 	}).slice(0, Math.max(0, cap));
 }
 
-async function fetchCodeLink(arxivId: string, token: string): Promise<string | null> {
+async function fetchCodeLink(searchKey: string, paper: CodePaperContext, token: string): Promise<string | null> {
 	const params = new URLSearchParams({
-		q: `"${bareArxivId(arxivId)}" in:name,description,readme`,
+		q: `"${searchKey}" in:name,description,readme`,
 		per_page: "3",
 	});
 	const response = await fetchGithub(`${GITHUB_SEARCH_URL}?${params}`, {
@@ -466,20 +558,23 @@ async function fetchCodeLink(arxivId: string, token: string): Promise<string | n
 			...(token ? { Authorization: `Bearer ${token}` } : {}),
 		},
 	});
-	return pickCodeRepo((await response.json()) as Record<string, any>);
+	return pickCodeRepo((await response.json()) as Record<string, any>, paper);
 }
 
 /**
  * Attach code_url to records. Two deterministic signals, in order of
- * precision: (1) a GitHub URL the paper's own abstract names (any record,
- * zero requests, provider "abstract"); (2) a GitHub repository search per
- * arXiv id (provider "github"). Runs AFTER filters/grouping; the engine
- * passes kept AND dropped records, dropped ones appended behind, so the
- * cap prefers on_target, then kept, then dropped. Failures degrade per
- * record, loudly; order and everything else ship unchanged (one output
- * per input, same order).
+ * precision: (1) a repository URL the paper's own abstract names (any
+ * record, zero requests, provider "abstract"); (2) a GitHub repository
+ * search per record -- by arXiv id, or by DOI with the stricter
+ * owner-must-match-an-author rule (provider "github" either way). Runs
+ * AFTER filters/grouping; the engine passes kept AND dropped records,
+ * dropped ones appended behind, so the cap prefers on_target, then kept,
+ * then dropped. Failures degrade per record, loudly; order and
+ * everything else ship unchanged (one output per input, same order).
  */
-export async function addCodeLinks<T extends EnrichableRecord & { group?: string; abstract?: string }>(
+export async function addCodeLinks<T extends EnrichableRecord & {
+	group?: string; abstract?: string; year?: string | null; authors?: string[];
+}>(
 	records: T[],
 	warn: (message: string) => void = defaultWarn,
 	signal?: AbortSignal,
@@ -491,28 +586,33 @@ export async function addCodeLinks<T extends EnrichableRecord & { group?: string
 		const url = codeUrlFromAbstract(record.abstract);
 		if (url !== null) abstractUrl.set(record, url);
 	}
-	// Pass 2 candidates: arXiv records still without a link, one per bare
-	// id (codeLookupCandidates dedupes -- duplicate records share one
-	// search and one capped slot).
+	// Pass 2 candidates: records still without a link, one per search key
+	// (codeLookupCandidates dedupes -- duplicate records share one search
+	// and one capped slot).
 	const searchable = records.filter((record) => !abstractUrl.has(record));
 	const candidates = codeLookupCandidates(searchable);
 	const eligible = new Set(
-		searchable.filter((record) => record.arxiv_id).map((record) => bareArxivId(record.arxiv_id)),
+		searchable.map((record) => codeSearchKey(record)).filter(Boolean),
 	).size;
 	if (eligible > candidates.length) {
-		warn(`code links: lookup capped at ${candidates.length} of ${eligible} arXiv record(s); the rest stays unmarked`);
+		warn(`code links: lookup capped at ${candidates.length} of ${eligible} record(s); the rest stays unmarked`);
 	}
 	const token = githubToken();
-	// Resolve the candidates first, keyed by bare id, so EVERY record
-	// carrying that id receives the link -- including duplicates that were
+	// Resolve the candidates first, keyed by search key, so EVERY record
+	// carrying that key receives the link -- including duplicates that were
 	// not themselves candidates.
-	const resolvedById = new Map<string, string | null>();
+	const resolvedByKey = new Map<string, string | null>();
 	let found = 0;
 	for (const record of candidates) {
 		if (signal?.aborted) throw new Error("search aborted by the user");
 		try {
-			const codeUrl = await fetchCodeLink(record.arxiv_id, token);
-			resolvedById.set(bareArxivId(record.arxiv_id), codeUrl);
+			const codeUrl = await fetchCodeLink(codeSearchKey(record), {
+				year: record.year ?? null,
+				title: record.title,
+				authors: record.authors,
+				requireOwner: !record.arxiv_id,
+			}, token);
+			resolvedByKey.set(codeSearchKey(record), codeUrl);
 			if (codeUrl !== null) found++;
 		} catch (error) {
 			const name = record.title || record.doi || record.arxiv_id || "(unidentified record)";
@@ -530,7 +630,8 @@ export async function addCodeLinks<T extends EnrichableRecord & { group?: string
 				enriched: { ...(record as Enriched<T>).enriched, code_url: "abstract" },
 			};
 		}
-		const fromLookup = record.arxiv_id ? resolvedById.get(bareArxivId(record.arxiv_id)) : undefined;
+		const key = codeSearchKey(record);
+		const fromLookup = key ? resolvedByKey.get(key) : undefined;
 		if (fromLookup !== undefined && fromLookup !== null) {
 			return {
 				...record,

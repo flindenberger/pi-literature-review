@@ -36,6 +36,7 @@ import {
 	type WizardResult,
 	type WizardStepDef,
 	type WizardView,
+	withQueryNumbers,
 	wizardAnswers,
 	wizardResult,
 	wizardView,
@@ -328,13 +329,25 @@ async function wizardOverlay(
 					const lines: string[] = options?.header
 						? [paint("accent", clip(options.header)), rule, tabBar, "", ...titleLines]
 						: [rule, tabBar, "", ...titleLines];
+					// Standalone uppercase boolean operators get their own
+					// colors on PLAIN rows (query-tab field values, variant
+					// expressions) so the surrounding terms read more easily:
+					// AND green, OR blue (user choice 2026-09-02; "success" and
+					// "mdLink" are the theme-defined green and blue), NOT keeps
+					// the keyword color. Applied AFTER wrapping (adds only
+					// zero-width SGR bytes, width accounting untouched) and only
+					// on unpainted rows -- active/warn/dim rows keep their one
+					// whole-row color as the state signal.
+					const OP_COLORS: Record<string, ThemeColor> = { AND: "success", OR: "mdLink", NOT: "syntaxKeyword" };
+					const colorOps = (line: string): string =>
+						line.replace(/\b(AND|OR|NOT)\b/g, (op) => paint(OP_COLORS[op], op));
 					let body = 0;
 					for (const row of view.rows) {
 						for (const line of wrapLine(row.text, width)) {
 							lines.push(row.active ? paint("accent", line)
 								: row.warn ? paint("warning", line)
 								: row.dim ? paint("dim", line)
-								: line);
+								: colorOps(line));
 							body += 1;
 						}
 					}
@@ -528,7 +541,11 @@ async function wizardSelectLoop(
 				const value = answers[step.id];
 				if (step.kind === "checkbox") {
 					const ids = Array.isArray(value) ? value : [];
-					const labels = step.items.filter((item) => ids.includes(item.id)).map((item) => item.label);
+					// Locked rows (the always-searched main query) are not
+					// answers, and queryNumbers steps carry the run's Q labels
+					// -- review parity with the overlay.
+					const items = step.queryNumbers ? withQueryNumbers(step.items, new Set(ids)) : step.items;
+					const labels = items.filter((item) => !item.locked && ids.includes(item.id)).map((item) => item.label);
 					return `${step.tab}: ${labels.length ? labels.join(", ") : text.unanswered}`;
 				}
 				if (step.kind === "text") {
@@ -539,16 +556,18 @@ async function wizardSelectLoop(
 				}
 				if (step.kind === "form") {
 					// An injected summary (the composed query) beats the field
-					// join -- review parity with the overlay's stepValueLabel.
+					// join -- review parity with the overlay's stepValueLabel;
+					// so does the review label ("Main query" over "Query").
+					const formLabel = step.reviewLabel ?? step.tab;
 					if (step.summary) {
 						const line = step.summary(formValues(step)).trim();
-						return `${step.tab}: ${line ? line : text.noQuestions}`;
+						return `${formLabel}: ${line ? line : text.noQuestions}`;
 					}
 					const set = formFields(step)
 						.map((field) => ({ field, value: typeof answers[field.id] === "string" ? (answers[field.id] as string).trim() : "" }))
 						.filter((entry) => entry.value !== "")
 						.map((entry) => `${entry.field.label} ${entry.value}`);
-					return `${step.tab}: ${set.length ? set.join(" · ") : text.noQuestions}`;
+					return `${formLabel}: ${set.length ? set.join(" · ") : text.noQuestions}`;
 				}
 				const option = step.options.find((entry) => entry.value === value);
 				// Labels can be functions over the live answers; the review

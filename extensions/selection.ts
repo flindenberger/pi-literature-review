@@ -343,10 +343,8 @@ export default function literatureSelection(pi: ExtensionAPI) {
 	// identifiers prefilled. The SAME Unpaywall-email and consent dialogs
 	// gate the download.
 	pi.registerCommand("lit-selection", {
-		description:
-			"Download papers as PDFs: /lit-selection [DOIs / arXiv IDs] runs agent-free (or paste the "
-			+ "\"Download these papers: ...\" line from the search page); the identifier dialog opens "
-			+ "either way, with passed identifiers prefilled.",
+		// Palette one-liner (user wording 2026-09-02); details live in docs/selection.md.
+		description: "Download academic literature as PDFs, e.g. the papers ticked in the HTML search report.",
 		handler: async (args, ctx) => {
 			if (!ctx.hasUI) return;
 			// The dialog opens with or without args: pasted identifiers arrive

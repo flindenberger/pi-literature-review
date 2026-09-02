@@ -34,7 +34,7 @@ Where each stage lives; the adapter/engine pair shares its basename.
 | `src/sources/polite.ts` | the shared politeness: per-source request spacing, timeout, retry on rate-limit answers (used by the clients and the GitHub code-link lookup) |
 | `src/pipeline.ts` | junk filter, deduplication, term matching, block labeling with evidence, the metadata filters, abstract gate |
 | `src/verify.ts` | the trust gate: DOI / arXiv ID resolution over HTTP |
-| `src/enrich.ts` | OpenAlex identifier lookup (cites, venue, abstract), journal 2-year citedness, author metrics, GitHub code links |
+| `src/enrich.ts` | OpenAlex identifier lookup (cites, venue, abstract), journal 2-year citedness, author metrics, code links (abstract URL on any known host, else a GitHub search per arXiv id or DOI with date/owner guards) |
 | `src/intake.ts` | query parsing: block expressions, derived blocks, stopwords, prose detection, variant-line parsing and ordering, year ranges |
 | `src/render.ts` | the results page: tables, sorting, BibTeX, selection bar, search documentation block, footnotes |
 | `src/network.ts` | the static citation-graph page (`network.html`) with its embedded fetch + layout script |

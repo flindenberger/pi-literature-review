@@ -72,8 +72,12 @@ fetch per source and query (raw counts recorded) -> junk filter (no title
 or no authors) -> deduplication by DOI / arXiv ID across sources and
 variants -> HTTP verification against doi.org / arxiv.org -> enrichment
 via an OpenAlex identifier lookup (missing citation counts, journal names,
-abstracts filled from OpenAlex, else from Semantic Scholar by DOI, and marked `*`; journal 2-year citedness; a GitHub code
-link from the abstract or one repository search per arXiv id) -> abstract
+abstracts filled from OpenAlex, else from Semantic Scholar by DOI, and marked `*`; journal 2-year citedness; a code
+link from the abstract -- GitHub, GitLab, Bitbucket, Codeberg, Hugging Face,
+Zenodo or OSF -- or one GitHub repository search per record, by arXiv id or
+by DOI; searched matches skip repositories created more than a year after
+the paper, and a DOI match is linked only when the repository owner's name
+matches an author) -> abstract
 gate (no abstract = dropped table) -> the optional filters -> labeling.
 Nothing disappears silently: every removed record sits in the dropped
 table with its reason; a failed source is shown and the run continues.

@@ -6,7 +6,7 @@
  */
 
 import assert from "node:assert/strict";
-import { addCodeLinks, applyEnrichment, applyJournalScores, bareArxivId, codeLookupCandidates, codeUrlFromAbstract, enrichAll, lookupDoi, pickCodeRepo } from "./enrich.ts";
+import { addCodeLinks, applyEnrichment, applyJournalScores, bareArxivId, codeLookupCandidates, codeSearchKey, codeUrlFromAbstract, enrichAll, lookupDoi, ownerMatchesAuthor, pickCodeRepo } from "./enrich.ts";
 
 const base = {
 	title: "A Title",
@@ -185,13 +185,15 @@ const base = {
 
 // pickCodeRepo (2026-08-07): first best-match repo with a usable URL; junk
 // and empty answers yield null; aggregator/list repos are skipped (live
-// find: "Robust_arXiv_daily" was the only hit for a SAR water paper)
+// find: "Robust_arXiv_daily" was the only hit for a SAR water paper).
+// An empty context keeps every guard inactive (no year = no date gate).
+const noPaper = { year: null, title: "" };
 {
 	assert.equal(
 		pickCodeRepo({ items: [
 			{ name: "b", html_url: "https://github.com/a/b" },
 			{ name: "d", html_url: "https://github.com/c/d" },
-		] }),
+		] }, noPaper),
 		"https://github.com/a/b",
 	);
 	assert.equal(
@@ -199,13 +201,86 @@ const base = {
 			{ name: "Robust_arXiv_daily", html_url: "https://github.com/x/Robust_arXiv_daily" },
 			{ name: "awesome-water-segmentation", html_url: "https://github.com/x/awesome-water-segmentation" },
 			{ name: "IWSeg-SAR-Poison", html_url: "https://github.com/GVCL/IWSeg-SAR-Poison" },
-		] }),
+		] }, noPaper),
 		"https://github.com/GVCL/IWSeg-SAR-Poison",
 	);
-	assert.equal(pickCodeRepo({ items: [{ name: "cv-papers", html_url: "https://github.com/x/cv-papers" }] }), null);
-	assert.equal(pickCodeRepo({ items: [{ html_url: "" }, { name: "x" }] }), null);
-	assert.equal(pickCodeRepo({ total_count: 0, items: [] }), null);
-	assert.equal(pickCodeRepo({}), null);
+	assert.equal(pickCodeRepo({ items: [{ name: "cv-papers", html_url: "https://github.com/x/cv-papers" }] }, noPaper), null);
+	assert.equal(pickCodeRepo({ items: [{ html_url: "" }, { name: "x" }] }, noPaper), null);
+	assert.equal(pickCodeRepo({ total_count: 0, items: [] }, noPaper), null);
+	assert.equal(pickCodeRepo({}, noPaper), null);
+}
+
+// Date gate (2026-09-02 field test): repositories created more than a
+// year AFTER the paper are third-party reimplementations, not the
+// authors' code (measured: correct picks -1..0, wrong ones +2..+11).
+// Fixtures from the test: a 2023 repo "for" a 2012 paper dies; the real
+// feevos/resuneta (created 2019, journal paper 2020) survives the
+// preprint->journal delay; an unreadable year disables the gate.
+{
+	const late = { items: [{ name: "Tree-species-classification", html_url: "https://github.com/SiruiWang0731/Tree-species-classification", created_at: "2023-01-08T00:00:00Z" }] };
+	assert.equal(pickCodeRepo(late, { year: "2012", title: "Tree Species Classification with Random Forest" }), null);
+	assert.equal(pickCodeRepo(late, { year: null, title: "" }), "https://github.com/SiruiWang0731/Tree-species-classification");
+	assert.equal(
+		pickCodeRepo(
+			{ items: [{ name: "resuneta", html_url: "https://github.com/feevos/resuneta", created_at: "2019-07-04T00:00:00Z" }] },
+			{ year: "2020", title: "ResUNet-a: a deep learning framework" },
+		),
+		"https://github.com/feevos/resuneta",
+	);
+	// Missing created_at on the item: gate inactive for that item.
+	assert.equal(
+		pickCodeRepo({ items: [{ name: "b", html_url: "https://github.com/a/b" }] }, { year: "2012", title: "" }),
+		"https://github.com/a/b",
+	);
+}
+
+// Title-word preference: among survivors, a repo whose name shares a
+// word (>= 4 chars, split on separators and camelCase) with the paper
+// title beats an earlier one without -- but it is NEVER a requirement
+// (field case Multihuntr/gff: correct repo, no title word).
+{
+	const items = { items: [
+		{ name: "some-toolkit", html_url: "https://github.com/x/some-toolkit" },
+		{ name: "DisasterNets", html_url: "https://github.com/HydroPML/DisasterNets" },
+	] };
+	assert.equal(
+		pickCodeRepo(items, { year: null, title: "DisasterNets: Embedding Machine Learning in Disaster Mapping" }),
+		"https://github.com/HydroPML/DisasterNets",
+	);
+	assert.equal(pickCodeRepo(items, { year: null, title: "Something Unrelated" }), "https://github.com/x/some-toolkit");
+}
+
+// ownerMatchesAuthor (2026-09-02 field test): on the DOI path the owner
+// name separated correct from wrong picks perfectly -- real cases pinned.
+// kvos matches via the initial+surname login pattern ("vos" alone is
+// under the 4-char floor).
+{
+	assert.equal(ownerMatchesAuthor("kvos", ["Kilian Vos"]), true);
+	assert.equal(ownerMatchesAuthor("connorlee77", ["Connor Lee", "Someone Else"]), true);
+	assert.equal(ownerMatchesAuthor("IamShubhamGupto", ["Shubham Gupta"]), true);
+	assert.equal(ownerMatchesAuthor("raadcostellomahmoud", ["Marc Wieland", "Sandro Martinis"]), false);
+	assert.equal(ownerMatchesAuthor("7Kitsu7", ["R Archana", "P. S. Eliahim Jeevaraj"]), false);
+	assert.equal(ownerMatchesAuthor("", ["Kilian Vos"]), false);
+	assert.equal(ownerMatchesAuthor("kvos", []), false);
+}
+
+// DOI path (requireOwner): a match is only linked when the owner looks
+// like an author -- field fixtures: the title-word hit without an owner
+// match (raadcostellomahmoud, Wieland 2023 paper) and the plain first
+// survivor (7Kitsu7, citing repo) both die; the real author repo passes.
+{
+	const wieland = { items: [{ name: "geospatial-water-masking", html_url: "https://github.com/raadcostellomahmoud/geospatial-water-masking", created_at: "2024-11-13T00:00:00Z", owner: { login: "raadcostellomahmoud" } }] };
+	const paper = { year: "2023", title: "Semantic segmentation of water bodies in very high-resolution satellite imagery", authors: ["Marc Wieland", "Sandro Martinis"] };
+	assert.equal(pickCodeRepo(wieland, { ...paper, requireOwner: true }), null);
+	// Same answer without the owner rule (arXiv path) would link it.
+	assert.equal(pickCodeRepo(wieland, paper), "https://github.com/raadcostellomahmoud/geospatial-water-masking");
+	assert.equal(
+		pickCodeRepo(
+			{ items: [{ name: "CoastSat", html_url: "https://github.com/kvos/CoastSat", created_at: "2018-09-28T00:00:00Z", owner: { login: "kvos" } }] },
+			{ year: "2019", title: "CoastSat: A Google Earth Engine-enabled Python toolkit", authors: ["Kilian Vos"], requireOwner: true },
+		),
+		"https://github.com/kvos/CoastSat",
+	);
 }
 
 // codeUrlFromAbstract (2026-08-07): the paper's own abstract naming its
@@ -227,22 +302,45 @@ const base = {
 	assert.equal(codeUrlFromAbstract("See https://github.com/acme for our work"), null);
 }
 
-// codeLookupCandidates: arXiv records only, on_target first, capped
+// codeUrlFromAbstract, further hosts (2026-09-02): abstracts may name
+// GitLab/Bitbucket/Codeberg/Hugging Face/Zenodo/OSF; a GitHub link wins
+// when several appear; forge profile links (owner only) stay null.
+{
+	assert.equal(codeUrlFromAbstract("Code: https://gitlab.com/acme/river-net."), "https://gitlab.com/acme/river-net");
+	assert.equal(codeUrlFromAbstract("at https://bitbucket.org/lab/model.git here"), "https://bitbucket.org/lab/model");
+	assert.equal(codeUrlFromAbstract("see https://codeberg.org/acme/tool,"), "https://codeberg.org/acme/tool");
+	assert.equal(codeUrlFromAbstract("weights at https://huggingface.co/acme/water-seg"), "https://huggingface.co/acme/water-seg");
+	assert.equal(codeUrlFromAbstract("data and code https://zenodo.org/records/1234567."), "https://zenodo.org/records/1234567");
+	assert.equal(codeUrlFromAbstract("archived at https://osf.io/ab1cd"), "https://osf.io/ab1cd");
+	assert.equal(
+		codeUrlFromAbstract("mirror https://gitlab.com/acme/mirror and main https://github.com/acme/main"),
+		"https://github.com/acme/main",
+	);
+	assert.equal(codeUrlFromAbstract("our group https://gitlab.com/acme published it"), null);
+}
+
+// codeLookupCandidates: arXiv OR doi holders, on_target first, capped;
+// the shared cap covers both search paths (2026-09-02). codeSearchKey:
+// the arXiv id wins when a record carries both.
 {
 	const records = [
 		{ arxiv_id: "", group: "on_target" },
 		{ arxiv_id: "2401.00001", group: "adjacent" },
 		{ arxiv_id: "2401.00002", group: "on_target" },
 		{ arxiv_id: "2401.00003" },
+		{ arxiv_id: "", doi: "10.1/journal", group: "adjacent" },
 	];
 	assert.deepEqual(
-		codeLookupCandidates(records).map((r) => r.arxiv_id),
-		["2401.00002", "2401.00001", "2401.00003"],
+		codeLookupCandidates(records).map((r) => codeSearchKey(r)),
+		["2401.00002", "2401.00001", "2401.00003", "10.1/journal"],
 	);
 	assert.deepEqual(
-		codeLookupCandidates(records, 2).map((r) => r.arxiv_id),
+		codeLookupCandidates(records, 2).map((r) => codeSearchKey(r)),
 		["2401.00002", "2401.00001"],
 	);
+	assert.equal(codeSearchKey({ arxiv_id: "2401.00001v2", doi: "10.1/x" }), "2401.00001");
+	assert.equal(codeSearchKey({ arxiv_id: "", doi: "10.1/x" }), "10.1/x");
+	assert.equal(codeSearchKey({ arxiv_id: "" }), "");
 }
 
 // bareArxivId + candidate dedupe (2026-08-11 review find): the same paper
@@ -264,15 +362,18 @@ const base = {
 }
 
 // addCodeLinks: one output per input, in input order (the engine re-zips
-// kept and dropped records positionally -- this 1:1 mapping is contract),
-// and duplicate arXiv records share ONE lookup, both carrying the link
+// kept and dropped records positionally -- this 1:1 mapping is contract);
+// duplicate arXiv records share ONE lookup, both carrying the link;
+// DOI-only journal records are searched too (2026-09-02) but linked only
+// when the repository owner looks like an author -- an abstract hit
+// spends no search budget either way.
 {
 	const calls: string[] = [];
 	const realFetch = globalThis.fetch;
 	globalThis.fetch = (async (url: unknown) => {
 		calls.push(String(url));
 		return new Response(
-			JSON.stringify({ items: [{ name: "sandbar-net", html_url: "https://github.com/acme/sandbar-net" }] }),
+			JSON.stringify({ items: [{ name: "sandbar-net", html_url: "https://github.com/acme/sandbar-net", owner: { login: "acme" } }] }),
 			{ status: 200 },
 		);
 	}) as typeof fetch;
@@ -281,20 +382,26 @@ const base = {
 			{ title: "A", doi: "10.1/a", arxiv_id: "", cites: null, venue: "", abstract: "Code at https://github.com/acme/a-repo." },
 			{ title: "B", doi: "", arxiv_id: "2401.00007", cites: null, venue: "" },
 			{ title: "B dup", doi: "", arxiv_id: "2401.00007v2", cites: null, venue: "" },
-			{ title: "C", doi: "10.1/c", arxiv_id: "", cites: null, venue: "" },
+			{ title: "C", doi: "10.1/c", arxiv_id: "", cites: null, venue: "", authors: ["Alice Acme"] },
+			{ title: "D", doi: "10.1/d", arxiv_id: "", cites: null, venue: "", authors: ["Bob Uninvolved"] },
 		];
 		const warnings: string[] = [];
 		const out = await addCodeLinks(records, (message) => warnings.push(message));
 		assert.equal(out.length, records.length);
-		assert.deepEqual(out.map((r) => r.title), ["A", "B", "B dup", "C"]);
+		assert.deepEqual(out.map((r) => r.title), ["A", "B", "B dup", "C", "D"]);
 		assert.equal(out[0].code_url, "https://github.com/acme/a-repo");
 		assert.equal(out[0].enriched?.code_url, "abstract");
-		assert.equal(calls.length, 1); // the two duplicates share one search
+		assert.equal(calls.length, 3); // duplicates share one search; C and D get one each
 		assert.equal(out[1].code_url, "https://github.com/acme/sandbar-net");
 		assert.equal(out[1].enriched?.code_url, "github");
 		assert.equal(out[2].code_url, "https://github.com/acme/sandbar-net");
-		assert.equal(out[3].code_url, undefined);
-		assert.ok(warnings.some((m) => m.includes("1 from abstract(s), 1/1 from GitHub lookup(s)")));
+		// C's answer owner "acme" matches author "Alice Acme" -> linked.
+		assert.equal(out[3].code_url, "https://github.com/acme/sandbar-net");
+		assert.equal(out[3].enriched?.code_url, "github");
+		// D's answer owner matches no author -> honestly unlinked.
+		assert.equal(out[4].code_url, undefined);
+		assert.ok(calls.some((url) => url.includes(encodeURIComponent('"10.1/c"'))));
+		assert.ok(warnings.some((m) => m.includes("1 from abstract(s), 2/3 from GitHub lookup(s)")));
 	} finally {
 		globalThis.fetch = realFetch;
 	}

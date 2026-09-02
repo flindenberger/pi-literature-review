@@ -173,6 +173,9 @@ const SEARCH_TEXT: Record<DialogLang, {
 	header: string;
 	queryTab: string;
 	queryTitle: string;
+	/** Confirm-page label for the query step: next to the variants list,
+	 * plain "Query" was ambiguous -- the review calls it the main query. */
+	queryReviewLabel: string;
 	/** Label of the n-th keyword-block field on the query tab. */
 	queryBlockLabel: (n: number) => string;
 	/** The add row under the block fields (Enter appends the next one). */
@@ -254,11 +257,12 @@ const SEARCH_TEXT: Record<DialogLang, {
 	de: {
 		header: "/lit-search -- Literatursuche (Esc bricht ab)",
 		queryTab: "Suchanfrage",
-		queryTitle: "Suchanfrage als Keyword-Blöcke: ein Konzept pro Block "
-			+ "(z. B. Block 1: satellite imagery, Block 2: data fusion, ...).",
+		queryTitle: "Query-Keywords eingeben: ein Konzept pro Block "
+			+ "(z. B. Block 1: satellite imagery, Block 2: data fusion).",
+		queryReviewLabel: "Hauptanfrage",
 		queryBlockLabel: (n) => `Keyword-Block ${n}`,
 		queryAddBlock: "+ Keyword-Block hinzufügen (Enter)",
-		queryFreeLabel: "Freitext (Satz / eigene Syntax statt Blöcken)",
+		queryFreeLabel: "Alternative: Freitext eingeben (Satz / eigene Syntax statt Blöcken)",
 		queryBothFilled: "Freitext ist die Hauptanfrage -- die Keyword-Blöcke werden ignoriert",
 		variantsTab: "Query-Varianten",
 		variantsTitle: "Query-Varianten (optional): das Modell schlägt alternative Suchen vor (Synonyme mit OR, "
@@ -327,11 +331,12 @@ const SEARCH_TEXT: Record<DialogLang, {
 	en: {
 		header: "/lit-search -- literature search (Esc cancels)",
 		queryTab: "Query",
-		queryTitle: "Query as keyword blocks: one concept per block "
-			+ "(e.g. block 1: satellite imagery, block 2: data fusion, ...).",
+		queryTitle: "Enter query keywords: one concept per block "
+			+ "(e.g. block 1: satellite imagery, block 2: data fusion).",
+		queryReviewLabel: "Main query",
 		queryBlockLabel: (n) => `Keyword block ${n}`,
 		queryAddBlock: "+ Add keyword block (Enter)",
-		queryFreeLabel: "Free text (sentence / own syntax instead of blocks)",
+		queryFreeLabel: "Alternative: enter free text (sentence / own syntax instead of blocks)",
 		queryBothFilled: "Free text set as main query, keyword blocks will be ignored",
 		variantsTab: "Query variants",
 		variantsTitle: "Query variants (optional): the model suggests alternative searches (synonyms with OR, "
@@ -542,7 +547,7 @@ async function intakeWizard(
 			// sentences and hand syntax instead and wins when filled (the
 			// note row warns while both are set). The composed query is
 			// exactly what the tabs, sources and labeling see.
-			kind: "form", id: "query", tab: text.queryTab, title: text.queryTitle,
+			kind: "form", id: "query", tab: text.queryTab, reviewLabel: text.queryReviewLabel, title: text.queryTitle,
 			grow: {
 				idPrefix: "query_block", label: text.queryBlockLabel, addLabel: text.queryAddBlock,
 				min: QUERY_BLOCK_MIN, max: QUERY_BLOCK_MAX,
@@ -554,7 +559,12 @@ async function intakeWizard(
 			}],
 			note: (values) =>
 				(queryFromValues(values).bothFilled ? { text: text.queryBothFilled, warn: true } : null),
-			summary: (values) => queryFromValues(values).query,
+			// The review line carries the run's Q1 label -- the same wording
+			// the variants rows and the HTML report use.
+			summary: (values) => {
+				const composed = queryFromValues(values).query;
+				return composed ? `Q1: ${composed}` : composed;
+			},
 		},
 		{
 			// Query-variants tab: the locked base query on top, LLM phrasing
@@ -566,6 +576,9 @@ async function intakeWizard(
 			kind: "checkbox", id: "variants", tab: text.variantsTab, title: text.variantsTitle,
 			items: [], selectAllLabel: text.variantsSelectAll, nextLabel: text.journalNext,
 			optional: true, emptyNote: text.variantsIdle, keepSelected: true, cursorStart: "next", spaced: true,
+			// Rows carry the run's Q labels (base = Q1, checked rows Q2.. in
+			// list order) -- the wording the HTML report uses.
+			queryNumbers: true,
 			// Own-variant row: typed text + Enter joins the list as a checked
 			// row and runs like any confirmed variant.
 			addInput: { id: "variants_own", label: text.variantsOwnLabel },
@@ -1077,7 +1090,7 @@ export default function literatureSearch(pi: ExtensionAPI) {
 				description: "Override for the HTML output path. Default (recommended): omit, and the deterministic location lit-search/<date>_<query>.html in the working directory is used. The page is generated from the JSON payload by fixed code, never by a model.",
 			})),
 			enrich: Type.Optional(Type.Boolean({
-				description: "Fill missing citation counts / journal names via a deterministic OpenAlex identifier lookup (open API, no scraping). Filled fields are listed per record under 'enriched' and marked with * in the HTML. Default: true.",
+				description: "Fill missing citation counts / journal names via a deterministic OpenAlex identifier lookup (open API, no scraping), and attach code repository links (abstract URL, else a guarded GitHub search per arXiv id or DOI). Filled fields are listed per record under 'enriched' and marked with * in the HTML. Default: true.",
 			})),
 		}),
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {
@@ -1174,9 +1187,8 @@ export default function literatureSearch(pi: ExtensionAPI) {
 	// deterministic pipeline as the tool, with no agent model deciding
 	// whether or how to search; a passed query is prefill on the query tab.
 	pi.registerCommand("lit-search", {
-		description:
-			"Discover literature online: /lit-search [query] opens the intake wizard (query, query variants, "
-			+ "period, count, journals, authors, filters) and runs the pipeline agent-free (verified HTML/JSON, digest).",
+		// Palette one-liner (user wording 2026-09-02); details live in docs/search.md.
+		description: "Search for academic literature and generate an HTML report of the query results.",
 		handler: async (args, ctx) => {
 			if (!ctx.hasUI) return;
 			const query = (args ?? "").trim();

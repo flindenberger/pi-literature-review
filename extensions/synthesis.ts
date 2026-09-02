@@ -1402,9 +1402,8 @@ export default async function literatureSynthesis(pi: ExtensionAPI) {
 	// hands the loop to the agent. With arguments: ONE agent-free grounded
 	// round.
 	pi.registerCommand("lit-synthesis", {
-		description:
-			"Chat about and report on local PDFs with verified citations. Bare /lit-synthesis runs the wizard "
-			+ "(documents, questions, report menu); /lit-synthesis <question> answers once, agent-free.",
+		// Palette one-liner (user wording 2026-09-02); details live in docs/synthesis.md.
+		description: "Understand, summarize and synthesize academic literature (PDFs) and generate an HTML synthesis report.",
 		handler: async (args, ctx) => {
 			if (!ctx.hasUI) return;
 			// Zero-config gate first: nobody should fill the wizard only to
