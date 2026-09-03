@@ -1,6 +1,7 @@
 /**
  * Search engine: runSearch() runs the whole deterministic pipeline
- * (sources -> junk filter -> dedupe -> verify -> enrich -> abstract gate ->
+ * (sources incl. the opt-in code-first searchers -> junk filter -> dedupe ->
+ * late code pairs to dropped -> verify -> enrich -> abstract gate ->
  * user filters -> sort -> grouping -> code links) and returns the payload
  * that the HTML page, the digest and the JSON sidecar are built from.
  * Shared by the pi tool/command and the CLI. No LLM call anywhere: every
@@ -11,6 +12,7 @@
 import {
 	applyFilters,
 	dedupe,
+	dropLateCodePairs,
 	dropWithoutAbstract,
 	filterRecords,
 	groupAcrossQueries,
@@ -20,11 +22,14 @@ import {
 	sortRecords,
 	type TermGroups,
 } from "./pipeline.ts";
+import { blockQuery, CODE_SEARCHERS, searchWords } from "./codesearch.ts";
+import { codeListTopics } from "./config.ts";
 import { addCodeLinks, addJournalScores, enrichAll } from "./enrich.ts";
 import { queryBlocks } from "./intake.ts";
 import { buildSearchQuery, searchArxiv } from "./sources/arxiv.ts";
 import { flattenBlockTerms, searchCrossref } from "./sources/crossref.ts";
 import { buildBlockSearch, searchOpenalex } from "./sources/openalex.ts";
+import { buildHfQuery } from "./sources/huggingface.ts";
 import { buildBulkQuery, searchSemanticScholar } from "./sources/semanticscholar.ts";
 import type { SourceRecord, SourceScope } from "./types.ts";
 import { verifyAll } from "./verify.ts";
@@ -53,6 +58,15 @@ export interface SearchOptions {
 	queryVariants?: string[];
 	perSource?: number;
 	sources?: string[];
+	/** Code-first sources (codesearch.ts: hf-papers, github-readme,
+	 * awesome-lists, gee-github): repositories first, their papers resolved
+	 * at arXiv/OpenAlex. Off unless named -- costs 30-90 s per run. Runs
+	 * regardless of `enrich` (identification, not enrichment). */
+	codeSources?: string[];
+	/** GitHub topics for the awesome-lists searcher; default from config
+	 * (codeListTopics(): env > config.json > remote-sensing,
+	 * satellite-imagery, earth-observation). */
+	codeListTopics?: string[];
 	/** Concept blocks for the BASE query (term groups, see pipeline.ts):
 	 * they label on_target/adjacent AND go out as the boolean source query
 	 * (arXiv, OpenAlex, Semantic Scholar; CrossRef gets the flattened
@@ -127,36 +141,76 @@ export async function runSearch(options: SearchOptions) {
 	const sourceFailures: Array<{ source: string; error: string }> = [];
 	// Raw per-source x query hit counts BEFORE any processing -- PRISMA-S
 	// "records identified per database", the first number of the flow.
-	const sourceCounts: Array<{ source: string; query: string; count: number }> = [];
+	// `candidates` only for code-first sources: repository->identifier pairs
+	// gathered before resolution ("12 candidates, 4 resolved").
+	const sourceCounts: Array<{ source: string; query: string; count: number; candidates?: number }> = [];
+	const codeSources = options.codeSources ?? [];
+	const codeSourcesUsed: string[] = [];
+	// Scope per query: the picked authors are run-wide, the concept blocks
+	// belong to THIS query.
+	const scopeFor = (index: number): SourceScope => ({
+		...(scopeAuthors ? { authors: scopeAuthors } : {}),
+		...(blocksByQuery[index].length ? { blocks: blocksByQuery[index] } : {}),
+	});
+	// One source x every query; shared by the database loop and the
+	// code-first loop so counts, failures and found_by are written once.
+	const runSource = async (
+		source: string,
+		run: (query: string, scope: SourceScope) => Promise<{ records: SourceRecord[]; candidates?: number; failures?: Array<{ step: string; error: string }> }>,
+	): Promise<boolean> => {
+		let succeeded = false;
+		for (const [index, query] of queries.entries()) {
+			aborted();
+			const qLabel = multiQuery ? ` (Q${index + 1})` : "";
+			const label = `source '${source}'${qLabel}`;
+			try {
+				const found = await run(query, scopeFor(index));
+				const candidates = found.candidates !== undefined ? `, ${found.candidates} candidate(s)` : "";
+				warn(`${label}: ${found.records.length} record(s)${candidates}`);
+				sourceCounts.push({
+					source, query, count: found.records.length,
+					...(found.candidates !== undefined ? { candidates: found.candidates } : {}),
+				});
+				records.push(...(multiQuery ? found.records.map((r) => ({ ...r, found_by: [query] })) : found.records));
+				// Partial failures (e.g. candidates found, arXiv resolution
+				// rate-limited) are real failures of this run -- same list,
+				// step-labelled, so the page and the digest show them.
+				for (const failure of found.failures ?? []) {
+					warn(`${label}: ${failure.step} failed: ${failure.error}`);
+					sourceFailures.push({ source: `${source} (${failure.step}${qLabel ? `, Q${index + 1}` : ""})`, error: failure.error });
+				}
+				succeeded = true;
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				warn(`${label} failed: ${message}`);
+				sourceFailures.push({ source: `${source}${qLabel}`, error: message });
+			}
+		}
+		return succeeded;
+	};
 	for (const source of sources) {
 		const search = SEARCHERS[source];
 		if (!search) {
 			warn(`unknown source '${source}'; skipping (available: ${Object.keys(SEARCHERS).join(", ")})`);
 			continue;
 		}
-		let succeeded = false;
-		for (const [index, query] of queries.entries()) {
-			aborted();
-			const label = multiQuery ? `source '${source}' (Q${index + 1})` : `source '${source}'`;
-			// Scope per query: the picked authors are run-wide, the concept
-			// blocks belong to THIS query.
-			const scope: SourceScope = {
-				...(scopeAuthors ? { authors: scopeAuthors } : {}),
-				...(blocksByQuery[index].length ? { blocks: blocksByQuery[index] } : {}),
-			};
-			try {
-				const found = await search(query, perSource, scope);
-				warn(`${label}: ${found.length} record(s)`);
-				sourceCounts.push({ source, query, count: found.length });
-				records.push(...(multiQuery ? found.map((r) => ({ ...r, found_by: [query] })) : found));
-				succeeded = true;
-			} catch (error) {
-				const message = error instanceof Error ? error.message : String(error);
-				warn(`${label} failed: ${message}`);
-				sourceFailures.push({ source: multiQuery ? `${source} (Q${index + 1})` : source, error: message });
-			}
+		if (await runSource(source, async (query, scope) => ({ records: await search(query, perSource, scope) }))) {
+			sourcesUsed.push(source);
 		}
-		if (succeeded) sourcesUsed.push(source);
+	}
+	// Code-first sources: repositories first, papers resolved from what they
+	// cite. Identification, not enrichment -- they run even with enrich:false.
+	const listTopics = options.codeListTopics ?? codeListTopics();
+	const codeContext = { signal: options.signal, warn, listTopics };
+	for (const source of codeSources) {
+		const search = CODE_SEARCHERS[source];
+		if (!search) {
+			warn(`unknown code source '${source}'; skipping (available: ${Object.keys(CODE_SEARCHERS).join(", ")})`);
+			continue;
+		}
+		if (await runSource(source, (query, scope) => search(query, perSource, scope, codeContext))) {
+			codeSourcesUsed.push(source);
+		}
 	}
 
 	const { kept, dropped } = filterRecords(records);
@@ -168,8 +222,18 @@ export async function runSearch(options: SearchOptions) {
 	if (deduped.length < kept.length) {
 		warn(`dedupe merged ${kept.length - deduped.length} duplicate record(s)`);
 	}
+	// Code pairs that failed the date gate: records only a code source
+	// delivered move to the dropped table (listed, selectable, reason named);
+	// records a database also delivered lose the late link instead.
+	const lateGate = dropLateCodePairs(deduped, (source) => source in CODE_SEARCHERS);
+	for (const { record, reason } of lateGate.dropped) {
+		warn(`dropped "${record.title}": ${reason}`);
+	}
+	for (const record of lateGate.stripped) {
+		warn(`"${record.title}": late code repository link removed (the paper also came from ${record.sources.filter((s) => !(s in CODE_SEARCHERS)).join(", ")})`);
+	}
 	aborted();
-	const verified = await verifyAll(deduped, warn, options.signal);
+	const verified = await verifyAll(lateGate.kept, warn, options.signal);
 	warn(`verified ${verified.filter((r) => r.verified).length}/${verified.length} records`);
 
 	// Enrichment runs before the user filters so that e.g. min_cites can act
@@ -233,7 +297,7 @@ export async function runSearch(options: SearchOptions) {
 	// no group and sort behind). Rides the enrich switch like every lookup
 	// beyond the search itself.
 	aborted();
-	const droppedEntries = [...dropped, ...abstractGate.dropped, ...filterResult.dropped];
+	const droppedEntries = [...dropped, ...lateGate.dropped, ...abstractGate.dropped, ...filterResult.dropped];
 	let results = grouped;
 	let droppedOut = droppedEntries;
 	if (options.enrich !== false) {
@@ -296,6 +360,21 @@ export async function runSearch(options: SearchOptions) {
 		semanticscholar_queries: sourcesUsed.includes("semanticscholar")
 			? queries.map((query, index) => buildBulkQuery(query, blocksByQuery[index]))
 			: null,
+		// Code-first sources of this run and what each received (PRISMA
+		// "other methods": the reader sees which repository search ran).
+		code_sources_used: codeSourcesUsed.length ? codeSourcesUsed : null,
+		code_queries: codeSourcesUsed.length
+			? Object.fromEntries(codeSourcesUsed.map((source) => [source, queries.map((query, index) => {
+				const words = searchWords(query, blocksByQuery[index]);
+				switch (source) {
+					case "hf-papers": return buildHfQuery(query, blocksByQuery[index]);
+					case "github-readme": return `${words} "arxiv.org" in:readme`;
+					case "gee-github": return `${blockQuery(query, blocksByQuery[index])} "code.earthengine.google.com" in:readme "doi.org" in:readme`;
+					case "awesome-lists": return `lists tagged ${listTopics.join(", ")}; entries matched against the blocks ${blocksByQuery[index].length ? blocksByQuery[index].map((b) => `(${b.join(" OR ")})`).join(" AND ") : "(none -- skipped)"}`;
+					default: return words;
+				}
+			})]))
+			: null,
 		grouping: blocksByQuery[0].length ? blocksByQuery[0] : null,
 		// Per-query blocks; null = that query carried no blocks (quoted/field
 		// syntax) and passed through unchanged.
@@ -317,6 +396,8 @@ export async function runSearch(options: SearchOptions) {
 			junk_removed: dropped.length,
 			duplicates_removed: kept.length - deduped.length,
 			screened: deduped.length,
+			// Optional: only present when a code-first source ran.
+			...(codeSourcesUsed.length ? { late_code_pairs_removed: lateGate.dropped.length } : {}),
 			no_abstract_removed: abstractGate.dropped.length,
 			excluded_by_filters: filterResult.dropped.length,
 			included: results.length,

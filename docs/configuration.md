@@ -22,7 +22,8 @@ which wins per field.
 |---|---|---|
 | `mailto` | `PI_LITERATURE_REVIEW_MAILTO` | Contact email for Unpaywall (required by their policy) and the CrossRef/OpenAlex polite pools. Sent only to those APIs. |
 | `s2ApiKey` | `PI_LITERATURE_REVIEW_S2_API_KEY` | Free Semantic Scholar key (semanticscholar.org/product/api): a dedicated 1 request/second instead of the often-saturated anonymous pool. |
-| `githubToken` | `PI_LITERATURE_REVIEW_GITHUB_TOKEN` | Raises the code-link repository search limit from 10 to 30 per minute. |
+| `githubToken` | `PI_LITERATURE_REVIEW_GITHUB_TOKEN` | Raises the GitHub repository search limit from 10 to 30 per minute (code links and the code-first sources share it). |
+| `codeListTopics` | `PI_LITERATURE_REVIEW_CODE_LIST_TOPICS` | GitHub topics whose awesome lists the `awesome-lists` code source reads (default `remote-sensing`, `satellite-imagery`, `earth-observation`; the env variable is a comma list). |
 | `llm.baseUrl` | `PI_LITERATURE_REVIEW_LLM_URL` | LLM backend address (default `http://127.0.0.1:11434`, Ollama). |
 | `llm.api` | `PI_LITERATURE_REVIEW_LLM_API` | `ollama` (default) or `openai` for any OpenAI-compatible server (llama.cpp's llama-server, vLLM, ...). |
 | `llm.embedModel` | `PI_LITERATURE_REVIEW_EMBED_MODEL` | Embedding model (default `bge-m3`, multilingual). Changing it re-embeds the index automatically. |

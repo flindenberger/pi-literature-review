@@ -49,6 +49,10 @@ interface StoredConfig {
 	/** Optional Semantic Scholar API key: the anonymous shared pool is
 	 * heavily contended; a free key gives a dedicated 1 request/second. */
 	s2ApiKey?: string;
+	/** GitHub topics whose awesome lists the code-first "awesome-lists"
+	 * source reads (default: remote-sensing, satellite-imagery,
+	 * earth-observation -- the tool is otherwise domain-neutral). */
+	codeListTopics?: string[];
 	/** LLM backend for the synthesis stage; unset fields use defaults.
 	 * chatModel is the paper-chat generator (see chatModel()). */
 	llm?: Partial<LlmConfig> & { chatModel?: string };
@@ -101,6 +105,21 @@ export function githubToken(
  * semanticscholar.org/product/api gives a dedicated 1 request/second. Same
  * precedence as the mailto/githubToken; empty string = anonymous.
  */
+/** Default GitHub topics for the awesome-lists code source. */
+export const DEFAULT_CODE_LIST_TOPICS = ["remote-sensing", "satellite-imagery", "earth-observation"];
+
+/** Topics for the awesome-lists code source: env (comma list) > config >
+ * default. Pure given its inputs. */
+export function codeListTopics(
+	env: Record<string, string | undefined> = process.env,
+	stored: StoredConfig = loadStoredConfig(),
+): string[] {
+	const fromEnv = (env.PI_LITERATURE_REVIEW_CODE_LIST_TOPICS ?? "").split(",").map((t) => t.trim()).filter(Boolean);
+	if (fromEnv.length) return fromEnv;
+	const fromConfig = (stored.codeListTopics ?? []).map((t) => String(t).trim()).filter(Boolean);
+	return fromConfig.length ? fromConfig : [...DEFAULT_CODE_LIST_TOPICS];
+}
+
 export function s2ApiKey(
 	env: Record<string, string | undefined> = process.env,
 	stored: StoredConfig = loadStoredConfig(),

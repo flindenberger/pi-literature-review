@@ -20,7 +20,7 @@
  */
 
 import { githubToken } from "./config.ts";
-import { pacedClient } from "./sources/polite.ts";
+import { fetchGithub, GITHUB_SEARCH_URL, githubHeaders, LIST_REPO_NAME } from "./sources/github.ts";
 import { reconstructAbstract } from "./sources/openalex.ts";
 import { fetchAbstractByDoi } from "./sources/semanticscholar.ts";
 import { contactMailto, userAgent, warn as defaultWarn } from "./types.ts";
@@ -388,27 +388,10 @@ export async function fetchJournalScores(
  * perfectly in the field test; arXiv-id matches skip the owner rule
  * because author repos there often live under organization accounts).
  */
-const GITHUB_SEARCH_URL = "https://api.github.com/search/repositories";
-/** GitHub's search rate limit is 10 requests/min unauthenticated, 30/min
- * with a token. Module-wide pacing, spanning back-to-back runs; GitHub
- * answers rate-limit violations with 403 or 429. */
-const GITHUB_SPACING_MS = 6_500;
-const GITHUB_SPACING_AUTH_MS = 2_100;
-const fetchGithub = pacedClient({
-	label: "GitHub",
-	spacingMs: () => (githubToken() ? GITHUB_SPACING_AUTH_MS : GITHUB_SPACING_MS),
-	rateLimitStatuses: [403, 429],
-});
 /** Per-run lookup cap: keeps the stage's worst case around a minute
  * (cap x 6.5s unauthenticated). Capped-out records honestly stay
  * unmarked, with a warn line naming the count. */
 export const CODE_LOOKUP_CAP = 12;
-
-/** Aggregator repositories (daily arXiv digests, awesome lists, survey
- * collections) mention THOUSANDS of arXiv ids in their READMEs and are
- * never the paper's code. Matched on the repo NAME; precision over
- * recall, a skipped legitimate repo just means no link. */
-const LIST_REPO_NAME = /awesome|daily|weekly|digest|arxiv|papers?([_-]|\b)|reading|survey|collection|curated/i;
 
 /** The paper a search answer is judged against, plus how strictly. */
 export interface CodePaperContext {
@@ -426,7 +409,7 @@ export interface CodePaperContext {
  * ones 2-11 years later). No lower bound: code precedes publication, and
  * preprint->journal delay stretches the gap. Unreadable year on either
  * side disables the gate -- absence is not evidence. */
-function createdTooLate(createdAt: unknown, year: string | null): boolean {
+export function createdTooLate(createdAt: unknown, year: string | null): boolean {
 	const paperYear = Number.parseInt(year ?? "", 10);
 	const created = typeof createdAt === "string" ? Number.parseInt(createdAt.slice(0, 4), 10) : NaN;
 	if (!Number.isFinite(paperYear) || !Number.isFinite(created)) return false;
@@ -551,13 +534,7 @@ async function fetchCodeLink(searchKey: string, paper: CodePaperContext, token: 
 		q: `"${searchKey}" in:name,description,readme`,
 		per_page: "3",
 	});
-	const response = await fetchGithub(`${GITHUB_SEARCH_URL}?${params}`, {
-		headers: {
-			"User-Agent": userAgent(),
-			Accept: "application/vnd.github+json",
-			...(token ? { Authorization: `Bearer ${token}` } : {}),
-		},
-	});
+	const response = await fetchGithub(`${GITHUB_SEARCH_URL}?${params}`, { headers: githubHeaders(token) });
 	return pickCodeRepo((await response.json()) as Record<string, any>, paper);
 }
 
@@ -581,15 +558,21 @@ export async function addCodeLinks<T extends EnrichableRecord & {
 ): Promise<Array<Enriched<T> & { code_url?: string }>> {
 	// Pass 1: the abstract names the repository -- the record is done and
 	// spends no search budget.
+	// Records that already carry a link (the code-first searchers set it)
+	// are left alone in both passes: only empty fields are filled, never
+	// rewritten, and they must not spend the lookup budget.
+	const linked = (record: T): boolean => typeof (record as { code_url?: unknown }).code_url === "string"
+		&& !!(record as { code_url?: string }).code_url;
 	const abstractUrl = new Map<T, string>();
 	for (const record of records) {
+		if (linked(record)) continue;
 		const url = codeUrlFromAbstract(record.abstract);
 		if (url !== null) abstractUrl.set(record, url);
 	}
 	// Pass 2 candidates: records still without a link, one per search key
 	// (codeLookupCandidates dedupes -- duplicate records share one search
 	// and one capped slot).
-	const searchable = records.filter((record) => !abstractUrl.has(record));
+	const searchable = records.filter((record) => !abstractUrl.has(record) && !linked(record));
 	const candidates = codeLookupCandidates(searchable);
 	const eligible = new Set(
 		searchable.map((record) => codeSearchKey(record)).filter(Boolean),
@@ -622,6 +605,7 @@ export async function addCodeLinks<T extends EnrichableRecord & {
 	// One output per input, in input order -- the engine re-zips kept and
 	// dropped records positionally and relies on this 1:1 mapping.
 	const out: Array<Enriched<T> & { code_url?: string }> = records.map((record) => {
+		if (linked(record)) return record;
 		const fromAbstract = abstractUrl.get(record);
 		if (fromAbstract !== undefined) {
 			return {

@@ -29,6 +29,7 @@ import {
 } from "../src/dialog-state.ts";
 import { renderDigest } from "../src/digest.ts";
 import { DEFAULT_PER_SOURCE, MAX_PER_SOURCE, runSearch, SEARCHERS, type SearchOptions, type SearchPayload } from "../src/search.ts";
+import { CODE_SEARCHERS } from "../src/codesearch.ts";
 import type { ResultFilters } from "../src/pipeline.ts";
 import {
 	type BlockFormQuery,
@@ -163,6 +164,9 @@ interface IntakeValues {
 	authorsOther?: boolean;
 	/** The author names the picker listed (see venuesListed). */
 	authorsListed?: string[];
+	/** Code-first sources (the Code tab): repositories first, papers
+	 * resolved from what they cite. Empty/undefined = off. */
+	codeSources?: string[] | undefined;
 }
 
 /** Intake wizard strings per dialog language (the dialogs follow the
@@ -214,6 +218,12 @@ const SEARCH_TEXT: Record<DialogLang, {
 	periodCustom: string;
 	countTab: string;
 	countTitle: string;
+	/** Code tab: head row, per-source labels and descriptions. */
+	codeTab: string;
+	codeTitle: string;
+	codeHead: string;
+	codeNext: string;
+	codeSource: Record<string, [string, string]>;
 	countDefault: string;
 	countMax: string;
 	countCustom: string;
@@ -286,6 +296,16 @@ const SEARCH_TEXT: Record<DialogLang, {
 		periodCustom: "Eigener Zeitraum:",
 		countTab: "Treffer",
 		countTitle: "Wie viele Treffer je Quelle (arXiv, CrossRef, OpenAlex, Semantic Scholar)?",
+		codeTab: "Code",
+		codeTitle: "Zusätzlich Code-Repositories durchsuchen und die Paper auflösen, die sie zitieren (Repository zuerst, Paper danach). Kostet je nach Auswahl etwa 30-90 s pro Lauf.",
+		codeHead: "Paper mit Code suchen",
+		codeNext: "Weiter",
+		codeSource: {
+			"hf-papers": ["Hugging Face Papers", "arXiv-Paper mit verlinktem Repository; schnell, eine Anfrage"],
+			"github-readme": ["GitHub README-Suche", "Repositories, deren README arxiv.org nennt; GitHub-Budget 10/min"],
+			"awesome-lists": ["Kuratierte Listen (awesome.ecosyste.ms)", "Awesome-Listen per Topic, Einträge gegen die Blöcke geprüft"],
+			"gee-github": ["Google Earth Engine (GitHub)", "GEE-Repositories, deren README eine DOI nennt"],
+		},
 		countDefault: `${DEFAULT_PER_SOURCE} (Standard)`,
 		countMax: `${MAX_PER_SOURCE} (Limit)`,
 		countCustom: "Eigene Anzahl:",
@@ -360,6 +380,16 @@ const SEARCH_TEXT: Record<DialogLang, {
 		periodCustom: "Custom range:",
 		countTab: "Records",
 		countTitle: "How many records per source (arXiv, CrossRef, OpenAlex, Semantic Scholar)?",
+		codeTab: "Code",
+		codeTitle: "Additionally search code repositories and resolve the papers they cite (repository first, paper second). Adds roughly 30-90 s per run depending on the selection.",
+		codeHead: "Search for papers with code",
+		codeNext: "Next",
+		codeSource: {
+			"hf-papers": ["Hugging Face Papers", "arXiv papers with a linked repository; fast, one request"],
+			"github-readme": ["GitHub README search", "repositories whose README cites arxiv.org; GitHub budget 10/min"],
+			"awesome-lists": ["Curated lists (awesome.ecosyste.ms)", "awesome lists found by topic, entries matched against the blocks"],
+			"gee-github": ["Google Earth Engine (GitHub)", "GEE repositories whose README cites a DOI"],
+		},
 		countDefault: `${DEFAULT_PER_SOURCE} (default)`,
 		countMax: `${MAX_PER_SOURCE} (limit)`,
 		countCustom: "Custom count:",
@@ -428,12 +458,13 @@ function periodToRange(raw: unknown): { yearFrom?: number; yearTo?: number } | n
 
 /** Engine options shared by the tool and the command path: the confirmed
  * wizard values, minus the filters (see filtersFor). */
-function searchOptionsFor(confirmed: IntakeValues): Pick<SearchOptions, "query" | "queryVariants" | "perSource" | "groupTerms"> {
+function searchOptionsFor(confirmed: IntakeValues): Pick<SearchOptions, "query" | "queryVariants" | "perSource" | "groupTerms" | "codeSources"> {
 	return {
 		query: confirmed.query,
 		queryVariants: confirmed.queryVariants,
 		perSource: confirmed.perSource,
 		groupTerms: confirmed.groupTerms,
+		codeSources: confirmed.codeSources,
 	};
 }
 
@@ -613,6 +644,20 @@ async function intakeWizard(
 			// On the proposal-confirm path the proposal IS the answer; a bare
 			// call starts genuinely unanswered (no pre-set check marks).
 			...(query.trim() ? { initialIsAnswer: true } : {}),
+		},
+		{
+			// Code-first search: the four sources are always on screen,
+			// unchecked; the head row "Search for papers with code" is a
+			// master switch (checks all, else clears all), each source stays
+			// individually untickable. Off by default (30-90 s per run); an
+			// agent code_sources proposal arrives with those sources checked.
+			kind: "checkbox", id: "code", tab: text.codeTab, title: text.codeTitle,
+			items: Object.keys(CODE_SEARCHERS).map((id) => {
+				const [label, description] = text.codeSource[id] ?? [id, ""];
+				return { id, label, ...(description ? { description } : {}) };
+			}),
+			selectAllLabel: text.codeHead, nextLabel: text.codeNext, optional: true, masterRow: true,
+			...(proposed.codeSources?.length ? { preselected: proposed.codeSources } : {}),
 		},
 		{
 			// Journal filter: the top journals for this query load INTO the
@@ -869,6 +914,10 @@ async function intakeWizard(
 			values.perSource = count;
 		}
 	}
+	// Code tab: the checked sources while the head is on, else nothing
+	// (the reducer exports an empty list for a closed head).
+	const codePicked = Array.isArray(result.code) ? (result.code as string[]).filter((id) => id in CODE_SEARCHERS) : [];
+	values.codeSources = codePicked.length ? codePicked : undefined;
 	// Optional filters, strictly opt-in: empty fields mean "no filter";
 	// unparseable input stays off, loudly.
 	const numberField = (raw: unknown, label: string, float: boolean): number | undefined => {
@@ -1054,6 +1103,9 @@ export default function literatureSearch(pi: ExtensionAPI) {
 			sources: Type.Optional(Type.Array(Type.String(), {
 				description: `Sources to query, default all of: ${Object.keys(SEARCHERS).join(", ")}`,
 			})),
+			code_sources: Type.Optional(Type.Array(Type.String(), {
+				description: `Code-first sources: search code repositories FIRST and resolve the papers they cite (repository link attached, metadata from arXiv/OpenAlex). Use when the user asks for papers WITH code / implementations. Any of: ${Object.keys(CODE_SEARCHERS).join(", ")}. Default: none (adds 30-90 s per run). In the wizard this only prefills the Code tab.`,
+			})),
 			group_terms: Type.Optional(Type.Array(Type.Array(Type.String()), {
 				description: "Deterministic grouping rules: array of term groups (see tool description). Omit for ungrouped results.",
 			})),
@@ -1112,6 +1164,7 @@ export default function literatureSearch(pi: ExtensionAPI) {
 				minJournalScore: params.min_journal_score,
 				venues: params.venues,
 				authors: params.authors,
+				codeSources: params.code_sources?.length ? params.code_sources : undefined,
 			};
 			if (ctx.hasUI) {
 				const sources = params.sources?.length ? params.sources : Object.keys(SEARCHERS);

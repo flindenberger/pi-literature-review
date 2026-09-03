@@ -6,7 +6,16 @@
  */
 
 import assert from "node:assert/strict";
-import { chatModel, configPath, configuredGenerateModel, isPlausibleMailto, LLM_DEFAULTS, llmConfig } from "./config.ts";
+import {
+	chatModel,
+	codeListTopics,
+	configPath,
+	configuredGenerateModel,
+	DEFAULT_CODE_LIST_TOPICS,
+	isPlausibleMailto,
+	LLM_DEFAULTS,
+	llmConfig,
+} from "./config.ts";
 
 /* ---------------- configPath ---------------- */
 {
@@ -135,6 +144,14 @@ import { chatModel, configPath, configuredGenerateModel, isPlausibleMailto, LLM_
 	assert.equal("apiKey" in llmConfig({}, {}), false);
 	assert.equal(llmConfig({}, { apiKey: "sk-stored" }).apiKey, "sk-stored");
 	assert.equal(llmConfig({ PI_LITERATURE_REVIEW_LLM_API_KEY: "sk-env" }, { apiKey: "sk-stored" }).apiKey, "sk-env");
+}
+
+// codeListTopics: env comma list > config list > the domain default.
+{
+	assert.deepEqual(codeListTopics({}, {}), DEFAULT_CODE_LIST_TOPICS);
+	assert.deepEqual(codeListTopics({}, { codeListTopics: ["hydrology", " gis "] }), ["hydrology", "gis"]);
+	assert.deepEqual(codeListTopics({ PI_LITERATURE_REVIEW_CODE_LIST_TOPICS: "a, b,,c" }, { codeListTopics: ["x"] }), ["a", "b", "c"]);
+	assert.deepEqual(codeListTopics({}, { codeListTopics: [] }), DEFAULT_CODE_LIST_TOPICS);
 }
 
 console.log("config.test.ts: all assertions passed");

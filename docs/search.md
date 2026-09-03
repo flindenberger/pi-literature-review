@@ -40,6 +40,21 @@ language (German/English).
   only the main query.
 - **Search period** -- last 5/10/20 years, all years, or `2015-2024`.
 - **Records** -- per source: 5, 15, 50 (the politeness cap), or custom.
+- **Code** -- four code-first sources, unticked, under a head row "Search
+  for papers with code" that ticks them all (or clears them): Hugging
+  Face Papers (arXiv papers with the repository linked on their Hugging
+  Face page), GitHub README search (repositories whose README cites
+  arxiv.org), curated lists (awesome lists found by GitHub topic on
+  awesome.ecosyste.ms, entries matched against the blocks) and Google
+  Earth Engine repositories (README names the GEE code editor and cites a
+  DOI). These search repositories FIRST and resolve the papers they cite
+  at arXiv / OpenAlex; a repository created more than a year after its
+  paper (usually a project citing it, not its code) moves the record to
+  the dropped table with the reason, more than five years and the pair is
+  not listed at all; when the found repository is an overview page, the
+  linked repository whose name matches the paper title is taken instead.
+  Off by default: the four together add roughly 30-90 seconds per run. No
+  key involved.
 - **Journals / Authors** -- the top journals and authors OpenAlex holds
   for this query, loaded as checkbox lists with hit counts, the journal's
   2-year citedness (open impact-factor analog) and the author's citations
@@ -68,9 +83,11 @@ consonant+y -> ies -- no stemming, no synonyms.
 
 ## The pipeline (fixed code)
 
-fetch per source and query (raw counts recorded) -> junk filter (no title
+fetch per source and query (raw counts recorded; the code-first sources
+run here too, counted as "other methods") -> junk filter (no title
 or no authors) -> deduplication by DOI / arXiv ID across sources and
-variants -> HTTP verification against doi.org / arxiv.org -> enrichment
+variants -> late code pairs (repository created more than a year after the
+paper) to the dropped table -> HTTP verification against doi.org / arxiv.org -> enrichment
 via an OpenAlex identifier lookup (missing citation counts, journal names,
 abstracts filled from OpenAlex, else from Semantic Scholar by DOI, and marked `*`; journal 2-year citedness; a code
 link from the abstract -- GitHub, GitLab, Bitbucket, Codeberg, Hugging Face,
@@ -95,6 +112,9 @@ self-contained and offline-readable.
   duplicates merged -> screened -> removed without abstract -> excluded by
   filters -> included) and the labeling rule -- the material of a
   PRISMA-2020 flow diagram and a PRISMA-S methods section.
+- **Code** column (only when any record carries a link): the repository,
+  labeled by host; provenance in the JSON (`enriched.code_url`: abstract,
+  github, or the code-first source that started from the repository).
 - **Query results** and **Dropped records** with identical columns;
   multi-level click sorting; expandable abstracts; folded author lists;
   a **BibTeX** button per row (deterministic entry from the record's
@@ -125,6 +145,8 @@ line per record), never the full JSON.
 `group_terms` (the base query's blocks; drive fetch and label),
 `min_cites`, `min_journal_score`, `year_from` / `year_to`, `venues`,
 `authors`, `require_pdf`, `verified_only`, `sort` (`cites` | `year`),
-`enrich` (default on), `html_file`.
+`enrich` (default on), `html_file`, `code_sources` (any of `hf-papers`,
+`github-readme`, `awesome-lists`, `gee-github`; default none -- in the
+wizard this prefills the Code tab).
 
 Where it lives in the code: see [Development -> Module map](development.md#module-map).

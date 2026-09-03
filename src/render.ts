@@ -48,9 +48,18 @@ interface RenderRecord {
 	found_by?: string[];
 	/** Journal-level 2-yr mean citedness from OpenAlex (open JIF analog). */
 	journal_2yr_citedness?: number | null;
-	/** GitHub repository named in the abstract or found by an arXiv-id
-	 * search -- a disclosed heuristic, not a verified artifact link. */
+	/** Repository named in the abstract, found by the identifier search, or
+	 * the repository a code-first source started from -- a disclosed
+	 * heuristic, not a verified artifact link. */
 	code_url?: string;
+	/** Code-first records: the database that delivered the metadata
+	 * ("arxiv" | "openalex") while `sources` names the code platform. */
+	resolved_via?: string;
+	/** Code-first pair gate: "late" (repository created long after the
+	 * paper; record sits in the dropped table), "unchecked" (no repository
+	 * metadata available). */
+	code_gate?: "late" | "unchecked";
+	code_gate_note?: string;
 }
 
 /** The search payload (runSearch output / JSON sidecar) as the page reads
@@ -77,9 +86,14 @@ export interface RenderPayload {
 	/** Boolean bulk-endpoint query sent to Semantic Scholar per query (+/|
 	 * syntax, citation-sorted). */
 	semanticscholar_queries?: string[] | null;
+	/** Code-first sources that ran (repositories first, papers resolved from
+	 * what they cite) and the search text each received per query. */
+	code_sources_used?: string[] | null;
+	code_queries?: Record<string, string[]> | null;
 	/** Raw per-source x query hit counts before any processing (PRISMA-S
-	 * "records identified"). */
-	source_counts?: Array<{ source: string; query: string; count: number }> | null;
+	 * "records identified"); code-first sources add the repository->paper
+	 * candidates gathered before resolution. */
+	source_counts?: Array<{ source: string; query: string; count: number; candidates?: number }> | null;
 	/** PRISMA flow numbers of the run; every value is the plain length of a
 	 * list the run actually produced. */
 	flow?: {
@@ -87,6 +101,9 @@ export interface RenderPayload {
 		junk_removed: number;
 		duplicates_removed: number;
 		screened: number;
+		/** Code-first pairs whose repository was created long after the
+		 * paper, moved to the dropped table (only when a code source ran). */
+		late_code_pairs_removed?: number;
 		/** Records still without an abstract after enrichment. */
 		no_abstract_removed?: number;
 		excluded_by_filters: number;
@@ -870,7 +887,7 @@ export function renderHtml(payload: RenderPayload, options?: { network?: boolean
 		? `\n<p class="meta">Network = opens a citation-context graph of the paper in a new tab: its references and citing works, related by the classic bibliometric similarity measures (bibliographic coupling, Kessler 1963; co-citation analysis, Small 1973 -- the graph page explains how each is used). The page fetches this live from the open OpenAlex API when opened (internet needed then; only the paper's DOI or title is sent, never paper content) and involves no language model.</p>`
 		: "";
 	const codeFootnote = withCode
-		? `\n<p class="meta">&sup2; Code = a repository found deterministically: preferably the code URL the paper's own abstract names (GitHub, GitLab, Bitbucket, Codeberg, Hugging Face, Zenodo, OSF), else the best-matching repository from one GitHub search per record -- by arXiv id, or by DOI for journal papers (the repository mentions the identifier in its name, description or README; aggregator/reading-list repositories and repositories created more than a year after the paper are skipped, and a DOI match is only linked when the repository owner's name matches an author). The search path is a heuristic pointer to likely code, not a verified artifact link -- follow it and judge. Recorded in the JSON as <code>code_url</code>, provenance in <code>enriched</code> (abstract | github).</p>`
+		? `\n<p class="meta">&sup2; Code = a repository found deterministically, by one of two paths. Paper first: preferably the code URL the paper's own abstract names (GitHub, GitLab, Bitbucket, Codeberg, Hugging Face, Zenodo, OSF), else the best-matching repository from one GitHub search per record -- by arXiv id, or by DOI for journal papers (the repository mentions the identifier in its name, description or README; aggregator/reading-list repositories and repositories created more than a year after the paper are skipped, and a DOI match is only linked when the repository owner's name matches an author). Repository first (code sources, when enabled): repositories are searched for the query and the paper is resolved from the identifiers they cite -- Hugging Face Papers (repository as linked on the paper's Hugging Face page by the community), GitHub README searches, curated awesome lists (awesome.ecosyste.ms) and Google Earth Engine repositories; the paper's metadata then comes from arXiv or OpenAlex (<code>resolved_via</code>), and a repository created more than a year after the paper moves the record to the dropped table with the reason (usually a project citing the paper, not its code; more than five years after and the pair is not listed at all); when the found repository is a paper list, the linked repository whose name matches the paper title is taken instead; repository creation dates come from repos.ecosyste.ms (data CC-BY-SA). Both paths are heuristic pointers to likely code, not verified artifact links -- follow it and judge. Recorded in the JSON as <code>code_url</code>, provenance in <code>enriched</code> (abstract | github | hf-papers | github-readme | awesome-lists | gee-github).</p>`
 		: "";
 
 	const variants = payload.query_variants ?? [];
@@ -914,6 +931,25 @@ export function renderHtml(payload: RenderPayload, options?: { network?: boolean
 		payload.semanticscholar_queries,
 		"Bulk-endpoint boolean syntax (+ = required block, | = OR); the bulk endpoint has no relevance ranking, results arrive sorted by citation count.",
 	);
+	// Code-first sources: what each repository search received. Labels and
+	// notes per source; unknown source names (a newer sidecar) fall back to
+	// the raw name.
+	const CODE_SOURCE_LABELS: Record<string, [string, string]> = {
+		"hf-papers": ["Sent to Hugging Face Papers", "Relevance search over arXiv papers indexed by Hugging Face; the repository is the one linked on the paper's Hugging Face page (community-linked, not an author declaration)."],
+		"github-readme": ["Sent to GitHub (README search)", "Repositories whose README cites arxiv.org and matches the words; aggregator and star-list repositories skipped; identifiers then read from each README."],
+		"gee-github": ["Sent to GitHub (Google Earth Engine)", "Repositories whose README names the Earth Engine code editor and cites doi.org; identifiers then read from each README."],
+		"awesome-lists": ["Matched against curated lists", "Awesome lists found by GitHub topic on awesome.ecosyste.ms; an entry matches when its name, description or category hits every block; identifiers then read from the repository README."],
+	};
+	const codeQueries = payload.code_queries ?? {};
+	const codeQueryRows = (payload.code_sources_used ?? [])
+		.map((source) => {
+			const [label, note] = CODE_SOURCE_LABELS[source] ?? [`Sent to ${source}`, undefined];
+			return sentRows(label, codeQueries[source], note);
+		})
+		.join("");
+	const codeSourcesRow = payload.code_sources_used?.length
+		? `\n<dt>Code sources</dt><dd>${esc(payload.code_sources_used.join(", "))}<span class="note"> -- repositories first, papers resolved at arXiv / OpenAlex (see footnote &sup2;)</span></dd>`
+		: "";
 	// Grouping: per query on multi-query runs; a record is on_target when it
 	// fully matches ANY confirmed query's blocks. Single-query runs and old
 	// sidecars keep the one-line form.
@@ -931,8 +967,10 @@ export function renderHtml(payload: RenderPayload, options?: { network?: boolean
 	// without counts/flow show whatever rows they carry.
 	const identifiedRows = payload.source_counts?.length
 		? `\n<dt>Records identified</dt>${payload.source_counts
-			.map((entry) => `<dd>${queryLabels.size > 1 ? `${queryLabels.get(entry.query) ?? "?"} ` : ""}${esc(entry.source)}: ${entry.count}</dd>`)
-			.join("")}<dd><span class="note">raw hits per source and query, before deduplication and filtering.</span></dd>`
+			.map((entry) => `<dd>${queryLabels.size > 1 ? `${queryLabels.get(entry.query) ?? "?"} ` : ""}${esc(entry.source)}: ${entry.count}${
+				typeof entry.candidates === "number" ? ` (resolved from ${entry.candidates} repository candidate(s))` : ""}</dd>`)
+			.join("")}<dd><span class="note">raw hits per source and query, before deduplication and filtering${
+				payload.code_sources_used?.length ? "; code sources count resolved papers" : ""}.</span></dd>`
 		: "";
 	// The chain's last step names its destination honestly: these records
 	// are pipeline survivors ELIGIBLE for the human's selection, not yet
@@ -963,6 +1001,9 @@ export function renderHtml(payload: RenderPayload, options?: { network?: boolean
 	// filter step carries its per-filter breakdown inline.
 	const flowRow = flow
 		? `\n<dt>Screening flow</dt><dd>${flow.identified} record(s) identified &rarr; ${flow.junk_removed} removed as uncitable (no title or no authors) &rarr; ${flow.duplicates_removed} duplicate(s) merged &rarr; ${flow.screened} screened${
+			typeof flow.late_code_pairs_removed === "number"
+				? ` &rarr; ${flow.late_code_pairs_removed} code pair(s) moved to dropped (repository created long after the paper)`
+				: ""}${
 			typeof flow.no_abstract_removed === "number"
 				? ` &rarr; ${flow.no_abstract_removed} removed without abstract`
 				: ""} &rarr; ${flow.excluded_by_filters} excluded by the user filters${
@@ -1074,7 +1115,7 @@ a.flow-download:hover { background: #e6e6df; }
 <dl class="meta">
 <dt>Query</dt><dd>${esc(queryLabel)}</dd>${variantRows}
 <dt>Generated</dt><dd>${esc(payload.generated)} (UTC)</dd>
-<dt>Sources</dt><dd>${esc(payload.sources_used.join(", ")) || "none reachable"}</dd>${sourceFailureRows}${lookupFailureRows}${
+<dt>Sources</dt><dd>${esc(payload.sources_used.join(", ")) || "none reachable"}</dd>${codeSourcesRow}${sourceFailureRows}${lookupFailureRows}${
 	payload.per_source ? `\n<dt>Records per source</dt><dd>${esc(payload.per_source)}</dd>` : ""}
 <dt>User filters</dt><dd>${esc(describeFilters(payload.filters))}</dd>
 <dt>Sort</dt><dd>${esc(payload.sort ?? "source order")}</dd>${flowRow || `
@@ -1086,11 +1127,14 @@ a.flow-download:hover { background: #e6e6df; }
 <dt>Search date</dt><dd>${esc(payload.generated)} (UTC)</dd>
 <dt>Query</dt><dd>${esc(queryLabel)}</dd>${variantRows}
 <dt>Databases</dt><dd>${esc(payload.sources_used.join(", ")) || "none reachable"}</dd>${
+	payload.code_sources_used?.length
+		? `\n<dt>Other methods</dt><dd>code repositories: ${esc(payload.code_sources_used.join(", "))} (repository search first, papers resolved from the identifiers the repositories cite)</dd>`
+		: ""}${
 	payload.per_source ? `\n<dt>Requested depth</dt><dd>${esc(payload.per_source)} record(s) per source and query</dd>` : ""}
 <dt>User filters</dt><dd>${esc(describeFilters(payload.filters))}</dd>
 </dl>${
-	arxivQueryRows || openalexQueryRows || crossrefQueryRows || semanticscholarQueryRows
-		? `\n<h3>Database-specific search translation</h3>\n<dl class="meta">${arxivQueryRows}${openalexQueryRows}${crossrefQueryRows}${semanticscholarQueryRows}\n</dl>`
+	arxivQueryRows || openalexQueryRows || crossrefQueryRows || semanticscholarQueryRows || codeQueryRows
+		? `\n<h3>Database-specific search translation</h3>\n<dl class="meta">${arxivQueryRows}${openalexQueryRows}${crossrefQueryRows}${semanticscholarQueryRows}${codeQueryRows}\n</dl>`
 		: ""}
 <h3>Retrieval and screening</h3>
 <dl class="meta">${identifiedRows}${excludedRows}${verificationRow}${groupingRows}

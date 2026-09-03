@@ -396,4 +396,12 @@ const chatReport: ChatReport = {
 	assert.ok(!renderDigest(payload({}), "/data/queries/x.html").includes("ABSTRACT LOOKUP FAILED"));
 }
 
+// Code-first sources get their own line, named as "other methods" -- and
+// only when a code source ran.
+{
+	const withCode = renderDigest({ ...payload({}), code_sources_used: ["hf-papers", "gee-github"] } as any, null);
+	assert.ok(withCode.includes("Code sources: hf-papers, gee-github (repositories first, papers resolved at arXiv / OpenAlex)"));
+	assert.ok(!renderDigest(payload({}) as any, null).includes("Code sources:"));
+}
+
 console.log("digest.test.ts: all assertions passed");

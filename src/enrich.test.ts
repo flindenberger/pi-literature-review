@@ -407,4 +407,28 @@ const noPaper = { year: null, title: "" };
 	}
 }
 
+// addCodeLinks leaves records that already carry a code_url alone: no
+// abstract overwrite (pass 1), no GitHub lookup (pass 2), provenance kept.
+{
+	const calls: string[] = [];
+	const realFetch = globalThis.fetch;
+	globalThis.fetch = (async (url: unknown) => {
+		calls.push(String(url));
+		return new Response(JSON.stringify({ items: [] }), { status: 200 });
+	}) as typeof fetch;
+	try {
+		const linked = {
+			title: "Linked", doi: "", arxiv_id: "2411.01411", cites: null, venue: "", year: "2024", authors: ["A"],
+			abstract: "code at https://github.com/other/from-abstract",
+			code_url: "https://github.com/microsoft/ai4g-flood", enriched: { code_url: "hf-papers" },
+		};
+		const out = await addCodeLinks([linked], () => {});
+		assert.equal(calls.length, 0);
+		assert.equal(out[0].code_url, "https://github.com/microsoft/ai4g-flood");
+		assert.deepEqual(out[0].enriched, { code_url: "hf-papers" });
+	} finally {
+		globalThis.fetch = realFetch;
+	}
+}
+
 console.log("enrich.test.ts: all assertions passed");

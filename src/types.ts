@@ -26,6 +26,21 @@ export interface SourceRecord {
 	venue_id?: string;
 	/** Journal-level 2-yr mean citedness from OpenAlex; set by enrichment. */
 	journal_2yr_citedness?: number;
+	/** Code repository URL: set by the code-first searchers (codesearch.ts)
+	 * or, later, by the code-link stage (enrich.ts). Never overwritten. */
+	code_url?: string;
+	/** Provenance of filled fields (field -> provider), see enrich.ts. */
+	enriched?: Record<string, string>;
+	/** Code-first records only: which database delivered the metadata
+	 * ("arxiv" | "openalex") -- the `source` names the code platform. */
+	resolved_via?: string;
+	/** Code-first records only: "late" when the repository was created more
+	 * than a year after the paper (the pair failed the date gate; the record
+	 * lands in the dropped table), "unchecked" when no repository metadata
+	 * was available. Absent = passed. */
+	code_gate?: "late" | "unchecked";
+	/** Human-readable reason for a "late" gate result. */
+	code_gate_note?: string;
 }
 
 /**

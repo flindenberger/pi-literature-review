@@ -1093,4 +1093,44 @@ const baseReport: SynthReport = {
 	));
 }
 
+// Code-first sources: skim row, "Other methods" + "Sent to" rows with the
+// per-source note, candidates on the identified rows, the flow step, the
+// extended footnote; a dropped late pair keeps its repo link in the Code
+// cell with the gate note as reason. Old sidecars (no fields) unchanged.
+{
+	const codeRun = renderHtml({
+		...payload,
+		code_sources_used: ["hf-papers", "awesome-lists"],
+		code_queries: {
+			"hf-papers": ["sandbar river sentinel"],
+			"awesome-lists": ["lists tagged remote-sensing; entries matched against the blocks (sandbar) AND (river)"],
+		},
+		source_counts: [
+			{ source: "arxiv", query: payload.query, count: 3 },
+			{ source: "hf-papers", query: payload.query, count: 2, candidates: 7 },
+		],
+		flow: { identified: 5, junk_removed: 0, duplicates_removed: 0, screened: 5, late_code_pairs_removed: 1, no_abstract_removed: 0, excluded_by_filters: 0, included: 2 },
+		results: [{ ...payload.results[0], sources: ["hf-papers"], resolved_via: "arxiv", code_url: "https://github.com/acme/sandbar-net", enriched: { code_url: "hf-papers" } }],
+		dropped: [{
+			reason: "found via code repository https://github.com/x/cropmask, created 2 years after the paper -- probably a project citing the paper, not the paper's own code",
+			record: { ...payload.results[1], sources: ["awesome-lists"], code_url: "https://github.com/x/cropmask", code_gate: "late" },
+		}],
+	});
+	assert.ok(codeRun.includes("<dt>Code sources</dt><dd>hf-papers, awesome-lists"));
+	assert.ok(codeRun.includes("<dt>Other methods</dt><dd>code repositories: hf-papers, awesome-lists"));
+	assert.ok(codeRun.includes("<dt>Sent to Hugging Face Papers</dt><dd>sandbar river sentinel</dd>"));
+	assert.ok(codeRun.includes("community-linked, not an author declaration"));
+	assert.ok(codeRun.includes("<dt>Matched against curated lists</dt><dd>lists tagged remote-sensing;"));
+	assert.ok(codeRun.includes("hf-papers: 2 (resolved from 7 repository candidate(s))"));
+	assert.ok(codeRun.includes("1 code pair(s) moved to dropped (repository created long after the paper)"));
+	assert.ok(codeRun.includes("Repository first (code sources, when enabled)"));
+	assert.ok(codeRun.includes("repos.ecosyste.ms (data CC-BY-SA)"));
+	assert.ok(codeRun.includes("abstract | github | hf-papers | github-readme | awesome-lists | gee-github"));
+	assert.ok(codeRun.includes("https://github.com/x/cropmask"));
+	assert.ok(codeRun.includes("created 2 years after the paper"));
+	assert.ok(!html.includes("<dt>Code sources</dt>"));
+	assert.ok(!html.includes("<dt>Other methods</dt>"));
+	assert.ok(!html.includes("code pair(s) moved to dropped"));
+}
+
 console.log("render.test.ts: all assertions passed");

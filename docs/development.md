@@ -8,7 +8,8 @@ extensions/         Pi adapters -- search.ts, selection.ts, synthesis.ts (one to
                     dialogs.ts (the tabbed wizard overlay + RPC fallback), pi-model.ts (one call on the Pi model)
 src/                the engines, Pi-free: search pipeline, render, network graph, selection,
                     synthesis (extract, retrieve, protocol, citation gate), dialog reducer, config, CLI
-src/sources/        the four source clients (arxiv, crossref, openalex, semanticscholar)
+src/sources/        the source clients (arxiv, crossref, openalex, semanticscholar) plus the
+                    code-side clients (github, huggingface, ecosystems) and the shared pacer
                     and polite.ts, the shared paced/retrying request helper
 docs/               this documentation, screenshots under docs/img/
 tsconfig.json       type-check settings (strict, NodeNext, .ts imports) for the editor and `tsc`
@@ -31,10 +32,14 @@ Where each stage lives; the adapter/engine pair shares its basename.
 | `extensions/search.ts` | the `pi-literature-search` tool + `/lit-search` command: intake wizard (tabs, variant suggestions via the Pi model, journal/author loaders), digest card |
 | `src/search.ts` | run orchestration: per source and query fetch, pipeline steps in order, payload assembly, source failures |
 | `src/sources/arxiv.ts`, `crossref.ts`, `openalex.ts`, `semanticscholar.ts` | one client per source: query building (booleans, author scope), record normalization; OpenAlex also holds the facet queries and the abstract reconstruction |
-| `src/sources/polite.ts` | the shared politeness: per-source request spacing, timeout, retry on rate-limit answers (used by the clients and the GitHub code-link lookup) |
+| `src/sources/polite.ts` | the shared politeness: per-source request spacing, timeout, retry on rate-limit answers (used by every client) |
+| `src/sources/github.ts` | GitHub: the one search pacer both code directions share, aggregator-name filter, repository search, raw README fetch |
+| `src/sources/huggingface.ts` | Hugging Face Papers search (arXiv id + linked repository per hit; undocumented site API, shape pinned) |
+| `src/sources/ecosystems.ts` | repos.ecosyste.ms (repository created date for the pair gate) and awesome.ecosyste.ms (lists by topic, structured list entries; slug URLs only) |
+| `src/codesearch.ts` | the code-first searchers (hf-papers, github-readme, awesome-lists, gee-github): repositories first, identifiers out of READMEs, resolution at arXiv / OpenAlex, the date gate; injectable clients for offline tests |
 | `src/pipeline.ts` | junk filter, deduplication, term matching, block labeling with evidence, the metadata filters, abstract gate |
 | `src/verify.ts` | the trust gate: DOI / arXiv ID resolution over HTTP |
-| `src/enrich.ts` | OpenAlex identifier lookup (cites, venue, abstract), journal 2-year citedness, author metrics, code links (abstract URL on any known host, else a GitHub search per arXiv id or DOI with date/owner guards) |
+| `src/enrich.ts` | OpenAlex identifier lookup (cites, venue, abstract), journal 2-year citedness, author metrics, code links (abstract URL on any known host, else a GitHub search per arXiv id or DOI with date/owner guards; records already linked by a code-first source are left alone) |
 | `src/intake.ts` | query parsing: block expressions, derived blocks, stopwords, prose detection, variant-line parsing and ordering, year ranges |
 | `src/render.ts` | the results page: tables, sorting, BibTeX, selection bar, search documentation block, footnotes |
 | `src/network.ts` | the static citation-graph page (`network.html`) with its embedded fetch + layout script |

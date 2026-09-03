@@ -325,6 +325,50 @@ function escapeRegExp(value: string): string {
 }
 
 /**
+ * Code-first pairs that failed the date gate (repository created more than
+ * a year after the paper -- measured: almost always a project citing the
+ * paper, not its code). Runs AFTER dedupe. A record that ONLY code sources
+ * delivered moves to the dropped list with the gate note as its reason --
+ * still listed, still selectable (cited methods are sometimes exactly what
+ * the reader wants). A record that a database ALSO delivered stays in the
+ * results, but the late link is removed from it (a wrong repository must
+ * not ride on a correct paper). A "late" flag whose note names a different
+ * repository than the record now carries came in through the merge of a
+ * passing pair with a late one: the flag is cleared, the link kept. Pure.
+ */
+export function dropLateCodePairs(
+	records: MergedRecord[],
+	isCodeSource: (source: string) => boolean,
+): { kept: MergedRecord[]; dropped: Array<{ record: MergedRecord; reason: string }>; stripped: MergedRecord[] } {
+	const kept: MergedRecord[] = [];
+	const dropped: Array<{ record: MergedRecord; reason: string }> = [];
+	const stripped: MergedRecord[] = [];
+	for (const record of records) {
+		if (record.code_gate !== "late") {
+			kept.push(record);
+			continue;
+		}
+		const lateUrl = /code repository (\S+),/.exec(record.code_gate_note ?? "")?.[1];
+		const { code_gate: _gate, code_gate_note: note, ...rest } = record;
+		if (lateUrl && record.code_url && record.code_url !== lateUrl) {
+			kept.push(rest);
+			continue;
+		}
+		if (record.sources.every(isCodeSource)) {
+			dropped.push({ record, reason: note ?? "code repository created long after the paper" });
+			continue;
+		}
+		const { code_url: _url, resolved_via: _via, ...clean } = rest;
+		const enriched = { ...(clean.enriched ?? {}) };
+		delete enriched.code_url;
+		const cleaned: MergedRecord = Object.keys(enriched).length ? { ...clean, enriched } : (({ enriched: _e, ...noEnriched }) => noEnriched)(clean);
+		kept.push(cleaned);
+		stripped.push(cleaned);
+	}
+	return { kept, dropped, stripped };
+}
+
+/**
  * Whole-word term matching. A term only matches a whole word: no word
  * character may touch it on either side (explicit lookarounds instead of
  * \b, which flips at non-word term edges like "sentinel-2"), so "s2" does

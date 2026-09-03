@@ -11,7 +11,7 @@ working directory (override with `PI_LITERATURE_REVIEW_HOME`).
 node src/cli.ts "<query>" [-n PER_SOURCE] [-s SOURCES] [-g "a,b;c,d"]
        [--min-cites N] [--year-from YYYY] [--year-to YYYY] [--venues "a,b"]
        [--require-pdf] [--verified-only] [--sort cites|year] [--html [FILE]] [--no-enrich]
-       [--variant "..." (repeatable)] [--digest]
+       [--variant "..." (repeatable)] [--digest] [--code SOURCES]
 ```
 
 - `-s` -- comma list of `arxiv`, `crossref`, `openalex`, `semanticscholar`
@@ -25,6 +25,9 @@ node src/cli.ts "<query>" [-n PER_SOURCE] [-s SOURCES] [-g "a,b;c,d"]
   JSON sidecar; with FILE, that path. Without `--html` the JSON payload
   prints to stdout.
 - `--digest` prints the agent-facing digest instead of the JSON.
+- `--code` -- comma list of code-first sources (`hf-papers`,
+  `github-readme`, `awesome-lists`, `gee-github`): repositories are searched
+  first and the papers they cite resolved at arXiv / OpenAlex; adds 30-90 s.
 
 Example (the release acceptance query):
 

@@ -5,7 +5,7 @@
  */
 
 import assert from "node:assert/strict";
-import { buildAuthorSearchFilter, buildBlockSearch, buildFacetFilter, parseFacetPage, parseFacets } from "./openalex.ts";
+import { buildAuthorSearchFilter, buildBlockSearch, buildFacetFilter, lookupOpenalexDois, parseFacetPage, parseFacets, toSourceRecord } from "./openalex.ts";
 
 /** v30.11: journals and authors share the facet parser. */
 const parseJournalFacets = parseFacets;
@@ -107,6 +107,75 @@ const parseJournalFacetPage = parseFacetPage;
 	assert.equal(buildBlockSearch(undefined), "");
 	// Embedded quotes in terms are stripped, empty groups drop.
 	assert.equal(buildBlockSearch([['"sentinel 2"'], [""]]), '"sentinel 2"');
+}
+
+// toSourceRecord: the one mapper both the search and the DOI lookup use.
+{
+	const item = {
+		id: "https://openalex.org/W1",
+		doi: "https://doi.org/10.3390/RS12152469",
+		title: " Comparing Sentinel-1 Surface Water Mapping Algorithms ",
+		publication_year: 2020,
+		cited_by_count: 42,
+		authorships: [{ author: { display_name: "Amanda Markert" } }, { author: {} }, { author: { display_name: " Kel Markert " } }],
+		primary_location: { source: { id: "https://openalex.org/S123", display_name: "Remote Sensing" }, pdf_url: "", landing_page_url: "https://www.mdpi.com/x" },
+		open_access: { is_oa: true, oa_url: "https://www.mdpi.com/x/pdf" },
+		abstract_inverted_index: { Surface: [0], water: [1] },
+	};
+	const record = toSourceRecord(item);
+	assert.equal(record.doi, "10.3390/RS12152469");
+	assert.equal(record.title, "Comparing Sentinel-1 Surface Water Mapping Algorithms");
+	assert.deepEqual(record.authors, ["Amanda Markert", "Kel Markert"]);
+	assert.equal(record.year, "2020");
+	assert.equal(record.venue, "Remote Sensing");
+	assert.equal(record.venue_id, "S123");
+	assert.equal(record.pdf_url, "https://www.mdpi.com/x/pdf");
+	assert.equal(record.url, "https://www.mdpi.com/x");
+	assert.equal(record.cites, 42);
+	assert.equal(record.source, "openalex");
+	assert.equal(record.abstract, "Surface water");
+	assert.equal(record.arxiv_id, "");
+	// Sparse work: nothing invented.
+	const sparse = toSourceRecord({ publication_date: "2019-05-01" });
+	assert.equal(sparse.title, "");
+	assert.equal(sparse.year, "2019");
+	assert.equal(sparse.cites, null);
+	assert.equal(sparse.doi, "");
+}
+
+// lookupOpenalexDois: pipe-joined filter, lowercase + deduped DOIs, unknown
+// DOIs simply absent, batches of 50.
+{
+	const calls: string[] = [];
+	const realFetch = globalThis.fetch;
+	globalThis.fetch = (async (url: unknown) => {
+		calls.push(String(url));
+		const filter = new URL(String(url)).searchParams.get("filter") ?? "";
+		const dois = filter.replace(/^doi:/, "").split("|");
+		return new Response(JSON.stringify({
+			results: dois.filter((d) => d !== "10.1/missing").map((d) => ({ doi: `https://doi.org/${d}`, title: `T ${d}`, publication_year: 2021 })),
+		}), { status: 200 });
+	}) as typeof fetch;
+	try {
+		const records = await lookupOpenalexDois(["10.3390/RS1", " 10.3390/rs1", "10.1/missing", "10.1016/x"]);
+		assert.equal(calls.length, 1);
+		const filter = new URL(calls[0]).searchParams.get("filter");
+		assert.equal(filter, "doi:10.3390/rs1|10.1/missing|10.1016/x");
+		assert.deepEqual(records.map((r) => r.doi), ["10.3390/rs1", "10.1016/x"]);
+		assert.equal(records[0].source, "openalex");
+		assert.equal(records[0].year, "2021");
+		// 60 DOIs -> two requests of 50 + 10.
+		calls.length = 0;
+		const many = await lookupOpenalexDois(Array.from({ length: 60 }, (_, i) => `10.1/d${i}`));
+		assert.equal(calls.length, 2);
+		assert.equal(many.length, 60);
+		// Empty input -> no request.
+		calls.length = 0;
+		assert.deepEqual(await lookupOpenalexDois([]), []);
+		assert.equal(calls.length, 0);
+	} finally {
+		globalThis.fetch = realFetch;
+	}
 }
 
 console.log("openalex.test.ts: all assertions passed");

@@ -55,12 +55,15 @@ export function checkboxLines(
 	selectAllLabel: string,
 	spaced = false,
 	allSelectedLabel?: string,
+	headChecked?: boolean,
 ): CheckboxLine[] {
 	const mark = (checked: boolean): string => (checked ? "[✔]" : "[ ]");
 	const width = String(state.items.length).length;
-	const all = allSelected(state);
+	// A master row carries "any"-semantics (passed in); otherwise the head
+	// row is the derived select-all mark.
+	const all = headChecked ?? allSelected(state);
 	const lines: CheckboxLine[] = [{
-		text: `${state.cursor === 0 ? "❯ " : "  "}   ${mark(all)} ${all && allSelectedLabel ? allSelectedLabel : selectAllLabel}`,
+		text: `${state.cursor === 0 ? "❯ " : "  "}   ${mark(all)} ${all && allSelectedLabel && headChecked === undefined ? allSelectedLabel : selectAllLabel}`,
 		active: state.cursor === 0,
 	}];
 	state.items.forEach((item, i) => {
@@ -203,6 +206,13 @@ export type WizardStepDef =
 		 * Next row -- Enter-through must not toggle select-all on a list of
 		 * generated suggestions. */
 		cursorStart?: "next";
+		/** MASTER ROW: the head row (selectAllLabel) is a switch with "any"
+		 * semantics instead of "all" -- checked while ANY item is checked;
+		 * Enter/Space on it checks every item when none is checked, else
+		 * clears them all (the code-search tab: "Search for papers with
+		 * code" over the four sources, which stay visible and individually
+		 * untickable; unticking one source keeps the head checked). */
+		masterRow?: boolean;
 		/** Step applies only while this holds over the current answers (* the detail-mode tab applies only with >= 2 documents AND >= 1
 		 * question). a disabled step STAYS in the tab bar greyed out
 		 * (a tab's visibility must not change while navigating) and can be
@@ -1054,7 +1064,15 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 		// nothing toggles (only the note is visible).
 		if (step.kind !== "checkbox" || step.loading || cursor > step.items.length) return state;
 		const selected = new Set(state.selected[state.tab]);
-		if (cursor === 0) {
+		if (cursor === 0 && step.masterRow) {
+			// Master row: any checked -> clear all (locked rows stay), none
+			// checked -> check all.
+			if (step.items.some((item) => selected.has(item.id))) {
+				for (const item of step.items) {
+					if (!item.locked) selected.delete(item.id);
+				}
+			} else for (const item of step.items) selected.add(item.id);
+		} else if (cursor === 0) {
 			if (step.items.every((item) => selected.has(item.id)) && step.items.length) {
 				// Select-all "off" keeps locked rows -- they are not optional.
 				for (const item of step.items) {
@@ -1448,7 +1466,13 @@ export function wizardView(state: WizardState): WizardView {
 				cursor,
 				selected: state.selected[state.tab],
 			};
-			rows.push(...checkboxLines(checkboxState, step.selectAllLabel, step.spaced === true, step.allSelectedLabel));
+			rows.push(...checkboxLines(
+				checkboxState,
+				step.selectAllLabel,
+				step.spaced === true,
+				step.allSelectedLabel,
+				step.masterRow ? step.items.some((item) => state.selected[state.tab].has(item.id)) : undefined,
+			));
 			pushAddRow();
 			pushInputRow();
 			rows.push({ text: `${nextActive ? "❯ " : "  "}   ${step.nextLabel}`, active: nextActive });

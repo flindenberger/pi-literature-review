@@ -7,16 +7,7 @@
  */
 
 import assert from "node:assert/strict";
-import {
-	applyFilters,
-	dedupe,
-	dropWithoutAbstract,
-	filterRecords,
-	groupAcrossQueries,
-	sanitizeTermGroups,
-	sortRecords,
-	termMatches,
-} from "./pipeline.ts";
+import { applyFilters, dedupe, dropLateCodePairs, dropWithoutAbstract, filterRecords, groupAcrossQueries, sanitizeTermGroups, sortRecords, termMatches } from "./pipeline.ts";
 import type { SourceRecord } from "./types.ts";
 
 function record(overrides: Partial<SourceRecord>): SourceRecord {
@@ -431,6 +422,44 @@ function record(overrides: Partial<SourceRecord>): SourceRecord {
 	assert.deepEqual(sortRecords(input, "cites").map((r) => r.cites), [300, 5, null]);
 	assert.deepEqual(sortRecords(input, "year").map((r) => r.year), ["2026", "1999", null]);
 	assert.equal(input[0].cites, 5); // original order untouched
+}
+
+// dropLateCodePairs: code-first pairs that failed the date gate. Only-code
+// records move to dropped with the gate note; records a database also
+// delivered keep the paper and lose the late link; a late flag naming a
+// different repository than the record carries (merge of a passing pair
+// with a late one) is cleared, the link kept; untouched records pass.
+{
+	const isCode = (s: string) => s === "hf-papers" || s === "github-readme";
+	const base = { title: "T", authors: ["A"], year: "2017", venue: "", doi: "", arxiv_id: "1703.06870", pdf_url: "", url: "", cites: null, abstract: "x" };
+	const note = "found via code repository https://github.com/ecohydro/CropMask_RCNN, created 2 years after the paper -- probably a project citing the paper, not the paper's own code";
+	const onlyCode = { ...base, sources: ["github-readme"], code_url: "https://github.com/ecohydro/CropMask_RCNN", enriched: { code_url: "github-readme" }, resolved_via: "arxiv", code_gate: "late" as const, code_gate_note: note };
+	const alsoDb = { ...base, sources: ["arxiv", "hf-papers"], code_url: "https://github.com/ecohydro/CropMask_RCNN", enriched: { code_url: "hf-papers", cites: "openalex" }, resolved_via: "arxiv", code_gate: "late" as const, code_gate_note: note };
+	const merged = { ...base, sources: ["hf-papers", "github-readme"], code_url: "https://github.com/right/repo", enriched: { code_url: "hf-papers" }, resolved_via: "arxiv", code_gate: "late" as const, code_gate_note: note };
+	const plain = { ...base, sources: ["openalex"] };
+	const passed = { ...base, sources: ["hf-papers"], code_url: "https://github.com/x/y", enriched: { code_url: "hf-papers" }, resolved_via: "arxiv" };
+	const result = dropLateCodePairs([onlyCode, alsoDb, merged, plain, passed], isCode);
+	assert.equal(result.dropped.length, 1);
+	assert.equal(result.dropped[0].record, onlyCode);
+	assert.equal(result.dropped[0].reason, note);
+	assert.equal(result.kept.length, 4);
+	const cleaned = result.kept[0];
+	assert.equal(cleaned.code_url, undefined);
+	assert.equal(cleaned.code_gate, undefined);
+	assert.equal(cleaned.code_gate_note, undefined);
+	assert.equal(cleaned.resolved_via, undefined);
+	assert.deepEqual(cleaned.enriched, { cites: "openalex" });
+	assert.deepEqual(cleaned.sources, ["arxiv", "hf-papers"]);
+	assert.deepEqual(result.stripped, [cleaned]);
+	const kept = result.kept[1];
+	assert.equal(kept.code_url, "https://github.com/right/repo");
+	assert.equal(kept.code_gate, undefined);
+	assert.equal(kept.code_gate_note, undefined);
+	assert.equal(result.kept[2], plain);
+	assert.equal(result.kept[3], passed);
+	// Fully-stripped enriched map disappears instead of lingering empty.
+	const bare = dropLateCodePairs([{ ...alsoDb, enriched: { code_url: "hf-papers" } }], isCode).kept[0];
+	assert.equal("enriched" in bare, false);
 }
 
 console.log("pipeline.test.ts: all assertions passed");

@@ -63,6 +63,11 @@ export function renderDigest(
 		lines.push(`Query: ${payload.query}`);
 	}
 	lines.push(`Sources: ${payload.sources_used.join(", ") || "none"}`);
+	// Code-first sources are "other methods" in PRISMA terms -- named
+	// separately so nobody reads them as databases.
+	if (payload.code_sources_used?.length) {
+		lines.push(`Code sources: ${payload.code_sources_used.join(", ")} (repositories first, papers resolved at arXiv / OpenAlex)`);
+	}
 	// A failed source is a fact about this run, not transient chrome: the
 	// agent and the user must both see that results may be incomplete and
 	// which source to blame.

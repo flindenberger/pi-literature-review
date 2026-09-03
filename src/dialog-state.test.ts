@@ -16,13 +16,13 @@ import {
 	parseQuestionLines,
 	pasteText,
 	reduceWizard,
-	type WizardState,
-	type WizardStepDef,
-	wizardAnswers,
-	wizardResult,
-	wizardView,
 	stepAnswered,
 	withQueryNumbers,
+	wizardAnswers,
+	wizardResult,
+	type WizardState,
+	type WizardStepDef,
+	wizardView,
 	wrapLine,
 } from "./dialog-state.ts";
 
@@ -1261,6 +1261,57 @@ function drive(
 	] as never).state;
 	assert.deepEqual([...proposed.selected[0]], ["Water"]);
 	assert.equal(stepAnswered(proposed, 0), true);
+}
+
+// Master row (the code-search tab): the head row has "any" semantics --
+// checked while any item is checked; Enter on it checks all when none
+// is checked, clears all otherwise; items stay visible and individually
+// untickable; the tab counts as answered while any item is checked.
+{
+	const codeStep: WizardStepDef = {
+		kind: "checkbox", id: "code", tab: "Code", title: "Code repositories",
+		items: [
+			{ id: "hf-papers", label: "Hugging Face Papers", description: "arXiv papers with linked repositories" },
+			{ id: "github-readme", label: "GitHub README search" },
+			{ id: "awesome-lists", label: "Curated lists" },
+		],
+		selectAllLabel: "Search for papers with code", nextLabel: "Next", optional: true, masterRow: true,
+	};
+	let state = initWizard([codeStep]);
+	const rowsOf = (st: WizardState) => wizardView(st).rows.map((r) => r.text);
+	// Start: head unchecked, every source visible and unchecked, not answered.
+	assert.ok(rowsOf(state).some((t) => t.includes("[ ] Search for papers with code")));
+	assert.ok(rowsOf(state).some((t) => t.includes("[ ] Hugging Face Papers")));
+	assert.ok(rowsOf(state).some((t) => t.includes("arXiv papers with linked repositories")));
+	assert.equal(stepAnswered(state, 0), false);
+	assert.deepEqual(wizardResult(state).code, []);
+	const height = maxWizardRows(state);
+	// Enter on the head checks all.
+	state = reduceWizard(state, "confirm").state;
+	assert.ok(rowsOf(state).some((t) => t.includes("[✔] Search for papers with code")));
+	assert.deepEqual(wizardResult(state).code, ["hf-papers", "github-readme", "awesome-lists"]);
+	assert.equal(stepAnswered(state, 0), true);
+	// Untick one source: the head stays checked ("any").
+	state = reduceWizard(state, "down").state;
+	state = reduceWizard(state, "down").state;
+	state = reduceWizard(state, "toggle").state;
+	assert.deepEqual(wizardResult(state).code, ["hf-papers", "awesome-lists"]);
+	assert.ok(rowsOf(state).some((t) => t.includes("[✔] Search for papers with code")));
+	// Head again: any checked -> clear all.
+	state = reduceWizard(state, "up").state;
+	state = reduceWizard(state, "up").state;
+	state = reduceWizard(state, "toggle").state;
+	assert.deepEqual(wizardResult(state).code, []);
+	assert.ok(rowsOf(state).some((t) => t.includes("[ ] Search for papers with code")));
+	assert.equal(stepAnswered(state, 0), false);
+	// Height never changes -- the items are always on screen.
+	assert.equal(maxWizardRows(state), height);
+	// Plain steps keep select-all semantics (head = ALL checked).
+	const plain = initWizard([{ ...codeStep, masterRow: undefined }]);
+	let p2 = reduceWizard(plain, "confirm").state;
+	p2 = reduceWizard(p2, "down").state;
+	p2 = reduceWizard(p2, "toggle").state;
+	assert.ok(rowsOf(p2).some((t) => t.includes("[ ] Search for papers with code")));
 }
 
 console.log("dialog-state tests passed");

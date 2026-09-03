@@ -11,6 +11,8 @@ import { contactMailto, type SourceRecord, type SourceScope, userAgent } from ".
 
 const BASE_URL = "https://api.openalex.org/works";
 const TIMEOUT_MS = 30_000;
+/** OpenAlex accepts up to 50 pipe-joined values in one filter. */
+const DOI_BATCH_SIZE = 50;
 
 /** Rebuild the abstract text from OpenAlex's inverted index. String ops
  * only; the enrichment stage fills missing abstracts from the same work
@@ -89,43 +91,77 @@ export async function searchOpenalex(query: string, rows: number, scope?: Source
 	const data = (await response.json()) as Record<string, any>;
 	const items: Array<Record<string, any>> = (data?.results ?? []).slice(0, rows);
 
-	return items.map((item) => {
-		const doi = typeof item.doi === "string"
-			? item.doi.replace("https://doi.org/", "").trim()
-			: "";
-		const primary = item.primary_location ?? {};
-		const openAccess = item.open_access ?? {};
-		const year = Number.isInteger(item.publication_year)
-			? String(item.publication_year)
-			: typeof item.publication_date === "string" && /^\d{4}/.test(item.publication_date)
-				? item.publication_date.slice(0, 4)
-				: null;
+	return items.map(toSourceRecord);
+}
 
-		return {
-			title: typeof item.title === "string" ? item.title.trim() : "",
-			authors: ((item.authorships as Array<Record<string, any>>) ?? [])
-				.map((authorship) => authorship?.author?.display_name)
-				.filter((name: unknown): name is string => typeof name === "string" && !!name.trim())
-				.map((name) => name.trim()),
-			year,
-			venue: typeof primary?.source?.display_name === "string"
-				? primary.source.display_name.trim()
-				: "",
-			doi,
-			arxiv_id: "",
-			pdf_url: (typeof primary?.pdf_url === "string" && primary.pdf_url.trim())
-				|| (openAccess?.is_oa && typeof openAccess?.oa_url === "string" && openAccess.oa_url.trim())
-				|| "",
-			url: (typeof primary?.landing_page_url === "string" && primary.landing_page_url.trim())
-				|| (typeof item.id === "string" ? item.id.trim() : ""),
-			cites: Number.isInteger(item.cited_by_count) ? (item.cited_by_count as number) : null,
-			source: "openalex",
-			abstract: reconstructAbstract(item.abstract_inverted_index),
-			venue_id: typeof primary?.source?.id === "string"
-				? primary.source.id.replace("https://openalex.org/", "").trim()
-				: "",
-		};
-	});
+/** One OpenAlex work object -> our record shape. Pure; shared by the
+ * search above and the DOI lookup below so both paths map identically. */
+export function toSourceRecord(item: Record<string, any>): SourceRecord {
+	const doi = typeof item.doi === "string"
+		? item.doi.replace("https://doi.org/", "").trim()
+		: "";
+	const primary = item.primary_location ?? {};
+	const openAccess = item.open_access ?? {};
+	const year = Number.isInteger(item.publication_year)
+		? String(item.publication_year)
+		: typeof item.publication_date === "string" && /^\d{4}/.test(item.publication_date)
+			? item.publication_date.slice(0, 4)
+			: null;
+
+	return {
+		title: typeof item.title === "string" ? item.title.trim() : "",
+		authors: ((item.authorships as Array<Record<string, any>>) ?? [])
+			.map((authorship) => authorship?.author?.display_name)
+			.filter((name: unknown): name is string => typeof name === "string" && !!name.trim())
+			.map((name) => name.trim()),
+		year,
+		venue: typeof primary?.source?.display_name === "string"
+			? primary.source.display_name.trim()
+			: "",
+		doi,
+		arxiv_id: "",
+		pdf_url: (typeof primary?.pdf_url === "string" && primary.pdf_url.trim())
+			|| (openAccess?.is_oa && typeof openAccess?.oa_url === "string" && openAccess.oa_url.trim())
+			|| "",
+		url: (typeof primary?.landing_page_url === "string" && primary.landing_page_url.trim())
+			|| (typeof item.id === "string" ? item.id.trim() : ""),
+		cites: Number.isInteger(item.cited_by_count) ? (item.cited_by_count as number) : null,
+		source: "openalex",
+		abstract: reconstructAbstract(item.abstract_inverted_index),
+		venue_id: typeof primary?.source?.id === "string"
+			? primary.source.id.replace("https://openalex.org/", "").trim()
+			: "",
+	};
+}
+
+/**
+ * Exact lookup by DOI (no relevance ranking involved): the code-first
+ * search turns DOIs found in repository READMEs into records here. Batched
+ * 50 per request via OpenAlex's pipe-joined filter; DOIs OpenAlex does not
+ * know are simply absent from the result. Order follows the API answer.
+ */
+export async function lookupOpenalexDois(dois: string[]): Promise<SourceRecord[]> {
+	const unique = [...new Set(dois.map((d) => d.trim().toLowerCase()).filter(Boolean))];
+	const records: SourceRecord[] = [];
+	for (let i = 0; i < unique.length; i += DOI_BATCH_SIZE) {
+		const batch = unique.slice(i, i + DOI_BATCH_SIZE);
+		const params = new URLSearchParams({
+			filter: `doi:${batch.join("|")}`,
+			"per-page": String(DOI_BATCH_SIZE),
+		});
+		const mailto = contactMailto();
+		if (mailto) params.set("mailto", mailto);
+		const response = await fetch(`${BASE_URL}?${params}`, {
+			headers: { "User-Agent": userAgent(), Accept: "application/json" },
+			signal: AbortSignal.timeout(TIMEOUT_MS),
+		});
+		if (!response.ok) {
+			throw new Error(`OpenAlex answered HTTP ${response.status}`);
+		}
+		const data = (await response.json()) as Record<string, any>;
+		records.push(...((data?.results ?? []) as Array<Record<string, any>>).map(toSourceRecord));
+	}
+	return records;
 }
 
 /** One bucket of a facet query below: plain API metadata. Journals and

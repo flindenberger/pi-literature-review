@@ -26,6 +26,7 @@ import { renderFetchReport, runSelection } from "./selection.ts";
 import { createBackend } from "./llm.ts";
 import { renderChatDigest, renderChatReportDigest, renderDigest, renderReportDigest } from "./digest.ts";
 import { runSearch, SEARCHERS, type SearchOptions } from "./search.ts";
+import { CODE_SEARCHERS } from "./codesearch.ts";
 import { parseGroupTerms } from "./intake.ts";
 import { writeNetworkPage } from "./network.ts";
 import { outputRoot, writeRunOutputs } from "./output.ts";
@@ -46,18 +47,22 @@ interface CliArgs {
 	htmlFile: string | undefined;
 	enrich: boolean;
 	digest: boolean;
+	/** Code-first sources (--code): repositories first, papers resolved. */
+	codeSources: string[] | undefined;
 }
 
 function usage(): never {
 	warn('usage: node src/cli.ts "<query>" [-n PER_SOURCE] [-s SOURCES] [-g "a,b;c,d"]');
 	warn("       [--min-cites N] [--year-from YYYY] [--year-to YYYY] [--venues \"a,b\"]");
 	warn("       [--require-pdf] [--verified-only] [--sort cites|year] [--html [FILE]] [--no-enrich]");
-	warn("       [--variant \"...\" (repeatable)] [--digest]");
+	warn("       [--variant \"...\" (repeatable)] [--digest] [--code SOURCES]");
 	warn("       --html without FILE writes to lit-search/<date>_<query>.html in the working directory");
 	warn("       (the full JSON payload is always written next to the HTML, same basename)");
 	warn("       --variant adds an alternative phrasing; results are deduplicated across variants");
 	warn("       --digest prints the agent-facing digest instead of JSON (combine with --html for real paths)");
+	warn("       --code searches code repositories FIRST and resolves the papers they cite (30-90 s extra)");
 	warn(`available sources: ${Object.keys(SEARCHERS).join(", ")}`);
+	warn(`available code sources: ${Object.keys(CODE_SEARCHERS).join(", ")}`);
 	warn("or:    node src/cli.ts selection <DOI-or-arXiv-ID> [more ...]");
 	warn("       downloads legal open-access PDFs into lit-selection/ in the working directory");
 	warn("or:    node src/cli.ts llm-check");
@@ -98,6 +103,7 @@ function parseArgs(argv: string[]): CliArgs {
 	let htmlFile: string | undefined;
 	let enrich = true;
 	let digest = false;
+	let codeSources: string[] | undefined;
 	const filters: ResultFilters = {};
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i];
@@ -146,6 +152,9 @@ function parseArgs(argv: string[]): CliArgs {
 			enrich = false;
 		} else if (arg === "--digest") {
 			digest = true;
+		} else if (arg === "--code") {
+			codeSources = (argv[++i] ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+			if (!codeSources.length) usage();
 		} else if (!query && !arg.startsWith("-")) {
 			query = arg;
 		} else {
@@ -153,7 +162,7 @@ function parseArgs(argv: string[]): CliArgs {
 		}
 	}
 	if (!query) usage();
-	return { query, variants, perSource, sources, groupTerms, filters, sort, htmlFile, enrich, digest };
+	return { query, variants, perSource, sources, groupTerms, filters, sort, htmlFile, enrich, digest, codeSources };
 }
 
 if (process.argv[2] === "llm-check") {
@@ -443,6 +452,7 @@ const options: SearchOptions = {
 	filters: args.filters,
 	sort: args.sort,
 	enrich: args.enrich,
+	codeSources: args.codeSources,
 	onWarn: warn,
 };
 const payload = await runSearch(options);
