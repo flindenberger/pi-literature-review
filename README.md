@@ -202,16 +202,13 @@ keep the license notice and a link back to this repository.
 
 ## Use of AI
 
-This package was developed with substantial help from an AI coding
-assistant (Claude Code by Anthropic). It was used for generating and
+This extension was developed with substantial help from the Claude Code AI
+coding agent (Opus and Fable models). It was used for generating and
 refactoring code and tests, debugging against the live APIs, comparing
 implementation approaches, discussing design decisions and writing
-documentation. It is not an author: the decisions that shape the package
-were taken by the maintainer, every generated change was read, run and
-tested before it entered the repository, and responsibility for the code
-and the claims made about it rests with the human author. The package's
-own rule held during development too: no bibliographic data shown to a
-user was ever produced or edited by a model.
+documentation. The decisions that shape the package were taken by the
+maintainer; every generated change was critically tested. The
+generated documentation was proofread and, in many cases, corrected.
 
 ## License, attribution and citation
 
