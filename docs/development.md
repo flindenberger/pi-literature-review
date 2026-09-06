@@ -81,6 +81,19 @@ Where each stage lives; the adapter/engine pair shares its basename.
 | `src/cardtext.ts` | bold/bullet formatting for transcript cards |
 | `index.ts` | registers the three tools |
 
+## Dependencies
+
+A user install pulls nine small packages and runs no install scripts:
+
+| Package | Role |
+|---|---|
+| `fast-xml-parser` | parses the arXiv Atom responses |
+| `unpdf` | extracts text from PDFs (pdf.js bundled inside, no further dependencies) |
+| `fast-xml-builder`, `strnum`, `anynum`, `is-unsafe`, `xml-naming`, `path-expression-matcher`, `@nodable/entities` | internal helpers of `fast-xml-parser` |
+
+The Pi packages the extension builds on are not among them; see the next
+section.
+
 ## Running from a checkout
 
 ```
