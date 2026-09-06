@@ -8,9 +8,9 @@ extensions/         Pi adapters -- search.ts, selection.ts, synthesis.ts (one to
                     dialogs.ts (the tabbed wizard overlay + RPC fallback), pi-model.ts (one call on the Pi model)
 src/                the engines, Pi-free: search pipeline, render, network graph, selection,
                     synthesis (extract, retrieve, protocol, citation gate), dialog reducer, config, CLI
-src/sources/        the source clients (arxiv, crossref, openalex, semanticscholar) plus the
-                    code-side clients (github, huggingface, ecosystems) and the shared pacer
-                    and polite.ts, the shared paced/retrying request helper
+src/sources/        the source clients (arxiv, crossref, openalex, semanticscholar), the
+                    code-side clients (github, huggingface, ecosystems) and polite.ts, the
+                    shared paced/retrying request helper
 docs/               this documentation, screenshots under docs/img/
 tsconfig.json       type-check settings (strict, NodeNext, .ts imports) for the editor and `tsc`
 ```
