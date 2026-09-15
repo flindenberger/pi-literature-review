@@ -24,6 +24,50 @@ export interface CheckboxItem {
 	 * ids live in the selection like normal picks; init and setItems keep
 	 * that invariant. */
 	locked?: boolean;
+	/** Child row of the item with this id: rendered indented under it
+	 * without a number. A master/select-all head ignores children, the
+	 * review page lists checked children after their parent. Children
+	 * arrive through a parent-scoped setItems event or the add row's
+	 * parent (the code tab lists the awesome-list topics under "Curated
+	 * lists"). */
+	parent?: string;
+	/** Row group swapped as a unit by a group-scoped setItems (the author
+	 * tab's lookup matches at the top of the list). Groups sit where their
+	 * first row sat, new groups at the top. */
+	group?: string;
+	/** One blank rendered line before this row (air before a section such
+	 * as the "list other authors" switch); never a cursor stop. */
+	spaceBefore?: boolean;
+	/** Section heading rendered before this row: one blank line, then the
+	 * heading text at column 0, level with the step title (the author tab's
+	 * "Search for highly cited authors"); never a cursor stop, and the row
+	 * numbering restarts at 1 under it. Implies the blank line --
+	 * spaceBefore is not needed on top. */
+	headingBefore?: string;
+	/** TYPING row at this position of the list (the author tab's "Type
+	 * author name: ..."): rendered as label + draft + caret, no mark. The
+	 * draft lives in texts[tab] and is exported LIVE as `<id>_draft` -- the
+	 * one exception to the committed-only rule, because the typing itself
+	 * is the trigger (the adapter's loader debounces). Enter on it: empty
+	 * draft advances (Enter-through stays one stroke), a non-empty draft
+	 * moves the cursor to the group row right under it (the matches).
+	 * Toggle there is a no-op; clearOnPick empties the draft when a
+	 * `group` row gets ticked. One per step. The rows BEFORE it form the
+	 * head row's select-all scope (the list section). */
+	typing?: { clearOnPick?: boolean; initial?: string };
+	/** Review wording for a parent whose children are an EXCLUSION list:
+	 * "all (no filter)" while every child is ticked (or none), else
+	 * "excluded: ..." -- instead of listing every ticked child. */
+	reviewAs?: "exclusion";
+	/** Row applies only while this holds over the live answers (the author
+	 * position boxes need a picked author). A disabled row renders dim with
+	 * its note, cannot be toggled, and is absent from the result, the review
+	 * and the answered check. */
+	enabledIf?: (answers: WizardAnswers) => boolean;
+	/** Short reason shown behind a disabled row's label; empty = dim row
+	 * without a note. A function may pick the reason from the live answers
+	 * (silent before a pick, "ignored" under the scope box). */
+	disabledNote?: string | ((answers: WizardAnswers) => string);
 }
 
 export interface CheckboxState {
@@ -45,6 +89,36 @@ export interface CheckboxLine {
 	active: boolean;
 	/** True for an item's description line (the adapter dims it). */
 	dim?: boolean;
+	/** A loading status line whose trailing dots pulse: the adapter paints
+	 * the dots in the accent color so the movement is visible in a dim
+	 * line. */
+	pulse?: boolean;
+}
+
+/** The typing row of a checkbox step: its item index, -1 without one. */
+export function typingIndex(step: { items: CheckboxItem[] }): number {
+	return step.items.findIndex((item) => item.typing !== undefined);
+}
+
+/** Cursor row of the typing row (item index + 1), -1 without one. */
+export function typingRow(step: { items: CheckboxItem[] }): number {
+	const index = typingIndex(step);
+	return index < 0 ? -1 : index + 1;
+}
+
+/** Rows the head (select-all) row governs: with a typing row the LIST
+ * SECTION above it, otherwise every item. */
+export function headScope(step: { items: CheckboxItem[] }): CheckboxItem[] {
+	const index = typingIndex(step);
+	return index < 0 ? step.items : step.items.slice(0, index);
+}
+
+/** A group's status note anchored under a row (`after` = item id; absent
+ * = under the head row). */
+export interface AnchoredNote {
+	text: string;
+	pulse: boolean;
+	after?: string;
 }
 
 /** Deterministic row texts: a select-all summary row on
@@ -56,28 +130,104 @@ export function checkboxLines(
 	spaced = false,
 	allSelectedLabel?: string,
 	headChecked?: boolean,
+	childNotes?: Record<string, string>,
+	childLoading?: Record<string, boolean>,
+	extras?: {
+		/** Draft of the typing row (rendered behind its label). */
+		draft?: string;
+		/** Group status notes, each under its anchor row; a note under
+		 * the head row REPLACES the head row while the list section is
+		 * empty (the loading line stands where the list will be). */
+		notes?: AnchoredNote[];
+		/** Ids of disabled rows and the note shown behind their label
+		 * (empty note = dim row without a note). */
+		disabled?: Map<string, string>;
+		/** No "1. " numbers before top-level rows (the author tab). */
+		unnumbered?: boolean;
+	},
 ): CheckboxLine[] {
 	const mark = (checked: boolean): string => (checked ? "[✔]" : "[ ]");
-	const width = String(state.items.length).length;
-	// A master row carries "any"-semantics (passed in); otherwise the head
-	// row is the derived select-all mark.
-	const all = headChecked ?? allSelected(state);
-	const lines: CheckboxLine[] = [{
-		text: `${state.cursor === 0 ? "❯ " : "  "}   ${mark(all)} ${all && allSelectedLabel && headChecked === undefined ? allSelectedLabel : selectAllLabel}`,
-		active: state.cursor === 0,
-	}];
+	// Numbers count top-level rows only; child rows sit indented, unnumbered.
+	const width = String(state.items.filter((item) => item.parent === undefined).length).length;
+	// Width of the top-level prefix ("1. " or three blanks); every other
+	// indent hangs off it so numbered and unnumbered lists align alike.
+	const prefixWidth = extras?.unnumbered ? 3 : width + 2;
+	const prefix = (number: number): string => (extras?.unnumbered ? "   " : `${String(number).padStart(width)}. `);
+	const childIndent = " ".repeat(prefixWidth + 2);
+	const noteIndent = " ".repeat(prefixWidth + 6);
+	const noteLine = (note: AnchoredNote): CheckboxLine =>
+		({ text: `${noteIndent}${note.text}`, active: false, dim: true, ...(note.pulse ? { pulse: true } : {}) });
+	const notesAfter = (id: string | undefined): AnchoredNote[] =>
+		(extras?.notes ?? []).filter((note) => note.after === id && note.text);
+	// The head row governs the list section (rows above the typing row,
+	// else all rows): mark, label and dimming derive from those rows only.
+	// A master row carries "any"-semantics (passed in) instead.
+	const scope = headScope(state);
+	const hasTyping = typingIndex(state) >= 0;
+	const all = headChecked ?? (scope.length > 0 && scope.every((item) => state.selected.has(item.id)));
+	const scopeDim = hasTyping && scope.length > 0 && scope.every((item) => extras?.disabled?.has(item.id));
+	const headNotes = notesAfter(undefined);
+	const lines: CheckboxLine[] = hasTyping && scope.length === 0 && headNotes.length
+		// Empty list section with a status: the note IS the head row
+		// (dim, pulsing while loading); Enter there advances, nothing toggles.
+		? [{ text: `${state.cursor === 0 ? "❯ " : "  "}   ${headNotes[0].text}`, active: state.cursor === 0, dim: true, ...(headNotes[0].pulse ? { pulse: true } : {}) }, ...headNotes.slice(1).map(noteLine)]
+		: [{
+			text: `${state.cursor === 0 ? "❯ " : "  "}   ${mark(all)} ${all && allSelectedLabel && headChecked === undefined ? allSelectedLabel : selectAllLabel}`,
+			active: state.cursor === 0,
+			...(scopeDim ? { dim: true } : {}),
+		}, ...headNotes.map(noteLine)];
+	let number = 0;
 	state.items.forEach((item, i) => {
 		const active = state.cursor === i + 1;
-		if (spaced) lines.push({ text: "", active: false });
+		if (item.headingBefore !== undefined) {
+			// Section heading: blank line, heading text, numbering restarts.
+			lines.push({ text: "", active: false });
+			lines.push({ text: item.headingBefore, active: false });
+			number = 0;
+		} else if (spaced || item.spaceBefore) lines.push({ text: "", active: false });
+		if (item.typing !== undefined) {
+			// Typing row: label, draft, caret while it is the cursor row;
+			// its group's status note (the lookup) sits right under it.
+			lines.push({ text: `${active ? "❯ " : "  "}   ${item.label}: ${extras?.draft ?? ""}${active ? "_" : ""}`, active });
+			lines.push(...notesAfter(item.id).map(noteLine));
+			return;
+		}
+		const checked = mark(state.selected.has(item.id) || item.locked === true);
+		const disabledNote = extras?.disabled?.get(item.id);
+		if (disabledNote !== undefined) {
+			// Disabled row: dim, mark kept, an optional reason behind the
+			// label; still a cursor row so the row math stays uniform.
+			if (item.parent === undefined) number += 1;
+			const indent = item.parent !== undefined ? childIndent : prefix(number);
+			lines.push({ text: `${active ? "❯ " : "  "}${indent}${checked} ${item.label}${disabledNote ? ` -- ${disabledNote}` : ""}`, active, dim: true });
+			lines.push(...notesAfter(item.id).map(noteLine));
+			return;
+		}
+		if (item.parent !== undefined) {
+			// Child row: indented one level under its parent, no number;
+			// its description sits one level further in.
+			lines.push({ text: `${active ? "❯ " : "  "}${childIndent}${checked} ${item.label}`, active });
+			if (item.description !== undefined) {
+				lines.push({ text: `${childIndent}${" ".repeat(8)}${item.description}`, active: false, dim: true });
+			}
+			lines.push(...notesAfter(item.id).map(noteLine));
+			return;
+		}
+		number += 1;
 		lines.push({
-			text: `${active ? "❯ " : "  "}${String(i + 1).padStart(width)}. ${mark(state.selected.has(item.id) || item.locked === true)} ${item.label}`,
+			text: `${active ? "❯ " : "  "}${prefix(number)}${checked} ${item.label}`,
 			active,
 		});
 		// Dim metadata line, indented to the label column; never a
 		// cursor stop -- the item above stays the selectable row.
 		if (item.description !== undefined) {
-			lines.push({ text: `${" ".repeat(width + 8)}${item.description}`, active: false, dim: true });
+			lines.push({ text: `${noteIndent}${item.description}`, active: false, dim: true });
 		}
+		// A note under the parent (a child loader's status: "suggesting
+		// topics ..."), dim, never a cursor stop.
+		const note = childNotes?.[item.id];
+		if (note) lines.push({ text: `${noteIndent}${note}`, active: false, dim: true, ...(childLoading?.[item.id] ? { pulse: true } : {}) });
+		lines.push(...notesAfter(item.id).map(noteLine));
 	});
 	return lines;
 }
@@ -195,13 +345,31 @@ export type WizardStepDef =
 		 * (case-insensitive dedupe against existing ids just checks the
 		 * existing row) and clears the draft; with keepSelected the added
 		 * row survives regenerations like any checked pick. The draft lives
-		 * in addTexts[tab]. */
-		addInput?: { id: string; label: string };
+		 * in addTexts[tab]. With `parent` the added row becomes a CHILD of
+		 * that item (inserted after its last child) -- the code tab's own
+		 * list topic lands under "Curated lists". */
+		addInput?: { id: string; label: string; parent?: string };
+		/** Status line under a parent item while its child rows load or
+		 * failed (parent id -> text); set and cleared through parent-scoped
+		 * setItems events. Rendered dim under the parent, never a cursor
+		 * stop; an empty text removes the line. */
+		childNotes?: Record<string, string>;
+		/** Parents whose child rows are loading right now (the note under
+		 * them pulses); set/cleared by parent-scoped setItems events. */
+		childLoading?: Record<string, boolean>;
+		/** Status notes of group loaders (group -> note), each rendered
+		 * under the group's anchor row (`after`, absent = the head row);
+		 * pulse while that load is in flight. Set and cleared by
+		 * group-scoped setItems events; maintained by the reducer. */
+		groupNotes?: Record<string, AnchoredNote>;
 		/** One blank rendered line before every item and before each input
 		 * row -- air between wide, wrapping rows (the query-variants tab).
 		 * Rendered lines only, never cursor stops; single-line lists stay
 		 * compact without it. */
 		spaced?: boolean;
+		/** No row numbers on this step (the author tab: two headed sections
+		 * where numbers would only compete with the headings). */
+		unnumbered?: boolean;
 		/** start (and re-anchor after setItems) the cursor on the
 		 * Next row -- Enter-through must not toggle select-all on a list of
 		 * generated suggestions. */
@@ -384,6 +552,24 @@ export interface WizardOptions {
 export interface WizardItemLoader {
 	/** Step id of the lazily loaded checkbox step. */
 	step: string;
+	/** Child loader: the loaded rows become the CHILDREN of this item
+	 * (parent-scoped setItems), the status notes sit under it and the
+	 * step's other rows stay untouched. The RPC fallback skips child
+	 * loaders (no modal equivalent). */
+	parent?: string;
+	/** Group loader: the loaded rows replace the rows tagged with this
+	 * group (group-scoped setItems); ticked rows of the group stay on
+	 * screen while the next load runs. Skipped by the RPC fallback. */
+	group?: string;
+	/** Group loaders: the row the group (and its status note) sits under;
+	 * absent = the top of the list, under the head row. */
+	after?: string;
+	/** Group loaders: rows arrive ticked, unticked ones stay remembered
+	 * across reloads (an exclusion list inside a mixed step). */
+	arriveChecked?: boolean;
+	/** Wait this long after the last key change before loading (the
+	 * author lookup keyed on the typing). Unset = load at once. */
+	debounceMs?: number;
 	/** Cache key over the live answers (e.g. the query text); a changed
 	 * key re-fetches on the next visit; empty key = nothing to load. */
 	key: (answers: WizardAnswers) => string;
@@ -516,7 +702,24 @@ export type WizardEvent =
 	 * not in the new items are pruned; the cursor is clamped. preselect
 	 * seeds the selection ONLY while it is empty (an agent venues
 	 * proposal becomes visible check marks, never overriding the user). */
-	| { kind: "setItems"; step: string; items: CheckboxItem[]; emptyNote?: string; preselect?: string[]; loading?: boolean };
+	| {
+		kind: "setItems"; step: string; items: CheckboxItem[]; emptyNote?: string; preselect?: string[]; loading?: boolean;
+		/** Parent-scoped swap: replace only the CHILD rows of this item
+		 * (the rest of the list and its ticks stay); `note` sets the status
+		 * line under the parent (empty removes it). preselect then applies
+		 * to child ids the list did not carry before -- rows that were
+		 * already there keep the user's tick state. */
+		parent?: string; note?: string;
+		/** Group-scoped swap: replace only the rows carrying this group tag
+		 * (kept where the group sat; a new group lands after the `after`
+		 * row, else at the top); `note` becomes the group's status line
+		 * under that anchor. arriveChecked: rows arrive ticked, unticked
+		 * ones stay remembered across swaps (exclusion list). Same
+		 * preselect rule as parent. */
+		group?: string;
+		after?: string;
+		arriveChecked?: boolean;
+	};
 
 export interface WizardStep {
 	state: WizardState;
@@ -556,6 +759,7 @@ export function initWizard(steps: WizardStepDef[], options?: WizardOptions): Wiz
 		chosen: steps.map((step) =>
 			(step.kind === "choice" && step.initialIsAnswer && step.initial !== undefined ? step.initial : null)),
 		texts: steps.map((step) => (step.kind === "text" ? step.initial ?? ""
+			: step.kind === "checkbox" ? step.items.find((item) => item.typing !== undefined)?.typing?.initial ?? ""
 			: step.kind === "choice" && step.initial !== undefined
 				&& !step.options.some((option) => option.value === step.initial) ? step.initial
 			: "")),
@@ -600,6 +804,13 @@ function rowCount(step: WizardStepDef): number {
 			// present (reload visibility); on an empty list it
 			// replaces the select-all row instead -- no extra height there.
 			+ (step.items.length && step.emptyNote ? 1 : 0)
+			// A child loader's status line under its parent; the head note;
+			// blank lines before sectioned rows.
+			+ Object.values(step.childNotes ?? {}).filter(Boolean).length
+			+ Object.values(step.groupNotes ?? {}).filter((note) => note.text).length
+			+ step.items.filter((item) => item.spaceBefore).length
+			// A section heading is a blank line plus the heading line.
+			+ 2 * step.items.filter((item) => item.headingBefore !== undefined).length
 		// Plain: input + placeholder line. Multiline questions: the
 		// line window, a possible overflow note and the count line.
 		: step.kind === "text" ? (step.plain ? 2 : MAX_TEXT_ROWS + 2)
@@ -690,7 +901,8 @@ export function checkboxAddRow(step: WizardStepDef & { kind: "checkbox" }): numb
 export function checkboxTypingRow(step: WizardStepDef, cursor: number): boolean {
 	if (step.kind !== "checkbox" || step.loading) return false;
 	return (step.input !== undefined && cursor === checkboxInputRow(step))
-		|| (step.addInput !== undefined && cursor === checkboxAddRow(step));
+		|| (step.addInput !== undefined && cursor === checkboxAddRow(step))
+		|| (typingRow(step) >= 0 && cursor === typingRow(step));
 }
 
 /** Rendered body rows of the submit tab: per step one "● Tab" line plus
@@ -714,6 +926,181 @@ function wrap(value: number, total: number): number {
 	return ((value % total) + total) % total;
 }
 
+/** Rows of a checkbox step that are disabled right now (enabledIf over
+ * the live answers): id -> note. Empty map when none. */
+function disabledRows(state: WizardState, index: number): Map<string, string> {
+	const step = state.steps[index];
+	const out = new Map<string, string>();
+	if (step.kind !== "checkbox") return out;
+	// Children of an UNTICKED parent are inapplicable too (the switch is
+	// off): absent from result, review and the answered check.
+	for (const item of step.items) {
+		if (item.parent !== undefined && !state.selected[index].has(item.parent)) out.set(item.id, "");
+	}
+	if (!step.items.some((item) => item.enabledIf)) return out;
+	const answers = rawAnswers(state);
+	for (const item of step.items) {
+		if (item.enabledIf && !item.enabledIf(answers)) {
+			// The note may depend on WHY the row is off (the author tab's
+			// position boxes: silent before a pick, "ignored" under the
+			// scope box).
+			out.set(item.id, typeof item.disabledNote === "function" ? item.disabledNote(answers) : item.disabledNote ?? "");
+		}
+	}
+	return out;
+}
+
+/** The cursor's ROLE carried across an item swap: Next stays Next, the
+ * steering row stays the steering row, the add row the add row; an item
+ * row is clamped into the new list. */
+function followedCursor(
+	before: WizardStepDef & { kind: "checkbox" },
+	after: WizardStepDef & { kind: "checkbox" },
+	oldCursor: number,
+): number {
+	return oldCursor === checkboxNavRows(before) - 1 ? checkboxNavRows(after) - 1
+		: before.input && oldCursor === checkboxInputRow(before) ? checkboxInputRow(after)
+		: before.addInput && oldCursor === checkboxAddRow(before) ? checkboxAddRow(after)
+		: typingRow(before) >= 0 && oldCursor === typingRow(before) ? typingRow(after)
+		: Math.min(oldCursor, Math.max(0, checkboxNavRows(after) - 1));
+}
+
+/** Swap ONE section of a checkbox list (the rows `belongs` matches) for
+ * new rows, keep every other row and its tick. The section lands at
+ * `insertAt` (index into the kept rows); the preselect ticks only ids
+ * that are NEW to the list, rows already present keep the user's state; a
+ * locked row is always ticked. Returns the new items and selection. */
+function swapSection(
+	target: WizardStepDef & { kind: "checkbox" },
+	selectedOld: ReadonlySet<string>,
+	belongs: (item: CheckboxItem) => boolean,
+	insertAt: (kept: CheckboxItem[]) => number,
+	rows: CheckboxItem[],
+	preselect: string[] | undefined,
+): { items: CheckboxItem[]; selected: Set<string> } {
+	const kept = target.items.filter((item) => !belongs(item));
+	const at = insertAt(kept);
+	const items = [...kept.slice(0, at), ...rows, ...kept.slice(at)];
+	const oldIds = new Set(target.items.filter(belongs).map((item) => item.id));
+	const newIds = new Set(rows.map((item) => item.id));
+	const selected = new Set<string>();
+	for (const id of selectedOld) {
+		if (!oldIds.has(id) || newIds.has(id)) selected.add(id);
+	}
+	for (const id of preselect ?? []) {
+		if (newIds.has(id) && !oldIds.has(id)) selected.add(id);
+	}
+	for (const item of rows) {
+		if (item.locked) selected.add(item.id);
+	}
+	return { items, selected };
+}
+
+function withSwappedStep(
+	state: WizardState,
+	index: number,
+	target: WizardStepDef & { kind: "checkbox" },
+	patch: Partial<WizardStepDef & { kind: "checkbox" }>,
+	selected: Set<string>,
+): { state: WizardState } {
+	const steps = state.steps.map((other, i) => (i === index && other.kind === "checkbox" ? { ...other, ...patch } : other));
+	const next = steps[index] as WizardStepDef & { kind: "checkbox" };
+	const cursorRow = followedCursor(target, next, state.cursors[index]);
+	return {
+		state: {
+			...state,
+			steps,
+			selected: state.selected.map((set, i) => (i === index ? selected : set)),
+			cursors: state.cursors.map((value, i) => (i === index ? cursorRow : value)),
+		},
+	};
+}
+
+/** Parent-scoped setItems: swap the child rows of ONE item (they land
+ * right after the parent); the note becomes the parent's status line
+ * (empty removes it), loading its pulse. Unknown parent = no-op. */
+function setChildItems(
+	state: WizardState,
+	index: number,
+	target: WizardStepDef & { kind: "checkbox" },
+	parent: string,
+	rows: CheckboxItem[],
+	preselect: string[] | undefined,
+	note: string | undefined,
+	loading: boolean,
+): { state: WizardState } {
+	if (!target.items.some((item) => item.id === parent && item.parent === undefined)) return { state };
+	const { items, selected } = swapSection(
+		target,
+		state.selected[index],
+		(item) => item.parent === parent,
+		(kept) => kept.findIndex((item) => item.id === parent) + 1,
+		rows.map((item) => ({ ...item, parent })),
+		preselect,
+	);
+	const childNotes = { ...(target.childNotes ?? {}) };
+	if (note) childNotes[parent] = note;
+	else delete childNotes[parent];
+	// Any parent-scoped dispatch without the flag ends that parent's pulse.
+	const childLoading = { ...(target.childLoading ?? {}) };
+	if (loading) childLoading[parent] = true;
+	else delete childLoading[parent];
+	return withSwappedStep(state, index, target, { items, childNotes, childLoading }, selected);
+}
+
+/** Group-scoped setItems: swap the rows tagged with this group (kept where
+ * the group sat; a new group lands right after its anchor row `after`,
+ * else at the top); the note becomes the group's status line under that
+ * anchor, loading its pulse. arriveChecked = exclusion-list rows: new
+ * rows arrive ticked unless remembered as unticked (excludedIds, which
+ * every swap of such a group updates from its OLD rows -- so the loading
+ * swap carries the user's removals over to the resolved list). */
+function setGroupItems(
+	state: WizardState,
+	index: number,
+	target: WizardStepDef & { kind: "checkbox" },
+	group: string,
+	rows: CheckboxItem[],
+	preselect: string[] | undefined,
+	note: string | undefined,
+	loading: boolean,
+	after: string | undefined,
+	arriveChecked: boolean,
+): { state: WizardState } {
+	const firstOld = target.items.findIndex((item) => item.group === group);
+	const insertAt = (kept: CheckboxItem[]): number => {
+		if (firstOld >= 0) return target.items.slice(0, firstOld).filter((item) => item.group !== group).length;
+		const anchor = after === undefined ? -1 : kept.findIndex((item) => item.id === after);
+		return anchor + 1;
+	};
+	const { items, selected } = swapSection(
+		target,
+		state.selected[index],
+		(item) => item.group === group,
+		insertAt,
+		rows.map((item) => ({ ...item, group })),
+		preselect,
+	);
+	const patch: Partial<WizardStepDef & { kind: "checkbox" }> = {
+		items,
+		groupNotes: { ...(target.groupNotes ?? {}), [group]: { text: note ?? "", pulse: loading, ...(after !== undefined ? { after } : {}) } },
+	};
+	if (arriveChecked) {
+		const excluded = new Set(target.excludedIds ?? []);
+		for (const item of target.items) {
+			if (item.group !== group) continue;
+			if (state.selected[index].has(item.id)) excluded.delete(item.id);
+			else excluded.add(item.id);
+		}
+		const oldIds = new Set(target.items.filter((item) => item.group === group).map((item) => item.id));
+		for (const item of rows) {
+			if (!oldIds.has(item.id) && !excluded.has(item.id)) selected.add(item.id);
+		}
+		patch.excludedIds = [...excluded];
+	}
+	return withSwappedStep(state, index, target, patch, selected);
+}
+
 /** Raw answers with texts AS STORED -- what derive() reads, so derive
  * steps can never recurse into each other's derived values. Form fields
  * join under their own ids. */
@@ -728,6 +1115,9 @@ function rawAnswers(state: WizardState): WizardAnswers {
 				answers[step.input.id] = state.committedTexts[i];
 				answers[`${step.input.id}_seq`] = String(state.inputSeq[i]);
 			}
+			// The typing row exports its LIVE draft (the lookup trigger).
+			const typing = step.items[typingIndex(step)];
+			if (typing) answers[`${typing.id}_draft`] = state.texts[i];
 		} else if (step.kind === "text") {
 			answers[step.id] = state.texts[i];
 		} else if (step.kind === "form") {
@@ -810,10 +1200,28 @@ export function stepAnswered(state: WizardState, index: number): boolean {
 			// with" (user wish 2026-09-02).
 			? (state.selected[index].size > 0 && state.selected[index].size < step.items.length)
 				|| state.committed[index]
-			: state.selected[index].size > 0)
+			// With a typing row: the list section above it counts only when
+			// SOME of its live rows are unticked (all = no filter) or the
+			// tab was committed; the section below counts like any list.
+			// Disabled rows (ticked by default but inapplicable) are no answer.
+			: typingRow(step) >= 0 ? sectionedAnswered(state, index)
+			: [...state.selected[index]].some((id) => !disabledRows(state, index).has(id)))
 		: step.kind === "text" ? effectiveText(state, index).trim() !== ""
 		: step.kind === "form" ? state.formTexts[index].some((value) => value.trim() !== "")
 		: state.chosen[index] !== null;
+}
+
+/** Answered check of a checkbox step with a typing row (see stepAnswered). */
+function sectionedAnswered(state: WizardState, index: number): boolean {
+	const step = state.steps[index];
+	if (step.kind !== "checkbox") return false;
+	const disabled = disabledRows(state, index);
+	const selected = state.selected[index];
+	const list = headScope(step).filter((item) => !disabled.has(item.id));
+	const rest = step.items.slice(typingIndex(step) + 1);
+	return (list.length > 0 && list.some((item) => !selected.has(item.id)))
+		|| rest.some((item) => selected.has(item.id) && !disabled.has(item.id))
+		|| state.committed[index];
 }
 
 /** Next tab in the given direction. disabled steps stay VISITABLE
@@ -904,6 +1312,10 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 	// typing edits the DRAFT in texts[tab]; Enter commits it.
 	const onCheckboxInput = current?.kind === "checkbox" && !current.loading
 		&& current.input !== undefined && cursor === checkboxInputRow(current);
+	// Checkbox step with the cursor on its typing row: the draft lives in
+	// texts[tab] like the steering draft.
+	const onCheckboxTyping = current?.kind === "checkbox" && !current.loading
+		&& typingRow(current) >= 0 && cursor === typingRow(current);
 	// Checkbox step with the cursor on the ADD row: typing
 	// edits the draft in addTexts[tab]; Enter adds it as a checked item.
 	const onCheckboxAdd = current?.kind === "checkbox" && !current.loading
@@ -934,7 +1346,7 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 		: onForm ? (formIndex >= 0 ? state.formTexts[state.tab][formIndex] ?? "" : null)
 		: onFreeText ? effectiveChoiceText(state, state.tab)
 		: onCheckboxAdd ? state.addTexts[state.tab]
-		: onCheckboxInput ? state.texts[state.tab]
+		: onCheckboxInput || onCheckboxTyping ? state.texts[state.tab]
 		: null;
 	// Runtime item replacement (lazily loaded checkbox lists):
 	// independent of the current tab; pruned selection, clamped cursor.
@@ -942,6 +1354,8 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 		const index = state.steps.findIndex((other) => other.id === event.step && other.kind === "checkbox");
 		if (index < 0) return { state };
 		const target = state.steps[index] as WizardStepDef & { kind: "checkbox" };
+		if (event.parent !== undefined) return setChildItems(state, index, target, event.parent, event.items, event.preselect, event.note, event.loading === true);
+		if (event.group !== undefined) return setGroupItems(state, index, target, event.group, event.items, event.preselect, event.note, event.loading === true, event.after, event.arriveChecked === true);
 		const selectedOld = state.selected[index];
 		// keepSelected: checked rows the new list no longer
 		// carries are APPENDED with their old label/flags instead of pruned
@@ -988,11 +1402,7 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 		// stays Next, the steering row stays the steering row -- an
 		// Enter-through user parked on Next must not land mid-list when the
 		// suggestions arrive.
-		const oldCursor = state.cursors[index];
-		const cursorRow = oldCursor === checkboxNavRows(target) - 1 ? checkboxNavRows(next) - 1
-			: target.input && oldCursor === checkboxInputRow(target) ? checkboxInputRow(next)
-			: target.addInput && oldCursor === checkboxAddRow(target) ? checkboxAddRow(next)
-			: Math.min(oldCursor, Math.max(0, checkboxNavRows(next) - 1));
+		const cursorRow = followedCursor(target, next, state.cursors[index]);
 		return {
 			state: {
 				...state,
@@ -1063,27 +1473,47 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 		// the steering input row and the Next row do not. While loading,
 		// nothing toggles (only the note is visible).
 		if (step.kind !== "checkbox" || step.loading || cursor > step.items.length) return state;
+		// A typing row has no check state.
+		if (typingRow(step) >= 0 && cursor === typingRow(step)) return state;
 		const selected = new Set(state.selected[state.tab]);
 		if (cursor === 0 && step.masterRow) {
 			// Master row: any checked -> clear all (locked rows stay), none
-			// checked -> check all.
-			if (step.items.some((item) => selected.has(item.id))) {
-				for (const item of step.items) {
+			// checked -> check all. Over the TOP-LEVEL rows only: child rows
+			// (the list topics) follow their parent's loader, not the head.
+			const topLevel = step.items.filter((item) => item.parent === undefined);
+			if (topLevel.some((item) => selected.has(item.id))) {
+				for (const item of topLevel) {
 					if (!item.locked) selected.delete(item.id);
 				}
-			} else for (const item of step.items) selected.add(item.id);
+			} else for (const item of topLevel) selected.add(item.id);
 		} else if (cursor === 0) {
-			if (step.items.every((item) => selected.has(item.id)) && step.items.length) {
+			// Over the head row's scope: the list section above a typing
+			// row, else every row. Disabled rows never change.
+			const disabled = disabledRows(state, state.tab);
+			const scope = headScope(step).filter((item) => !disabled.has(item.id));
+			if (scope.every((item) => selected.has(item.id)) && scope.length) {
 				// Select-all "off" keeps locked rows -- they are not optional.
-				for (const item of step.items) {
+				for (const item of scope) {
 					if (!item.locked) selected.delete(item.id);
 				}
-			} else for (const item of step.items) selected.add(item.id);
+			} else for (const item of scope) selected.add(item.id);
 		} else {
 			const item = step.items[cursor - 1];
 			if (item === undefined || item.locked) return state;
+			if (disabledRows(state, state.tab).has(item.id)) return state;
 			if (selected.has(item.id)) selected.delete(item.id);
-			else selected.add(item.id);
+			else {
+				selected.add(item.id);
+				// Ticking a lookup match clears the typing row (the pick is
+				// done; the next search starts clean).
+				if (item.group !== undefined && step.items[typingIndex(step)]?.typing?.clearOnPick) {
+					return {
+						...state,
+						selected: state.selected.map((set, i) => (i === state.tab ? selected : set)),
+						texts: state.texts.map((prev, i) => (i === state.tab ? "" : prev)),
+					};
+				}
+			}
 		}
 		return { ...state, selected: state.selected.map((set, i) => (i === state.tab ? selected : set)) };
 	};
@@ -1139,8 +1569,17 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 					const draft = state.addTexts[state.tab].trim();
 					if (!draft) return { state };
 					const existing = step.items.find((item) => item.id.toLowerCase() === draft.toLowerCase());
-					const items = existing ? step.items : [...step.items, { id: draft, label: draft }];
 					const id = existing ? existing.id : draft;
+					// With a parent the new row is a CHILD: it lands after the
+					// parent's last child (or right after the parent).
+					const parent = step.addInput?.parent;
+					const anchor = parent === undefined ? -1
+						: Math.max(step.items.findIndex((item) => item.id === parent && item.parent === undefined),
+							...step.items.map((item, i) => (item.parent === parent ? i : -1)));
+					const added: CheckboxItem = parent === undefined ? { id: draft, label: draft } : { id: draft, label: draft, parent };
+					const items = existing ? step.items
+						: anchor < 0 ? [...step.items, added]
+						: [...step.items.slice(0, anchor + 1), added, ...step.items.slice(anchor + 1)];
 					const steps = state.steps.map((other, i) => (i === state.tab && other.kind === "checkbox"
 						? { ...other, items }
 						: other));
@@ -1158,6 +1597,15 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 								(i === state.tab ? checkboxAddRow(grown) : value)),
 						},
 					};
+				}
+				// Enter on the typing row: nothing typed = advance (the
+				// Enter-through flow stays one stroke); something typed = step
+				// down to the group row right under it (the matches) when
+				// one is there, else stay.
+				if (onCheckboxTyping) {
+					if (!state.texts[state.tab].trim()) return advanceCommitted();
+					const below = step.items[typingIndex(step) + 1];
+					return below?.group !== undefined ? { state: withCursor(typingRow(step) + 1) } : { state };
 				}
 				// An empty OPTIONAL list advances from any row (the
 				// lazily loaded journal list must never stall Enter-through).
@@ -1236,8 +1684,11 @@ export function wizardResult(state: WizardState): WizardResult {
 	state.steps.forEach((step, i) => {
 		if (!stepEnabled(state, i)) return;
 		if (step.kind === "checkbox") {
-			result[step.id] = step.items.filter((item) => state.selected[i].has(item.id)).map((item) => item.id);
+			const disabled = disabledRows(state, i);
+			result[step.id] = step.items.filter((item) => state.selected[i].has(item.id) && !disabled.has(item.id)).map((item) => item.id);
 			if (step.input) result[step.input.id] = state.committedTexts[i];
+			const typing = step.items[typingIndex(step)];
+			if (typing) result[typing.id] = state.texts[i];
 		} else if (step.kind === "text") {
 			result[step.id] = effectiveText(state, i);
 		} else if (step.kind === "form") {
@@ -1260,6 +1711,9 @@ export interface WizardViewRow {
 	dim?: boolean;
 	/** Warning line (the review page's open-steps notice). */
 	warn?: boolean;
+	/** Loading status line: the adapter paints the trailing dots in the
+	 * accent color (a dim line's pulse was easy to miss). */
+	pulse?: boolean;
 }
 
 export interface WizardView {
@@ -1297,10 +1751,36 @@ function stepValueLines(state: WizardState, i: number): string[] {
 	if (step.kind === "checkbox" && !step.defaultAll) {
 		const text = DIALOG_TEXT[state.lang];
 		const items = step.queryNumbers ? withQueryNumbers(step.items, state.selected[i]) : step.items;
-		const chosen = items.filter((item) => !item.locked && state.selected[i].has(item.id));
+		const disabled = disabledRows(state, i);
+		// The list section above a typing row is an exclusion list: ONE
+		// summary line ("all (no filter)" / "excluded: ...") over its live
+		// rows; disabled (a pick made) it is off the review entirely.
+		const listSection = typingRow(step) >= 0 ? headScope(step).filter((item) => !disabled.has(item.id)) : [];
+		const listLines = listSection.length
+			? [(() => {
+				const out = listSection.filter((item) => !state.selected[i].has(item.id));
+				return out.length === 0 || out.length === listSection.length ? text.allKept : text.excluded(out.map((item) => item.label));
+			})()]
+			: [];
+		const listIds = new Set(headScope(step).map((item) => item.id));
+		const chosen = items.filter((item) => item.parent === undefined && !item.locked && item.typing === undefined
+			&& !(typingRow(step) >= 0 && listIds.has(item.id))
+			&& state.selected[i].has(item.id) && !disabled.has(item.id));
 		// Optional steps: empty is a decision, not an open question.
-		if (chosen.length === 0) return [step.optional ? text.noQuestions : text.unanswered];
-		return chosen.map((item) => item.label);
+		if (chosen.length === 0 && listLines.length === 0) return [step.optional ? text.noQuestions : text.unanswered];
+		if (chosen.length === 0) return listLines;
+		// A parent lists its checked children behind it ("Curated lists:
+		// remote-sensing, gis") -- the review shows what will be read; an
+		// exclusion parent names what is OUT instead.
+		return [...listLines, ...chosen.map((item) => {
+			const children = items.filter((child) => child.parent === item.id);
+			if (item.reviewAs === "exclusion") {
+				const out = children.filter((child) => !state.selected[i].has(child.id));
+				return `${item.label}: ${out.length === 0 || out.length === children.length ? text.allKept : text.excluded(out.map((child) => child.label))}`;
+			}
+			const kids = children.filter((child) => state.selected[i].has(child.id));
+			return kids.length ? `${item.label}: ${kids.map((child) => child.label).join(", ")}` : item.label;
+		})];
 	}
 	return [stepValueLabel(state, i)];
 }
@@ -1444,7 +1924,7 @@ export function wizardView(state: WizardState): WizardView {
 			// select-all, no rows, no inputs -- so the load is unmistakable.
 			// Enter still advances (see the confirm guard); items/selection
 			// live on untouched underneath and reappear with the swap.
-			rows.push({ text: `     ${step.emptyNote ?? ""}`, active: false, dim: true });
+			rows.push({ text: `     ${step.emptyNote ?? ""}`, active: false, dim: true, pulse: true });
 		} else if (step.items.length === 0) {
 			// Lazily loaded list before/without items: the note says
 			// why it is empty; the next-row keeps Enter-through working.
@@ -1471,7 +1951,15 @@ export function wizardView(state: WizardState): WizardView {
 				step.selectAllLabel,
 				step.spaced === true,
 				step.allSelectedLabel,
-				step.masterRow ? step.items.some((item) => state.selected[state.tab].has(item.id)) : undefined,
+				step.masterRow ? step.items.some((item) => item.parent === undefined && state.selected[state.tab].has(item.id)) : undefined,
+				step.childNotes,
+				step.childLoading,
+				{
+					draft: state.texts[state.tab],
+					notes: Object.values(step.groupNotes ?? {}),
+					disabled: disabledRows(state, state.tab),
+					...(step.unnumbered ? { unnumbered: true } : {}),
+				},
 			));
 			pushAddRow();
 			pushInputRow();

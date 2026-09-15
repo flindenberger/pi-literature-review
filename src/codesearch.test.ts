@@ -278,6 +278,9 @@ const scope = { blocks: [["water", "flood"], ["mapping", "segmentation"]] };
 	assert.deepEqual(calls.filter((c) => c.startsWith("entries:")), ["entries:sidl/techniques", "entries:opengeos/Awesome-GEE"]);
 	assert.deepEqual(calls.filter((c) => c.startsWith("readme:")), ["readme:Servir-Mekong/hydra-floods", "readme:ecohydro/CropMask_RCNN"]);
 	assert.equal(result.candidates, 2);
+	// The lists actually read are reported (largest first, entry counts).
+	assert.deepEqual(result.listsRead!.map((l) => l.replace(/ \(\d+ entries\)$/, "")), ["sidl/techniques", "opengeos/Awesome-GEE"]);
+	assert.match(result.listsRead![0], / \(\d+ entries\)$/);
 	const hydra = result.records.find((r) => r.doi === "10.3390/rs12152469")!;
 	assert.equal(hydra.code_url, "https://github.com/Servir-Mekong/hydra-floods");
 	assert.equal(hydra.code_gate, undefined);

@@ -78,6 +78,9 @@ export interface RenderPayload {
 	abstract_lookup_failures?: Array<{ source: string; error: string; records: number }> | null;
 	/** Boolean expression actually sent to arXiv per query (null: arXiv unused). */
 	arxiv_queries?: string[] | null;
+	/** Authors picked in the wizard's lookup (null: none): names, OpenAlex
+	 * ids, the required position and whether the query still applied. */
+	author_scope?: { names: string[]; ids: string[]; position: string; scope: string } | null;
 	/** Boolean block search actually sent to OpenAlex per query. */
 	openalex_queries?: string[] | null;
 	/** Flattened block terms actually sent to CrossRef per query (CrossRef
@@ -152,6 +155,8 @@ const FILTER_LABELS: Record<string, string> = {
 	venues: "venues",
 	requirePdf: "PDF required",
 	verifiedOnly: "verified only",
+	pickedAuthors: "picked authors",
+	authorPosition: "author position",
 };
 
 /** Human-readable filter summary; shared with the digest so both log the
@@ -920,11 +925,15 @@ export function renderHtml(payload: RenderPayload, options?: { network?: boolean
 			? "arXiv is the only source needing this boolean syntax; CrossRef and OpenAlex received the query text unchanged (keyword relevance search)."
 			: undefined,
 	);
-	const openalexQueryRows = sentRows("Sent to OpenAlex", payload.openalex_queries);
+	const openalexQueryRows = sentRows(
+		"Sent to OpenAlex",
+		payload.openalex_queries,
+		"A type filter keeps peer-review reports and author replies, supplementary material, datasets, paratext and grants out of the results.",
+	);
 	const crossrefQueryRows = sentRows(
 		"Sent to CrossRef",
 		payload.crossref_queries,
-		"CrossRef offers no boolean search; it receives the block terms as plain relevance keywords.",
+		"CrossRef offers no boolean search; it receives the block terms as plain relevance keywords. A type filter requests scholarly works only (articles, proceedings, preprints, books, chapters, reports, theses), so peer-review reports and author replies never arrive.",
 	);
 	const semanticscholarQueryRows = sentRows(
 		"Sent to Semantic Scholar",
@@ -947,6 +956,16 @@ export function renderHtml(payload: RenderPayload, options?: { network?: boolean
 			return sentRows(label, codeQueries[source], note);
 		})
 		.join("");
+	// Picked authors (the wizard lookup): who, in which position, and
+	// whether the query still applied -- one row in both meta blocks.
+	const authorScopeRow = payload.author_scope
+		? `<dt>Author scope</dt><dd>${esc(payload.author_scope.names.map((name, i) =>
+			`${name}${payload.author_scope?.ids[i] ? ` (${payload.author_scope.ids[i]})` : ""}`).join(", "))} -- ${
+			esc(payload.author_scope.position === "first" ? "first author only"
+				: payload.author_scope.position === "contributing" ? "contributing author only"
+				: "any author position")}, ${
+			esc(payload.author_scope.scope === "all" ? "all their publications (query used only for the on_target label)" : "publications matching the query")}</dd>\n`
+		: "";
 	const codeSourcesRow = payload.code_sources_used?.length
 		? `\n<dt>Code sources</dt><dd>${esc(payload.code_sources_used.join(", "))}<span class="note"> -- repositories first, papers resolved at arXiv / OpenAlex (see footnote &sup2;)</span></dd>`
 		: "";
@@ -1117,7 +1136,7 @@ a.flow-download:hover { background: #e6e6df; }
 <dt>Generated</dt><dd>${esc(payload.generated)} (UTC)</dd>
 <dt>Sources</dt><dd>${esc(payload.sources_used.join(", ")) || "none reachable"}</dd>${codeSourcesRow}${sourceFailureRows}${lookupFailureRows}${
 	payload.per_source ? `\n<dt>Records per source</dt><dd>${esc(payload.per_source)}</dd>` : ""}
-<dt>User filters</dt><dd>${esc(describeFilters(payload.filters))}</dd>
+${authorScopeRow}<dt>User filters</dt><dd>${esc(describeFilters(payload.filters))}</dd>
 <dt>Sort</dt><dd>${esc(payload.sort ?? "source order")}</dd>${flowRow || `
 <dt>Results</dt><dd>${results.length}${groupSummary}; ${verifiedCount}/${results.length} identifiers verified; ${payload.dropped.length} dropped</dd>`}
 </dl>
@@ -1131,7 +1150,7 @@ a.flow-download:hover { background: #e6e6df; }
 		? `\n<dt>Other methods</dt><dd>code repositories: ${esc(payload.code_sources_used.join(", "))} (repository search first, papers resolved from the identifiers the repositories cite)</dd>`
 		: ""}${
 	payload.per_source ? `\n<dt>Requested depth</dt><dd>${esc(payload.per_source)} record(s) per source and query</dd>` : ""}
-<dt>User filters</dt><dd>${esc(describeFilters(payload.filters))}</dd>
+${authorScopeRow}<dt>User filters</dt><dd>${esc(describeFilters(payload.filters))}</dd>
 </dl>${
 	arxivQueryRows || openalexQueryRows || crossrefQueryRows || semanticscholarQueryRows || codeQueryRows
 		? `\n<h3>Database-specific search translation</h3>\n<dl class="meta">${arxivQueryRows}${openalexQueryRows}${crossrefQueryRows}${semanticscholarQueryRows}${codeQueryRows}\n</dl>`

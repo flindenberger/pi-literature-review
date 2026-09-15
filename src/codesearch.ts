@@ -51,6 +51,10 @@ export interface CodeSearchResult {
 	 * "12 candidates, 4 resolved"). */
 	candidates: number;
 	failures: CodeSearchFailure[];
+	/** awesome-lists only: the lists actually read, "<owner>/<repo>
+	 * (N entries)", largest first -- the report names them next to the
+	 * topics (transparency: which curated lists this run relied on). */
+	listsRead?: string[];
 }
 
 /** Injectable network functions: tests pass stubs, the engine the real ones. */
@@ -499,6 +503,7 @@ export const searchAwesomeLists: CodeSearcher = async (query, perSource, scope, 
 	const slugs = [...lists.entries()].sort((a, b) => b[1] - a[1]).slice(0, MAX_LISTS).map(([slug]) => slug);
 	const repos: Array<{ owner: string; repo: string; createdAt: string | null }> = [];
 	const seen = new Set<string>();
+	const listsRead: string[] = [];
 	for (const slug of slugs) {
 		aborted(ctx);
 		let entries: ListEntry[];
@@ -510,6 +515,7 @@ export const searchAwesomeLists: CodeSearcher = async (query, perSource, scope, 
 			failures.push({ step: `entries of list ${slug}`, error: errorText(error) });
 			continue;
 		}
+		listsRead.push(`${slug} (${entries.length} entries)`);
 		for (const entry of entries) {
 			if (!entry.repoUrl || !entryMatchesBlocks(entry, blocks)) continue;
 			const parsed = parseRepoUrl(entry.repoUrl);
@@ -524,7 +530,7 @@ export const searchAwesomeLists: CodeSearcher = async (query, perSource, scope, 
 	// createdAt unknown here -> resolvePairs asks repos.ecosyste.ms.
 	const pairs = (await pairsFromReadmes(repos, limit, ctx, failures)).map((p) => ({ ...p, createdAt: undefined }));
 	const records = await resolvePairs(pairs, "awesome-lists", perSource, ctx, failures);
-	return { records, candidates: pairs.length, failures };
+	return { records, candidates: pairs.length, failures, listsRead };
 };
 
 export const CODE_SEARCHERS: Record<string, CodeSearcher> = {

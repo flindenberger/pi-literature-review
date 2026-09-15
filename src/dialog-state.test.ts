@@ -7,6 +7,7 @@
 import assert from "node:assert/strict";
 import {
 	animateEllipsis,
+	type CheckboxItem,
 	type CheckboxState,
 	checkboxTypingRow,
 	detectDialogLang,
@@ -21,6 +22,7 @@ import {
 	wizardAnswers,
 	wizardResult,
 	type WizardState,
+	type WizardAnswers,
 	type WizardStepDef,
 	wizardView,
 	wrapLine,
@@ -989,6 +991,8 @@ function drive(
 	const loadingView = wizardView(state);
 	assert.equal(loadingView.rows.length, 1);
 	assert.ok(loadingView.rows[0].dim === true && loadingView.rows[0].text.includes("(loading)"));
+	// The whole-tab loading note pulses (dots painted in the accent color).
+	assert.equal(loadingView.rows[0].pulse, true);
 	// ...then the new list arrives: v2 is not in it but stays, appended.
 	({ state } = drive(state, [
 		{ kind: "setItems", step: "variants", items: [
@@ -1312,6 +1316,302 @@ function drive(
 	p2 = reduceWizard(p2, "down").state;
 	p2 = reduceWizard(p2, "toggle").state;
 	assert.ok(rowsOf(p2).some((t) => t.includes("[ ] Search for papers with code")));
+}
+
+// Child rows under a parent item (the code tab's list topics under
+// "Curated lists"): a parent-scoped setItems swaps ONLY that parent's
+// children, keeps every other row and tick, renders them indented and
+// unnumbered, the master head ignores them, the review lists them behind
+// their parent, and the add row with a parent files its row as a child.
+{
+	const codeStep: WizardStepDef = {
+		kind: "checkbox", id: "code", tab: "Code", title: "Code repositories",
+		// Four described rows: the step's own row count dominates the submit
+		// page's budget, so the height assertions below measure THIS step.
+		items: [
+			{ id: "hf-papers", label: "Hugging Face Papers", description: "arXiv papers with a linked repository" },
+			{ id: "awesome-lists", label: "Curated lists", description: "awesome lists by topic" },
+			{ id: "github-readme", label: "GitHub README search", description: "READMEs citing arxiv.org" },
+			{ id: "gee-github", label: "Google Earth Engine", description: "READMEs naming the GEE editor" },
+		],
+		selectAllLabel: "Search for papers with code", nextLabel: "Next", optional: true, masterRow: true,
+		addInput: { id: "code_topic_own", label: "+ Own list topic", parent: "awesome-lists" },
+	};
+	let state = initWizard([codeStep]);
+	const rowsOf = (st: WizardState) => wizardView(st).rows.map((r) => r.text);
+	// Tick the head (all four sources), then the loader's status line
+	// under the parent: height grows by exactly that line.
+	state = reduceWizard(state, "confirm").state;
+	const before = maxWizardRows(state);
+	state = reduceWizard(state, { kind: "setItems", step: "code", parent: "awesome-lists", items: [], note: "suggesting topics ...", loading: true }).state;
+	assert.ok(rowsOf(state).some((t) => t.includes("suggesting topics ...")));
+	assert.equal(maxWizardRows(state), before + 1);
+	// The note under a LOADING parent pulses (dim + pulse flag); a plain
+	// note (failed) is dim only.
+	const noteRow = wizardView(state).rows.find((r) => r.text.includes("suggesting topics ..."))!;
+	assert.equal(noteRow.dim, true);
+	assert.equal(noteRow.pulse, true);
+	state = reduceWizard(state, { kind: "setItems", step: "code", parent: "awesome-lists", items: [], note: "topic suggestion failed" }).state;
+	const failedRow = wizardView(state).rows.find((r) => r.text.includes("topic suggestion failed"))!;
+	assert.equal(failedRow.dim, true);
+	assert.equal(failedRow.pulse, undefined);
+	// Children arrive: inserted right after the parent, indented, no
+	// number; preselect ticks them; the sources keep their ticks; the
+	// status line is gone.
+	state = reduceWizard(state, {
+		kind: "setItems", step: "code", parent: "awesome-lists",
+		items: [{ id: "remote-sensing", label: "remote-sensing", description: "17 lists" }, { id: "water", label: "water" }],
+		preselect: ["remote-sensing"], note: "",
+	}).state;
+	const rows = rowsOf(state);
+	const iParent = rows.findIndex((t) => t.includes("2. [✔] Curated lists"));
+	const iChild = rows.findIndex((t) => t.includes("[✔] remote-sensing"));
+	const iGee = rows.findIndex((t) => t.includes("4. [✔] Google Earth Engine"));
+	assert.ok(iParent >= 0 && iChild > iParent && iGee > iChild, rows.join("\n"));
+	assert.ok(rows.some((t) => t.includes("[ ] water")));
+	assert.ok(rows.some((t) => t.trim() === "17 lists"));
+	assert.ok(!rows.some((t) => t.includes("suggesting topics")));
+	assert.ok(!rows.some((t) => /\d\. \[.\] remote-sensing/.test(t)), "child rows carry no number");
+	assert.deepEqual(wizardResult(state).code, ["hf-papers", "awesome-lists", "remote-sensing", "github-readme", "gee-github"]);
+	// Cursor: the child is a real cursor row (toggle works); untick water on.
+	state = reduceWizard(state, "down").state; // 1 hf
+	state = reduceWizard(state, "down").state; // 2 awesome
+	state = reduceWizard(state, "down").state; // remote-sensing
+	state = reduceWizard(state, "down").state; // water
+	state = reduceWizard(state, "toggle").state;
+	assert.ok(wizardResult(state).code.includes("water"));
+	// Re-swap with one new child: rows already present KEEP their tick
+	// state (water stays ticked, remote-sensing stays ticked), the new one
+	// follows the preselect; a dropped child is pruned from the selection.
+	state = reduceWizard(state, {
+		kind: "setItems", step: "code", parent: "awesome-lists",
+		items: [{ id: "remote-sensing", label: "remote-sensing" }, { id: "water", label: "water" }, { id: "gis", label: "gis" }],
+		preselect: ["remote-sensing", "gis"],
+	}).state;
+	assert.deepEqual(wizardResult(state).code, ["hf-papers", "awesome-lists", "remote-sensing", "water", "gis", "github-readme", "gee-github"]);
+	state = reduceWizard(state, { kind: "setItems", step: "code", parent: "awesome-lists", items: [{ id: "gis", label: "gis" }], preselect: ["gis"] }).state;
+	assert.deepEqual(wizardResult(state).code, ["hf-papers", "awesome-lists", "gis", "github-readme", "gee-github"]);
+	// Master head: ANY over the top-level rows only; clearing leaves the
+	// child tick alone (its loader removes the rows), and the head reads
+	// unchecked although a child is still ticked.
+	state = reduceWizard(state, { kind: "setItems", step: "code", parent: "awesome-lists", items: [{ id: "gis", label: "gis" }], preselect: ["gis"] }).state;
+	state = reduceWizard(state, "up").state;
+	state = reduceWizard(state, "up").state;
+	state = reduceWizard(state, "up").state;
+	state = reduceWizard(state, "up").state; // head (cursor was on water's old row = 4, clamped)
+	while (wizardView(state).rows.findIndex((r) => r.active) !== wizardView(state).rows.findIndex((r) => r.text.includes("Search for papers with code"))) {
+		state = reduceWizard(state, "up").state;
+	}
+	state = reduceWizard(state, "toggle").state;
+	// The child stays ticked underneath but its parent is off: not a result.
+	assert.deepEqual(wizardResult(state).code, []);
+	assert.ok(rowsOf(state).some((t) => t.includes("[ ] Search for papers with code")));
+	// Head again checks the four sources, not more.
+	state = reduceWizard(state, "toggle").state;
+	assert.deepEqual(wizardResult(state).code, ["hf-papers", "awesome-lists", "gis", "github-readme", "gee-github"]);
+	// Review page: the parent lists its checked children behind it.
+	state = reduceWizard(state, { kind: "setItems", step: "code", parent: "awesome-lists", items: [{ id: "gis", label: "gis" }, { id: "hydrology", label: "hydrology" }], preselect: ["hydrology"] }).state;
+	const review = { ...state, tab: state.steps.length };
+	const reviewRows = wizardView(review).rows.map((r) => r.text);
+	assert.ok(reviewRows.some((t) => t.includes("Curated lists: gis, hydrology")), reviewRows.join("\n"));
+	assert.ok(!reviewRows.some((t) => /^\s*→ gis$/.test(t)));
+	// Add row with a parent: the typed topic lands after the parent's last
+	// child, checked, and the cursor follows the add row.
+	const addRow = wizardView(state).rows.findIndex((r) => r.text.includes("+ Own list topic"));
+	while (wizardView(state).rows.findIndex((r) => r.active) !== addRow) state = reduceWizard(state, "down").state;
+	state = reduceWizard(state, { kind: "input", chars: "flood" }).state;
+	state = reduceWizard(state, "confirm").state;
+	const after = rowsOf(state);
+	const iHydro = after.findIndex((t) => t.includes("[✔] hydrology"));
+	const iFlood = after.findIndex((t) => t.includes("[✔] flood"));
+	const iGee2 = after.findIndex((t) => t.includes("[✔] Google Earth Engine"));
+	assert.ok(iHydro >= 0 && iFlood === iHydro + 1 && iGee2 > iFlood, after.join("\n"));
+	assert.deepEqual(wizardResult(state).code, ["hf-papers", "awesome-lists", "gis", "hydrology", "flood", "github-readme", "gee-github"]);
+	assert.ok(after.some((t) => t.includes("+ Own list topic: _")), "draft cleared, cursor on the add row");
+	// Unknown parent: no-op.
+	const same = reduceWizard(state, { kind: "setItems", step: "code", parent: "nope", items: [{ id: "x", label: "x" }] }).state;
+	assert.deepEqual(wizardResult(same).code, wizardResult(state).code);
+}
+
+// Author-tab mechanics: an exclusion list loaded as a group at the top
+// (rows arrive ticked, removals survive reloads, the head row governs
+// only that section and greys out with it once an author is picked), a
+// TYPING row mid-list under its own heading with the lookup's matches
+// anchored under it, clearOnPick, boxes greyed out (no note) until a
+// pick, a scope box greying out the position boxes WITH a note, no row
+// numbers, and the sectioned answered/review semantics.
+{
+	const hasPick = (answers: WizardAnswers) =>
+		Array.isArray(answers.author_pick) && (answers.author_pick as string[]).some((id) => /^A\d+$/.test(id));
+	const noPick = (answers: WizardAnswers) => !hasPick(answers);
+	const scopeAll = (answers: WizardAnswers) =>
+		Array.isArray(answers.author_pick) && (answers.author_pick as string[]).includes("scope_all");
+	const positionOn = (answers: WizardAnswers) => hasPick(answers) && !scopeAll(answers);
+	const positionNote = (answers: WizardAnswers) => (hasPick(answers) ? "ignored (all publications selected)" : "");
+	const authorStep: WizardStepDef = {
+		kind: "checkbox", id: "author_pick", tab: "Authors", title: "Authors for this query, ranked by citations", unnumbered: true,
+		items: [
+			{ id: "author_search", label: "Type author name", headingBefore: "Limit the search to a specific author", typing: { clearOnPick: true } },
+			{ id: "pos_first", label: "as first author", enabledIf: positionOn, disabledNote: positionNote },
+			{ id: "pos_contrib", label: "as contributing author", enabledIf: positionOn, disabledNote: positionNote },
+			{ id: "scope_all", label: "ignore the query", enabledIf: hasPick },
+		],
+		preselected: ["pos_first", "pos_contrib"],
+		selectAllLabel: "Select all", allSelectedLabel: "All authors included (Enter: deselect all)",
+		nextLabel: "Next", optional: true, cursorStart: "next",
+	};
+	const listRows = (): CheckboxItem[] => [
+		{ id: "L1", label: "Claudia Kuenzer (21 hits)", enabledIf: noPick },
+		{ id: "L2", label: "Marco Ottinger (9 hits)", enabledIf: noPick },
+		{ id: "Other", label: "Other authors", enabledIf: noPick },
+	];
+	let state = initWizard([authorStep]);
+	const rowsOf = (st: WizardState) => wizardView(st).rows.map((r) => r.text);
+	const rowIndex = (text: string) => wizardView(state).rows.findIndex((r) => r.text.includes(text));
+	const activeRow = () => wizardView(state).rows.findIndex((r) => r.active);
+	const moveTo = (text: string) => { while (activeRow() !== rowIndex(text)) state = reduceWizard(state, "down").state; };
+	// Fresh: empty list section under a plain head, the heading + typing
+	// row + dim boxes below, the cursor on Next; nothing counts.
+	const rows0 = rowsOf(state);
+	assert.equal(rows0[0], "     [ ] Select all");
+	assert.equal(rows0[1], "");
+	assert.equal(rows0[2], "Limit the search to a specific author");
+	assert.equal(rows0[3], "     Type author name: ");
+	assert.equal(rows0[4], "     [✔] as first author");
+	assert.equal(wizardView(state).rows[4].dim, true);
+	assert.ok(wizardView(state).rows[rowIndex("Next")].active, "cursor starts on Next");
+	assert.ok(!rows0.some((t) => /\d\. \[/.test(t)), rows0.join("\n"));
+	assert.equal(stepAnswered(state, 0), false);
+	assert.deepEqual(wizardResult(state).author_pick, []);
+	assert.equal(wizardResult(state).author_search, "");
+	// Height budget: the heading costs one line more than a plain blank line.
+	const spacedStep: WizardStepDef = { ...authorStep, items: authorStep.items.map((item) => item.typing ? { ...item, headingBefore: undefined, spaceBefore: true } : item) };
+	assert.equal(maxWizardRows(state), maxWizardRows(initWizard([spacedStep])) + 1);
+	// List loading: the note IS the head row while the section is empty.
+	state = reduceWizard(state, { kind: "setItems", step: "author_pick", group: "list", items: [], note: "fetching author list ...", loading: true, arriveChecked: true }).state;
+	const loadingHead = wizardView(state).rows[0];
+	assert.ok(loadingHead.text === "     fetching author list ..." && loadingHead.dim === true && loadingHead.pulse === true, loadingHead.text);
+	assert.ok(wizardView(state).rows[rowIndex("Next")].active, "cursor role survives the swap");
+	// List arrives ticked (arriveChecked): head reads all-included, rows
+	// sit above the heading; all ticked = no filter = not answered, the
+	// review says "all (no filter)".
+	state = reduceWizard(state, { kind: "setItems", step: "author_pick", group: "list", items: listRows(), note: "", arriveChecked: true }).state;
+	const rows1 = rowsOf(state);
+	assert.equal(rows1[0], "     [✔] All authors included (Enter: deselect all)");
+	assert.equal(rows1[1], "     [✔] Claudia Kuenzer (21 hits)");
+	assert.equal(rows1[3], "     [✔] Other authors");
+	assert.equal(rows1[4], "");
+	assert.equal(rows1[5], "Limit the search to a specific author");
+	assert.equal(rows1[6], "     Type author name: ");
+	assert.equal(stepAnswered(state, 0), false);
+	assert.deepEqual(wizardResult(state).author_pick, ["L1", "L2", "Other"]);
+	assert.ok(wizardView({ ...state, tab: 1 }).rows.some((r) => r.text === "    → all (no filter)"), wizardView({ ...state, tab: 1 }).rows.map((r) => r.text).join("\n"));
+	// Untick one list row: answered, review names it, head drops to "Select all".
+	moveTo("Marco Ottinger");
+	state = reduceWizard(state, "toggle").state;
+	assert.equal(stepAnswered(state, 0), true);
+	assert.ok(wizardView({ ...state, tab: 1 }).rows.some((r) => r.text === "    → excluded: Marco Ottinger (9 hits)"));
+	assert.equal(rowsOf(state)[0], "     [ ] Select all");
+	// Head row: Enter re-ticks the section, again clears it (all off =
+	// no filter too); the boxes below are never touched by it.
+	while (activeRow() !== 0) state = reduceWizard(state, "up").state;
+	state = reduceWizard(state, "toggle").state;
+	assert.deepEqual(wizardResult(state).author_pick, ["L1", "L2", "Other"]);
+	state = reduceWizard(state, "toggle").state;
+	assert.deepEqual(wizardResult(state).author_pick, []);
+	assert.ok(wizardView({ ...state, tab: 1 }).rows.some((r) => r.text === "    → all (no filter)"));
+	state = reduceWizard(state, "toggle").state;
+	// Reload memory: an unticked row stays unticked across the loading
+	// swap (kept rows only) and the resolved list.
+	moveTo("Marco Ottinger");
+	state = reduceWizard(state, "toggle").state;
+	state = reduceWizard(state, { kind: "setItems", step: "author_pick", group: "list", items: listRows().filter((item) => item.id !== "L2"), note: "fetching ...", loading: true, arriveChecked: true }).state;
+	state = reduceWizard(state, { kind: "setItems", step: "author_pick", group: "list", items: listRows(), note: "", arriveChecked: true }).state;
+	assert.deepEqual(wizardResult(state).author_pick, ["L1", "Other"]);
+	moveTo("Marco Ottinger");
+	state = reduceWizard(state, "toggle").state;
+	// Typing: the live draft is exported as <id>_draft; toggle there is a no-op.
+	moveTo("Type author name");
+	state = reduceWizard(state, { kind: "input", chars: "kuen" }).state;
+	assert.equal(wizardAnswers(state).author_search_draft, "kuen");
+	assert.equal(rowsOf(state)[6], "❯    Type author name: kuen_");
+	state = reduceWizard(state, "toggle").state;
+	assert.deepEqual(wizardResult(state).author_pick, ["L1", "L2", "Other"]);
+	// Enter with a draft but no matches yet: stays (the box below is no group row).
+	assert.equal(reduceWizard(state, "confirm").state.cursors[0], state.cursors[0]);
+	// Matches load anchored under the typing row: note there, then rows.
+	state = reduceWizard(state, { kind: "setItems", step: "author_pick", group: "matches", after: "author_search", items: [], note: "looking up ...", loading: true }).state;
+	const noteRow = wizardView(state).rows[7];
+	assert.ok(noteRow.text.includes("looking up ...") && noteRow.dim === true && noteRow.pulse === true, noteRow.text);
+	state = reduceWizard(state, {
+		kind: "setItems", step: "author_pick", group: "matches", after: "author_search",
+		items: [{ id: "A1", label: "Claudia Kuenzer", description: "306 works" }, { id: "A2", label: "Christopher Kuenze" }],
+		note: "",
+	}).state;
+	const rows2 = rowsOf(state);
+	assert.equal(rows2[6], "❯    Type author name: kuen_");
+	assert.equal(rows2[7], "     [ ] Claudia Kuenzer");
+	assert.equal(rows2[8], "         306 works");
+	assert.equal(rows2[9], "     [ ] Christopher Kuenze");
+	assert.equal(rows2[10], "     [✔] as first author");
+	assert.ok(!rows2.some((t) => t.includes("looking up")));
+	// Enter on the typing row with a draft steps down to the first match;
+	// ticking it picks the author, clears the draft, brings the boxes
+	// alive and greys out the whole list section incl. its head row.
+	state = reduceWizard(state, "confirm").state;
+	assert.equal(activeRow(), 7);
+	state = reduceWizard(state, "toggle").state;
+	assert.equal(wizardAnswers(state).author_search_draft, "");
+	assert.equal(rowsOf(state)[6], "     Type author name: ");
+	assert.deepEqual(wizardResult(state).author_pick, ["A1", "pos_first", "pos_contrib"]);
+	assert.equal(stepAnswered(state, 0), true);
+	assert.ok(wizardView(state).rows[0].dim === true && wizardView(state).rows[1].dim === true, "list section dim after a pick");
+	assert.ok(wizardView(state).rows[10].dim !== true, "boxes alive after a pick");
+	let review = wizardView({ ...state, tab: 1 }).rows.map((r) => r.text);
+	assert.ok(review.some((t) => t === "    → Claudia Kuenzer") && review.some((t) => t === "    → as first author"), review.join("\n"));
+	assert.ok(!review.some((t) => t.includes("no filter") || t.includes("excluded")), "list off the review after a pick");
+	// Toggling a greyed list row is a no-op.
+	while (activeRow() !== 1) state = reduceWizard(state, "up").state;
+	state = reduceWizard(state, "toggle").state;
+	assert.deepEqual(wizardResult(state).author_pick, ["A1", "pos_first", "pos_contrib"]);
+	// Scope box: greys out both position boxes WITH the note, drops them
+	// from the result (position = any), toggle there is a no-op; unticking
+	// restores them.
+	moveTo("ignore the query");
+	state = reduceWizard(state, "toggle").state;
+	const posRow = wizardView(state).rows.find((r) => r.text.includes("as first author"))!;
+	assert.ok(posRow.dim === true && posRow.text.endsWith("as first author -- ignored (all publications selected)"), posRow.text);
+	assert.deepEqual(wizardResult(state).author_pick, ["A1", "scope_all"]);
+	state = reduceWizard(state, "up").state; // pos_contrib
+	state = reduceWizard(state, "toggle").state;
+	assert.deepEqual(wizardResult(state).author_pick, ["A1", "scope_all"], "toggle on a greyed box is a no-op");
+	state = reduceWizard(state, "down").state; // scope_all
+	state = reduceWizard(state, "toggle").state;
+	assert.deepEqual(wizardResult(state).author_pick, ["A1", "pos_first", "pos_contrib"]);
+	// Group swap keeps the picked row's tick (same id present again) and
+	// drops the unpicked old match; a new match arrives unticked; the
+	// cursor keeps its row.
+	state = reduceWizard(state, {
+		kind: "setItems", step: "author_pick", group: "matches", after: "author_search",
+		items: [{ id: "A1", label: "Claudia Kuenzer" }, { id: "A3", label: "Kuen Yu" }],
+	}).state;
+	assert.deepEqual(wizardResult(state).author_pick, ["A1", "pos_first", "pos_contrib"]);
+	assert.ok(rowsOf(state).some((t) => t === "     [ ] Kuen Yu"));
+	assert.ok(!rowsOf(state).some((t) => t.includes("Christopher")));
+	// Height budget counts a group note with rows present.
+	const withNote = reduceWizard(state, { kind: "setItems", step: "author_pick", group: "matches", after: "author_search", items: [{ id: "A1", label: "Claudia Kuenzer" }], note: "x", loading: true }).state;
+	assert.equal(maxWizardRows(withNote), maxWizardRows(reduceWizard(withNote, { kind: "setItems", step: "author_pick", group: "matches", after: "author_search", items: [{ id: "A1", label: "Claudia Kuenzer" }], note: "" }).state) + 1);
+	// Unpick the author: the list comes back alive (its ticks untouched),
+	// the boxes go dim again, the list is the result once more.
+	moveTo("Claudia Kuenzer");
+	while (!wizardView(state).rows[activeRow()].text.includes("[✔] Claudia Kuenzer") || activeRow() < 7) state = reduceWizard(state, "down").state;
+	state = reduceWizard(state, "toggle").state;
+	assert.deepEqual(wizardResult(state).author_pick, ["L1", "L2", "Other"]);
+	assert.ok(wizardView(state).rows[0].dim !== true && wizardView(state).rows[1].dim !== true);
+	assert.equal(wizardView(state).rows.find((r) => r.text.includes("as first author"))!.dim, true);
+	// Enter on the empty typing row advances (Enter-through = one stroke).
+	moveTo("Type author name");
+	assert.equal(reduceWizard(state, "confirm").state.tab, 1);
 }
 
 console.log("dialog-state tests passed");

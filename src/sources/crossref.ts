@@ -81,18 +81,42 @@ export function flattenBlockTerms(blocks: string[][] | undefined): string {
 	return terms.join(" ");
 }
 
-export async function searchCrossref(query: string, rows: number, scope?: SourceScope): Promise<SourceRecord[]> {
+/** The parameters of one works request: the flattened block terms (or
+ * the plain text) plus the author field; with author scope "all" the text
+ * query is dropped and the author field alone is sent. Relevance order in
+ * BOTH cases -- measured 2026-09-14: query.author alone by relevance gave
+ * 10/10 papers of the wanted author, sorted by citation count 0/10 (the
+ * name match is loose, citation order surfaces unrelated mega-cited
+ * works). Pure; exported so the payload can show what was sent. */
+/** Record types requested from CrossRef: scholarly works only. CrossRef
+ * knows no negative filter, so this is the positive list; it keeps out
+ * peer-review reports and author replies of open review platforms
+ * (Copernicus "Reply on RC1", typed peer-review), datasets, journal
+ * issues, components, grants and standards. */
+export const CROSSREF_WORK_TYPES = [
+	"journal-article", "proceedings-article", "posted-content", "book-chapter",
+	"book", "monograph", "edited-book", "report", "dissertation",
+];
+
+export function buildCrossrefParams(query: string, rows: number, scope?: SourceScope): URLSearchParams {
+	const authorTerms = (scope?.authors ?? []).map((name) => name.trim()).filter(Boolean);
+	const allByAuthor = scope?.authorScope === "all" && authorTerms.length > 0;
 	const params = new URLSearchParams({
-		query: flattenBlockTerms(scope?.blocks) || query,
+		...(allByAuthor ? {} : { query: flattenBlockTerms(scope?.blocks) || query }),
 		rows: String(rows),
 		sort: "relevance",
 		order: "desc",
+		filter: CROSSREF_WORK_TYPES.map((type) => `type:${type}`).join(","),
 	});
 	// Picked authors go into CrossRef's author search field. The field is
 	// relevance-ranked, not boolean -- the deterministic post-filter still
 	// guarantees that only matching records survive.
-	const authorTerms = (scope?.authors ?? []).map((name) => name.trim()).filter(Boolean);
 	if (authorTerms.length) params.set("query.author", authorTerms.join(" "));
+	return params;
+}
+
+export async function searchCrossref(query: string, rows: number, scope?: SourceScope): Promise<SourceRecord[]> {
+	const params = buildCrossrefParams(query, rows, scope);
 	const mailto = contactMailto();
 	if (mailto) params.set("mailto", mailto);
 

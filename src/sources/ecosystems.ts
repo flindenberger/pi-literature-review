@@ -75,10 +75,12 @@ export function parseLists(data: unknown): AwesomeList[] {
 	return lists.sort((a, b) => b.projectsCount - a.projectsCount);
 }
 
-/** Lists tagged with a GitHub topic (e.g. "remote-sensing"). */
-export async function listsForTopic(topic: string): Promise<AwesomeList[]> {
+/** Lists tagged with a GitHub topic (e.g. "remote-sensing"). An optional
+ * signal bounds the wait (the wizard's topic check uses a short timeout;
+ * the run keeps the default). */
+export async function listsForTopic(topic: string, signal?: AbortSignal): Promise<AwesomeList[]> {
 	const params = new URLSearchParams({ topic, per_page: String(PAGE_SIZE) });
-	const response = await fetchPaced(`${AWESOME_URL}/lists?${params}`, { headers: headers() });
+	const response = await fetchPaced(`${AWESOME_URL}/lists?${params}`, { headers: headers(), ...(signal ? { signal } : {}) });
 	if (response.status === 404) return [];
 	return parseLists(await response.json());
 }

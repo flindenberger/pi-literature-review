@@ -462,4 +462,34 @@ function record(overrides: Partial<SourceRecord>): SourceRecord {
 	assert.equal("enriched" in bare, false);
 }
 
+// Picked authors (the wizard lookup): the record must carry one, in the
+// wanted position; a picked author's record passes the listed-authors
+// exclusion; reasons name the position.
+{
+	const rec = (authors: string[]) => ({
+		cites: 1, year: "2020", venue: "V", authors, pdf_url: "", verified: true,
+	});
+	const picked = { pickedAuthors: ["Kuenzer"] };
+	assert.equal(applyFilters([rec(["Claudia Kuenzer", "A. Other"])], picked).kept.length, 1);
+	const none = applyFilters([rec(["A. Other"])], picked).dropped[0];
+	assert.match(none.reason, /none of the authors is a picked author \(Kuenzer\)/);
+	// Position rules.
+	const first = { ...picked, authorPosition: "first" as const };
+	assert.equal(applyFilters([rec(["Claudia Kuenzer", "B"])], first).kept.length, 1);
+	assert.match(applyFilters([rec(["B", "Claudia Kuenzer"])], first).dropped[0].reason, /not the first author \(first: B\)/);
+	const contributing = { ...picked, authorPosition: "contributing" as const };
+	assert.equal(applyFilters([rec(["B", "Claudia Kuenzer"])], contributing).kept.length, 1);
+	assert.match(applyFilters([rec(["Claudia Kuenzer", "B"])], contributing).dropped[0].reason, /is the first author, not a contributing author/);
+	// A paper where the picked author is first AND appears again later is
+	// a contributing hit too (rare, harmless).
+	assert.equal(applyFilters([rec(["Claudia Kuenzer", "C. Kuenzer"])], contributing).kept.length, 1);
+	assert.equal(applyFilters([rec(["Claudia Kuenzer", "B"])], { ...picked, authorPosition: "any" as const }).kept.length, 1);
+	// Exclusion list on top: the unlisted "other" row is off and only "X"
+	// is ticked -- a picked author's paper still passes.
+	const exclusion = { ...picked, authors: ["X"], authorsOther: true, authorsListed: ["X", "Claudia Kuenzer"] };
+	assert.equal(applyFilters([rec(["Claudia Kuenzer"])], exclusion).kept.length, 1);
+	assert.equal(applyFilters([rec(["X"])], { authors: ["X"], authorsOther: true, authorsListed: ["X", "Claudia Kuenzer"] }).kept.length, 1);
+	assert.equal(applyFilters([rec(["Claudia Kuenzer"])], { authors: ["X"], authorsOther: true, authorsListed: ["X", "Claudia Kuenzer"] }).dropped.length, 1);
+}
+
 console.log("pipeline.test.ts: all assertions passed");

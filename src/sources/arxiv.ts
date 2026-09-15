@@ -69,16 +69,20 @@ function extractDoi(entry: Record<string, any>): string {
  * papers by those authors on the topic; both sides are parenthesized so the
  * clause composes with every query form.
  */
-export function buildSearchQuery(query: string, authors?: string[], blocks?: string[][]): string {
+export function buildSearchQuery(query: string, authors?: string[], blocks?: string[][], authorsOnly = false): string {
 	const trimmed = query.trim().replace(/\s+/g, " ");
 	const hasOperators = /(^|\s)(AND|OR|NOT|ANDNOT)(\s|$)/.test(trimmed) || trimmed.includes('"');
 	const tokens = trimmed.toLowerCase().split(" ").filter(Boolean);
+	const names = (authors ?? [])
+		.map((name) => name.replace(/["|,]/g, " ").replace(/\s+/g, " ").trim())
+		.filter(Boolean);
+	const authorClause = names.map((name) => `au:"${name}"`).join(" OR ");
+	// Author scope "all": the au: clause alone -- the picked authors' papers
+	// regardless of the topic.
+	if (authorsOnly && names.length) return names.length > 1 ? `(${authorClause})` : authorClause;
 	const withAuthors = (expression: string): string => {
-		const names = (authors ?? [])
-			.map((name) => name.replace(/["|,]/g, " ").replace(/\s+/g, " ").trim())
-			.filter(Boolean);
 		if (!names.length) return expression;
-		return `(${expression}) AND (${names.map((name) => `au:"${name}"`).join(" OR ")})`;
+		return `(${expression}) AND (${authorClause})`;
 	};
 	// Blocks win over the token derivation below; the field-syntax/quote
 	// escape hatch never gets blocks (queryBlocks hands off there).
@@ -154,7 +158,7 @@ async function fetchFeed(params: URLSearchParams): Promise<SourceRecord[]> {
 
 export async function searchArxiv(query: string, rows: number, scope?: SourceScope): Promise<SourceRecord[]> {
 	return fetchFeed(new URLSearchParams({
-		search_query: buildSearchQuery(query, scope?.authors, scope?.blocks),
+		search_query: buildSearchQuery(query, scope?.authors, scope?.blocks, scope?.authorScope === "all"),
 		max_results: String(rows),
 		sortBy: "relevance",
 		sortOrder: "descending",

@@ -354,6 +354,79 @@ export function parseVariantSuggestions(raw: string, baseQuery: string, cap = 8)
  * labeling their own finds. Every rule below exists because a model broke
  * it in the field; code enforces the structural ones afterwards
  * (breadth order, block order). */
+/* ------------------------------------------------------------------ *
+ * Awesome-list topics (the code tab's "Curated lists" source)          *
+ * ------------------------------------------------------------------ */
+
+/** GitHub topics that name a whole technique or an "awesome" meta list
+ * rather than a field: measured 2026-09-13, machine-learning carries 988
+ * lists and deep-learning 744, single lists there hold up to 74 000
+ * entries -- a run would read for minutes and match noise. Filtered out
+ * of the model's suggestions; the user can still type one by hand. */
+const GENERIC_LIST_TOPICS = new Set([
+	"awesome", "awesome-list", "awesome-lists", "list", "lists", "machine-learning", "deep-learning",
+	"artificial-intelligence", "ai", "ml", "python", "data-science", "research", "science", "papers",
+	"paper", "github", "software", "tools", "resources",
+]);
+
+/** A GitHub topic slug out of free text: lowercase, spaces/underscores to
+ * hyphens, anything but letters, digits and hyphens dropped, hyphens
+ * collapsed and trimmed. "" when nothing usable remains. Pure. */
+export function topicSlug(text: string): string {
+	return text
+		.toLowerCase()
+		.replace(/[\s_]+/g, "-")
+		.replace(/[^a-z0-9-]/g, "")
+		.replace(/-{2,}/g, "-")
+		.replace(/^-+|-+$/g, "")
+		.slice(0, 50);
+}
+
+export const TOPIC_SYSTEM_PROMPT =
+	"You name GitHub topics under which curated \"awesome\" link lists for a research FIELD are filed. "
+	+ "You only shape a search; you never produce citations, paper titles, authors or any bibliographic data.";
+
+/**
+ * Prompt for the list-topic suggestions: the model sees the concept blocks
+ * of the query and names the FIELD's GitHub topics (measured 2026-09-13:
+ * awesome lists are filed by field -- remote-sensing, bioinformatics,
+ * finance -- never by a research question; block words like "flood" or
+ * "water body" find nothing). Pure.
+ */
+export function topicPrompt(query: string, blocks: string[][], count: number): string {
+	const chain = blocks.length ? blocks.map((block) => `(${block.join(" OR ")})`).join(" AND ") : query;
+	return [
+		`Literature search: ${chain}`,
+		"",
+		`Name up to ${count} GitHub topics under which curated "awesome" lists for the research FIELD of this search are filed.`,
+		"Rules: one topic per line, lowercase, words joined with hyphens (remote-sensing, computational-biology), nothing else on the line.",
+		"Name the field or discipline and its established subfields, the way a GitHub list would be tagged -- not the words of the search itself, not a research question.",
+		"Skip technique-only or catch-all topics (machine-learning, deep-learning, python, awesome): they hold thousands of unrelated entries.",
+		"Order from the most specific field to the broadest.",
+	].filter((line) => line !== "").join("\n");
+}
+
+/**
+ * Topic slugs out of the model's answer: bullets/numbering/quotes/backticks
+ * stripped, slugified, generic topics and duplicates dropped, capped.
+ * Pure.
+ */
+export function parseTopicLines(raw: string, cap = 5): string[] {
+	const topics: string[] = [];
+	for (const line of raw.split(/\r?\n/)) {
+		const cleaned = line
+			.replace(/^\s*(?:[-*•]|\d+[.)])\s*/, "")
+			.replace(/[`"'„“”‚‘’]/g, "")
+			.trim();
+		if (!cleaned || /\s.*\s.*\s/.test(cleaned) && cleaned.length > 60) continue;
+		const slug = topicSlug(cleaned);
+		if (!slug || slug.length < 2 || GENERIC_LIST_TOPICS.has(slug) || topics.includes(slug)) continue;
+		topics.push(slug);
+		if (topics.length >= cap) break;
+	}
+	return topics;
+}
+
 export const VARIANT_SYSTEM_PROMPT =
 	"You build concept-block search queries for academic literature databases (the systematic-review "
 	+ "building-blocks method). You only shape search queries; you never produce citations, paper "

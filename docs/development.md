@@ -16,16 +16,98 @@ tsconfig.json       type-check settings (strict, NodeNext, .ts imports) for the 
 ```
 
 Adapters (`extensions/`) hold everything that touches Pi: tool schemas,
-dialogs, widgets, message rendering. Engines (`src/`) are pure and testable
-without Pi; the CLI drives them directly. Tests sit next to their modules
-(`src/<name>.test.ts`, `src/sources/<name>.test.ts`) and use only Node's
-built-in `assert`.
+dialogs, widgets, message rendering. Engines (`src/`) are pure and
+testable without Pi; the CLI drives them directly. Tests sit next to their
+modules (`src/<name>.test.ts`, `src/sources/<name>.test.ts`) and use only
+Node's built-in `assert`.
+
+## Running from a checkout
+
+```
+npm install            # add --no-bin-links on filesystems without symlinks (exFAT)
+pi install /absolute/path/to/pi-literature-review
+```
+
+At runtime Pi's extension loader provides `@earendil-works/pi-coding-agent`,
+`@earendil-works/pi-tui`, `@earendil-works/pi-ai/compat` and `typebox`.
+They are declared as optional peer dependencies, so a user install pulls
+only this package's own dependencies; for development they are
+devDependencies, so `npm install` in a checkout brings them in for the
+editor, the type check and the offline smoke test.
+
+Restart Pi after code changes -- `/reload` is not guaranteed for package
+extensions.
+
+## Type check and tests
+
+```
+node node_modules/typescript/bin/tsc -p tsconfig.json
+
+for f in src/*.test.ts src/sources/*.test.ts; do node "$f" || echo "FAIL $f"; done
+node -e "import('./index.ts').then(() => console.log('index loads'))"
+```
+
+The type check runs strict TypeScript over `index.ts`, `src/` and
+`extensions/`, tests included, and emits no output (Node runs the `.ts`
+files directly). It is clean and part of the release gate.
+
+Every test file is standalone and offline; network clients are exercised
+against captured fixtures and a stubbed `fetch`. The last line is the
+smoke check that the extension entry loads with the peers present.
+
+## Release acceptance gate
+
+Before any release the ground-truth query must pass end to end:
+
+```
+node src/cli.ts "sandbar detection rivers Sentinel-1 Sentinel-2" -n 5 -s arxiv,crossref,openalex
+```
+
+DOIs `10.3390/rs13081505` and `10.3390/rs18010132` must appear with
+`verified: true`, known junk records (empty titles, off-topic keyword
+matches) must be dropped with reasons, and a fabricated DOI must come out
+`verified: false`.
+
+## Dependencies
+
+A user install pulls nine small packages and runs no install scripts:
+
+| Package | Role |
+|---|---|
+| `fast-xml-parser` | parses the arXiv Atom responses |
+| `unpdf` | extracts text from PDFs (pdf.js bundled inside, no further dependencies) |
+| `fast-xml-builder`, `strnum`, `anynum`, `is-unsafe`, `xml-naming`, `path-expression-matcher`, `@nodable/entities` | internal helpers of `fast-xml-parser` |
+
+The Pi packages the extension builds on are not among them; see [Running
+from a checkout](#running-from-a-checkout).
+
+## Web / RPC clients
+
+Pi web frontends drive Pi in RPC mode. There every wizard runs as a chain
+of modal dialogs -- one select or editor per step, form tabs as a field
+menu. Result cards are a terminal feature, so a finished command run hands
+its text to the agent for one verbatim chat answer, and progress widgets
+are invisible in clients that do not render them. Some clients report an
+empty editor save as cancelled, so the dialog chain never treats an editor
+cancel as a run abort; cancelling is the Cancel row of a select step.
+
+## Conventions
+
+- No language model in the citation path -- ever. A model may shape a
+  query or write prose over numbered excerpts; fixed code inserts and
+  validates every citation.
+- Gates, validation and state live in code, not in instructions to the
+  agent; every stage also has an agent-free slash command.
+- Third-party behaviour (Pi's TUI, pdf.js, the source APIs) is proven
+  against the code or service that actually runs, never assumed.
+- Plain, emoji-free output everywhere.
 
 ## Module map
 
 Where each stage lives; the adapter/engine pair shares its basename.
 
-**Search**
+<details>
+<summary>Search</summary>
 
 | File | Holds |
 |---|---|
@@ -46,14 +128,20 @@ Where each stage lives; the adapter/engine pair shares its basename.
 | `src/digest.ts` | the agent-facing digest and the transcript card text |
 | `src/output.ts` | output folders and collision-safe file names |
 
-**Selection**
+</details>
+
+<details>
+<summary>Selection</summary>
 
 | File | Holds |
 |---|---|
 | `extensions/selection.ts` | the `pi-literature-selection` tool + `/lit-selection` command: identifier dialog, Unpaywall-email dialog, consent dialog, per-paper report widget |
 | `src/selection.ts` | identifier parsing, resolver chain (record link -> Unpaywall -> arXiv), `%PDF` check, library naming, the report |
 
-**Synthesis**
+</details>
+
+<details>
+<summary>Synthesis</summary>
 
 | File | Holds |
 |---|---|
@@ -70,7 +158,10 @@ Where each stage lives; the adapter/engine pair shares its basename.
 | `src/llm.ts` | the HTTP client for the embedding/generation backends (Ollama and OpenAI dialects, per-role split, role-clear errors) |
 | `src/pisession.ts` | current Pi session id for the CLI |
 
-**Shared**
+</details>
+
+<details>
+<summary>Shared</summary>
 
 | File | Holds |
 |---|---|
@@ -81,85 +172,4 @@ Where each stage lives; the adapter/engine pair shares its basename.
 | `src/cardtext.ts` | bold/bullet formatting for transcript cards |
 | `index.ts` | registers the three tools |
 
-## Dependencies
-
-A user install pulls nine small packages and runs no install scripts:
-
-| Package | Role |
-|---|---|
-| `fast-xml-parser` | parses the arXiv Atom responses |
-| `unpdf` | extracts text from PDFs (pdf.js bundled inside, no further dependencies) |
-| `fast-xml-builder`, `strnum`, `anynum`, `is-unsafe`, `xml-naming`, `path-expression-matcher`, `@nodable/entities` | internal helpers of `fast-xml-parser` |
-
-The Pi packages the extension builds on are not among them; see the next
-section.
-
-## Running from a checkout
-
-```
-npm install            # add --no-bin-links on filesystems without symlinks (exFAT)
-pi install /absolute/path/to/pi-literature-review
-```
-
-At runtime Pi's extension loader provides `@earendil-works/pi-coding-agent`,
-`@earendil-works/pi-tui`, `@earendil-works/pi-ai/compat` and `typebox`
-(declared as optional peer dependencies, so a user install pulls only this
-package's own dependencies). For development they are devDependencies, so
-`npm install` in a checkout brings them in for the editor, the type check
-and the offline smoke test. Restart Pi after code changes -- `/reload` is
-not guaranteed for package extensions.
-
-## Type check
-
-```
-node node_modules/typescript/bin/tsc -p tsconfig.json
-```
-
-Strict TypeScript over `index.ts`, `src/` and `extensions/` (tests
-included); no output is emitted (Node runs the `.ts` files directly). The
-check is clean and is part of the release gate together with the tests.
-
-## Tests
-
-```
-for f in src/*.test.ts src/sources/*.test.ts; do node "$f" || echo "FAIL $f"; done
-node -e "import('./index.ts').then(() => console.log('index loads'))"
-```
-
-Every test file is standalone and offline (network clients are exercised
-against captured fixtures and stubbed `fetch`). The second line is the
-smoke check that the extension entry loads with the peers present.
-
-## Release acceptance gate
-
-Before any release the ground-truth query must pass end to end:
-
-```
-node src/cli.ts "sandbar detection rivers Sentinel-1 Sentinel-2" -n 5 -s arxiv,crossref,openalex
-```
-
-DOIs `10.3390/rs13081505` and `10.3390/rs18010132` must appear with
-`verified: true`, known junk records (empty titles, off-topic keyword
-matches) must be dropped with reasons, and a fabricated DOI must come out
-`verified: false`.
-
-## Web / RPC clients
-
-Pi web frontends drive Pi in RPC mode; there every wizard runs as a chain
-of modal dialogs (one select or editor per step, form tabs as a field
-menu). Result cards are a terminal feature, so a finished command run hands
-its text to the agent for one verbatim chat answer; progress widgets are
-invisible in clients that do not render them; some clients report an empty
-editor save as cancelled, so the dialog chain never treats an editor
-cancel as a run abort (cancelling is the Cancel row of a select step).
-
-## Conventions
-
-- No language model in the citation path -- ever. A model may shape a
-  query or write prose over numbered excerpts; fixed code inserts and
-  validates every citation.
-- Gates, validation and state live in code, not in instructions to the
-  agent; every stage also has an agent-free slash command.
-- Third-party behaviour (Pi's TUI, pdf.js, the source APIs) is proven
-  against the code or service that actually runs, never assumed.
-- Plain, emoji-free output everywhere.
+</details>

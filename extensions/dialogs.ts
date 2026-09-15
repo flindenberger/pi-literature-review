@@ -32,6 +32,7 @@ import {
 	reduceWizard,
 	type WizardAnswers,
 	type WizardEvent,
+	type WizardItemLoader,
 	type WizardOptions,
 	type WizardResult,
 	type WizardStepDef,
@@ -213,7 +214,27 @@ async function wizardOverlay(
 			// it stops itself when nothing is loading or the overlay finished.
 			// The dispatches carry loading:true, so the view shows ONLY the
 			// pulsing note while a load runs.
-			const loadingNotes = new Map<string, string>();
+			const loadingNotes = new Map<string, { loader: WizardItemLoader; note: string; keep: CheckboxItem[] }>();
+			// setItems for a loader: parent loaders swap only that item's
+			// child rows and put their status under the parent (the code
+			// tab's list topics); group loaders swap their group (anchored
+			// under `after`, exclusion rows arrive ticked); plain loaders
+			// replace the whole list.
+			const itemsEvent = (loader: WizardItemLoader, items: CheckboxItem[], note: string, extra: { loading?: boolean; preselect?: string[] } = {}) =>
+				(loader.parent !== undefined
+					? { kind: "setItems" as const, step: loader.step, parent: loader.parent, items, note, ...extra }
+					: loader.group !== undefined
+						? {
+							kind: "setItems" as const, step: loader.step, group: loader.group, items, note, ...extra,
+							...(loader.after !== undefined ? { after: loader.after } : {}),
+							...(loader.arriveChecked ? { arriveChecked: true } : {}),
+						}
+						: { kind: "setItems" as const, step: loader.step, items, emptyNote: note, ...extra });
+			// Debounced loaders (the author lookup keyed on the live typing):
+			// the load starts only after a pause; a newer key cancels the
+			// pending one. Keyed per loader (step + section).
+			const loaderId = (loader: WizardItemLoader): string => `${loader.step}\u0000${loader.parent ?? ""}\u0000${loader.group ?? ""}`;
+			const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 			let loadTick = 0;
 			let loadTimer: ReturnType<typeof setInterval> | undefined;
 			const syncLoadTimer = (): void => {
@@ -225,11 +246,8 @@ async function wizardOverlay(
 							return;
 						}
 						loadTick += 1;
-						for (const [stepId, note] of loadingNotes) {
-							state = reduceWizard(state, {
-								kind: "setItems", step: stepId, items: [], loading: true,
-								emptyNote: animateEllipsis(note, loadTick),
-							}).state;
+						for (const [, entry] of loadingNotes) {
+							state = reduceWizard(state, itemsEvent(entry.loader, entry.keep, animateEllipsis(entry.note, loadTick), { loading: true })).state;
 						}
 						tui.requestRender();
 					}, 400);
@@ -238,49 +256,69 @@ async function wizardOverlay(
 					loadTimer = undefined;
 				}
 			};
+			// Rows a group loader keeps on screen while it loads: the ticked
+			// ones (a picked author must not blink away during the next
+			// lookup). Whole-list and parent loaders clear their section.
+			const keptRows = (loader: WizardItemLoader): CheckboxItem[] => {
+				if (loader.group === undefined) return [];
+				const index = state.steps.findIndex((step) => step.id === loader.step);
+				const step = state.steps[index];
+				if (!step || step.kind !== "checkbox") return [];
+				return step.items.filter((item) => item.group === loader.group && state.selected[index].has(item.id));
+			};
+			const startLoad = (loader: WizardItemLoader, key: string, answers: WizardAnswers): void => {
+				const id = loaderId(loader);
+				state = reduceWizard(state, itemsEvent(loader, keptRows(loader), animateEllipsis(loader.loadingNote, loadTick), { loading: true })).state;
+				loadingNotes.set(id, { loader, note: loader.loadingNote, keep: keptRows(loader) });
+				syncLoadTimer();
+				tui.requestRender();
+				loader.load(answers).then((items) => {
+					// The stale-guard also protects loadingNotes: an OLD
+					// promise resolving after a re-keyed load must not stop
+					// the pulse of the load still in flight.
+					if (finished || loadedKeys.get(id) !== key) return;
+					loadingNotes.delete(id);
+					syncLoadTimer();
+					state = reduceWizard(state, itemsEvent(loader, items, items.length ? "" : loader.emptyNote,
+						loader.preselect ? { preselect: loader.preselect(items) } : {})).state;
+					tui.requestRender();
+				}).catch((error) => {
+					if (finished || loadedKeys.get(id) !== key) return;
+					loadingNotes.delete(id);
+					syncLoadTimer();
+					state = reduceWizard(state, itemsEvent(loader, keptRows(loader), loader.failedNote(error instanceof Error ? error.message : String(error)))).state;
+					tui.requestRender();
+				});
+			};
 			const maybeLoadItems = (): void => {
 				for (const loader of options?.itemLoaders ?? []) {
 					const index = state.steps.findIndex((step) => step.id === loader.step);
 					if (index < 0 || state.tab !== index) continue;
+					const id = loaderId(loader);
 					const answers = wizardAnswers(state);
 					const key = loader.key(answers);
-					if (key === loadedKeys.get(loader.step)) continue;
-					loadedKeys.set(loader.step, key);
+					if (key === loadedKeys.get(id)) continue;
+					loadedKeys.set(id, key);
+					const pending = debounceTimers.get(id);
+					if (pending !== undefined) {
+						clearTimeout(pending);
+						debounceTimers.delete(id);
+					}
 					if (!key) {
-						loadingNotes.delete(loader.step);
+						loadingNotes.delete(id);
 						syncLoadTimer();
-						state = reduceWizard(state, { kind: "setItems", step: loader.step, items: [], emptyNote: loader.idleNote }).state;
+						state = reduceWizard(state, itemsEvent(loader, keptRows(loader), loader.idleNote)).state;
 						continue;
 					}
-					state = reduceWizard(state, {
-						kind: "setItems", step: loader.step, items: [], loading: true,
-						emptyNote: animateEllipsis(loader.loadingNote, loadTick),
-					}).state;
-					loadingNotes.set(loader.step, loader.loadingNote);
-					syncLoadTimer();
-					loader.load(answers).then((items) => {
-						// The stale-guard also protects loadingNotes: an OLD
-						// promise resolving after a re-keyed load must not stop
-						// the pulse of the load still in flight.
-						if (finished || loadedKeys.get(loader.step) !== key) return;
-						loadingNotes.delete(loader.step);
-						syncLoadTimer();
-						state = reduceWizard(state, {
-							kind: "setItems", step: loader.step, items,
-							emptyNote: items.length ? "" : loader.emptyNote,
-							...(loader.preselect ? { preselect: loader.preselect(items) } : {}),
-						}).state;
-						tui.requestRender();
-					}).catch((error) => {
-						if (finished || loadedKeys.get(loader.step) !== key) return;
-						loadingNotes.delete(loader.step);
-						syncLoadTimer();
-						state = reduceWizard(state, {
-							kind: "setItems", step: loader.step, items: [],
-							emptyNote: loader.failedNote(error instanceof Error ? error.message : String(error)),
-						}).state;
-						tui.requestRender();
-					});
+					if (loader.debounceMs) {
+						debounceTimers.set(id, setTimeout(() => {
+							debounceTimers.delete(id);
+							if (finished || loadedKeys.get(id) !== key) return;
+							startLoad(loader, key, answers);
+						}, loader.debounceMs));
+						continue;
+					}
+					startLoad(loader, key, answers);
 				}
 			};
 			maybeLoadItems();
@@ -342,10 +380,19 @@ async function wizardOverlay(
 					const colorOps = (line: string): string =>
 						line.replace(/\b(AND|OR|NOT)\b/g, (op) => paint(OP_COLORS[op], op));
 					let body = 0;
+					// Loading status lines: dim text, the pulsing trailing dots in
+					// the accent color (a grey pulse was easy to miss). Theme
+					// colors only, applied per wrapped line -- the dots sit on the
+					// last one.
+					const pulseLine = (line: string): string => {
+						const match = /^(.*?)(\.{1,3})$/.exec(line);
+						return match ? paint("dim", match[1]) + paint("accent", match[2]) : paint("dim", line);
+					};
 					for (const row of view.rows) {
 						for (const line of wrapLine(row.text, width)) {
 							lines.push(row.active ? paint("accent", line)
 								: row.warn ? paint("warning", line)
+								: row.pulse ? pulseLine(line)
 								: row.dim ? paint("dim", line)
 								: colorOps(line));
 							body += 1;
@@ -395,11 +442,13 @@ async function wizardOverlay(
 					if (step.done === "confirmed") {
 						finished = true;
 						loadingNotes.clear();
+						for (const timer of debounceTimers.values()) clearTimeout(timer);
 						syncLoadTimer();
 						done(wizardResult(state));
 					} else if (step.done === "cancelled") {
 						finished = true;
 						loadingNotes.clear();
+						for (const timer of debounceTimers.values()) clearTimeout(timer);
 						syncLoadTimer();
 						done(null);
 					} else {
@@ -603,8 +652,12 @@ async function wizardSelectLoop(
 			// cache: revisiting a tab with an unchanged key reuses the fetched
 			// list -- the variants loader makes an LLM call, which must not
 			// repeat on every visit.
-			let items = step.items;
-			const loader = options?.itemLoaders?.find((entry) => entry.step === step.id);
+			// A typing row has no modal equivalent (no author lookup here);
+			// the fallback shows the step's tickable rows only.
+			let items = step.items.filter((item) => item.typing === undefined);
+			// Parent loaders (child rows under one item) have no modal
+			// equivalent: the fallback shows the step's static rows only.
+			const loader = options?.itemLoaders?.find((entry) => entry.step === step.id && entry.parent === undefined && entry.group === undefined);
 			if (loader) {
 				const live = liveAnswers();
 				const key = loader.key(live);

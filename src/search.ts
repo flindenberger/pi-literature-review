@@ -27,8 +27,8 @@ import { codeListTopics } from "./config.ts";
 import { addCodeLinks, addJournalScores, enrichAll } from "./enrich.ts";
 import { queryBlocks } from "./intake.ts";
 import { buildSearchQuery, searchArxiv } from "./sources/arxiv.ts";
-import { flattenBlockTerms, searchCrossref } from "./sources/crossref.ts";
-import { buildBlockSearch, searchOpenalex } from "./sources/openalex.ts";
+import { buildCrossrefParams, searchCrossref } from "./sources/crossref.ts";
+import { buildWorksParams, searchOpenalex } from "./sources/openalex.ts";
 import { buildHfQuery } from "./sources/huggingface.ts";
 import { buildBulkQuery, searchSemanticScholar } from "./sources/semanticscholar.ts";
 import type { SourceRecord, SourceScope } from "./types.ts";
@@ -74,6 +74,15 @@ export interface SearchOptions {
 	groupTerms?: unknown;
 	/** Metadata filters (min citations, year range, venues, ...). Optional. */
 	filters?: ResultFilters;
+	/** Authors picked in the wizard's lookup, as OpenAlex ids (exact; the
+	 * names travel in filters.pickedAuthors for the other sources and the
+	 * post-filter). */
+	authorIds?: string[];
+	/** "all": the picked authors' works regardless of the query (OpenAlex
+	 * by id citation-sorted, CrossRef/arXiv by name alone; Semantic Scholar
+	 * cannot search by author and is skipped, noted as such); default
+	 * "query" = author AND query. Only read with picked authors. */
+	authorScope?: "query" | "all";
 	/** Sort results descending by "cites" or "year" (unknown values last). */
 	sort?: SortKey;
 	/** Fill missing cites/venue via an OpenAlex identifier lookup; filled
@@ -129,9 +138,13 @@ export async function runSearch(options: SearchOptions) {
 	// anyone unlisted", which no source query can express. The post-filter
 	// keeps running either way: it is the guarantee, the scope is the fetch
 	// optimization.
-	const scopeAuthors = options.filters?.authors?.length && !options.filters.authorsOther
-		? options.filters.authors
-		: undefined;
+	const picked = options.filters?.pickedAuthors?.filter(Boolean) ?? [];
+	const scopeAuthors = picked.length ? picked
+		: options.filters?.authors?.length && !options.filters.authorsOther
+			? options.filters.authors
+			: undefined;
+	const authorScope: "query" | "all" = picked.length && options.authorScope === "all" ? "all" : "query";
+	const authorIds = picked.length ? options.authorIds?.filter(Boolean) : undefined;
 
 	const records: SourceRecord[] = [];
 	const sourcesUsed: string[] = [];
@@ -146,17 +159,22 @@ export async function runSearch(options: SearchOptions) {
 	const sourceCounts: Array<{ source: string; query: string; count: number; candidates?: number }> = [];
 	const codeSources = options.codeSources ?? [];
 	const codeSourcesUsed: string[] = [];
+	// Curated lists the awesome-lists source actually read (run-wide; the
+	// report names them next to the topics).
+	const listsRead: string[] = [];
 	// Scope per query: the picked authors are run-wide, the concept blocks
 	// belong to THIS query.
 	const scopeFor = (index: number): SourceScope => ({
 		...(scopeAuthors ? { authors: scopeAuthors } : {}),
+		...(authorIds?.length ? { authorIds } : {}),
+		...(authorScope === "all" ? { authorScope } : {}),
 		...(blocksByQuery[index].length ? { blocks: blocksByQuery[index] } : {}),
 	});
 	// One source x every query; shared by the database loop and the
 	// code-first loop so counts, failures and found_by are written once.
 	const runSource = async (
 		source: string,
-		run: (query: string, scope: SourceScope) => Promise<{ records: SourceRecord[]; candidates?: number; failures?: Array<{ step: string; error: string }> }>,
+		run: (query: string, scope: SourceScope) => Promise<{ records: SourceRecord[]; candidates?: number; failures?: Array<{ step: string; error: string }>; listsRead?: string[] }>,
 	): Promise<boolean> => {
 		let succeeded = false;
 		for (const [index, query] of queries.entries()) {
@@ -172,6 +190,9 @@ export async function runSearch(options: SearchOptions) {
 					...(found.candidates !== undefined ? { candidates: found.candidates } : {}),
 				});
 				records.push(...(multiQuery ? found.records.map((r) => ({ ...r, found_by: [query] })) : found.records));
+				for (const list of found.listsRead ?? []) {
+					if (!listsRead.includes(list)) listsRead.push(list);
+				}
 				// Partial failures (e.g. candidates found, arXiv resolution
 				// rate-limited) are real failures of this run -- same list,
 				// step-labelled, so the page and the digest show them.
@@ -192,6 +213,15 @@ export async function runSearch(options: SearchOptions) {
 		const search = SEARCHERS[source];
 		if (!search) {
 			warn(`unknown source '${source}'; skipping (available: ${Object.keys(SEARCHERS).join(", ")})`);
+			continue;
+		}
+		// "All publications of the picked authors": Semantic Scholar's bulk
+		// search has no author field, so it cannot serve that scope -- said
+		// in the payload instead of returning the query's unrelated head.
+		if (authorScope === "all" && source === "semanticscholar") {
+			const note = "not queried: the bulk search has no author field (author scope: all publications)";
+			warn(`source '${source}': ${note}`);
+			sourceFailures.push({ source, error: note });
 			continue;
 		}
 		if (await runSource(source, async (query, scope) => ({ records: await search(query, perSource, scope) }))) {
@@ -352,10 +382,21 @@ export async function runSearch(options: SearchOptions) {
 			? queries.map((query, index) => buildSearchQuery(query, scopeAuthors, blocksByQuery[index]))
 			: null,
 		openalex_queries: sourcesUsed.includes("openalex")
-			? queries.map((query, index) => buildBlockSearch(blocksByQuery[index]) || query)
+			? queries.map((query, index) => {
+				const params = buildWorksParams(query, perSource, scopeFor(index));
+				const search = params.get("search");
+				const filter = params.get("filter");
+				return `${search !== null ? search : `(no text search; sort=${params.get("sort")})`}${filter ? ` [filter: ${filter}]` : ""}`;
+			})
 			: null,
 		crossref_queries: sourcesUsed.includes("crossref")
-			? queries.map((query, index) => flattenBlockTerms(blocksByQuery[index]) || query)
+			? queries.map((query, index) => {
+				const params = buildCrossrefParams(query, perSource, scopeFor(index));
+				const text = params.get("query");
+				const author = params.get("query.author");
+				const filter = params.get("filter");
+				return `${text !== null ? text : "(no text query; author field only)"}${author ? ` [query.author: ${author}]` : ""}${filter ? ` [filter: ${filter}]` : ""}`;
+			})
 			: null,
 		semanticscholar_queries: sourcesUsed.includes("semanticscholar")
 			? queries.map((query, index) => buildBulkQuery(query, blocksByQuery[index]))
@@ -370,10 +411,20 @@ export async function runSearch(options: SearchOptions) {
 					case "hf-papers": return buildHfQuery(query, blocksByQuery[index]);
 					case "github-readme": return `${words} "arxiv.org" in:readme`;
 					case "gee-github": return `${blockQuery(query, blocksByQuery[index])} "code.earthengine.google.com" in:readme "doi.org" in:readme`;
-					case "awesome-lists": return `lists tagged ${listTopics.join(", ")}; entries matched against the blocks ${blocksByQuery[index].length ? blocksByQuery[index].map((b) => `(${b.join(" OR ")})`).join(" AND ") : "(none -- skipped)"}`;
+					case "awesome-lists": return `lists tagged ${listTopics.length ? listTopics.join(", ") : "(no topics)"}; lists read: ${listsRead.length ? listsRead.join(", ") : "none"}; entries matched against the blocks ${blocksByQuery[index].length ? blocksByQuery[index].map((b) => `(${b.join(" OR ")})`).join(" AND ") : "(none -- skipped)"}`;
 					default: return words;
 				}
 			})]))
+			: null,
+		// Author lookup scope (null: no picked author): who was picked, in
+		// which position, and whether the query still applied.
+		author_scope: picked.length
+			? {
+				names: picked,
+				ids: authorIds ?? [],
+				position: options.filters?.authorPosition ?? "any",
+				scope: authorScope,
+			}
 			: null,
 		grouping: blocksByQuery[0].length ? blocksByQuery[0] : null,
 		// Per-query blocks; null = that query carried no blocks (quoted/field

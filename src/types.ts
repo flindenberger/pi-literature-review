@@ -52,6 +52,13 @@ export interface SourceRecord {
  */
 export interface SourceScope {
 	authors?: string[];
+	/** Picked authors as OpenAlex ids (exact); OpenAlex uses them instead
+	 * of the names, the other sources only know names. */
+	authorIds?: string[];
+	/** "all": the picked authors' works regardless of the query (the text
+	 * search is dropped where the source can search by author alone);
+	 * "query" (default): author AND query. */
+	authorScope?: "query" | "all";
 	/** Concept blocks of THIS query: OR-linked synonyms per block, AND
 	 * between blocks. Boolean-capable sources (arXiv, OpenAlex, Semantic
 	 * Scholar) send them as a real boolean expression; CrossRef (no boolean

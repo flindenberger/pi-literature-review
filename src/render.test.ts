@@ -346,6 +346,9 @@ const html = renderHtml(payload);
 	assert.ok(blockRun.includes("<dd>Q2: (cnn OR &quot;deep learning&quot;) AND river</dd>"));
 	assert.ok(blockRun.includes("<dt>Sent to CrossRef</dt>"));
 	assert.ok(blockRun.includes("CrossRef offers no boolean search"));
+	// Both Sent-to notes disclose the record-type filter.
+	assert.ok(blockRun.includes("A type filter requests scholarly works only"));
+	assert.ok(blockRun.includes("A type filter keeps peer-review reports and author replies"));
 	// 4th source: the bulk boolean expression per query plus
 	// the citation-sort disclosure.
 	assert.ok(blockRun.includes("<dt>Sent to Semantic Scholar</dt>"));
@@ -1131,6 +1134,23 @@ const baseReport: SynthReport = {
 	assert.ok(!html.includes("<dt>Code sources</dt>"));
 	assert.ok(!html.includes("<dt>Other methods</dt>"));
 	assert.ok(!html.includes("code pair(s) moved to dropped"));
+}
+
+// Author scope row: picked authors with ids, position and scope wording in
+// both meta blocks; absent without picked authors; the filter summary
+// names the picked authors and the position.
+{
+	const scoped = renderHtml({
+		...payload,
+		author_scope: { names: ["Claudia Kuenzer"], ids: ["A5059343226"], position: "first", scope: "all" },
+		filters: { pickedAuthors: ["Claudia Kuenzer"], authorPosition: "first" },
+	});
+	assert.ok(scoped.includes("<dt>Author scope</dt><dd>Claudia Kuenzer (A5059343226) -- first author only, all their publications (query used only for the on_target label)</dd>"));
+	assert.equal(scoped.split("<dt>Author scope</dt>").length, 3);
+	assert.ok(scoped.includes("picked authors: Claudia Kuenzer; author position: first"));
+	const anyPos = renderHtml({ ...payload, author_scope: { names: ["X"], ids: [], position: "any", scope: "query" } });
+	assert.ok(anyPos.includes("<dt>Author scope</dt><dd>X -- any author position, publications matching the query</dd>"));
+	assert.ok(!renderHtml({ ...payload, author_scope: null }).includes("Author scope"));
 }
 
 console.log("render.test.ts: all assertions passed");

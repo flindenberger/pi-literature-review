@@ -142,4 +142,12 @@ import { buildSearchQuery } from "./arxiv.ts";
 	);
 }
 
+// Author scope "all": the au: clause alone; without authors the flag
+// changes nothing.
+{
+	assert.equal(buildSearchQuery("water flood", ["Claudia Kuenzer"], undefined, true), 'au:"Claudia Kuenzer"');
+	assert.equal(buildSearchQuery("water flood", ["A B", "C D"], undefined, true), '(au:"A B" OR au:"C D")');
+	assert.equal(buildSearchQuery("water flood", [], undefined, true), buildSearchQuery("water flood", [], undefined, false));
+}
+
 console.log("arxiv.test.ts: all assertions passed");

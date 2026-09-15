@@ -10,6 +10,7 @@
 import { contactMailto, type SourceRecord, type SourceScope, userAgent } from "../types.ts";
 
 const BASE_URL = "https://api.openalex.org/works";
+const AUTOCOMPLETE_URL = "https://api.openalex.org/autocomplete/authors";
 const TIMEOUT_MS = 30_000;
 /** OpenAlex accepts up to 50 pipe-joined values in one filter. */
 const DOI_BATCH_SIZE = 50;
@@ -44,6 +45,69 @@ export function buildAuthorSearchFilter(authors: string[] | undefined): string {
 	return names.length ? `raw_author_name.search:${names.join("|")}` : "";
 }
 
+/** Author ids as an OpenAlex filter= value: authorships.author.id takes
+ * pipe-joined ids (A5059343226|A...). Ids are taken as given, URL prefixes
+ * stripped. Pure. Empty = no filter. */
+export function buildAuthorIdFilter(ids: string[] | undefined): string {
+	const clean = (ids ?? [])
+		.map((id) => id.replace(/^https?:\/\/openalex\.org\//i, "").trim())
+		.filter((id) => /^A\d+$/.test(id));
+	return clean.length ? `authorships.author.id:${clean.join("|")}` : "";
+}
+
+export interface AuthorMatch {
+	/** Short OpenAlex id, "A5059343226". */
+	id: string;
+	name: string;
+	/** Institution line as OpenAlex prints it ("University of Würzburg,
+	 * Germany"), empty when unknown. */
+	hint: string;
+	works: number | undefined;
+	cites: number | undefined;
+	orcid: string;
+}
+
+/** Pure: the author autocomplete answer -> matches (measured shape
+ * 2026-09-13: results[].id/display_name/hint/works_count/cited_by_count/
+ * external_id). Entries without a usable id are skipped; duplicates by id
+ * collapse (OpenAlex sometimes lists a person twice under DIFFERENT ids --
+ * those stay, the row shows works and institution to tell them apart). */
+export function parseAuthorAutocomplete(data: unknown): AuthorMatch[] {
+	const results = (data as { results?: unknown })?.results;
+	if (!Array.isArray(results)) return [];
+	const seen = new Set<string>();
+	const matches: AuthorMatch[] = [];
+	for (const entry of results as Array<Record<string, unknown>>) {
+		const id = typeof entry?.id === "string" ? entry.id.replace(/^https?:\/\/openalex\.org\//i, "").trim() : "";
+		const name = typeof entry?.display_name === "string" ? entry.display_name.trim() : "";
+		if (!/^A\d+$/.test(id) || !name || seen.has(id)) continue;
+		seen.add(id);
+		matches.push({
+			id,
+			name,
+			hint: typeof entry.hint === "string" ? entry.hint.trim() : "",
+			works: Number.isInteger(entry.works_count) ? (entry.works_count as number) : undefined,
+			cites: Number.isInteger(entry.cited_by_count) ? (entry.cited_by_count as number) : undefined,
+			orcid: typeof entry.external_id === "string" ? entry.external_id.trim() : "",
+		});
+	}
+	return matches;
+}
+
+/** Author name lookup for the wizard's typing row: GET /autocomplete/
+ * authors?q=<prefix>, the best ten. An optional signal bounds the wait. */
+export async function autocompleteAuthors(prefix: string, signal?: AbortSignal): Promise<AuthorMatch[]> {
+	const params = new URLSearchParams({ q: prefix.trim() });
+	const mailto = contactMailto();
+	if (mailto) params.set("mailto", mailto);
+	const response = await fetch(`${AUTOCOMPLETE_URL}?${params}`, {
+		headers: { "User-Agent": userAgent(), Accept: "application/json" },
+		signal: signal ?? AbortSignal.timeout(TIMEOUT_MS),
+	});
+	if (!response.ok) throw new Error(`OpenAlex answered HTTP ${response.status}`);
+	return parseAuthorAutocomplete(await response.json());
+}
+
 /**
  * Concept blocks as an OpenAlex boolean search string. OpenAlex supports
  * full boolean queries in its search parameter:
@@ -65,19 +129,41 @@ export function buildBlockSearch(blocks: string[][] | undefined): string {
 		.join(" AND ");
 }
 
-export async function searchOpenalex(query: string, rows: number, scope?: SourceScope): Promise<SourceRecord[]> {
-	const params = new URLSearchParams({
+/** The parameters of one works request: the boolean block search (or the
+ * plain text) plus the author scope -- picked authors by OpenAlex id
+ * (exact) or by name (raw_author_name.search); with authorScope "all" the
+ * text search is dropped and the author's works come citation-sorted.
+ * Pure; exported so the payload can show what was sent. */
+/** Record types EXCLUDED from OpenAlex work searches (negated filter):
+ * peer-review reports and author replies of open review platforms,
+ * supplementary material, datasets, paratext (covers, issue matter) and
+ * grants are not papers. Errata and retraction notices stay: they
+ * concern papers. */
+export const OPENALEX_EXCLUDED_TYPES = ["peer-review", "supplementary-materials", "paratext", "dataset", "grant"];
+
+export function buildWorksParams(query: string, rows: number, scope?: SourceScope): URLSearchParams {
+	const params = new URLSearchParams();
+	const allByAuthor = scope?.authorScope === "all" && ((scope.authorIds?.length ?? 0) > 0 || (scope.authors?.length ?? 0) > 0);
+	if (!allByAuthor) {
 		// Blocks (OR synonyms, AND between concepts) go out as a REAL boolean
 		// search; without blocks the plain text keeps the legacy behavior
 		// (OpenAlex ANDs plain words by itself).
-		search: buildBlockSearch(scope?.blocks) || query,
-		"per-page": String(Math.min(rows, 200)),
-	});
+		params.set("search", buildBlockSearch(scope?.blocks) || query);
+	} else {
+		params.set("sort", "cited_by_count:desc");
+	}
+	params.set("per-page", String(Math.min(rows, 200)));
 	// Picked authors narrow the fetch itself: OpenAlex then returns per-page
 	// papers BY those authors on the topic instead of the global relevance
-	// head the post-filter would decimate.
-	const authorFilter = buildAuthorSearchFilter(scope?.authors);
-	if (authorFilter) params.set("filter", authorFilter);
+	// head the post-filter would decimate. Ids win over names (exact).
+	const authorFilter = buildAuthorIdFilter(scope?.authorIds) || buildAuthorSearchFilter(scope?.authors);
+	// Type exclusion first, then the author filter (comma = AND).
+	params.set("filter", [`type:!${OPENALEX_EXCLUDED_TYPES.join("|")}`, authorFilter].filter(Boolean).join(","));
+	return params;
+}
+
+export async function searchOpenalex(query: string, rows: number, scope?: SourceScope): Promise<SourceRecord[]> {
+	const params = buildWorksParams(query, rows, scope);
 	const mailto = contactMailto();
 	if (mailto) params.set("mailto", mailto);
 

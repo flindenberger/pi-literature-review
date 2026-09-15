@@ -49,6 +49,8 @@ interface CliArgs {
 	digest: boolean;
 	/** Code-first sources (--code): repositories first, papers resolved. */
 	codeSources: string[] | undefined;
+	authorIds: string[] | undefined;
+	authorScope: "query" | "all" | undefined;
 }
 
 function usage(): never {
@@ -56,6 +58,7 @@ function usage(): never {
 	warn("       [--min-cites N] [--year-from YYYY] [--year-to YYYY] [--venues \"a,b\"]");
 	warn("       [--require-pdf] [--verified-only] [--sort cites|year] [--html [FILE]] [--no-enrich]");
 	warn("       [--variant \"...\" (repeatable)] [--digest] [--code SOURCES]");
+	warn("       [--author \"Name\" (repeatable)] [--author-id A... (repeatable, paired)] [--author-position first|contributing|any] [--author-scope query|all]");
 	warn("       --html without FILE writes to lit-search/<date>_<query>.html in the working directory");
 	warn("       (the full JSON payload is always written next to the HTML, same basename)");
 	warn("       --variant adds an alternative phrasing; results are deduplicated across variants");
@@ -104,6 +107,11 @@ function parseArgs(argv: string[]): CliArgs {
 	let enrich = true;
 	let digest = false;
 	let codeSources: string[] | undefined;
+	// Picked authors: names (post-filter, CrossRef, arXiv) and OpenAlex ids
+	// (exact filter), paired in order; position and scope as in the wizard.
+	const pickedAuthors: string[] = [];
+	const authorIds: string[] = [];
+	let authorScope: "query" | "all" | undefined;
 	const filters: ResultFilters = {};
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i];
@@ -125,6 +133,22 @@ function parseArgs(argv: string[]): CliArgs {
 		} else if (arg === "--venues") {
 			filters.venues = (argv[++i] ?? "").split(",").map((s) => s.trim()).filter(Boolean);
 			if (!filters.venues.length) usage();
+		} else if (arg === "--author") {
+			const name = (argv[++i] ?? "").trim();
+			if (!name) usage();
+			pickedAuthors.push(name);
+		} else if (arg === "--author-id") {
+			const id = (argv[++i] ?? "").trim().replace(/^https?:\/\/openalex\.org\//i, "");
+			if (!/^A\d+$/.test(id)) usage();
+			authorIds.push(id);
+		} else if (arg === "--author-position") {
+			const value = argv[++i];
+			if (value !== "first" && value !== "contributing" && value !== "any") usage();
+			filters.authorPosition = value;
+		} else if (arg === "--author-scope") {
+			const value = argv[++i];
+			if (value !== "query" && value !== "all") usage();
+			authorScope = value;
 		} else if (arg === "--require-pdf") {
 			filters.requirePdf = true;
 		} else if (arg === "--verified-only") {
@@ -162,7 +186,13 @@ function parseArgs(argv: string[]): CliArgs {
 		}
 	}
 	if (!query) usage();
-	return { query, variants, perSource, sources, groupTerms, filters, sort, htmlFile, enrich, digest, codeSources };
+	if (pickedAuthors.length) filters.pickedAuthors = pickedAuthors;
+	else if (authorIds.length || filters.authorPosition || authorScope) usage(); // ids/position/scope need --author
+	return {
+		query, variants, perSource, sources, groupTerms, filters, sort, htmlFile, enrich, digest, codeSources,
+		authorIds: authorIds.length ? authorIds : undefined,
+		authorScope,
+	};
 }
 
 if (process.argv[2] === "llm-check") {
@@ -453,6 +483,8 @@ const options: SearchOptions = {
 	sort: args.sort,
 	enrich: args.enrich,
 	codeSources: args.codeSources,
+	authorIds: args.authorIds,
+	authorScope: args.authorScope,
 	onWarn: warn,
 };
 const payload = await runSearch(options);

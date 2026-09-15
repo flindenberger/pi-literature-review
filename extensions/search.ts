@@ -30,6 +30,9 @@ import {
 import { renderDigest } from "../src/digest.ts";
 import { DEFAULT_PER_SOURCE, MAX_PER_SOURCE, runSearch, SEARCHERS, type SearchOptions, type SearchPayload } from "../src/search.ts";
 import { CODE_SEARCHERS } from "../src/codesearch.ts";
+import { codeListTopics } from "../src/config.ts";
+import { listsForTopic } from "../src/sources/ecosystems.ts";
+import { type AuthorMatch, autocompleteAuthors } from "../src/sources/openalex.ts";
 import type { ResultFilters } from "../src/pipeline.ts";
 import {
 	type BlockFormQuery,
@@ -37,11 +40,15 @@ import {
 	formatGroupExpression,
 	isProseQuery,
 	parsePerSource,
+	parseTopicLines,
 	parseVariantSuggestions,
 	type VariantSuggestion,
 	parseYearRange,
 	queryBlocks,
 	queryFromBlockAnswers,
+	TOPIC_SYSTEM_PROMPT,
+	topicPrompt,
+	topicSlug,
 	VARIANT_SYSTEM_PROMPT,
 	variantPrompt,
 	yearRangeToSpec,
@@ -67,6 +74,21 @@ const JOURNAL_OTHER_ID = "__other_journals__";
  * query, with a catch-all row underneath. */
 const AUTHOR_PICK_LIMIT = 12;
 const AUTHOR_OTHER_ID = "__other_authors__";
+/** Author tab rows: the typing row, the position boxes, the scope box,
+ * the loaded author list (group at the top) and the lookup match group
+ * (under the typing row). */
+const AUTHOR_TYPING_ID = "author_search";
+const AUTHOR_POS_FIRST = "__author_first__";
+const AUTHOR_POS_CONTRIB = "__author_contributing__";
+const AUTHOR_SCOPE_ALL = "__author_scope_all__";
+const AUTHOR_LIST_GROUP = "author_list";
+const AUTHOR_MATCH_GROUP = "author_matches";
+/** Typed letters before the lookup fires, and the pause after the last
+ * keystroke (OpenAlex's autocomplete endpoint is built for this pace). */
+const AUTHOR_LOOKUP_MIN_CHARS = 3;
+const AUTHOR_LOOKUP_DEBOUNCE_MS = 400;
+const AUTHOR_MATCH_LIMIT = 6;
+const AUTHOR_LOOKUP_TIMEOUT_MS = 8_000;
 /** Sentinel id of the LOCKED base-query row in the variants tab; variant
  * ids are the query strings themselves, so this cannot collide with one. */
 const VARIANT_BASE_ID = "__base_query__";
@@ -75,6 +97,13 @@ const VARIANT_BASE_ID = "__base_query__";
  * keep the tab readable -- block expressions are wide rows -- and the
  * steering row regenerates for more while checked rows survive. */
 const VARIANT_SUGGESTION_LIMIT = 4;
+/** The code source whose topic rows the code tab lists underneath. */
+const CODE_LIST_SOURCE = "awesome-lists";
+/** Field topics asked of the model for the curated-lists rows. */
+const CODE_TOPIC_SUGGESTION_LIMIT = 5;
+/** Per-topic wait for the list count in the tab (the run itself keeps the
+ * client's default timeout); one failure stops further probing. */
+const CODE_TOPIC_CHECK_TIMEOUT_MS = 8_000;
 // VARIANT_SYSTEM_PROMPT and variantPrompt live in src/intake.ts (pure
 // string builders, pinned offline); the prompt turns block-faithful by
 // itself when the base query is a block expression.
@@ -123,6 +152,9 @@ const INTAKE_WIDGET = "pi-literature-review-intake";
  * widgets do not -- a capped widget truncates real result lists). */
 const DIGEST_ENTRY = "pi-literature-search-digest";
 let digestEntryReady = false;
+/** pi-tui's Text component, captured at startup (pi runtime only): the
+ * post-submit ticker paints its pulsing dots in the accent color. */
+let tuiText: (new (text: string) => unknown) | null = null;
 
 /** Agent-facing framing on the TUI command-path digest message (card +
  * brief chat answer): the card above the agent's reply IS the full result;
@@ -164,9 +196,21 @@ interface IntakeValues {
 	authorsOther?: boolean;
 	/** The author names the picker listed (see venuesListed). */
 	authorsListed?: string[];
+	/** Authors picked in the tab's lookup: names (post-filter, CrossRef,
+	 * arXiv) and OpenAlex ids (exact OpenAlex filter), same order. */
+	pickedAuthors?: string[] | undefined;
+	authorIds?: string[] | undefined;
+	/** Required position of a picked author (both boxes = "any"). */
+	authorPosition?: "first" | "contributing" | "any";
+	/** "all" = the picked authors' works regardless of the query. */
+	authorScope?: "query" | "all";
 	/** Code-first sources (the Code tab): repositories first, papers
 	 * resolved from what they cite. Empty/undefined = off. */
 	codeSources?: string[] | undefined;
+	/** GitHub topics whose curated lists the awesome-lists source reads
+	 * (the topic rows under "Curated lists"). undefined = the config
+	 * default (no rows were offered, e.g. the RPC fallback). */
+	codeListTopics?: string[] | undefined;
 }
 
 /** Intake wizard strings per dialog language (the dialogs follow the
@@ -224,6 +268,12 @@ const SEARCH_TEXT: Record<DialogLang, {
 	codeHead: string;
 	codeNext: string;
 	codeSource: Record<string, [string, string]>;
+	codeTopicOwn: string;
+	codeTopicsLoading: string;
+	codeTopicsNone: string;
+	codeTopicsFailed: (message: string) => string;
+	codeTopicCount: (lists: number, names: string[]) => string;
+	codeTopicUnknown: string;
 	countDefault: string;
 	countMax: string;
 	countCustom: string;
@@ -240,6 +290,18 @@ const SEARCH_TEXT: Record<DialogLang, {
 	journalOther: string;
 	authorTab: string;
 	authorTitle: string;
+	authorSearchLabel: string;
+	authorLookupIdle: string;
+	authorLookupLoading: string;
+	authorLookupNone: string;
+	authorLookupFailed: (message: string) => string;
+	/** Match row description: institution · works · citations · h-index · topics. */
+	authorMatch: (match: AuthorMatch, metrics: Partial<AuthorMetrics>) => string;
+	authorPosFirst: string;
+	authorPosContrib: string;
+	authorScopeAll: string;
+	authorScopeNote: string;
+	authorPickHeading: string;
 	authorSelectAll: string;
 	authorAllSelected: string;
 	/** List entry suffix: hits for THIS query plus the author's OpenAlex
@@ -256,7 +318,6 @@ const SEARCH_TEXT: Record<DialogLang, {
 	filterTab: string;
 	filterTitle: string;
 	minCitesLabel: string;
-	authorsLabel: string;
 	note: (sources: string[], variants: number) => string;
 	badYears: (spec: string) => string;
 	badCount: (spec: string) => string;
@@ -303,9 +364,15 @@ const SEARCH_TEXT: Record<DialogLang, {
 		codeSource: {
 			"hf-papers": ["Hugging Face Papers", "arXiv-Paper mit verlinktem Repository; schnell, eine Anfrage"],
 			"github-readme": ["GitHub README-Suche", "Repositories, deren README arxiv.org nennt; GitHub-Budget 10/min"],
-			"awesome-lists": ["Kuratierte Listen (awesome.ecosyste.ms)", "Awesome-Listen per Topic, Einträge gegen die Blöcke geprüft"],
+			"awesome-lists": ["Kuratierte Listen (awesome.ecosyste.ms)", "Awesome-Listen nach Fachgebiet (GitHub-Topic), Einträge gegen die Blöcke geprüft; anhaken zeigt die Themen"],
 			"gee-github": ["Google Earth Engine (GitHub)", "GEE-Repositories, deren README eine DOI nennt"],
 		},
+		codeTopicOwn: "+ Eigenes Listen-Thema für Kuratierte Listen (Enter fügt hinzu und hakt an)",
+		codeTopicsLoading: "Listen-Themen für das Fachgebiet werden vorgeschlagen und geprüft ...",
+		codeTopicsNone: "keine Listen-Themen",
+		codeTopicsFailed: (message) => `Themenvorschlag fehlgeschlagen: ${message}; nur die konfigurierten Themen`,
+		codeTopicCount: (lists, names) => (lists ? `${lists} Liste${lists === 1 ? "" : "n"} · ${names.join(", ")}` : "0 Listen (nichts zu lesen)"),
+		codeTopicUnknown: "Anzahl nicht verfügbar (awesome.ecosyste.ms antwortet nicht)",
 		countDefault: `${DEFAULT_PER_SOURCE} (Standard)`,
 		countMax: `${MAX_PER_SOURCE} (Limit)`,
 		countCustom: "Eigene Anzahl:",
@@ -319,9 +386,24 @@ const SEARCH_TEXT: Record<DialogLang, {
 			`(${count} Treffer${score !== undefined ? ` · 2-Jahres-Rate ${score}` : ""})`,
 		journalOther: "Andere Journals/Quellen (hier nicht gelistet)",
 		authorTab: "Autoren",
-		authorTitle: `Autoren (optional): die ${AUTHOR_PICK_LIMIT} häufigsten Autoren zu Anfrage, Zeitraum und `
-			+ "Journals. Alle sind drin -- Haken entfernen schließt die Paper dieser Person aus. Zitationen und "
-			+ "h-Index gelten für das Gesamtwerk.",
+		authorTitle: "Autoren zu dieser Anfrage, nach Zitationen sortiert",
+		authorSearchLabel: "Autorenname tippen",
+		authorLookupIdle: "",
+		authorLookupLoading: "suche Autoren bei OpenAlex ...",
+		authorLookupNone: "kein Autor zu diesem Namen gefunden",
+		authorLookupFailed: (message) => `Autorensuche fehlgeschlagen: ${message}`,
+		authorMatch: (match, metrics) => [
+			match.hint,
+			match.works !== undefined ? `${match.works} Werke` : "",
+			match.cites !== undefined ? `${match.cites} Zitationen` : "",
+			metrics.hIndex !== undefined ? `h-Index ${metrics.hIndex}` : "",
+			metrics.topics?.length ? metrics.topics.join(", ") : "",
+		].filter(Boolean).join(" · "),
+		authorPosFirst: "als Erstautor (innerhalb der Suchanfrage)",
+		authorPosContrib: "als Mitautor (innerhalb der Suchanfrage)",
+		authorScopeAll: "alle Publikationen dieses Autors, Suchanfrage ignorieren",
+		authorScopeNote: "ignoriert (alle Publikationen gewählt)",
+		authorPickHeading: "Suche auf einen bestimmten Autor einschränken",
 		authorSelectAll: "Alle auswählen",
 		authorAllSelected: "Alle Autoren drin (Enter: alle abwählen)",
 		authorItem: (count, metrics) =>
@@ -339,7 +421,6 @@ const SEARCH_TEXT: Record<DialogLang, {
 		filterTab: "Filter",
 		filterTitle: "Optionale Filter (leer = aus).",
 		minCitesLabel: "Mindestzitationen",
-		authorsLabel: "Autor (Name enthält)",
 		note: (sources, variants) =>
 			`Quellen: ${sources.join(", ")}${variants ? ` · +${variants} Query-Variante(n)` : ""}`,
 		badYears: (spec) => `Jahresangabe "${spec}" nicht verstanden -- Vorschlag bleibt`,
@@ -387,9 +468,15 @@ const SEARCH_TEXT: Record<DialogLang, {
 		codeSource: {
 			"hf-papers": ["Hugging Face Papers", "arXiv papers with a linked repository; fast, one request"],
 			"github-readme": ["GitHub README search", "repositories whose README cites arxiv.org; GitHub budget 10/min"],
-			"awesome-lists": ["Curated lists (awesome.ecosyste.ms)", "awesome lists found by topic, entries matched against the blocks"],
+			"awesome-lists": ["Curated lists (awesome.ecosyste.ms)", "awesome lists by field (GitHub topic), entries matched against the blocks; tick to see the topics"],
 			"gee-github": ["Google Earth Engine (GitHub)", "GEE repositories whose README cites a DOI"],
 		},
+		codeTopicOwn: "+ Own list topic for Curated lists (Enter adds and checks it)",
+		codeTopicsLoading: "suggesting and checking list topics for the field ...",
+		codeTopicsNone: "no list topics",
+		codeTopicsFailed: (message) => `topic suggestion failed: ${message}; configured topics only`,
+		codeTopicCount: (lists, names) => (lists ? `${lists} list${lists === 1 ? "" : "s"} · ${names.join(", ")}` : "0 lists (nothing to read)"),
+		codeTopicUnknown: "count unavailable (awesome.ecosyste.ms not answering)",
 		countDefault: `${DEFAULT_PER_SOURCE} (default)`,
 		countMax: `${MAX_PER_SOURCE} (limit)`,
 		countCustom: "Custom count:",
@@ -403,9 +490,24 @@ const SEARCH_TEXT: Record<DialogLang, {
 			`(${count} hits${score !== undefined ? ` · 2-yr rate ${score}` : ""})`,
 		journalOther: "Other journals/sources (not listed here)",
 		authorTab: "Authors",
-		authorTitle: `Authors (optional): the ${AUTHOR_PICK_LIMIT} most frequent authors for this query, period `
-			+ "and journals. All are included -- untick an author to exclude their papers. Citations and "
-			+ "h-index cover their whole work.",
+		authorTitle: "Authors for this query, ranked by citations",
+		authorSearchLabel: "Type author name",
+		authorLookupIdle: "",
+		authorLookupLoading: "looking up authors at OpenAlex ...",
+		authorLookupNone: "no author found for this name",
+		authorLookupFailed: (message) => `author lookup failed: ${message}`,
+		authorMatch: (match, metrics) => [
+			match.hint,
+			match.works !== undefined ? `${match.works} works` : "",
+			match.cites !== undefined ? `${match.cites} citations` : "",
+			metrics.hIndex !== undefined ? `h-index ${metrics.hIndex}` : "",
+			metrics.topics?.length ? metrics.topics.join(", ") : "",
+		].filter(Boolean).join(" · "),
+		authorPosFirst: "as first author (within the search query)",
+		authorPosContrib: "as contributing author (within the search query)",
+		authorScopeAll: "all publications of this author, ignoring the search query",
+		authorScopeNote: "ignored (all publications selected)",
+		authorPickHeading: "Limit the search to a specific author",
 		authorSelectAll: "Select all",
 		authorAllSelected: "All authors included (Enter: deselect all)",
 		authorItem: (count, metrics) =>
@@ -423,7 +525,6 @@ const SEARCH_TEXT: Record<DialogLang, {
 		filterTab: "Filters",
 		filterTitle: "Optional filters (empty = off).",
 		minCitesLabel: "Min. citations",
-		authorsLabel: "Author name (substring)",
 		note: (sources, variants) =>
 			`Sources: ${sources.join(", ")}${variants ? ` · +${variants} query variant(s)` : ""}`,
 		badYears: (spec) => `Year range "${spec}" not understood -- keeping the proposal`,
@@ -458,13 +559,16 @@ function periodToRange(raw: unknown): { yearFrom?: number; yearTo?: number } | n
 
 /** Engine options shared by the tool and the command path: the confirmed
  * wizard values, minus the filters (see filtersFor). */
-function searchOptionsFor(confirmed: IntakeValues): Pick<SearchOptions, "query" | "queryVariants" | "perSource" | "groupTerms" | "codeSources"> {
+function searchOptionsFor(confirmed: IntakeValues): Pick<SearchOptions, "query" | "queryVariants" | "perSource" | "groupTerms" | "codeSources" | "codeListTopics" | "authorIds" | "authorScope"> {
 	return {
 		query: confirmed.query,
 		queryVariants: confirmed.queryVariants,
 		perSource: confirmed.perSource,
 		groupTerms: confirmed.groupTerms,
 		codeSources: confirmed.codeSources,
+		codeListTopics: confirmed.codeListTopics,
+		authorIds: confirmed.authorIds,
+		authorScope: confirmed.authorScope,
 	};
 }
 
@@ -482,6 +586,8 @@ function filtersFor(confirmed: IntakeValues): ResultFilters {
 		authors: confirmed.authors,
 		authorsOther: confirmed.authorsOther,
 		authorsListed: confirmed.authorsListed,
+		pickedAuthors: confirmed.pickedAuthors,
+		authorPosition: confirmed.authorPosition,
 	};
 }
 
@@ -550,6 +656,29 @@ async function intakeWizard(
 	let listedJournals: string[] = [];
 	let listedJournalIds = new Map<string, string>();
 	let listedAuthors: string[] = [];
+	// Author lookup (author tab): facts of every match the lookup ever
+	// showed (id -> name + row), so picked rows survive later lookups and
+	// the submit mapping knows the picked names.
+	const authorFacts = new Map<string, { name: string; row: CheckboxItem }>();
+	const pickedAuthorIds = (answers: WizardAnswers): string[] =>
+		(Array.isArray(answers.author_pick) ? (answers.author_pick as string[]) : []).filter((id) => authorFacts.has(id));
+	const hasPickedAuthor = (answers: WizardAnswers): boolean => pickedAuthorIds(answers).length > 0;
+	// The position boxes need a picked author and apply within the query
+	// only: the scope box ("all publications, ignoring the query") greys
+	// them out with a note; before a pick they are grey without one.
+	const scopeAllOn = (answers: WizardAnswers): boolean =>
+		Array.isArray(answers.author_pick) && (answers.author_pick as string[]).includes(AUTHOR_SCOPE_ALL);
+	const positionBoxOn = (answers: WizardAnswers): boolean => hasPickedAuthor(answers) && !scopeAllOn(answers);
+	const positionBoxNote = (answers: WizardAnswers): string => (hasPickedAuthor(answers) ? text.authorScopeNote : "");
+	// List-topic rows under "Curated lists" (code tab): ids the loader has
+	// produced or verified, ids the user typed on the add row (kept in the
+	// list even when unticked), and whether rows were offered at all -- the
+	// submit mapping passes the ticked topics only when they were.
+	const knownTopics = new Set<string>();
+	const typedTopics: string[] = [];
+	let topicsOffered = false;
+	const topicSuggestions = new Map<string, Promise<string[]>>();
+	const topicCounts = new Map<string, Promise<{ lists: number; names: string[] } | null>>();
 	// Facet scope from the LIVE answers (lists built from the query text
 	// alone would show journals/authors the configured run could never
 	// return). Both parts feed the loader cache keys, so editing the period
@@ -658,6 +787,9 @@ async function intakeWizard(
 			}),
 			selectAllLabel: text.codeHead, nextLabel: text.codeNext, optional: true, masterRow: true,
 			...(proposed.codeSources?.length ? { preselected: proposed.codeSources } : {}),
+			// Own list topic: lands as a child row under "Curated lists",
+			// checked; the topic loader below verifies it on its next pass.
+			addInput: { id: "code_topic_own", label: text.codeTopicOwn, parent: CODE_LIST_SOURCE },
 		},
 		{
 			// Journal filter: the top journals for this query load INTO the
@@ -672,15 +804,35 @@ async function intakeWizard(
 			defaultAll: true, cursorStart: "next",
 		},
 		{
-			// Author filter: the same mechanics as the journal tab -- the top
-			// authors for this query load into the tab, each row carrying its
-			// hits plus the author's open OpenAlex metrics (total citations,
-			// h-index, topics). A typed name in the Filters tab still works
-			// for anyone outside this head.
-			kind: "checkbox", id: "author_pick", tab: text.authorTab, title: text.authorTitle,
-			items: [], selectAllLabel: text.authorSelectAll, allSelectedLabel: text.authorAllSelected,
-			nextLabel: text.journalNext, optional: true, emptyNote: text.authorLoading,
-			defaultAll: true, cursorStart: "next",
+			// Author tab, two sections. (1) The top authors for this query
+			// load as an EXCLUSION list at the top (group loader, rows arrive
+			// ticked, "All authors included" head row over exactly these
+			// rows); the list greys out once an author is picked below.
+			// (2) Under its own heading, the typing row -- the lookup's
+			// matches arrive as a group right under it, a ticked match is a
+			// picked author and clears the draft; three boxes sit greyed out
+			// (no note) until an author is picked, and the scope box greys
+			// out the two position boxes with a note. No row numbers: they
+			// would compete with the two headings.
+			kind: "checkbox", id: "author_pick", tab: text.authorTab, title: text.authorTitle, unnumbered: true,
+			items: [
+				{
+					id: AUTHOR_TYPING_ID, label: text.authorSearchLabel, headingBefore: text.authorPickHeading,
+					typing: { clearOnPick: true, ...(proposed.authors?.[0] ? { initial: proposed.authors[0] } : {}) },
+				},
+				{ id: AUTHOR_POS_FIRST, label: text.authorPosFirst, enabledIf: positionBoxOn, disabledNote: positionBoxNote },
+				{ id: AUTHOR_POS_CONTRIB, label: text.authorPosContrib, enabledIf: positionBoxOn, disabledNote: positionBoxNote },
+				{ id: AUTHOR_SCOPE_ALL, label: text.authorScopeAll, enabledIf: hasPickedAuthor },
+			],
+			// Both position boxes start ticked (any position); an agent
+			// proposal narrows them or ticks the scope box.
+			preselected: [
+				...(proposed.authorPosition === "contributing" ? [] : [AUTHOR_POS_FIRST]),
+				...(proposed.authorPosition === "first" ? [] : [AUTHOR_POS_CONTRIB]),
+				...(proposed.authorScope === "all" ? [AUTHOR_SCOPE_ALL] : []),
+			],
+			selectAllLabel: text.authorSelectAll, allSelectedLabel: text.authorAllSelected,
+			nextLabel: text.journalNext, optional: true, cursorStart: "next",
 		},
 		{
 			kind: "form", id: "filters", tab: text.filterTab, title: text.filterTitle,
@@ -688,10 +840,6 @@ async function intakeWizard(
 				{
 					id: "min_cites", label: text.minCitesLabel,
 					...(proposed.minCites !== undefined ? { initial: String(proposed.minCites) } : {}),
-				},
-				{
-					id: "authors", label: text.authorsLabel,
-					...(proposed.authors?.length ? { initial: proposed.authors.join(", ") } : {}),
 				},
 			],
 		},
@@ -786,6 +934,97 @@ async function intakeWizard(
 			emptyNote: text.variantsNoneFound,
 			failedNote: text.variantsFailed,
 		}, {
+			// List topics under "Curated lists" (child loader): the rows
+			// appear once the source is ticked and vanish when it is unticked.
+			// Rows = the configured topics, an agent proposal, up to five
+			// FIELD topics named by the model selected in pi (awesome lists
+			// are filed by field, measured 2026-09-13 -- block words find
+			// nothing), and the user's own typed topics. Every row is checked
+			// against awesome.ecosyste.ms and shows its list count; a model
+			// topic without lists is not shown, the others keep an honest
+			// "0 lists". Suggestions and counts are cached per process, so
+			// leaving and re-entering the tab costs no second model call.
+			step: "code",
+			parent: CODE_LIST_SOURCE,
+			key: (answers) => {
+				const picked = Array.isArray(answers.code) ? (answers.code as string[]) : [];
+				if (!picked.includes(CODE_LIST_SOURCE)) return "";
+				// A ticked id the loader never produced = a freshly typed
+				// topic -> one reload verifies it (then it is known).
+				const fresh = picked.filter((id) => !(id in CODE_SEARCHERS) && !knownTopics.has(id)).sort();
+				for (const id of fresh) {
+					if (!typedTopics.includes(id)) typedTopics.push(id);
+				}
+				return `${composedQuery(answers).query.toLowerCase()}|${fresh.join(",")}`;
+			},
+			load: async (answers) => {
+				topicsOffered = true;
+				const liveQuery = composedQuery(answers).query;
+				const configTopics = codeListTopics();
+				const agentTopics = (proposed.codeListTopics ?? []).map(topicSlug).filter(Boolean);
+				let modelTopics: string[] = [];
+				if (ctx.model && liveQuery) {
+					const cacheKey = liveQuery.toLowerCase();
+					if (!topicSuggestions.has(cacheKey)) {
+						topicSuggestions.set(cacheKey, completeWithPiModel(ctx, {
+							system: TOPIC_SYSTEM_PROMPT,
+							user: topicPrompt(liveQuery, queryBlocks(liveQuery), CODE_TOPIC_SUGGESTION_LIMIT),
+							maxTokens: 200,
+							...(signal ? { signal } : {}),
+						}).then((raw) => parseTopicLines(raw, CODE_TOPIC_SUGGESTION_LIMIT)));
+					}
+					try {
+						modelTopics = await topicSuggestions.get(cacheKey)!;
+					} catch (error) {
+						// The model failing is not a reason to hide the configured
+						// rows; the status line says what happened.
+						topicSuggestions.delete(cacheKey);
+						ctx.ui.notify(text.codeTopicsFailed(error instanceof Error ? error.message : String(error)), "warning");
+					}
+				}
+				const ordered: Array<{ id: string; fromModel: boolean }> = [];
+				const push = (id: string, fromModel: boolean): void => {
+					if (id && !ordered.some((entry) => entry.id === id)) ordered.push({ id, fromModel });
+				};
+				for (const id of configTopics) push(topicSlug(id), false);
+				for (const id of agentTopics) push(id, false);
+				for (const id of modelTopics) push(id, true);
+				for (const id of typedTopics) push(id, false);
+				// Verification at the index the run will read; a short timeout
+				// per topic and ONE failure stops further probing (a down
+				// index must not cost minutes).
+				let indexDown = false;
+				const items: CheckboxItem[] = [];
+				for (const entry of ordered) {
+					if (!topicCounts.has(entry.id) && !indexDown) {
+						topicCounts.set(entry.id, listsForTopic(entry.id, AbortSignal.timeout(CODE_TOPIC_CHECK_TIMEOUT_MS))
+							.then((lists) => ({ lists: lists.length, names: lists.slice(0, 2).map((list) => list.slug.split("/")[1] ?? list.slug) })));
+					}
+					let count: { lists: number; names: string[] } | null = null;
+					if (topicCounts.has(entry.id)) {
+						try {
+							count = await topicCounts.get(entry.id)!;
+						} catch {
+							topicCounts.delete(entry.id);
+							indexDown = true;
+						}
+					}
+					if (entry.fromModel && count !== null && count.lists === 0) continue;
+					knownTopics.add(entry.id);
+					items.push({
+						id: entry.id,
+						label: entry.id,
+						description: count === null ? text.codeTopicUnknown : text.codeTopicCount(count.lists, count.names),
+					});
+				}
+				return items;
+			},
+			preselect: (items: { id: string }[]) => items.map((item) => item.id),
+			loadingNote: text.codeTopicsLoading,
+			idleNote: "",
+			emptyNote: text.codeTopicsNone,
+			failedNote: text.codeTopicsFailed,
+		}, {
 			step: "journals",
 			key: (answers) => `${composedQuery(answers).query.toLowerCase()}|${scopeKey(liveYearScope(answers))}`,
 			load: async (answers) => {
@@ -825,40 +1064,88 @@ async function intakeWizard(
 			emptyNote: text.journalNoneFound,
 			failedNote: text.journalFetchFailed,
 		}, {
-			// The author list: one facet request over the query's works plus
-			// one batched author lookup for the open metrics. Scoped by the
-			// live period AND the picked journals.
+			// Author lookup (group under the typing row): keyed on the LIVE
+			// draft and the picked ids, debounced; picked rows are always part
+			// of the result so they survive every later lookup. Metrics for
+			// the matches come from the same batched author lookup the list
+			// uses. A draft too short to look up returns the picked rows only.
 			step: "author_pick",
-			key: (answers) => `${composedQuery(answers).query.toLowerCase()}|${
-				scopeKey({ ...liveYearScope(answers), sourceIds: livePickedSourceIds(answers) })}`,
+			group: AUTHOR_MATCH_GROUP,
+			after: AUTHOR_TYPING_ID,
+			debounceMs: AUTHOR_LOOKUP_DEBOUNCE_MS,
+			key: (answers) => {
+				const draft = String(answers.author_search_draft ?? "").trim();
+				const picked = pickedAuthorIds(answers).sort().join(",");
+				const lookup = draft.length >= AUTHOR_LOOKUP_MIN_CHARS ? draft.toLowerCase() : "";
+				return lookup || picked ? `${lookup}|${picked}` : "";
+			},
+			load: async (answers) => {
+				const draft = String(answers.author_search_draft ?? "").trim();
+				const picked = pickedAuthorIds(answers);
+				const pickedRows = picked.map((id) => authorFacts.get(id)!.row);
+				if (draft.length < AUTHOR_LOOKUP_MIN_CHARS) return pickedRows;
+				const matches = (await autocompleteAuthors(draft, AbortSignal.timeout(AUTHOR_LOOKUP_TIMEOUT_MS)))
+					.filter((match) => !picked.includes(match.id))
+					.slice(0, AUTHOR_MATCH_LIMIT);
+				let metrics = new Map<string, AuthorMetrics>();
+				try {
+					metrics = await fetchAuthorMetrics(matches.map((match) => match.id), () => {});
+				} catch {
+					// the rows then show the autocomplete facts only
+				}
+				const rows = matches.map((match) => {
+					const row: CheckboxItem = { id: match.id, label: match.name, description: text.authorMatch(match, metrics.get(match.id) ?? {}) };
+					authorFacts.set(match.id, { name: match.name, row });
+					return row;
+				});
+				return [...pickedRows, ...rows];
+			},
+			loadingNote: text.authorLookupLoading,
+			idleNote: text.authorLookupIdle,
+			emptyNote: text.authorLookupNone,
+			failedNote: text.authorLookupFailed,
+		}, {
+			// The author list at the top (group loader, loads when the tab is
+			// reached): one facet request over the query's works plus one
+			// batched author lookup for the open metrics, scoped by the live
+			// period AND the picked journals. Rows arrive ticked (exclusion
+			// list: unticking excludes), ranked by the author's total
+			// citations (the title says so), and grey out once an author is
+			// picked below -- a pick is a filter of its own, the list is moot.
+			step: "author_pick",
+			group: AUTHOR_LIST_GROUP,
+			arriveChecked: true,
+			key: (answers) => {
+				const query = composedQuery(answers).query;
+				if (!query) return "";
+				return `${query.toLowerCase()}|${
+					scopeKey({ ...liveYearScope(answers), sourceIds: livePickedSourceIds(answers) })}`;
+			},
 			load: async (answers) => {
 				const page = await authorFacets(composedQuery(answers).query, AUTHOR_PICK_LIMIT, {
 					...liveYearScope(answers),
 					sourceIds: livePickedSourceIds(answers),
 				});
 				const metrics = await fetchAuthorMetrics(page.listed.map((facet) => facet.id), () => {});
-				listedAuthors = page.listed.map((facet) => facet.name);
-				const items = page.listed.map((facet) => ({
+				const ranked = [...page.listed].sort((a, b) =>
+					(metrics.get(b.id)?.cites ?? -1) - (metrics.get(a.id)?.cites ?? -1) || b.count - a.count);
+				listedAuthors = ranked.map((facet) => facet.name);
+				const noPick = (live: WizardAnswers): boolean => !hasPickedAuthor(live);
+				const items: CheckboxItem[] = ranked.map((facet) => ({
 					id: facet.name,
 					label: `${facet.name} ${text.authorItem(facet.count, metrics.get(facet.id) ?? {})}`,
+					enabledIf: noPick,
 				}));
 				return items.length
 					? [...items, {
 						id: AUTHOR_OTHER_ID,
 						label: `${text.authorOther} ${text.authorItem(page.otherCount, {})}`,
+						enabledIf: noPick,
 					}]
 					: items;
 			},
-			...(proposed.authors?.length
-				? {
-					preselect: (items: { id: string }[]) => items
-						.filter((item) => proposed.authors?.some((author) =>
-							item.id.toLowerCase().includes(author.trim().toLowerCase())))
-						.map((item) => item.id),
-				}
-				: {}),
 			loadingNote: text.authorLoading,
-			idleNote: text.journalIdle,
+			idleNote: "",
 			emptyNote: text.authorNoneFound,
 			failedNote: text.authorFetchFailed,
 		}],
@@ -916,8 +1203,16 @@ async function intakeWizard(
 	}
 	// Code tab: the checked sources while the head is on, else nothing
 	// (the reducer exports an empty list for a closed head).
-	const codePicked = Array.isArray(result.code) ? (result.code as string[]).filter((id) => id in CODE_SEARCHERS) : [];
+	const codeRows = Array.isArray(result.code) ? (result.code as string[]) : [];
+	const codePicked = codeRows.filter((id) => id in CODE_SEARCHERS);
 	values.codeSources = codePicked.length ? codePicked : undefined;
+	// The ticked topic rows under "Curated lists" are what the source reads
+	// -- exactly the rows shown, an empty tick set reads nothing. Without
+	// offered rows (RPC fallback) the config default applies.
+	const topicRows = codeRows.filter((id) => !(id in CODE_SEARCHERS)).map(topicSlug).filter(Boolean);
+	values.codeListTopics = topicsOffered && codePicked.includes(CODE_LIST_SOURCE)
+		? [...new Set(topicRows)]
+		: undefined;
 	// Optional filters, strictly opt-in: empty fields mean "no filter";
 	// unparseable input stays off, loudly.
 	const numberField = (raw: unknown, label: string, float: boolean): number | undefined => {
@@ -935,25 +1230,32 @@ async function intakeWizard(
 	// silently applying an agent-passed value the wizard never showed. The
 	// tool param keeps working on headless runs.
 	values.minJournalScore = undefined;
-	// Author filter: any listed name substring may match any author. The
-	// Authors tab contributes picked names, plus its own catch-all row --
-	// typed names and picked names are the same kind of wanted substring
-	// and simply merge (deduplicated, case-insensitive).
-	const authorsSpec = typeof result.authors === "string" ? result.authors.trim() : "";
-	const typedAuthors = authorsSpec.split(/[,;]/).map((name) => name.trim()).filter(Boolean);
-	const pickedAuthorRows = Array.isArray(result.author_pick) ? (result.author_pick as string[]) : [];
-	const pickedAuthorOther = pickedAuthorRows.includes(AUTHOR_OTHER_ID);
-	const pickedAuthors = pickedAuthorRows.filter((name) => name !== AUTHOR_OTHER_ID);
-	const wantedAuthors: string[] = [];
-	for (const name of [...pickedAuthors, ...typedAuthors]) {
-		if (!wantedAuthors.some((seen) => seen.toLowerCase() === name.toLowerCase())) wantedAuthors.push(name);
-	}
-	if (pickedAuthorOther && pickedAuthors.length >= listedAuthors.length && !typedAuthors.length) {
-		// Every row checked -> no author filter at all.
-		values.authors = undefined;
+	// Author tab. (1) Picked authors from the lookup: names for the
+	// post-filter/CrossRef/arXiv, OpenAlex ids for the exact filter; the
+	// position boxes (both = any) and the scope box. (2) The list at the
+	// top, only without a pick (its rows are greyed out and off the result
+	// once an author is picked): ticked listed names plus the catch-all
+	// row -- every row ticked means no exclusion at all.
+	const authorRows = Array.isArray(result.author_pick) ? (result.author_pick as string[]) : [];
+	const pickedIds = authorRows.filter((id) => authorFacts.has(id));
+	values.authorIds = pickedIds.length ? pickedIds : undefined;
+	values.pickedAuthors = pickedIds.length ? pickedIds.map((id) => authorFacts.get(id)!.name) : undefined;
+	const first = authorRows.includes(AUTHOR_POS_FIRST);
+	const contributing = authorRows.includes(AUTHOR_POS_CONTRIB);
+	values.authorPosition = !pickedIds.length || first === contributing ? undefined : first ? "first" : "contributing";
+	values.authorScope = pickedIds.length && authorRows.includes(AUTHOR_SCOPE_ALL) ? "all" : undefined;
+	const listOn = !pickedIds.length && listedAuthors.length > 0;
+	const listedRows = listOn ? authorRows.filter((id) => listedAuthors.includes(id)) : [];
+	const listedOther = listOn && authorRows.includes(AUTHOR_OTHER_ID);
+	// The agent's name proposal keeps its post-filter role only while no
+	// author was picked (a pick is the more precise statement).
+	const typedAuthors = pickedIds.length ? [] : (proposed.authors ?? []).map((name) => name.trim()).filter(Boolean);
+	const wantedAuthors = [...listedRows, ...typedAuthors];
+	if (!listOn || (listedOther && listedRows.length >= listedAuthors.length)) {
+		values.authors = typedAuthors.length ? typedAuthors : undefined;
 		values.authorsOther = undefined;
 		values.authorsListed = undefined;
-	} else if (pickedAuthorOther) {
+	} else if (listedOther) {
 		values.authors = wantedAuthors.length ? wantedAuthors : undefined;
 		values.authorsOther = true;
 		values.authorsListed = listedAuthors;
@@ -1009,6 +1311,7 @@ export default function literatureSearch(pi: ExtensionAPI) {
 	void (async () => {
 		try {
 			const { Box, Text } = await import("@earendil-works/pi-tui");
+			tuiText = Text as unknown as new (text: string) => unknown;
 			// A raw file:// URL WRAPS across card lines in narrow terminals and
 			// the click target breaks. Display-only fix: the card renders the
 			// URL as an OSC 8 hyperlink with the short basename as its text --
@@ -1106,6 +1409,9 @@ export default function literatureSearch(pi: ExtensionAPI) {
 			code_sources: Type.Optional(Type.Array(Type.String(), {
 				description: `Code-first sources: search code repositories FIRST and resolve the papers they cite (repository link attached, metadata from arXiv/OpenAlex). Use when the user asks for papers WITH code / implementations. Any of: ${Object.keys(CODE_SEARCHERS).join(", ")}. Default: none (adds 30-90 s per run). In the wizard this only prefills the Code tab.`,
 			})),
+			code_list_topics: Type.Optional(Type.Array(Type.String(), {
+				description: "GitHub topics of the research FIELD whose curated awesome lists the awesome-lists code source reads (e.g. remote-sensing, bioinformatics -- fields, not query words). Prefills the topic rows of the Code tab; default from the config.",
+			})),
 			group_terms: Type.Optional(Type.Array(Type.Array(Type.String()), {
 				description: "Deterministic grouping rules: array of term groups (see tool description). Omit for ungrouped results.",
 			})),
@@ -1127,7 +1433,16 @@ export default function literatureSearch(pi: ExtensionAPI) {
 				description: "Keep only records whose journal/venue name contains one of these strings (case-insensitive). Excludes venue-less preprints, with a reason.",
 			})),
 			authors: Type.Optional(Type.Array(Type.String(), {
-				description: "Fetch and keep only papers by these authors: the names are pushed into each source's author search field (arXiv au:, CrossRef query.author, OpenAlex raw_author_name.search), and a deterministic post-filter keeps only records where at least one author name contains one of these strings (case-insensitive). Use when the user asks for papers by a specific author or group.",
+				description: "Papers by these authors (names): in the wizard the first name prefills the author lookup of the Authors tab (the user picks the exact person); headless the names go into each source's author search field (arXiv au:, CrossRef query.author, OpenAlex raw_author_name.search) plus a deterministic post-filter (author name contains the string, case-insensitive). Use when the user asks for papers by a specific author or group.",
+			})),
+			author_ids: Type.Optional(Type.Array(Type.String(), {
+				description: "OpenAlex author ids (A5059343226) of the wanted authors, together with their names in `authors`: OpenAlex then filters by id (exact person). Headless only; the wizard resolves the person itself.",
+			})),
+			author_position: Type.Optional(Type.String({
+				description: "Required position of the wanted author: \"first\", \"contributing\" (any position but the first) or \"any\" (default). Only with `authors`.",
+			})),
+			author_scope: Type.Optional(Type.String({
+				description: "\"all\" = every publication of the wanted authors regardless of the query (OpenAlex by id citation-sorted, CrossRef/arXiv by name; Semantic Scholar is skipped and noted); default \"query\" = author AND query. Only with `authors`.",
 			})),
 			require_pdf: Type.Optional(Type.Boolean({
 				description: "Keep only records with a direct PDF link",
@@ -1164,7 +1479,20 @@ export default function literatureSearch(pi: ExtensionAPI) {
 				minJournalScore: params.min_journal_score,
 				venues: params.venues,
 				authors: params.authors,
+				// Headless author scope: the names double as the picked
+				// authors (post-filter, CrossRef, arXiv), the ids drive
+				// OpenAlex; unknown position/scope strings fall back to the
+				// defaults (a strict enum would kill the call before this code).
+				...(params.authors?.length && (params.author_ids?.length || params.author_position || params.author_scope)
+					? {
+						pickedAuthors: params.authors,
+						authorIds: params.author_ids?.length ? params.author_ids : undefined,
+						authorPosition: params.author_position === "first" || params.author_position === "contributing" ? params.author_position : undefined,
+						authorScope: params.author_scope?.trim().toLowerCase() === "all" ? "all" as const : undefined,
+					}
+					: {}),
 				codeSources: params.code_sources?.length ? params.code_sources : undefined,
+				codeListTopics: params.code_list_topics?.length ? params.code_list_topics : undefined,
 			};
 			if (ctx.hasUI) {
 				const sources = params.sources?.length ? params.sources : Object.keys(SEARCHERS);
@@ -1281,7 +1609,24 @@ export default function literatureSearch(pi: ExtensionAPI) {
 			const ticker = setInterval(() => {
 				const seconds = Math.round((Date.now() - startedAt) / 1000);
 				const dots = ".".repeat(1 + (seconds % 3));
-				ctx.ui.setWidget(INTAKE_WIDGET, [`working -- ${seconds}s elapsed -- searching, verifying, enriching${dots}`]);
+				const base = `working -- ${seconds}s elapsed -- searching, verifying, enriching`;
+				// Dim line, the building dots in the accent color (theme
+				// colors only); plain text where pi-tui is unavailable.
+				const TextComponent = tuiText;
+				if (TextComponent && ctx.mode === "tui") {
+					ctx.ui.setWidget(INTAKE_WIDGET, (_tui, theme) => {
+						let painted = base + dots;
+						try {
+							const fg = (theme as { fg(color: string, text: string): string }).fg;
+							painted = fg.call(theme, "dim", base) + fg.call(theme, "accent", dots);
+						} catch {
+							// unknown color key in a custom theme -> plain text
+						}
+						return new TextComponent(painted) as never;
+					});
+				} else {
+					ctx.ui.setWidget(INTAKE_WIDGET, [base + dots]);
+				}
 			}, 1000);
 			try {
 				const payload = await runSearch({

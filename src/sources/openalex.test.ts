@@ -5,7 +5,11 @@
  */
 
 import assert from "node:assert/strict";
-import { buildAuthorSearchFilter, buildBlockSearch, buildFacetFilter, lookupOpenalexDois, parseFacetPage, parseFacets, toSourceRecord } from "./openalex.ts";
+import { buildAuthorSearchFilter, buildBlockSearch, buildFacetFilter, lookupOpenalexDois, parseFacetPage, parseFacets, toSourceRecord,
+	buildAuthorIdFilter,
+	buildWorksParams,
+	parseAuthorAutocomplete,
+} from "./openalex.ts";
 
 /** v30.11: journals and authors share the facet parser. */
 const parseJournalFacets = parseFacets;
@@ -176,6 +180,44 @@ const parseJournalFacetPage = parseFacetPage;
 	} finally {
 		globalThis.fetch = realFetch;
 	}
+}
+
+// Author lookup: the autocomplete answer (shape measured 2026-09-13) ->
+// matches; ids as a filter; the works parameters per author scope.
+{
+	const matches = parseAuthorAutocomplete({ results: [
+		{ id: "https://openalex.org/A5059343226", display_name: "Claudia Kuenzer", hint: "University of Würzburg, Germany", cited_by_count: 16579, works_count: 306, external_id: null },
+		{ id: "https://openalex.org/A5076899684", display_name: "Christopher Kuenze", hint: null, cited_by_count: 3667, works_count: 201, external_id: "https://orcid.org/0000-0001-9184-4636" },
+		{ id: "https://openalex.org/A5059343226", display_name: "Claudia Kuenzer" },
+		{ id: "https://openalex.org/W1", display_name: "not an author" },
+		{ display_name: "no id" },
+	] });
+	assert.deepEqual(matches.map((m) => m.id), ["A5059343226", "A5076899684"]);
+	assert.deepEqual(matches[0], { id: "A5059343226", name: "Claudia Kuenzer", hint: "University of Würzburg, Germany", works: 306, cites: 16579, orcid: "" });
+	assert.equal(matches[1].hint, "");
+	assert.equal(matches[1].orcid, "https://orcid.org/0000-0001-9184-4636");
+	assert.deepEqual(parseAuthorAutocomplete({ error: "x" }), []);
+	assert.equal(buildAuthorIdFilter(["A5059343226", "https://openalex.org/A1", " junk ", ""]), "authorships.author.id:A5059343226|A1");
+	assert.equal(buildAuthorIdFilter([]), "");
+	// Scope "query": text search plus the id filter (ids win over names).
+	const byQuery = buildWorksParams("water flood", 5, { authorIds: ["A5059343226"], authors: ["Claudia Kuenzer"], blocks: [["water"], ["flood"]] });
+	assert.equal(byQuery.get("search"), "water AND flood");
+	assert.equal(byQuery.get("filter"), "type:!peer-review|supplementary-materials|paratext|dataset|grant,authorships.author.id:A5059343226");
+	assert.equal(byQuery.get("sort"), null);
+	// Scope "all": no text search, citation-sorted, the id filter alone.
+	const all = buildWorksParams("water flood", 5, { authorIds: ["A5059343226"], authorScope: "all", blocks: [["water"]] });
+	assert.equal(all.get("search"), null);
+	assert.equal(all.get("sort"), "cited_by_count:desc");
+	assert.equal(all.get("filter"), "type:!peer-review|supplementary-materials|paratext|dataset|grant,authorships.author.id:A5059343226");
+	// Scope "all" without any author falls back to the text search.
+	assert.equal(buildWorksParams("water", 5, { authorScope: "all" }).get("search"), "water");
+	// Names only (no ids): the raw_author_name search as before.
+	assert.equal(buildWorksParams("water", 5, { authors: ["Kuenzer"] }).get("filter"), "type:!peer-review|supplementary-materials|paratext|dataset|grant,raw_author_name.search:Kuenzer");
+	// Type exclusion on EVERY works search (peer-review reports and author
+	// replies of open review platforms are typed peer-review; measured
+	// 2026-09-15: the negated pipe form and the comma form agree, 210 -> 188
+	// works for one author), also without any author scope.
+	assert.equal(buildWorksParams("water", 5).get("filter"), "type:!peer-review|supplementary-materials|paratext|dataset|grant");
 }
 
 console.log("openalex.test.ts: all assertions passed");

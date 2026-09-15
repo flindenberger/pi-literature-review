@@ -160,6 +160,15 @@ export interface ResultFilters {
 	authorsOther?: boolean;
 	/** The author names the picker LISTED (its top-N facet head). */
 	authorsListed?: string[];
+	/** Authors PICKED in the wizard's lookup (names as OpenAlex prints
+	 * them): a record must carry one of them (substring, case-insensitive)
+	 * or it drops with a reason. A record by a picked author passes the
+	 * listed-authors exclusion above regardless. */
+	pickedAuthors?: string[];
+	/** Position the picked author must hold: "first" = first name of the
+	 * author list, "contributing" = any position but the first, "any"
+	 * (default) = either. Only read with pickedAuthors. */
+	authorPosition?: "first" | "contributing" | "any";
 	/** Keep only records with a direct PDF link. */
 	requirePdf?: boolean;
 	/** Keep only records whose identifier resolved (verified: true). */
@@ -218,12 +227,34 @@ function filterReason(record: FilterableRecord, filters: ResultFilters): string 
 				: `filtered: venue "${record.venue}" matches none of the requested venues`;
 		}
 	}
+	// Picked authors (the lookup): the record must carry one of them, in
+	// the wanted position; a record by a picked author is exempt from the
+	// listed-authors exclusion further down.
+	const picked = (filters.pickedAuthors ?? []).map((name) => name.trim().toLowerCase()).filter(Boolean);
+	let byPickedAuthor = false;
+	if (picked.length) {
+		const names = record.authors.map((author) => author.toLowerCase());
+		const matchesPicked = (author: string): boolean => picked.some((name) => author.includes(name));
+		const anyMatch = names.some(matchesPicked);
+		if (!anyMatch) {
+			return `filtered: none of the authors is a picked author (${(filters.pickedAuthors ?? []).join(", ")})`;
+		}
+		const firstMatches = names.length > 0 && matchesPicked(names[0]);
+		const position = filters.authorPosition ?? "any";
+		if (position === "first" && !firstMatches) {
+			return `filtered: picked author is not the first author (first: ${record.authors[0]})`;
+		}
+		if (position === "contributing" && firstMatches && !names.slice(1).some(matchesPicked)) {
+			return `filtered: picked author is the first author, not a contributing author (${record.authors[0]})`;
+		}
+		byPickedAuthor = true;
+	}
 	const wantedAuthors = (filters.authors ?? []).map((name) => name.trim().toLowerCase()).filter(Boolean);
 	const listedAuthors = (filters.authorsListed ?? []).map((name) => name.trim().toLowerCase()).filter(Boolean);
 	// Same rule as the journals above: "other authors" without a list of
 	// who IS listed excludes nobody.
 	const otherAuthorsWanted = !!filters.authorsOther && listedAuthors.length > 0;
-	if (wantedAuthors.length || otherAuthorsWanted) {
+	if ((wantedAuthors.length || otherAuthorsWanted) && !byPickedAuthor) {
 		const names = record.authors.map((author) => author.toLowerCase());
 		const matchesWanted = names.some((author) => wantedAuthors.some((name) => author.includes(name)));
 		// "Other" means: none of this record's authors is on the listed head.

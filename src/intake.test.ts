@@ -15,11 +15,14 @@ import {
 	parseGroupSpec,
 	parseGroupTerms,
 	parsePerSource,
+	parseTopicLines,
 	parseVariantSuggestions,
 	parseYearRange,
 	queryBlocks,
 	queryFromBlockAnswers,
 	sortVariantsByBreadth,
+	topicPrompt,
+	topicSlug,
 	variantPrompt,
 	yearRangeToSpec,
 } from "./intake.ts";
@@ -410,6 +413,29 @@ const parseVariantLines = (raw: string, base: string, cap?: number): string[] =>
 	assert.ok(!variantPrompt('"water mask" AND satellite', "", 6, false).includes("SAME number of concept blocks"));
 	// The steering hint rides as its own line.
 	assert.ok(variantPrompt("x", "more deep learning", 6, false).includes("more deep learning"));
+}
+
+// List topics for the code tab: slug normalisation, the prompt carries
+// the block chain and the field rule, the parser strips list markup,
+// drops generic/duplicate topics and caps.
+{
+	assert.equal(topicSlug("Remote Sensing"), "remote-sensing");
+	assert.equal(topicSlug("  earth_observation "), "earth-observation");
+	assert.equal(topicSlug("Sentinel-2!"), "sentinel-2");
+	assert.equal(topicSlug("--gis--"), "gis");
+	assert.equal(topicSlug("###"), "");
+	const prompt = topicPrompt("water body mapping", [["satellite", "Sentinel-2"], ["water body", "river"]], 5);
+	assert.ok(prompt.includes("(satellite OR Sentinel-2) AND (water body OR river)"));
+	assert.ok(prompt.includes("up to 5 GitHub topics"));
+	assert.ok(prompt.includes("not the words of the search itself"));
+	assert.ok(topicPrompt("plain words", [], 3).includes("Literature search: plain words"));
+	assert.deepEqual(
+		parseTopicLines("1. remote-sensing\n- `Earth Observation`\n* \"hydrology\"\nmachine-learning\nremote sensing\n2) GIS\nagriculture\nclimate"),
+		["remote-sensing", "earth-observation", "hydrology", "gis", "agriculture"],
+	);
+	assert.deepEqual(parseTopicLines("awesome\npython\n\n"), []);
+	assert.deepEqual(parseTopicLines("Here are some topics you could use for this search, hopefully they help\nremote-sensing"), ["remote-sensing"]);
+	assert.deepEqual(parseTopicLines("a\nbioinformatics", 1), ["bioinformatics"]);
 }
 
 console.log("intake.test.ts: all assertions passed");
