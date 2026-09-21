@@ -7,7 +7,7 @@
  */
 
 import assert from "node:assert/strict";
-import { applyFilters, dedupe, dropLateCodePairs, dropWithoutAbstract, filterRecords, groupAcrossQueries, sanitizeTermGroups, sortRecords, termMatches } from "./pipeline.ts";
+import { applyFilters, dedupe, dropLateCodePairs, dropOffTopicCodeRecords, dropWithoutAbstract, filterRecords, groupAcrossQueries, sanitizeTermGroups, requiredBlockHits, sortRecords, termMatches } from "./pipeline.ts";
 import type { SourceRecord } from "./types.ts";
 
 function record(overrides: Partial<SourceRecord>): SourceRecord {
@@ -493,3 +493,38 @@ function record(overrides: Partial<SourceRecord>): SourceRecord {
 }
 
 console.log("pipeline.test.ts: all assertions passed");
+
+// requiredBlockHits: every block with one or two blocks, all but one from
+// three blocks on.
+{
+	assert.deepEqual([1, 2, 3, 4, 5].map(requiredBlockHits), [1, 2, 2, 3, 4]);
+}
+
+// dropOffTopicCodeRecords: a code-only find must hit the required blocks
+// of at least one confirmed query in title + abstract; database finds and
+// runs without blocks pass untouched.
+{
+	const isCode = (source: string) => source === "github-readme" || source === "hf-papers";
+	const blocks = [["water level"], ["automated monitoring"], ["river"], ["cameras"]];
+	const variant = [["water level", "stage"], ["automated monitoring", "telemetry"], ["river", "riverine"], ["cameras", "video"]];
+	const rec = (title: string, abstract: string, sources: string[]) =>
+		({ title, abstract, sources, code_url: "https://github.com/o/r" });
+	const defi = rec("Attacking the DeFi Ecosystem with Flash Loans", "Credit allows a lender ...", ["github-readme"]);
+	const onTopic = rec("Towards Automated River Water Level Monitoring using Visual IoT Cameras", "", ["hf-papers"]);
+	const viaVariant = rec("River stage from video", "telemetry of riverine gauges", ["hf-papers"]);
+	const oneShort = rec("Water level of rivers", "", ["github-readme"]);
+	const alsoDb = rec("Attacking DeFi", "blockchain", ["github-readme", "openalex"]);
+	const result = dropOffTopicCodeRecords([defi, onTopic, viaVariant, oneShort, alsoDb], [blocks, variant], isCode);
+	assert.deepEqual(result.kept.map((r) => r.title), [onTopic.title, viaVariant.title, alsoDb.title]);
+	assert.deepEqual(result.dropped.map((d) => d.record.title), [defi.title, oneShort.title]);
+	assert.equal(
+		result.dropped[0]!.reason,
+		"found only via code repository https://github.com/o/r; title/abstract match 0 of 4 query blocks "
+		+ "(at least 3 needed) -- probably off topic",
+	);
+	assert.ok(result.dropped[1]!.reason.includes("match 2 of 4 query blocks"));
+	// No blocks anywhere: nothing to judge against, everything stays.
+	assert.equal(dropOffTopicCodeRecords([defi], [[]], isCode).kept.length, 1);
+	// Two blocks: both must hit.
+	assert.equal(dropOffTopicCodeRecords([oneShort], [[["water level"], ["cameras"]]], isCode).dropped.length, 1);
+}

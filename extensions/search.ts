@@ -363,7 +363,7 @@ const SEARCH_TEXT: Record<DialogLang, {
 		countTitle: "Wie viele Treffer je Quelle (arXiv, CrossRef, OpenAlex, Semantic Scholar)?",
 		codeTab: "Code",
 		codeTitle: "Zusätzlich Code-Repositories durchsuchen und die Paper auflösen, die sie zitieren (Repository zuerst, Paper danach). Kostet je nach Auswahl etwa 30-90 s pro Lauf.",
-		codeHead: "Paper mit Code suchen",
+		codeHead: "Paper mit Code suchen und hinzufügen",
 		codeNext: "Weiter",
 		codeSource: {
 			"hf-papers": ["Hugging Face Papers", "Suche bei Hugging Face, Paper-Daten von arXiv, GitHub-Link falls vorhanden"],
@@ -471,7 +471,7 @@ const SEARCH_TEXT: Record<DialogLang, {
 		countTitle: "How many records per source (arXiv, CrossRef, OpenAlex, Semantic Scholar)?",
 		codeTab: "Code",
 		codeTitle: "Additionally search code repositories and resolve the papers they cite (repository first, paper second). Adds roughly 30-90 s per run depending on the selection.",
-		codeHead: "Search for papers with code",
+		codeHead: "Search and add papers with Code",
 		codeNext: "Next",
 		codeSource: {
 			"hf-papers": ["Hugging Face Papers", "Hugging Face search, paper details from arXiv, GitHub link if available"],

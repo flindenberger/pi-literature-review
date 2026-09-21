@@ -111,6 +111,9 @@ export interface RenderPayload {
 		late_code_pairs_removed?: number;
 		/** Records still without an abstract after enrichment. */
 		no_abstract_removed?: number;
+		/** Code-only records whose title/abstract miss the query blocks,
+		 * moved to the dropped table (only when a code source ran). */
+		off_topic_code_removed?: number;
 		excluded_by_filters: number;
 		included: number;
 	} | null;
@@ -825,15 +828,18 @@ export function flowDiagramSvg(
 	const WIDTH = 750;
 	const mainCx = MAIN_X + MAIN_W / 2;
 
-	const excludedTotal = (flow.no_abstract_removed ?? 0) + flow.excluded_by_filters;
+	const excludedTotal = (flow.late_code_pairs_removed ?? 0) + (flow.no_abstract_removed ?? 0)
+		+ (flow.off_topic_code_removed ?? 0) + flow.excluded_by_filters;
 	const side1Lines = [
 		"Records removed before screening",
 		`uncitable (no title or no authors): n = ${flow.junk_removed}`,
 		`duplicate records merged: n = ${flow.duplicates_removed}`,
 	];
 	const side2Lines = [`Records excluded: n = ${excludedTotal}`];
+	if (flow.late_code_pairs_removed) side2Lines.push(`code repository long after the paper: n = ${flow.late_code_pairs_removed}`);
 	if (extras.abstractNone) side2Lines.push(`no abstract available: n = ${extras.abstractNone}`);
 	if (extras.abstractFailed) side2Lines.push(`abstract retrieval failed: n = ${extras.abstractFailed}`);
+	if (flow.off_topic_code_removed) side2Lines.push(`code-only find off topic: n = ${flow.off_topic_code_removed}`);
 	if (flow.excluded_by_filters) {
 		side2Lines.push(`user filters: n = ${flow.excluded_by_filters}`);
 		for (const entry of extras.filterBreakdown) side2Lines.push(` ${entry.label}: n = ${entry.count}`);
@@ -1057,13 +1063,19 @@ export function renderHtml(payload: RenderPayload, options?: { network?: boolean
 				: ""}${
 			typeof flow.no_abstract_removed === "number"
 				? ` &rarr; ${flow.no_abstract_removed} removed without abstract`
+				: ""}${
+			typeof flow.off_topic_code_removed === "number"
+				? ` &rarr; ${flow.off_topic_code_removed} code-only find(s) moved to dropped (title/abstract miss the query blocks)`
 				: ""} &rarr; ${flow.excluded_by_filters} excluded by the user filters${
 			filterCategories.length ? ` (${esc(filterCategories.map((c) => `${c.count} by ${c.label}`).join(", "))})` : ""} &rarr; ${flow.included} record(s) remaining ${flowSummary}, ${payload.dropped.length} dropped</dd><dd><span class="note">Papers of both tables (results and dropped) can still be selected and downloaded.</span></dd>`
 		: "";
-	const excludedRows = flow && (abstractReasons.length || flow.excluded_by_filters)
+	const excludedRows = flow && (abstractReasons.length || flow.off_topic_code_removed || flow.excluded_by_filters)
 		? `\n<dt>Records excluded</dt>`
 			+ (abstractNone ? `<dd>no abstract available: ${abstractNone}</dd>` : "")
 			+ (abstractFailed ? `<dd>abstract retrieval failed: ${abstractFailed} (their abstracts may exist -- see the failed-lookups note)</dd>` : "")
+			+ (flow.off_topic_code_removed
+				? `<dd>code-only finds off topic: ${flow.off_topic_code_removed} (title/abstract hit fewer query blocks than required -- see the dropped table)</dd>`
+				: "")
 			+ (flow.excluded_by_filters
 				? `<dd>user filters: ${flow.excluded_by_filters}${
 					filterCategories.length ? ` (${esc(filterCategories.map((c) => `${c.label}: ${c.count}`).join(", "))})` : ""}</dd>`

@@ -13,6 +13,7 @@ import {
 	applyFilters,
 	dedupe,
 	dropLateCodePairs,
+	dropOffTopicCodeRecords,
 	dropWithoutAbstract,
 	filterRecords,
 	groupAcrossQueries,
@@ -345,8 +346,17 @@ export async function runSearch(options: SearchOptions) {
 		warn(`abstract gate removed ${abstractGate.dropped.length} record(s), kept ${abstractGate.kept.length}`);
 	}
 
+	// Topic gate for code-first finds: a paper only a code source
+	// delivered must itself fit the query blocks (the repository matched,
+	// not necessarily the paper). Runs after the abstract gate, so it
+	// judges the final abstracts.
+	const topicGate = dropOffTopicCodeRecords(abstractGate.kept, blocksByQuery, (source) => source in CODE_SEARCHERS);
+	for (const { record, reason } of topicGate.dropped) {
+		warn(`dropped "${record.title}": ${reason}`);
+	}
+
 	const filters = options.filters ?? {};
-	const filterResult = applyFilters(abstractGate.kept, filters);
+	const filterResult = applyFilters(topicGate.kept, filters);
 	for (const { record, reason } of filterResult.dropped) {
 		warn(`${reason}: "${record.title}"`);
 	}
@@ -374,7 +384,7 @@ export async function runSearch(options: SearchOptions) {
 	// no group and sort behind). Rides the enrich switch like every lookup
 	// beyond the search itself.
 	aborted();
-	const droppedEntries = [...dropped, ...lateGate.dropped, ...abstractGate.dropped, ...filterResult.dropped];
+	const droppedEntries = [...dropped, ...lateGate.dropped, ...abstractGate.dropped, ...topicGate.dropped, ...filterResult.dropped];
 	let results = grouped;
 	let droppedOut = droppedEntries;
 	if (options.enrich !== false) {
@@ -489,7 +499,8 @@ export async function runSearch(options: SearchOptions) {
 		// run produced -- identified (raw per-source hits, pre-dedupe),
 		// removed as uncitable by the junk filter, duplicates merged, screened
 		// (= post-dedupe), removed without abstract, excluded by the requested
-		// filters (reasons ship in `dropped`), included. Verification,
+		// filters (reasons ship in `dropped`), included; with code sources
+		// also the late code pairs and the off-topic code-only finds. Verification,
 		// enrichment and grouping never change the count.
 		source_counts: sourceCounts.length ? sourceCounts : null,
 		flow: {
@@ -500,6 +511,7 @@ export async function runSearch(options: SearchOptions) {
 			// Optional: only present when a code-first source ran.
 			...(codeSourcesUsed.length ? { late_code_pairs_removed: lateGate.dropped.length } : {}),
 			no_abstract_removed: abstractGate.dropped.length,
+			...(codeSourcesUsed.length ? { off_topic_code_removed: topicGate.dropped.length } : {}),
 			excluded_by_filters: filterResult.dropped.length,
 			included: results.length,
 		},

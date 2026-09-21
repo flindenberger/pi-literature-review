@@ -399,6 +399,60 @@ export function dropLateCodePairs(
 	return { kept, dropped, stripped };
 }
 
+/** Concept blocks a code-only record must hit in title + abstract: every
+ * block with one or two blocks, all but one from three blocks on. Pure. */
+export function requiredBlockHits(blockCount: number): number {
+	return blockCount >= 3 ? blockCount - 1 : blockCount;
+}
+
+/**
+ * Topic gate for code-first finds. A code source reaches a paper through a
+ * repository whose README merely contains the query words, so the paper
+ * itself may be off topic (a blockchain paper cited by a README that
+ * happens to mention "river" and "camera"). A record that ONLY code
+ * sources delivered stays when its title + abstract hit at least
+ * requiredBlockHits(n) of the n blocks of at least one confirmed query
+ * (termMatches, the tolerances of the labeling); otherwise it moves to
+ * the dropped list, reason naming repository and hit count -- still
+ * listed, still selectable. Records a database also delivered, and every
+ * record of a run without blocks, pass untouched. Pure.
+ */
+export function dropOffTopicCodeRecords<T extends { title: string; abstract: string; sources: string[]; code_url?: string }>(
+	records: T[],
+	blockSets: TermGroups[],
+	isCodeSource: (source: string) => boolean,
+): { kept: T[]; dropped: Array<{ record: T; reason: string }> } {
+	const sets = blockSets.filter((blocks) => blocks.length);
+	if (!sets.length) return { kept: records, dropped: [] };
+	const kept: T[] = [];
+	const dropped: Array<{ record: T; reason: string }> = [];
+	for (const record of records) {
+		if (!record.sources.length || !record.sources.every(isCodeSource)) {
+			kept.push(record);
+			continue;
+		}
+		const text = `${record.title} ${record.abstract}`.toLowerCase();
+		// Per query: hits and the shortfall against its requirement; the
+		// query closest to passing names the numbers in the reason.
+		const scores = sets.map((blocks) => {
+			const hits = blocks.filter((block) => block.some((term) => termMatches(text, term))).length;
+			return { hits, total: blocks.length, missing: requiredBlockHits(blocks.length) - hits };
+		});
+		const best = scores.reduce((a, b) => (b.missing < a.missing ? b : a));
+		if (best.missing <= 0) {
+			kept.push(record);
+			continue;
+		}
+		const via = record.code_url ? `code repository ${record.code_url}` : "a code source";
+		dropped.push({
+			record,
+			reason: `found only via ${via}; title/abstract match ${best.hits} of ${best.total} query blocks `
+				+ `(at least ${requiredBlockHits(best.total)} needed) -- probably off topic`,
+		});
+	}
+	return { kept, dropped };
+}
+
 /**
  * Whole-word term matching. A term only matches a whole word: no word
  * character may touch it on either side (explicit lookarounds instead of

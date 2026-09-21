@@ -132,8 +132,8 @@ results page carries an "Author scope" row and the JSON `author_scope`.
 
 ### Code
 
-Four code-first sources, unticked by default, under a head row "Search for
-papers with code" that ticks or clears them all:
+Four code-first sources, unticked by default, under a head row "Search and
+add papers with Code" that ticks or clears them all:
 
 | Source | Finds |
 |---|---|
@@ -148,6 +148,16 @@ usually a project citing it, not its code: the record moves to the dropped
 table with that reason, and beyond five years the pair is not listed at
 all. When the found repository is an overview page, the linked repository
 whose name matches the paper title is taken instead.
+
+A repository can match the query words while the papers it cites are
+about something else entirely (a large README that happens to mention
+"river" and "camera"). So a paper that ONLY code sources found must fit
+the query itself: its title + abstract must hit the concept blocks of at
+least one confirmed query -- every block with one or two blocks, all but
+one from three blocks on (4 blocks: at least 3). Same whole-word matching
+as the labeling. Otherwise it moves to the dropped table, reason naming
+the repository and the hit count. Papers a database also found are not
+affected.
 
 The four together add roughly 30-90 seconds per run, which is why they are
 off by default. No key involved.
@@ -197,7 +207,9 @@ to ies -- and no stemming or synonyms beyond that.
    more than a year after the paper, and a DOI match is linked only when
    the repository owner's name matches an author.
 7. **Abstract gate** -- no abstract, dropped table.
-8. **Optional filters**, then **labeling**.
+8. **Topic gate for code-only finds** -- title + abstract miss the
+   required query blocks (see Code above), dropped table.
+9. **Optional filters**, then **labeling**.
 
 Nothing disappears silently: every removed record sits in the dropped
 table with its reason, and a failed source is shown while the run
