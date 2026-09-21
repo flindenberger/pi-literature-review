@@ -31,13 +31,24 @@ contain content.
 
 ### Query variants
 
-One call to the model selected in Pi suggests up to four alternative
-searches, written as concept-block boolean queries (OR-synonyms within a
-concept, AND between concepts), staggered narrow to broad and in the base
-query's concept order. One row is a computer-science phrasing tagged
-["arXiv/CS phrasing"]((https://github.com/arXiv/arxiv-docs/blob/develop/source/help/api/user-manual.md?utm_source=chatgpt.com)), because arXiv barely indexes domain jargon. When the
-base query is a hand-built block expression, the suggestions keep its
-block count and concepts and vary only the synonyms.
+One call to the model selected in Pi suggests three alternative searches,
+written as concept-block boolean queries (OR-synonyms within a concept,
+AND between concepts) in the base query's concept order. Each row has a
+fixed role, shown in grey under it:
+
+| row | rule |
+|---|---|
+| +1 synonym per block | the base query's own terms plus at most one synonym per block |
+| +2 synonyms per block | the base query's own terms plus at most two synonyms per block |
+| optimized for arXiv | method words instead of field jargon (arXiv barely indexes domain jargon), at most three terms per block |
+
+The limits are enforced in code, not only asked of the model: longer
+blocks are cut, and the base query's own terms (including synonyms you
+typed yourself) always stay. If the model leaves out the arXiv row, a
+second call asks for that row alone; if it is still missing, the main
+query row says so. When the base query is a hand-built block expression,
+the first two rows keep its block count and concepts and vary only the
+synonyms.
 
 The main query is locked and always runs. Every checked row runs as an
 additional search in the same run: arXiv and OpenAlex receive it as a real
@@ -47,7 +58,7 @@ of at least one).
 
 Two rows at the bottom, separated by blank lines: **Add row** takes a
 variant you type yourself; **Steering row** takes a direction and, on
-Enter, regenerates four fresh suggestions -- checked rows survive and
+Enter, regenerates the three rows with other words -- checked rows survive and
 carry a reload sign. With no model selected, the tab offers only the main
 query.
 

@@ -41,7 +41,10 @@ import {
 	isProseQuery,
 	parsePerSource,
 	parseTopicLines,
+	arxivVariantPrompt,
+	parseArxivSuggestion,
 	parseVariantSuggestions,
+	type VariantRole,
 	type VariantSuggestion,
 	parseYearRange,
 	queryBlocks,
@@ -92,11 +95,6 @@ const AUTHOR_LOOKUP_TIMEOUT_MS = 8_000;
 /** Sentinel id of the LOCKED base-query row in the variants tab; variant
  * ids are the query strings themselves, so this cannot collide with one. */
 const VARIANT_BASE_ID = "__base_query__";
-/** How many LLM suggestions the variants tab asks for per generation:
- * four (1-2 close to the base query, 1-2 wider, one arXiv/CS phrasing)
- * keep the tab readable -- block expressions are wide rows -- and the
- * steering row regenerates for more while checked rows survive. */
-const VARIANT_SUGGESTION_LIMIT = 4;
 /** The code source whose topic rows the code tab lists underneath. */
 const CODE_LIST_SOURCE = "awesome-lists";
 /** Field topics asked of the model for the curated-lists rows. */
@@ -254,7 +252,10 @@ const SEARCH_TEXT: Record<DialogLang, {
 	 * sentence: the derived AND chain would be unsatisfiably strict; the
 	 * first suggestion distills the sentence and arrives prechecked. */
 	variantsProse: string;
-	variantsArxiv: string;
+	/** Dim role line under each suggestion row. */
+	variantsRole: Record<VariantRole, string>;
+	/** Status note when no arXiv row came back, even after the follow-up call. */
+	variantsNoArxiv: string;
 	periodTab: string;
 	periodTitle: string;
 	periodLast: (n: number) => string;
@@ -347,7 +348,12 @@ const SEARCH_TEXT: Record<DialogLang, {
 		variantsFailed: (message) => `Vorschläge nicht abrufbar: ${message}`,
 		variantsNoModel: "kein Modell in pi gewählt -- Vorschläge nicht verfügbar",
 		variantsProse: "liest sich wie ein Satz -- der erste Vorschlag unten destilliert ihn in Konzeptblöcke und ist vorausgewählt",
-		variantsArxiv: "arXiv/CS-Fassung: Methodenwörter statt Fachjargon -- die Zeile, die arXiv beantworten kann",
+		variantsRole: {
+			plus1: "+1 Synonym pro Block",
+			plus2: "+2 Synonyme pro Block",
+			arxiv: "optimiert für arXiv: Methodenwörter statt Fachjargon",
+		},
+		variantsNoArxiv: "kein arXiv-Vorschlag vom Modell erhalten",
 		periodTab: "Suchzeitraum",
 		periodTitle: "Erscheinungszeitraum?",
 		periodLast: (n) => `Letzte ${n} Jahre`,
@@ -450,7 +456,12 @@ const SEARCH_TEXT: Record<DialogLang, {
 		variantsFailed: (message) => `suggestions not available: ${message}`,
 		variantsNoModel: "no model selected in pi -- suggestions not available",
 		variantsProse: "reads like a sentence -- the first suggestion below distills it into concept blocks and is prechecked",
-		variantsArxiv: "arXiv/CS phrasing: method words instead of field jargon -- the row arXiv can answer",
+		variantsRole: {
+			plus1: "+1 synonym per block",
+			plus2: "+2 synonyms per block",
+			arxiv: "optimized for arXiv: method words instead of field jargon",
+		},
+		variantsNoArxiv: "no arXiv suggestion received from the model",
 		periodTab: "Search Period",
 		periodTitle: "Publication period?",
 		periodLast: (n) => `Last ${n} years`,
@@ -875,10 +886,8 @@ async function intakeWizard(
 				const liveQuery = composedQuery(answers).query;
 				const hint = String(answers.variants_hint ?? "").trim();
 				// Prose sentence as base: the prompt demands a faithful
-				// distillation as the FIRST line; after the breadth sort the
-				// closest-to-base suggestion sits first, which under that rule
-				// IS the distillation -- preselect checks it so the default
-				// Enter-through run carries a proper block query.
+				// distillation as the plus1 row -- preselect checks it so the
+				// default Enter-through run carries a proper block query.
 				const prose = isProseQuery(liveQuery);
 				const agentItems: CheckboxItem[] = agentVariants
 					.filter((variant) => variant.toLowerCase() !== liveQuery.toLowerCase())
@@ -889,24 +898,47 @@ async function intakeWizard(
 				try {
 					const raw = await completeWithPiModel(ctx, {
 						system: VARIANT_SYSTEM_PROMPT,
-						user: variantPrompt(liveQuery, hint, VARIANT_SUGGESTION_LIMIT, prose),
+						user: variantPrompt(liveQuery, hint, prose),
 						maxTokens: 500,
 						...(signal ? { signal } : {}),
 					});
-					const suggestions = parseVariantSuggestions(raw, liveQuery, VARIANT_SUGGESTION_LIMIT)
+					const suggestions: VariantSuggestion[] = parseVariantSuggestions(raw, liveQuery);
+					// The arXiv row is part of every generation: a model that
+					// left it out is asked once more for that line alone; a
+					// second miss shows a note instead of a silent gap.
+					let missingArxiv = !suggestions.some((entry) => entry.role === "arxiv");
+					if (missingArxiv) {
+						try {
+							const retry = await completeWithPiModel(ctx, {
+								system: VARIANT_SYSTEM_PROMPT,
+								user: arxivVariantPrompt(liveQuery, hint),
+								maxTokens: 200,
+								...(signal ? { signal } : {}),
+							});
+							const arxiv = parseArxivSuggestion(retry, liveQuery, suggestions.map((entry) => entry.text));
+							if (arxiv) {
+								suggestions.push({ text: arxiv, role: "arxiv" });
+								missingArxiv = false;
+							}
+						} catch (error) {
+							if (signal?.aborted) throw error;
+						}
+					}
+					const shown = suggestions
 						.filter((entry) => !agentVariants.some((seen) => seen.toLowerCase() === entry.text.toLowerCase()));
-					proseDistilled = prose && suggestions.length ? (suggestions[0] as VariantSuggestion).text : null;
+					const plus1 = shown.find((entry) => entry.role === "plus1");
+					proseDistilled = prose && plus1 ? plus1.text : null;
+					const notes = [
+						shown.length ? (prose && plus1 ? text.variantsProse : undefined) : text.variantsNoneFound,
+						shown.length && missingArxiv ? text.variantsNoArxiv : undefined,
+					].filter((note): note is string => note !== undefined);
 					return [
-						base(suggestions.length
-							? (prose ? text.variantsProse : undefined)
-							: text.variantsNoneFound),
+						base(notes.length ? notes.join(" · ") : undefined),
 						...agentItems,
-						...suggestions.map((entry) => ({
+						...shown.map((entry) => ({
 							id: entry.text,
 							label: entry.text,
-							// The model's arXiv/CS phrasing gets a dim tag line so
-							// the user can spot it; no marker from the model = no tag.
-							...(entry.arxiv ? { description: text.variantsArxiv } : {}),
+							description: text.variantsRole[entry.role],
 						})),
 					];
 				} catch (error) {

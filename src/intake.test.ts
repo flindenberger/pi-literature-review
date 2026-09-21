@@ -7,20 +7,22 @@ import assert from "node:assert/strict";
 import {
 	alignBlocksToBase,
 	alignVariantExpression,
+	arxivVariantPrompt,
 	blocksForEditing,
+	capVariantBlocks,
 	deriveGroupsFromQuery,
 	formatGroupExpression,
 	isBlockExpression,
 	isProseQuery,
 	parseGroupSpec,
 	parseGroupTerms,
+	parseArxivSuggestion,
 	parsePerSource,
 	parseTopicLines,
 	parseVariantSuggestions,
 	parseYearRange,
 	queryBlocks,
 	queryFromBlockAnswers,
-	sortVariantsByBreadth,
 	topicPrompt,
 	topicSlug,
 	variantPrompt,
@@ -179,9 +181,9 @@ import {
 	assert.equal(isProseQuery(""), false);
 }
 
-/** Text-only view of the parsed suggestions (the flag is tested separately). */
-const parseVariantLines = (raw: string, base: string, cap?: number): string[] =>
-	parseVariantSuggestions(raw, base, cap).map((entry) => entry.text);
+/** Text-only view of the parsed suggestions (the roles are tested separately). */
+const parseVariantLines = (raw: string, base: string): string[] =>
+	parseVariantSuggestions(raw, base).map((entry) => entry.text);
 
 // parseVariantLines: LLM suggestion output -> clean variant
 // list. Models habitually number, bullet and quote despite instructions.
@@ -191,16 +193,16 @@ const parseVariantLines = (raw: string, base: string, cap?: number): string[] =>
 			'1. "river water segmentation"\n- surface water mapping satellite\n* Water Mask Extraction\n\n2) river extraction remote sensing',
 			"water mask extraction",
 		),
-		["river water segmentation", "surface water mapping satellite", "river extraction remote sensing"],
+		["river water segmentation", "surface water mapping satellite"],
 	);
 	// Case-insensitive dedupe against the base query AND among the lines.
 	assert.deepEqual(
 		parseVariantLines("Water Mask\nwater mask\nsurface water", "Water Mask"),
 		["surface water"],
 	);
-	// The cap holds.
+	// Two unmarked rows at most (plus1, plus2); further lines are ignored.
 	assert.deepEqual(
-		parseVariantLines("a1\na2\na3", "base", 2),
+		parseVariantLines("a1\na2\na3", "base"),
 		["a1", "a2"],
 	);
 	// Junk/empty input -> empty list, never a throw.
@@ -208,55 +210,6 @@ const parseVariantLines = (raw: string, base: string, cap?: number): string[] =>
 	assert.deepEqual(parseVariantLines("\n- \n\"\"\n", "base"), []);
 	// German quotes strip too.
 	assert.deepEqual(parseVariantLines("„Wassermaske Sentinel-2“", "base"), ["Wassermaske Sentinel-2"]);
-}
-
-// sortVariantsByBreadth: suggestions run narrow-to-broad no
-// matter what order the model emitted -- fewer terms first, then fewer
-// base-foreign terms, ties keep the model's order (stable).
-{
-	const base = queryBlocks("water mask satellite");
-	// Term count decides first: the broad 9-term row falls behind the
-	// narrow 4-term row although the model emitted it first.
-	assert.deepEqual(
-		sortVariantsByBreadth(
-			[
-				"(water OR waterbody OR hydrology) AND (mask OR mapping OR segmentation) AND (satellite OR spaceborne OR remote sensing)",
-				"(water) AND (mask OR mapping) AND (satellite)",
-			],
-			base,
-		),
-		[
-			"(water) AND (mask OR mapping) AND (satellite)",
-			"(water OR waterbody OR hydrology) AND (mask OR mapping OR segmentation) AND (satellite OR spaceborne OR remote sensing)",
-		],
-	);
-	// Same term count: the row with fewer base-foreign terms comes first.
-	assert.deepEqual(
-		sortVariantsByBreadth(
-			[
-				"(waterbody OR hydrology) AND (segmentation OR delineation)",
-				"(water OR waterbody) AND (mask OR mapping)",
-			],
-			base,
-		),
-		[
-			"(water OR waterbody) AND (mask OR mapping)",
-			"(waterbody OR hydrology) AND (segmentation OR delineation)",
-		],
-	);
-	// Fully tied rows keep the model's order.
-	assert.deepEqual(
-		sortVariantsByBreadth(["(a OR b) AND (c)", "(d OR e) AND (f)"], base),
-		["(a OR b) AND (c)", "(d OR e) AND (f)"],
-	);
-	// parseVariantLines applies the sort end-to-end.
-	assert.deepEqual(
-		parseVariantLines(
-			"(water OR waterbody OR hydrology) AND (mask OR mapping OR segmentation)\n(water) AND (mask)",
-			"water mask satellite",
-		),
-		["(water) AND (mask)", "(water OR waterbody OR hydrology) AND (mask OR mapping OR segmentation)"],
-	);
 }
 
 // alignBlocksToBase / alignVariantExpression: suggestions
@@ -328,20 +281,92 @@ const parseVariantLines = (raw: string, base: string, cap?: number): string[] =>
 	assert.deepEqual(queryBlocks("ti:flood mapping"), []);
 }
 
-// parseVariantSuggestions: the model marks its arXiv/CS
-// phrasing with a leading "arXiv:"; the marker is stripped and carried as a
-// flag (survives bullets, dedupe and the breadth sort); unmarked lines are
-// plain; the string-only wrapper stays marker-free.
+// parseVariantSuggestions: three role slots in fixed order. The
+// arXiv-marked line fills "arxiv" wherever the model put it, the first
+// unmarked line "plus1", the next "plus2"; the marker is stripped.
 {
-	const raw = "1. river sandbar satellite\n2. arXiv: (river OR water body) AND (segmentation OR mapping) AND (satellite OR SAR)";
+	const raw = "1. arXiv: (river OR water body) AND (segmentation OR mapping) AND (satellite OR SAR)\n"
+		+ "2. river sandbar satellite\n3. sandbar remote sensing";
 	const parsed = parseVariantSuggestions(raw, "sandbar detection");
-	assert.equal(parsed.length, 2);
-	const tagged = parsed.filter((entry) => entry.arxiv);
-	assert.equal(tagged.length, 1);
-	assert.ok(!/arxiv:/i.test(tagged[0]!.text), "marker stripped");
-	assert.ok(tagged[0]!.text.includes("segmentation"));
-	assert.ok(parseVariantLines(raw, "sandbar detection").every((line) => !/^arxiv:/i.test(line)));
-	assert.deepEqual(parseVariantSuggestions("plain line", "base").map((entry) => entry.arxiv), [false]);
+	assert.deepEqual(parsed.map((entry) => entry.role), ["plus1", "plus2", "arxiv"]);
+	assert.equal(parsed[0]!.text, "river sandbar satellite");
+	assert.ok(!/arxiv:/i.test(parsed[2]!.text), "marker stripped");
+	// A second arXiv-marked line is ignored; a missing role is left out.
+	assert.deepEqual(
+		parseVariantSuggestions("arXiv: a b\narXiv: c d", "base").map((entry) => [entry.role, entry.text]),
+		[["arxiv", "a b"]],
+	);
+	// A row that collapses onto an earlier one after capping frees its
+	// slot for the next line.
+	assert.deepEqual(
+		parseVariantLines(
+			"(satellite OR remote sensing) AND (river OR fluvial)\n"
+			+ "(satellite OR remote sensing OR x) AND (river OR fluvial)\n"
+			+ "(satellite OR Sentinel OR remote sensing) AND (river OR river channel OR fluvial)",
+			"satellite AND river",
+		).length,
+		2,
+	);
+}
+
+// capVariantBlocks: the role's breadth holds whatever the model emitted.
+// plus1/plus2 keep the base block's own terms first and add at most one
+// or two synonyms; the arXiv row keeps at most three terms per block.
+{
+	const base = queryBlocks("satellite AND river AND water classification");
+	const bloated = "(remote sensing OR satellite OR earth observation OR spaceborne) AND "
+		+ "(river OR stream network OR fluvial OR river channel) AND "
+		+ "(water body mapping OR water classification OR water segmentation)";
+	assert.equal(
+		capVariantBlocks(bloated, base, "plus1"),
+		"(satellite OR remote sensing) AND (river OR stream network) AND (water classification OR water body mapping)",
+	);
+	assert.equal(
+		capVariantBlocks(bloated, base, "plus2"),
+		"(satellite OR remote sensing OR earth observation) AND (river OR stream network OR fluvial) "
+		+ "AND (water classification OR water body mapping OR water segmentation)",
+	);
+	assert.equal(
+		capVariantBlocks("(a OR b OR c OR d) AND (e OR f)", base, "arxiv"),
+		"(a OR b OR c) AND (e OR f)",
+	);
+	// The user's own synonyms count as base terms and are never cut:
+	// "+1" is counted from them.
+	assert.equal(
+		capVariantBlocks(
+			"(satellite OR SAR OR radar OR Sentinel) AND (river OR fluvial OR stream network)",
+			queryBlocks("(satellite OR SAR) AND river"),
+			"plus1",
+		),
+		"(satellite OR SAR OR radar) AND (river OR fluvial)",
+	);
+	// A block sharing no word with the base takes the base block at the
+	// same position when the block counts agree ...
+	assert.equal(
+		capVariantBlocks("(earth observation OR spaceborne OR orbital) AND (river OR fluvial)",
+			queryBlocks("(satellite OR SAR) AND river"), "plus1"),
+		"(earth observation OR spaceborne OR orbital) AND (river OR fluvial)",
+	);
+	// ... and counts as one base term otherwise.
+	assert.equal(
+		capVariantBlocks("(orbital OR spaceborne OR x) AND (river OR fluvial) AND (y)", queryBlocks("river"), "plus1"),
+		"(orbital OR spaceborne) AND (river OR fluvial) AND (y)",
+	);
+	// Plain keywords and hands-off syntax pass through untouched.
+	assert.equal(capVariantBlocks("a b c d e", base, "plus1"), "a b c d e");
+	assert.equal(capVariantBlocks('"a b" AND (c OR d OR e OR f)', base, "plus1"), '"a b" AND (c OR d OR e OR f)');
+}
+
+// parseArxivSuggestion: the follow-up answer -> one capped arXiv row,
+// marker optional; nothing usable or a repeat -> null.
+{
+	assert.equal(
+		parseArxivSuggestion("- arXiv: (a OR b OR c OR d) AND (e)", "base", []),
+		"(a OR b OR c) AND (e)",
+	);
+	assert.equal(parseArxivSuggestion("\n(a OR b) AND (e)\nnoise", "base", []), "(a OR b) AND (e)");
+	assert.equal(parseArxivSuggestion("", "base", []), null);
+	assert.equal(parseArxivSuggestion("arXiv: (a OR b) AND (e)", "base", ["(a OR b) AND (e)"]), null);
 }
 
 // queryFromBlockAnswers: the query tab's block form -> one query string.
@@ -398,21 +423,28 @@ const parseVariantLines = (raw: string, base: string, cap?: number): string[] =>
 // expression bases (user-authored structure), stays absent for plain and
 // prose bases, and never touches the arXiv-line rule.
 {
-	const faithful = variantPrompt("(river OR stream) AND (sandbar)", "", 6, false);
+	const faithful = variantPrompt("(river OR stream) AND (sandbar)", "", false);
 	assert.ok(faithful.includes("exactly 2 concept block(s)"));
 	assert.ok(faithful.includes("SAME number of concept blocks"));
 	assert.ok(faithful.includes("arXiv: "), "arXiv marker rule kept");
-	assert.ok(faithful.includes("exempt from this rule"));
-	const plain = variantPrompt("water mask satellite", "", 6, false);
+	assert.ok(faithful.includes("The arXiv line follows its own rule instead."));
+	const plain = variantPrompt("water mask satellite", "", false);
 	assert.ok(!plain.includes("SAME number of concept blocks"));
 	assert.ok(plain.includes("2-4 concept blocks"));
-	const prose = variantPrompt("i would like papers about water mapping from satellites", "", 6, true);
+	const prose = variantPrompt("i would like papers about water mapping from satellites", "", true);
 	assert.ok(prose.includes("faithful distillation"));
 	assert.ok(!prose.includes("SAME number of concept blocks"));
 	// Hands-off syntax (quotes) yields no blocks -> never block-faithful.
-	assert.ok(!variantPrompt('"water mask" AND satellite', "", 6, false).includes("SAME number of concept blocks"));
+	assert.ok(!variantPrompt('"water mask" AND satellite', "", false).includes("SAME number of concept blocks"));
 	// The steering hint rides as its own line.
-	assert.ok(variantPrompt("x", "more deep learning", 6, false).includes("more deep learning"));
+	assert.ok(variantPrompt("x", "more deep learning", false).includes("more deep learning"));
+	// The three roles are spelled out in order.
+	assert.ok(plain.includes("Line 1: the base query's own terms plus exactly ONE synonym"));
+	assert.ok(plain.includes("Line 2: the base query's own terms plus at most TWO synonyms"));
+	// The follow-up prompt asks for the arXiv line alone, hint included.
+	const retry = arxivVariantPrompt("water mask satellite", "more SAR");
+	assert.ok(retry.includes("more SAR"));
+	assert.ok(retry.includes("Output exactly one line, starting with 'arXiv: '"));
 }
 
 // List topics for the code tab: slug normalisation, the prompt carries
