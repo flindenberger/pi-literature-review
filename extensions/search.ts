@@ -363,9 +363,9 @@ const SEARCH_TEXT: Record<DialogLang, {
 		codeNext: "Weiter",
 		codeSource: {
 			"hf-papers": ["Hugging Face Papers", "Suche bei Hugging Face, Paper-Daten von arXiv, GitHub-Link falls vorhanden"],
-			"github-readme": ["GitHub README-Suche", "Repositories, deren README arxiv.org nennt; GitHub-Budget 10/min"],
+			"github-readme": ["GitHub README-Suche", "Suche auf GitHub nach Repos, deren README ein arXiv-Paper nennt, Paper-Daten von arXiv"],
 			"awesome-lists": ["Kuratierte Listen (awesome.ecosyste.ms)", "Awesome-Listen nach Fachgebiet (GitHub-Topic), Einträge gegen die Blöcke geprüft; anhaken zeigt die Themen"],
-			"gee-github": ["Google Earth Engine (GitHub)", "GEE-Repositories, deren README eine DOI nennt"],
+			"gee-github": ["Google Earth Engine (GitHub)", "Suche auf GitHub nach Earth-Engine-Repos, Paper-Daten von OpenAlex über die DOI in der README"],
 		},
 		codeTopicOwn: "+ Eigenes Listen-Thema für Kuratierte Listen (Enter fügt hinzu und hakt an)",
 		codeTopicsLoading: "Listen-Themen für das Fachgebiet werden vorgeschlagen und geprüft ...",
@@ -467,9 +467,9 @@ const SEARCH_TEXT: Record<DialogLang, {
 		codeNext: "Next",
 		codeSource: {
 			"hf-papers": ["Hugging Face Papers", "Hugging Face search, paper details from arXiv, GitHub link if available"],
-			"github-readme": ["GitHub README search", "repositories whose README cites arxiv.org; GitHub budget 10/min"],
+			"github-readme": ["GitHub README search", "GitHub search for repos whose README cites an arXiv paper, paper details from arXiv"],
 			"awesome-lists": ["Curated lists (awesome.ecosyste.ms)", "awesome lists by field (GitHub topic), entries matched against the blocks; tick to see the topics"],
-			"gee-github": ["Google Earth Engine (GitHub)", "GEE repositories whose README cites a DOI"],
+			"gee-github": ["Google Earth Engine (GitHub)", "GitHub search for Earth Engine repos, paper details from OpenAlex via the README's DOI"],
 		},
 		codeTopicOwn: "+ Own list topic for Curated lists (Enter adds and checks it)",
 		codeTopicsLoading: "suggesting and checking list topics for the field ...",
