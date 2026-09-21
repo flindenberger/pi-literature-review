@@ -167,4 +167,15 @@ const html = renderNetworkHtml();
 	}
 }
 
+// Labels and tooltip: "et al." for several authors, a white halo under the
+// selected paper's label, the tooltip reuses the header's authors line
+// (first three, ..., last + citations), arrowheads sit mid-line.
+{
+	assert.ok(html.includes('var more = (work.authorships || []).length > 1 ? " et al." : "";'));
+	assert.ok(html.includes('stroke="#ffffff" stroke-width="3.5"'));
+	assert.ok(html.includes('paint-order="stroke"'));
+	assert.ok(html.includes("'<div class=\"t-line\">' + authorsLineHtml(work) + '</div>'"));
+	assert.ok(html.includes("var mx = (x1 + x2) / 2, my = (y1 + y2) / 2;"));
+}
+
 console.log("network.test.ts: all assertions passed");

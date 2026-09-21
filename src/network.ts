@@ -133,28 +133,37 @@ const PAGE_SCRIPT = `
 		return parts[parts.length - 1];
 	}
 
-	// Header line for the selected paper: bold title, year, and the first
-	// three authors plus the last one (long lists elided in the middle,
-	// like the results table). Built from escaped API strings only.
-	function seedLineHtml(work, suffix) {
-		// Two lines under the h1: the title, then authors + citation count.
+	// Authors + citation count, as in the header: the first three authors
+	// plus the last one (long lists elided in the middle, like the results
+	// table). Escaped HTML from API strings only.
+	function authorsLineHtml(work) {
 		var names = (work.authorships || []).map(function (ship) {
 			return ship.author && ship.author.display_name ? ship.author.display_name : "";
 		}).filter(Boolean);
 		var shown = names.length > 5
 			? names.slice(0, 3).concat(["\u2026", names[names.length - 1]])
 			: names;
-		var year = work.publication_year ? " (" + work.publication_year + ")" : "";
 		var cites = (work.cited_by_count || 0) + " citation" + (work.cited_by_count === 1 ? "" : "s");
-		return '<div class="seed-title">' + escapeHtml(work.display_name || "(untitled)") + escapeHtml(year)
-			+ escapeHtml(suffix || "") + '</div>'
-			+ '<div class="seed-authors">' + (shown.length ? escapeHtml(shown.join(", ")) + ' &middot; ' : '')
-			+ cites + ' (OpenAlex)</div>';
+		return (shown.length ? escapeHtml(shown.join(", ")) + ' &middot; ' : '') + cites + ' (OpenAlex)';
 	}
 
+	function titleWithYear(work) {
+		return (work.display_name || "(untitled)") + (work.publication_year ? " (" + work.publication_year + ")" : "");
+	}
+
+	// Header lines for the selected paper under the h1: the title with its
+	// year, then authors + citation count.
+	function seedLineHtml(work, suffix) {
+		return '<div class="seed-title">' + escapeHtml(titleWithYear(work)) + escapeHtml(suffix || "") + '</div>'
+			+ '<div class="seed-authors">' + authorsLineHtml(work) + '</div>';
+	}
+
+	// Node label: first author's last name, "et al." whenever there are
+	// more authors, and the year.
 	function labelOf(work) {
 		var year = work.publication_year ? String(work.publication_year) : "n.d.";
-		return firstAuthorLastName(work) + ", " + year;
+		var more = (work.authorships || []).length > 1 ? " et al." : "";
+		return firstAuthorLastName(work) + more + ", " + year;
 	}
 
 	// Deterministic PRNG (mulberry32) seeded from the resolved work id --
@@ -513,8 +522,11 @@ const PAGE_SCRIPT = `
 				var stroke = active ? "#7a5230" : "#a8a094";
 				var opacity = active ? 0.95 : (faded ? 0.15 : 0.55);
 				// A shown citation is drawn citing -> cited, stopping at the
-				// cited circle's rim, with the arrowhead queued for the top
-				// layer. Everything else stays a plain undirected line.
+				// cited circle's rim, with the arrowhead at the MIDDLE of the
+				// line (queued for the top layer): heads at the rim piled up
+				// into a blot around the selected paper. A mutual citation
+				// gets two heads just either side of the middle. Everything
+				// else stays a plain undirected line.
 				var from = shown ? points[edge.citing] : points[edge.source];
 				var to = shown ? points[edge.cited] : points[edge.target];
 				var x1 = from.x, y1 = from.y, x2 = to.x, y2 = to.y;
@@ -523,11 +535,17 @@ const PAGE_SCRIPT = `
 					var len = Math.sqrt(dx * dx + dy * dy) || 1;
 					var trimEnd = radiusOf(nodes[edge.cited], maxCites) + 1;
 					x2 -= (dx / len) * trimEnd; y2 -= (dy / len) * trimEnd;
-					arrows.push(arrowHead(x1, y1, x2, y2, ARROW_FILL, opacity));
+					var ux = dx / len, uy = dy / len;
+					var mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
 					if (edge.mutual) {
 						var trimStart = radiusOf(nodes[edge.citing], maxCites) + 1;
-						x1 += (dx / len) * trimStart; y1 += (dy / len) * trimStart;
-						arrows.push(arrowHead(x2, y2, x1, y1, ARROW_FILL, opacity));
+						x1 += ux * trimStart; y1 += uy * trimStart;
+						mx = (x1 + x2) / 2; my = (y1 + y2) / 2;
+						arrows.push(arrowHead(x1, y1, mx + ux * ARROW_SIZE, my + uy * ARROW_SIZE, ARROW_FILL, opacity));
+						arrows.push(arrowHead(x2, y2, mx - ux * ARROW_SIZE, my - uy * ARROW_SIZE, ARROW_FILL, opacity));
+					} else {
+						// tip half a head past the middle: the head is centred on it
+						arrows.push(arrowHead(x1, y1, mx + ux * ARROW_SIZE / 2, my + uy * ARROW_SIZE / 2, ARROW_FILL, opacity));
 					}
 				}
 				var line = '<line data-edge="' + index + '" x1="' + x1.toFixed(1) + '" y1="' + y1.toFixed(1)
@@ -557,7 +575,10 @@ const PAGE_SCRIPT = `
 					+ '" stroke-width="' + strokeWidth + '"/>');
 				parts.push('<text x="' + p.x.toFixed(1) + '" y="' + (p.y + r + 13).toFixed(1)
 					+ '" text-anchor="middle" font-size="11" opacity="' + (related ? 1 : 0.25) + '"'
-					+ (isSeed ? ' font-weight="700" fill="#8a1f11"' : ' fill="#2c2c2c"')
+					// the seed label gets a white halo (stroke painted under the
+					// fill) so it stays legible on top of its many lines
+					+ (isSeed ? ' font-weight="700" fill="#8a1f11" stroke="#ffffff" stroke-width="3.5"'
+						+ ' stroke-linejoin="round" paint-order="stroke"' : ' fill="#2c2c2c"')
 					+ '>' + escapeHtml(labelOf(work)) + '</text>');
 			});
 			canvas.innerHTML = parts.concat(arrows).join("");
@@ -595,9 +616,8 @@ const PAGE_SCRIPT = `
 			}
 			if (hit.node !== null) {
 				var work = nodes[hit.node];
-				tooltip.innerHTML = '<div class="t-title">' + escapeHtml(work.display_name || "(untitled)") + '</div>'
-					+ '<div class="t-line">' + escapeHtml(labelOf(work))
-					+ ' -- citations: ' + (work.cited_by_count || 0) + '</div>'
+				tooltip.innerHTML = '<div class="t-title">' + escapeHtml(titleWithYear(work)) + '</div>'
+					+ '<div class="t-line">' + authorsLineHtml(work) + '</div>'
 					+ '<div class="t-line">' + roleText(roles[hit.node]) + '</div>'
 					+ '<div class="t-line">click opens ' + (work.doi ? "doi.org" : "openalex.org") + '</div>';
 			} else if (hit.edge !== null) {
