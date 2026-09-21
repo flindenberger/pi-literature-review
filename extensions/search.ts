@@ -28,7 +28,7 @@ import {
 	type WizardStepDef,
 } from "../src/dialog-state.ts";
 import { renderDigest } from "../src/digest.ts";
-import { DEFAULT_PER_SOURCE, MAX_PER_SOURCE, runSearch, SEARCHERS, type SearchOptions, type SearchPayload } from "../src/search.ts";
+import { DEFAULT_PER_SOURCE, keyRequirement, MAX_PER_SOURCE, runSearch, SEARCHERS, type SearchOptions, type SearchPayload } from "../src/search.ts";
 import { CODE_SEARCHERS } from "../src/codesearch.ts";
 import { codeListTopics } from "../src/config.ts";
 import { listsForTopic } from "../src/sources/ecosystems.ts";
@@ -318,7 +318,7 @@ const SEARCH_TEXT: Record<DialogLang, {
 	filterTab: string;
 	filterTitle: string;
 	minCitesLabel: string;
-	note: (sources: string[], variants: number) => string;
+	note: (sources: string[], variants: number, keyless: string[]) => string;
 	badYears: (spec: string) => string;
 	badCount: (spec: string) => string;
 	badNumber: (label: string, spec: string) => string;
@@ -421,8 +421,9 @@ const SEARCH_TEXT: Record<DialogLang, {
 		filterTab: "Filter",
 		filterTitle: "Optionale Filter (leer = aus).",
 		minCitesLabel: "Mindestzitationen",
-		note: (sources, variants) =>
-			`Quellen: ${sources.join(", ")}${variants ? ` · +${variants} Query-Variante(n)` : ""}`,
+		note: (sources, variants, keyless) =>
+			`Quellen: ${sources.join(", ")}${variants ? ` · +${variants} Query-Variante(n)` : ""}`
+			+ (keyless.length ? ` · ${keyless.join(", ")} aus (optional, braucht einen kostenlosen API-Schlüssel)` : ""),
 		badYears: (spec) => `Jahresangabe "${spec}" nicht verstanden -- Vorschlag bleibt`,
 		badCount: (spec) => `Anzahl "${spec}" nicht verstanden -- Vorschlag bleibt`,
 		badNumber: (label, spec) => `${label}: "${spec}" nicht verstanden -- Filter bleibt aus`,
@@ -525,8 +526,9 @@ const SEARCH_TEXT: Record<DialogLang, {
 		filterTab: "Filters",
 		filterTitle: "Optional filters (empty = off).",
 		minCitesLabel: "Min. citations",
-		note: (sources, variants) =>
-			`Sources: ${sources.join(", ")}${variants ? ` · +${variants} query variant(s)` : ""}`,
+		note: (sources, variants, keyless) =>
+			`Sources: ${sources.join(", ")}${variants ? ` · +${variants} query variant(s)` : ""}`
+			+ (keyless.length ? ` · ${keyless.join(", ")} off (optional, needs a free API key)` : ""),
 		badYears: (spec) => `Year range "${spec}" not understood -- keeping the proposal`,
 		badCount: (spec) => `Count "${spec}" not understood -- keeping the proposal`,
 		badNumber: (label, spec) => `${label}: "${spec}" not understood -- filter stays off`,
@@ -849,9 +851,13 @@ async function intakeWizard(
 		header: text.header,
 		// Live variant count on the review page: checked rows minus the
 		// locked base row.
-		submitNote: (answers) => text.note(sources, Array.isArray(answers.variants)
-			? (answers.variants as string[]).filter((id) => id !== VARIANT_BASE_ID).length
-			: 0),
+		submitNote: (answers) => text.note(
+			sources.filter((source) => !keyRequirement(source)),
+			Array.isArray(answers.variants)
+				? (answers.variants as string[]).filter((id) => id !== VARIANT_BASE_ID).length
+				: 0,
+			sources.filter((source) => keyRequirement(source)),
+		),
 		// Lazily loaded tabs: each loader fires when its tab is reached,
 		// keyed on the LIVE answers it depends on (a changed key re-fetches
 		// on the next visit).
@@ -1404,7 +1410,7 @@ export default function literatureSearch(pi: ExtensionAPI) {
 				description: `Results per source, default ${DEFAULT_PER_SOURCE}, capped at ${MAX_PER_SOURCE} (politeness towards the free APIs)`,
 			})),
 			sources: Type.Optional(Type.Array(Type.String(), {
-				description: `Sources to query, default all of: ${Object.keys(SEARCHERS).join(", ")}`,
+				description: `Sources to query, default all of: ${Object.keys(SEARCHERS).join(", ")} (semanticscholar only when an API key is configured)`,
 			})),
 			code_sources: Type.Optional(Type.Array(Type.String(), {
 				description: `Code-first sources: search code repositories FIRST and resolve the papers they cite (repository link attached, metadata from arXiv/OpenAlex). Use when the user asks for papers WITH code / implementations. Any of: ${Object.keys(CODE_SEARCHERS).join(", ")}. Default: none (adds 30-90 s per run). In the wizard this only prefills the Code tab.`,

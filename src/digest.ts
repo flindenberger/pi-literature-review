@@ -71,6 +71,9 @@ export function renderDigest(
 	// A failed source is a fact about this run, not transient chrome: the
 	// agent and the user must both see that results may be incomplete and
 	// which source to blame.
+	for (const skipped of payload.sources_skipped ?? []) {
+		lines.push(`Source ${skipped.source}: ${skipped.reason}`);
+	}
 	for (const failure of payload.source_failures ?? []) {
 		lines.push(`SOURCE FAILED: ${failure.source} -- ${failure.error} (results may be incomplete)`);
 	}

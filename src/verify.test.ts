@@ -4,7 +4,7 @@
  */
 
 import assert from "node:assert/strict";
-import { verifyAll, verifyRecord } from "./verify.ts";
+import { verifyAll, verifyRecord, type HeadFn } from "./verify.ts";
 
 const answer = (status: number | null, note = "") => async () => ({ status, note });
 
@@ -54,6 +54,30 @@ const answer = (status: number | null, note = "") => async () => ({ status, note
 	const controller = new AbortController();
 	controller.abort();
 	await assert.rejects(() => verifyAll([{ ...base, doi: "10.1/x" }], () => {}, controller.signal, answer(302)), /aborted/);
+}
+
+// DOI HEADs run a few at a time (never all at once), yet results and
+// warnings keep the input order although the answers arrive reversed.
+{
+	let active = 0;
+	let peak = 0;
+	const slowFirst: HeadFn = async (url) => {
+		active++;
+		peak = Math.max(peak, active);
+		const n = Number(url.split("/").pop());
+		await new Promise((resolve) => setTimeout(resolve, 60 - n * 5));
+		active--;
+		return { status: n === 3 ? 404 : 302, note: "" };
+	};
+	const base = { title: "t", authors: ["a"], year: "2021", venue: "", arxiv_id: "", url: "", pdf_url: "", cites: null, abstract: "", sources: ["x"] };
+	const warnings: string[] = [];
+	const records = Array.from({ length: 10 }, (_, n) => ({ ...base, doi: `10.1/${n}` }));
+	const out = await verifyAll(records, (m) => warnings.push(m), undefined, slowFirst);
+	assert.deepEqual(out.map((r) => r.doi), records.map((r) => r.doi));
+	assert.deepEqual(out.map((r) => r.verified), records.map((_, n) => n !== 3));
+	assert.ok(peak > 1 && peak <= 6, `peak concurrency ${peak}`);
+	assert.equal(warnings.length, 1);
+	assert.ok(warnings[0].startsWith('unverified "10.1/3"'));
 }
 
 console.log("verify.test.ts: all assertions passed");

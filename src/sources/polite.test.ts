@@ -56,4 +56,24 @@ import { pacedClient, retryDelayMs } from "./polite.ts";
 	}
 }
 
+// Concurrent callers of ONE client keep the spacing: each reserves its send
+// slot before sleeping, so three parallel calls go out one spacing apart
+// instead of together (parallel sources sharing a server rely on this).
+{
+	const realFetch = globalThis.fetch;
+	const sentAt: number[] = [];
+	globalThis.fetch = (async () => {
+		sentAt.push(Date.now());
+		return new Response("", { status: 200 });
+	}) as typeof fetch;
+	try {
+		const client = pacedClient({ label: "Test API", spacingMs: 150 });
+		await Promise.all([client("https://example.invalid/1"), client("https://example.invalid/2"), client("https://example.invalid/3")]);
+		assert.equal(sentAt.length, 3);
+		for (let i = 1; i < sentAt.length; i++) assert.ok(sentAt[i] - sentAt[i - 1] >= 140, `gap ${sentAt[i] - sentAt[i - 1]} ms`);
+	} finally {
+		globalThis.fetch = realFetch;
+	}
+}
+
 console.log("polite.test.ts: all assertions passed");

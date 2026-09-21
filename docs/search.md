@@ -1,6 +1,8 @@
 # Search (`/lit-search`)
 
-Searches arXiv, CrossRef, OpenAlex, and Semantic Scholar directly. The model
+Searches arXiv, CrossRef and OpenAlex directly, plus Semantic Scholar when a
+free API key is configured ([Configuration](configuration.md); without one
+the results page notes it as "not queried"). The model
 can help shape the queries, but it does not generate the search results:
 every record shown comes directly from an API response.
 
@@ -159,7 +161,8 @@ to ies -- and no stemming or synonyms beyond that.
 
 ## The pipeline (fixed code)
 
-1. **Fetch** per source and query; raw counts are recorded. The code-first
+1. **Fetch** per source and query, all sources in parallel (queries of one
+   source in turn); raw counts are recorded in source order. The code-first
    sources run here too and are counted as "other methods". CrossRef and
    OpenAlex requests carry a record-type filter (scholarly works only:
    articles, proceedings, preprints, books, chapters, reports, theses), so
@@ -171,16 +174,19 @@ to ies -- and no stemming or synonyms beyond that.
 3. **Deduplication** by DOI / arXiv ID, across sources and variants.
 4. **Late code pairs** -- repository created more than a year after the
    paper -- to the dropped table.
-5. **Verification** over HTTP against doi.org / arxiv.org.
-6. **Enrichment** via an OpenAlex identifier lookup: missing citation
-   counts, journal names, journal 2-year citedness, and abstracts filled
-   from OpenAlex or, failing that, from Semantic Scholar by DOI and marked
-   `*`. Plus a code link, taken from the abstract when it names a known
-   host (GitHub, GitLab, Bitbucket, Codeberg, Hugging Face, Zenodo, OSF),
-   otherwise from one GitHub repository search per record by arXiv id or
-   DOI. Searched matches skip repositories created more than a year after
-   the paper, and a DOI match is linked only when the repository owner's
-   name matches an author.
+5. **Verification** over HTTP against doi.org (a few requests in
+   parallel) / arxiv.org (one at a time).
+6. **Enrichment** via batched OpenAlex identifier lookups: missing
+   citation counts, journal names, journal 2-year citedness, and
+   abstracts filled from OpenAlex or, failing that, from Semantic
+   Scholar by DOI and marked `*` (Semantic Scholar only with an API
+   key). Plus a code link, taken from the abstract when it names a known
+   host (GitHub, GitLab, Bitbucket, Codeberg, Hugging Face, Zenodo,
+   OSF); when code sources are ticked, also from one GitHub repository
+   search per record by arXiv id or DOI (at most 12, stopped at the
+   first GitHub rate limit). Searched matches skip repositories created
+   more than a year after the paper, and a DOI match is linked only when
+   the repository owner's name matches an author.
 7. **Abstract gate** -- no abstract, dropped table.
 8. **Optional filters**, then **labeling**.
 
@@ -212,9 +218,11 @@ labeled by host. Provenance sits in the JSON (`enriched.code_url`:
 abstract, github, or the code-first source that started from the
 repository).
 
-**Selection bar**: tick rows in either table, press "Copy download
-request", paste `Download these papers: <id>, ...` into the chat. That is
-the handover to `/lit-selection`.
+**Download steps**: a strip above the results table, sticky while
+scrolling, walks through the handover to `/lit-selection` in three steps:
+tick rows in either table (ticked rows stay tinted), press "Copy download
+request", paste `Download these papers: <id>, ...` into the Pi chat. The
+step markers fill as each step is done.
 
 The agent receives only a short digest -- counts, HTML path, one reference
 line per record -- never the full JSON.

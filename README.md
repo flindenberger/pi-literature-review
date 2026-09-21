@@ -8,7 +8,7 @@ One package, three tools:
 * `/lit-selection` — download selected papers
 * `/lit-synthesis` — read, discuss and synthesize papers
 
-It uses the public APIs of arXiv, CrossRef, OpenAlex and Semantic Scholar. No account, API key or paid service is required. The workflow can run locally with a small LLM and embedding model. See [Requirements](docs/requirements.md).
+It uses the public APIs of arXiv, CrossRef and OpenAlex, plus Semantic Scholar when you add a free API key. No account, API key or paid service is required. The workflow can run locally with a small LLM and embedding model. See [Requirements](docs/requirements.md).
 
 **The central design rule: models never modify or generate paper data.**
 
@@ -24,7 +24,7 @@ The workflow has three stages:
 
 | Stage | Command | What it does | Creates |
 |---|---|---|---|
-| Literature search | `/lit-search` | Searches arXiv, CrossRef, OpenAlex and Semantic Scholar; filters, deduplicates, verifies, enriches and labels the records | One HTML page + JSON file per run in `lit-search/` |
+| Literature search | `/lit-search` | Searches arXiv, CrossRef, OpenAlex (and Semantic Scholar with an API key); filters, deduplicates, verifies, enriches and labels the records | One HTML page + JSON file per run in `lit-search/` |
 | Literature selection | `/lit-selection` | Downloads the papers you ticked on the results page (legal open access only) | A PDF library in `lit-selection/` |
 | Literature synthesis | `/lit-synthesis` | Chats about one paper or builds a report across one or several papers (PDFs), with page-exact citations | HTML reports and chat protocols in `lit-synthesis/` |
 
@@ -131,7 +131,7 @@ The package uses public, login-free endpoints. Search text and paper identifiers
 
 Used services include:
 
-* arXiv, CrossRef, OpenAlex and Semantic Scholar for search and verification
+* arXiv, CrossRef, OpenAlex (and Semantic Scholar, only with an API key) for search and verification
 * Hugging Face Papers, GitHub and ecosyste.ms when code search is enabled
 * Unpaywall and the relevant publisher or repository for downloads
 * OpenAlex for citation graphs

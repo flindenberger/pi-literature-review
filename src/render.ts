@@ -76,6 +76,8 @@ export interface RenderPayload {
 	 * source must stay visible on the page. */
 	source_failures?: Array<{ source: string; error: string }> | null;
 	abstract_lookup_failures?: Array<{ source: string; error: string; records: number }> | null;
+	/** Sources deliberately not queried (an optional API key missing). */
+	sources_skipped?: Array<{ source: string; reason: string }> | null;
 	/** Boolean expression actually sent to arXiv per query (null: arXiv unused). */
 	arxiv_queries?: string[] | null;
 	/** Authors picked in the wizard's lookup (null: none): names, OpenAlex
@@ -492,25 +494,40 @@ const STYLE = `
 	.graph-link:hover { background: #e6e6df; }
 	td.pickcell { text-align: center; }
 	th.no-sort { cursor: default; }
-	.selectbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem;
-		margin-top: 0.8rem; font-size: 0.84rem;
-		position: sticky; bottom: 0; z-index: 5; background: #eef2f7;
-		padding: 0.6rem 0.8rem; border-top: 2px solid #2b4a6f;
-		box-shadow: 0 -3px 8px rgba(0, 0, 0, 0.12); }
-	.selectbar button { font: inherit; padding: 0.3rem 0.7rem; cursor: pointer;
-		background: #f1f1ec; border: 1px solid #c9c9c2; border-radius: 3px; }
-	.selectbar button:hover:enabled { background: #e6e6df; }
-	.selectbar button:disabled { color: #9a9a94; cursor: default; }
-	.selectbar button.copy-selection { background: #2b4a6f; border-color: #223c5b; color: #fff;
-		font-weight: 600; padding: 0.45rem 1rem; }
-	.selectbar button.copy-selection:hover:enabled { background: #223c5b; }
-	.selectbar button.copy-selection:disabled { background: #f1f1ec; border-color: #c9c9c2;
-		color: #9a9a94; font-weight: 400; }
-	.selectbar .hint { color: #6b6b6b; font-size: 0.78rem; }
-	.selectbar .copied { color: #2e7d43; font-weight: 600; }
+	/* Download steps: a sticky strip above the results table that walks the
+	   user through tick -> copy -> paste; ticked rows keep the hover tint. */
+	tbody tr:has(input.pick:checked) td { background: #eaeff5; }
+	.selectsteps { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1.1rem;
+		position: sticky; top: 0; z-index: 5; margin: 0.6rem 0 0.9rem; padding: 0.6rem 1rem;
+		background: #eef2f7; border: 1px solid #c9d3df; border-left: 5px solid #2b4a6f;
+		border-radius: 4px; box-shadow: 0 3px 10px rgba(0, 0, 0, 0.07); font-size: 0.92rem; }
+	.selectsteps .step { display: flex; align-items: center; gap: 0.5rem; white-space: nowrap;
+		color: #33404f; padding: 0.2rem 0.5rem; border: 2px solid transparent; border-radius: 4px; }
+	.selectsteps .step b { display: inline-flex; align-items: center; justify-content: center;
+		width: 1.5rem; height: 1.5rem; border-radius: 50%; font-size: 0.8rem;
+		background: #fff; border: 2px solid #2b4a6f; color: #2b4a6f; }
+	.selectsteps .step.done b { background: #2b4a6f; color: #fff; }
+	.selectsteps .step.now { background: #fff; border-color: #2b4a6f; color: #2b4a6f; font-weight: 600;
+		animation: steppulse 1.6s ease-in-out 3; }
+	.selectsteps .step.now b { background: #2b4a6f; color: #fff; }
+	@keyframes steppulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(43, 74, 111, 0); }
+		50% { box-shadow: 0 0 0 5px rgba(43, 74, 111, 0.25); } }
+	.selectsteps .selectcount { font-weight: 600; color: #2b4a6f; }
+	.selectsteps .sep { color: #8a9aae; }
+	.selectsteps .actions { margin-left: auto; display: flex; align-items: center; gap: 0.5rem; }
+	.selectsteps button { font: inherit; font-size: 0.84rem; padding: 0.3rem 0.7rem; cursor: pointer;
+		background: #fff; border: 1px solid #c9c9c2; border-radius: 4px; }
+	.selectsteps button:hover:enabled { background: #e6e6df; }
+	.selectsteps button.copy-selection { min-width: 15rem; font-size: 0.92rem; font-weight: 600;
+		padding: 0.5rem 1rem; background: #2b4a6f; border-color: #223c5b; color: #fff; }
+	.selectsteps button.copy-selection:hover:enabled { background: #223c5b; }
+	.selectsteps button.copy-selection:disabled { background: #f1f1ec; border-color: #c9c9c2;
+		color: #9a9a94; font-weight: 400; cursor: default; }
+	.selectsteps button.copy-selection.copied { background: #fff; color: #2b4a6f; border-color: #2b4a6f; }
+	.selectsteps svg { vertical-align: -3px; margin-right: 0.35rem; }
 	footer { margin: 2.5rem 0 1rem; font-size: 0.78rem; color: #6b6b6b;
 		border-top: 1px solid #d9d9d4; padding-top: 0.6rem; }
-	@media print { body { max-width: none; } details, .selectbar, td.pickcell, td.bibtexcell, th.no-sort { display: none; } }
+	@media print { body { max-width: none; } details, .selectsteps, td.pickcell, td.bibtexcell, th.no-sort { display: none; } }
 `;
 
 /**
@@ -626,6 +643,9 @@ function resultColgroup(withCode: boolean, withNetwork: boolean): string {
 	return `<colgroup>${widths.map((width) => `<col style="width:${width}%">`).join("")}</colgroup>`;
 }
 
+/** Download arrow for the copy button: inline SVG, no external asset. */
+const DOWNLOAD_ICON = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12"/><path d="M6 11l6 6 6-6"/><path d="M4 21h16"/></svg>';
+
 /**
  * Selection layer: checkboxes feed a ready-made chat sentence ("Download
  * these papers: <id>, <id>, ...") into the clipboard. Pure view logic on
@@ -633,38 +653,50 @@ function resultColgroup(withCode: boolean, withNetwork: boolean): string {
  * never download (file:// pages have neither filesystem access nor
  * permission to call other servers); the sentence is pasted into the Pi
  * chat, where the selection tool downloads after the user confirms the terminal
- * dialog.
+ * dialog. The three step markers of the strip follow the state: 1 filled
+ * once something is ticked, 2 filled after copying, 3 highlighted until the
+ * ticks change again.
  */
 const SELECT_SCRIPT = `
 {
-	const bar = document.querySelector(".selectbar");
+	const bar = document.querySelector(".selectsteps");
 	if (bar) {
 		const picks = () => Array.from(document.querySelectorAll("input.pick"));
 		const chosen = () => picks().filter((box) => box.checked);
 		const countLabel = bar.querySelector(".selectcount");
 		const copyButton = bar.querySelector(".copy-selection");
-		const feedback = bar.querySelector(".copy-feedback");
+		const copyLabel = copyButton.innerHTML;
+		const step = (n) => bar.querySelector(".step" + n);
+		// copied: the clipboard holds the request for the CURRENT ticks; any
+		// tick change makes it stale and drops back to step 2.
+		let copied = false;
 		const update = () => {
 			const n = chosen().length;
-			countLabel.textContent = n + " selected";
+			if (n === 0) copied = false;
+			countLabel.textContent = n ? "(" + n + " ticked)" : "";
+			step(1).classList.toggle("done", n > 0);
+			step(2).classList.toggle("done", copied);
+			step(3).classList.toggle("now", copied);
 			copyButton.disabled = n === 0;
-			feedback.textContent = "";
+			copyButton.classList.toggle("copied", copied);
+			copyButton.innerHTML = copied ? "Copied &mdash; now paste in Pi" : copyLabel;
 		};
+		const changed = () => { copied = false; update(); };
 		document.addEventListener("change", (event) => {
-			if (event.target instanceof HTMLInputElement && event.target.classList.contains("pick")) update();
+			if (event.target instanceof HTMLInputElement && event.target.classList.contains("pick")) changed();
 		});
-		bar.querySelector(".select-all")?.addEventListener("click", () => {
+		bar.querySelector(".select-all").addEventListener("click", () => {
 			for (const box of picks()) box.checked = true;
-			update();
+			changed();
 		});
 		bar.querySelector(".select-clear").addEventListener("click", () => {
 			for (const box of picks()) box.checked = false;
-			update();
+			changed();
 		});
 		copyButton.addEventListener("click", () => {
 			const sentence = "Download these papers: "
 				+ chosen().map((box) => box.dataset.id).join(", ");
-			const done = () => { feedback.textContent = "Copied. Now paste it into the Pi chat."; };
+			const done = () => { copied = true; update(); };
 			const fallback = () => {
 				const area = document.createElement("textarea");
 				area.value = sentence;
@@ -1051,6 +1083,11 @@ export function renderHtml(payload: RenderPayload, options?: { network?: boolean
 	// Honest degradation stays visible: a source that errored is listed with
 	// its reason -- the results may be incomplete and the page must say so,
 	// not just a transient status line during the run.
+	// A source left out on purpose (optional key missing) is a neutral
+	// note on the Sources row, never a failure.
+	const skippedNote = (payload.sources_skipped ?? [])
+		.map((s) => `<span class="note"> -- ${esc(s.source)} ${esc(s.reason)}</span>`)
+		.join("");
 	const sourceFailures = payload.source_failures ?? [];
 	const sourceFailureRows = sourceFailures.length
 		? `\n<dt>Failed sources</dt>${sourceFailures
@@ -1067,23 +1104,23 @@ export function renderHtml(payload: RenderPayload, options?: { network?: boolean
 			.join("")}`
 		: "";
 
-	// The selection bar sits BELOW both tables and covers them both (the
-	// select script collects every input.pick on the page).
+	// The download steps sit above the results table and cover BOTH tables
+	// (the select script collects every input.pick on the page); the strip
+	// is sticky, so it stays in view over the dropped table too.
 	const fetchable = allRecords.some((record) => fetchIdOf(record));
-	const selectBar = fetchable
-		? `\n<div class="selectbar">
-<span class="selectcount">0 selected</span>
-<button type="button" class="select-all">Select all</button>
+	const selectSteps = fetchable
+		? `<div class="selectsteps" title="The selection tool downloads the open-access PDFs into the lit-selection/ library after you confirm the terminal dialog.">
+<span class="step step1"><b>1</b>Tick papers to download <span class="selectcount"></span></span><span class="sep">&rarr;</span>
+<span class="step step2"><b>2</b>Copy the request</span><span class="sep">&rarr;</span>
+<span class="step step3"><b>3</b>Paste it into the Pi chat</span>
+<span class="actions"><button type="button" class="select-all">Select all</button>
 <button type="button" class="select-clear">Clear</button>
-<button type="button" class="copy-selection" disabled>Copy download request</button>
-<span class="copy-feedback copied"></span>
-<span class="hint">Tick papers above (results AND dropped), copy the request, then paste it into the Pi chat --
-the selection tool downloads the PDFs into the lit-selection/ library after you confirm the terminal dialog.</span>
-</div>`
+<button type="button" class="copy-selection" disabled>${DOWNLOAD_ICON}Copy download request</button></span>
+</div>\n`
 		: "";
 
 	const columns: TableColumns = { withCode, withNetwork, queryLabels };
-	const resultsTable = `<h2>Query results (${results.length})</h2>\n` + (results.length
+	const resultsTable = `<h2>Query results (${results.length})</h2>\n` + selectSteps + (results.length
 		? `<table class="sortable records">
 ${resultColgroup(withCode, withNetwork)}
 <thead>${resultHeaders(withCode, withNetwork)}</thead>
@@ -1097,7 +1134,7 @@ ${results.map((record, index) => resultRow(record, index, columns)).join("\n")}
 		? `<h2>Dropped records (${payload.dropped.length})</h2>
 <p class="meta">Removed by the screening steps or by your filters -- nothing disappears silently, the Label
 column carries each reason, and every row stays selectable: tick dropped papers too, the download request
-below includes them. Same columns as the results table.</p>
+above includes them. Same columns as the results table.</p>
 <table class="sortable records">
 ${resultColgroup(withCode, withNetwork)}
 <thead>${resultHeaders(withCode, withNetwork)}</thead>
@@ -1134,7 +1171,7 @@ a.flow-download:hover { background: #e6e6df; }
 <dl class="meta">
 <dt>Query</dt><dd>${esc(queryLabel)}</dd>${variantRows}
 <dt>Generated</dt><dd>${esc(payload.generated)} (UTC)</dd>
-<dt>Sources</dt><dd>${esc(payload.sources_used.join(", ")) || "none reachable"}</dd>${codeSourcesRow}${sourceFailureRows}${lookupFailureRows}${
+<dt>Sources</dt><dd>${esc(payload.sources_used.join(", ")) || "none reachable"}${skippedNote}</dd>${codeSourcesRow}${sourceFailureRows}${lookupFailureRows}${
 	payload.per_source ? `\n<dt>Records per source</dt><dd>${esc(payload.per_source)}</dd>` : ""}
 ${authorScopeRow}<dt>User filters</dt><dd>${esc(describeFilters(payload.filters))}</dd>
 <dt>Sort</dt><dd>${esc(payload.sort ?? "source order")}</dd>${flowRow || `
@@ -1166,7 +1203,7 @@ flow, exclusion reasons and labeling rule provide the search provenance needed t
 PRISMA-S / PRISMA-2020 reporting.</p>
 </details>
 ${resultsTable}
-${droppedSection}${enrichmentFootnote}${scoreFootnote}${codeFootnote}${networkFootnote}${selectBar}
+${droppedSection}${enrichmentFootnote}${scoreFootnote}${codeFootnote}${networkFootnote}
 <footer>Rendered deterministically from the pi-literature-review JSON payload. Every field on this page
 originates from a search-API response; an identifier counts as verified when it resolved via HTTP at
 doi.org / arxiv.org. Column sorting only reorders the rows above. No language model produced or

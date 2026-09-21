@@ -3,9 +3,9 @@
  * APIs, never scraping, never an LLM. Four stages live here:
  *
  *   1. enrichAll: records still missing citations, venue or abstract after
- *      dedupe get ONE OpenAlex work lookup by DOI (arXiv records via their
- *      DataCite DOI); an abstract still missing afterwards is asked from
- *      Semantic Scholar by the record's own DOI.
+ *      dedupe are looked up at OpenAlex by DOI, in batches (arXiv records
+ *      via their DataCite DOI); an abstract still missing afterwards is
+ *      asked from Semantic Scholar by the record's own DOI (API key only).
  *   2. addJournalScores: the journal's OpenAlex 2-yr mean citedness (open
  *      analog of the impact factor), two batched lookups per run.
  *   3. fetchJournalScores / fetchAuthorMetrics: the batched lookups the
@@ -19,7 +19,7 @@
  * the provenance. A filled abstract also feeds the block labeling.
  */
 
-import { githubToken } from "./config.ts";
+import { githubToken, s2ApiKey } from "./config.ts";
 import { fetchGithub, GITHUB_SEARCH_URL, githubHeaders, LIST_REPO_NAME } from "./sources/github.ts";
 import { reconstructAbstract } from "./sources/openalex.ts";
 import { fetchAbstractByDoi } from "./sources/semanticscholar.ts";
@@ -142,54 +142,77 @@ export interface EnrichmentResult<T> {
 	s2AbstractFailures: Map<string, string>;
 }
 
+/** The work objects for a batch of DOIs, keyed by lowercased DOI. One
+ * OpenAlex request per BATCH_SIZE DOIs instead of one per record. */
+async function fetchWorksByDoi(dois: string[]): Promise<Map<string, Record<string, any>>> {
+	const works = new Map<string, Record<string, any>>();
+	for (const batch of chunk([...new Set(dois.map((doi) => doi.toLowerCase()))], BATCH_SIZE)) {
+		const data = await fetchJson(`${BASE_URL}${apiQuery({
+			filter: `doi:${batch.join("|")}`,
+			"per-page": String(BATCH_SIZE),
+		})}`);
+		for (const work of (data.results ?? []) as Array<Record<string, any>>) {
+			const doi = typeof work.doi === "string" ? work.doi.replace("https://doi.org/", "").toLowerCase() : "";
+			if (doi) works.set(doi, work);
+		}
+	}
+	return works;
+}
+
 /**
  * Enrich all records that miss cites, venue or abstract and carry an
- * identifier. A failing lookup degrades gracefully: the record ships as
- * delivered, with a warning. Sequential requests, politeness towards the
- * free APIs. The Semantic Scholar lookup is injectable for tests.
+ * identifier. OpenAlex is asked in batches of DOIs; a failing batch
+ * degrades gracefully (its records ship as delivered, with a warning).
+ * Afterwards, when a Semantic Scholar API key is configured, S2 is asked
+ * one record at a time for abstracts still missing (without a key its
+ * anonymous pool is saturated nearly always -- not asked at all). The
+ * lookup is injectable for tests, as is whether a key is configured.
  */
 export async function enrichAll<T extends EnrichableRecord>(
 	records: T[],
 	warn: (message: string) => void = defaultWarn,
 	abstractLookup: (doi: string, opts?: { retry?: boolean }) => Promise<string | null> = fetchAbstractByDoi,
+	s2Keyed: boolean = !!s2ApiKey(),
 ): Promise<EnrichmentResult<T>> {
-	const out: Array<Enriched<T>> = [];
-	let lookups = 0;
+	const targets = records.filter((record) => lookupDoi(record) !== null && needsEnrichment(record));
+	let works = new Map<string, Record<string, any>>();
+	if (targets.length) {
+		try {
+			works = await fetchWorksByDoi(targets.map((record) => lookupDoi(record) as string));
+		} catch (error) {
+			warn(`enrichment lookup failed: ${error instanceof Error ? error.message : error}; affected records kept as delivered`);
+		}
+	}
 	let gained = 0;
 	let s2Lookups = 0;
 	let s2Gained = 0;
 	let s2Degraded = false;
 	const s2AbstractFailures = new Map<string, string>();
+	const out: Array<Enriched<T>> = [];
 	for (const record of records) {
 		const doi = lookupDoi(record);
 		if (doi === null || !needsEnrichment(record)) {
 			out.push(record);
 			continue;
 		}
-		lookups++;
 		let current: Enriched<T> = record;
-		try {
-			const work = await fetchJson(`${BASE_URL}/doi:${doi}${apiQuery()}`);
+		const work = works.get(doi.toLowerCase());
+		if (work) {
 			const { record: enrichedRecord, filled } = applyEnrichment(record, work);
 			if (filled.length) {
 				gained++;
 				warn(`enriched "${record.title}": ${filled.join(", ")} (openalex)`);
 			}
 			current = enrichedRecord;
-		} catch (error) {
-			warn(`enrichment lookup for "${record.title}" failed: ${error instanceof Error ? error.message : error}; record kept as delivered`);
 		}
-		// Second abstract source: Semantic Scholar by the record's own DOI
-		// (arXiv DataCite DOIs are not asked -- arXiv records always carry
-		// their abstract). Failure keeps the record as it is, loudly. The
-		// anonymous S2 pool rate-limits for minutes at a time; after the
-		// first hard failure every remaining lookup is still TRIED, but only
-		// once, without the backoff sleeps -- a blocked pool then costs
-		// seconds instead of minutes, and if it opens up mid-run the later
-		// records still get their abstracts. Every failure is recorded so
-		// the drop reason and the payload can say "lookup failed" instead of
-		// "delivered none".
-		if (!current.abstract && record.doi) {
+		// Second abstract source: Semantic Scholar by the record's own DOI,
+		// only with an API key (arXiv DataCite DOIs are not asked -- arXiv
+		// records always carry their abstract). Failure keeps the record as
+		// it is, loudly, and is recorded so the drop reason can say "lookup
+		// failed" instead of "delivered none". After the first hard failure
+		// every remaining lookup is still tried, but once, without the
+		// backoff sleeps -- a blocked service then costs seconds, not minutes.
+		if (s2Keyed && !current.abstract && record.doi) {
 			s2Lookups++;
 			try {
 				const abstract = await abstractLookup(record.doi, { retry: !s2Degraded });
@@ -208,7 +231,7 @@ export async function enrichAll<T extends EnrichableRecord>(
 		}
 		out.push(current);
 	}
-	if (lookups) warn(`enrichment: ${lookups} lookup(s), ${gained} record(s) gained fields`);
+	if (targets.length) warn(`enrichment: ${targets.length} lookup(s), ${gained} record(s) gained fields`);
 	if (s2Lookups) {
 		warn(`abstract lookups at Semantic Scholar: ${s2Lookups}, ${s2Gained} abstract(s) filled`
 			+ (s2AbstractFailures.size ? `, ${s2AbstractFailures.size} lookup(s) failed` : ""));
@@ -534,7 +557,10 @@ async function fetchCodeLink(searchKey: string, paper: CodePaperContext, token: 
 		q: `"${searchKey}" in:name,description,readme`,
 		per_page: "3",
 	});
-	const response = await fetchGithub(`${GITHUB_SEARCH_URL}?${params}`, { headers: githubHeaders(token) });
+	// Single attempt: a rate-limit answer here means the run's search budget
+	// is spent (the code sources share it), and waiting would not refill it
+	// in time -- the caller stops the stage instead.
+	const response = await fetchGithub(`${GITHUB_SEARCH_URL}?${params}`, { headers: githubHeaders(token) }, { retry: false });
 	return pickCodeRepo((await response.json()) as Record<string, any>, paper);
 }
 
@@ -546,8 +572,14 @@ async function fetchCodeLink(searchKey: string, paper: CodePaperContext, token: 
  * owner-must-match-an-author rule (provider "github" either way). Runs
  * AFTER filters/grouping; the engine passes kept AND dropped records,
  * dropped ones appended behind, so the cap prefers on_target, then kept,
- * then dropped. Failures degrade per record, loudly; order and
- * everything else ship unchanged (one output per input, same order).
+ * then dropped. The GitHub search runs only when `githubLookup` is set
+ * (the engine sets it when the user asked for code sources; GitHub allows
+ * 10 anonymous searches a minute, so the stage costs ~6.5 s per record).
+ * The first GitHub rate-limit answer ends the lookups of this run -- the
+ * budget is spent and every further request would only wait; lookups are
+ * therefore single attempts without backoff sleeps. Failures
+ * degrade per record, loudly; order and everything else ship unchanged
+ * (one output per input, same order).
  */
 export async function addCodeLinks<T extends EnrichableRecord & {
 	group?: string; abstract?: string; year?: string | null; authors?: string[];
@@ -555,6 +587,7 @@ export async function addCodeLinks<T extends EnrichableRecord & {
 	records: T[],
 	warn: (message: string) => void = defaultWarn,
 	signal?: AbortSignal,
+	githubLookup: boolean = true,
 ): Promise<Array<Enriched<T> & { code_url?: string }>> {
 	// Pass 1: the abstract names the repository -- the record is done and
 	// spends no search budget.
@@ -573,11 +606,11 @@ export async function addCodeLinks<T extends EnrichableRecord & {
 	// (codeLookupCandidates dedupes -- duplicate records share one search
 	// and one capped slot).
 	const searchable = records.filter((record) => !abstractUrl.has(record) && !linked(record));
-	const candidates = codeLookupCandidates(searchable);
+	const candidates = githubLookup ? codeLookupCandidates(searchable) : [];
 	const eligible = new Set(
 		searchable.map((record) => codeSearchKey(record)).filter(Boolean),
 	).size;
-	if (eligible > candidates.length) {
+	if (githubLookup && eligible > candidates.length) {
 		warn(`code links: lookup capped at ${candidates.length} of ${eligible} record(s); the rest stays unmarked`);
 	}
 	const token = githubToken();
@@ -586,8 +619,10 @@ export async function addCodeLinks<T extends EnrichableRecord & {
 	// not themselves candidates.
 	const resolvedByKey = new Map<string, string | null>();
 	let found = 0;
+	let tried = 0;
 	for (const record of candidates) {
 		if (signal?.aborted) throw new Error("search aborted by the user");
+		tried++;
 		try {
 			const codeUrl = await fetchCodeLink(codeSearchKey(record), {
 				year: record.year ?? null,
@@ -598,8 +633,14 @@ export async function addCodeLinks<T extends EnrichableRecord & {
 			resolvedByKey.set(codeSearchKey(record), codeUrl);
 			if (codeUrl !== null) found++;
 		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
 			const name = record.title || record.doi || record.arxiv_id || "(unidentified record)";
-			warn(`code lookup for "${name}" failed: ${error instanceof Error ? error.message : error}; record kept as delivered`);
+			warn(`code lookup for "${name}" failed: ${message}; record kept as delivered`);
+			if (/HTTP (403|429)\b/.test(message)) {
+				const left = candidates.length - tried;
+				if (left) warn(`code links: GitHub rate limit reached; the remaining ${left} lookup(s) of this run are skipped (a GitHub token raises the limit)`);
+				break;
+			}
 		}
 	}
 	// One output per input, in input order -- the engine re-zips kept and
@@ -626,7 +667,7 @@ export async function addCodeLinks<T extends EnrichableRecord & {
 		return record;
 	});
 	if (abstractUrl.size || candidates.length) {
-		warn(`code links: ${abstractUrl.size} from abstract(s), ${found}/${candidates.length} from GitHub lookup(s)`);
+		warn(`code links: ${abstractUrl.size} from abstract(s), ${found}/${tried} from GitHub lookup(s)`);
 	}
 	return out;
 }

@@ -6,9 +6,11 @@
 | `/lit-selection` | Internet access. A contact email for Unpaywall is optional and requested in a dialog.    | No                                                                           |
 | `/lit-synthesis` | A chat model selected in Pi and a small local **embedding** model (`bge-m3` by default). | Yes — chat LLM + embedding model                                             |
 
-The package itself requires no accounts, API keys, or paid services. Optional
-keys for Semantic Scholar and GitHub only increase rate limits and can be
-configured in `config.json` — see [Configuration](configuration.md).
+The package itself requires no accounts, API keys, or paid services. A free
+Semantic Scholar key adds it as a fourth search source (without one it is
+not queried: its anonymous access is almost always overloaded); a GitHub
+token raises the code-search rate limits. Both go into `config.json` — see
+[Configuration](configuration.md).
 
 
 ## The embedding model

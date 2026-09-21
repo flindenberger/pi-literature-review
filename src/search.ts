@@ -23,7 +23,7 @@ import {
 	type TermGroups,
 } from "./pipeline.ts";
 import { blockQuery, CODE_SEARCHERS, searchWords } from "./codesearch.ts";
-import { codeListTopics } from "./config.ts";
+import { codeListTopics, s2ApiKey } from "./config.ts";
 import { addCodeLinks, addJournalScores, enrichAll } from "./enrich.ts";
 import { queryBlocks } from "./intake.ts";
 import { buildSearchQuery, searchArxiv } from "./sources/arxiv.ts";
@@ -40,10 +40,20 @@ export const SEARCHERS: Record<string, Searcher> = {
 	arxiv: searchArxiv,
 	crossref: searchCrossref,
 	openalex: searchOpenalex,
-	// Boolean via the bulk endpoint, citation-sorted; may fail loudly on
-	// the anonymous rate limit (see the module header).
+	// Boolean via the bulk endpoint, citation-sorted. Queried only with an
+	// API key (see keyRequirement).
 	semanticscholar: searchSemanticScholar,
 };
+
+/** Why a source is not queried in this configuration, or null when it is.
+ * Semantic Scholar needs an API key: its anonymous pool is saturated
+ * nearly all the time, so without one it only produced rate-limit
+ * failures. Read per call so a config change applies without a restart. */
+export function keyRequirement(source: string): string | null {
+	return source === "semanticscholar" && !s2ApiKey()
+		? "not queried: optional, needs a free API key (s2ApiKey in config.json, see docs/configuration.md)"
+		: null;
+}
 
 export const DEFAULT_PER_SOURCE = 5;
 /** Politeness cap towards the free APIs. */
@@ -152,6 +162,9 @@ export async function runSearch(options: SearchOptions) {
 	// transient status chrome, and the reader must be able to tell a failed
 	// source from one that honestly found nothing.
 	const sourceFailures: Array<{ source: string; error: string }> = [];
+	// Sources deliberately not queried (a missing optional key): a neutral
+	// note, never a failure.
+	const sourcesSkipped: Array<{ source: string; reason: string }> = [];
 	// Raw per-source x query hit counts BEFORE any processing -- PRISMA-S
 	// "records identified per database", the first number of the flow.
 	// `candidates` only for code-first sources: repository->identifier pairs
@@ -170,13 +183,24 @@ export async function runSearch(options: SearchOptions) {
 		...(authorScope === "all" ? { authorScope } : {}),
 		...(blocksByQuery[index].length ? { blocks: blocksByQuery[index] } : {}),
 	});
-	// One source x every query; shared by the database loop and the
-	// code-first loop so counts, failures and found_by are written once.
+	// One source x every query; shared by the database and the code-first
+	// sources. Sources run CONCURRENTLY (different servers; a server shared
+	// by two sources is serialized by its paced client), the queries of one
+	// source stay sequential. Everything a source produces is buffered and
+	// merged below in the fixed source order, so records, counts, failures
+	// and found_by come out exactly as with a sequential run.
+	type SourceRun = {
+		records: SourceRecord[];
+		counts: typeof sourceCounts;
+		failures: typeof sourceFailures;
+		lists: string[];
+		succeeded: boolean;
+	};
 	const runSource = async (
 		source: string,
 		run: (query: string, scope: SourceScope) => Promise<{ records: SourceRecord[]; candidates?: number; failures?: Array<{ step: string; error: string }>; listsRead?: string[] }>,
-	): Promise<boolean> => {
-		let succeeded = false;
+	): Promise<SourceRun> => {
+		const out: SourceRun = { records: [], counts: [], failures: [], lists: [], succeeded: false };
 		for (const [index, query] of queries.entries()) {
 			aborted();
 			const qLabel = multiQuery ? ` (Q${index + 1})` : "";
@@ -185,30 +209,30 @@ export async function runSearch(options: SearchOptions) {
 				const found = await run(query, scopeFor(index));
 				const candidates = found.candidates !== undefined ? `, ${found.candidates} candidate(s)` : "";
 				warn(`${label}: ${found.records.length} record(s)${candidates}`);
-				sourceCounts.push({
+				out.counts.push({
 					source, query, count: found.records.length,
 					...(found.candidates !== undefined ? { candidates: found.candidates } : {}),
 				});
-				records.push(...(multiQuery ? found.records.map((r) => ({ ...r, found_by: [query] })) : found.records));
-				for (const list of found.listsRead ?? []) {
-					if (!listsRead.includes(list)) listsRead.push(list);
-				}
+				out.records.push(...(multiQuery ? found.records.map((r) => ({ ...r, found_by: [query] })) : found.records));
+				out.lists.push(...(found.listsRead ?? []));
 				// Partial failures (e.g. candidates found, arXiv resolution
 				// rate-limited) are real failures of this run -- same list,
 				// step-labelled, so the page and the digest show them.
 				for (const failure of found.failures ?? []) {
 					warn(`${label}: ${failure.step} failed: ${failure.error}`);
-					sourceFailures.push({ source: `${source} (${failure.step}${qLabel ? `, Q${index + 1}` : ""})`, error: failure.error });
+					out.failures.push({ source: `${source} (${failure.step}${qLabel ? `, Q${index + 1}` : ""})`, error: failure.error });
 				}
-				succeeded = true;
+				out.succeeded = true;
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				warn(`${label} failed: ${message}`);
-				sourceFailures.push({ source: `${source}${qLabel}`, error: message });
+				out.failures.push({ source: `${source}${qLabel}`, error: message });
 			}
 		}
-		return succeeded;
+		return out;
 	};
+	type Job = { source: string; kind: "database" | "code"; run: Promise<SourceRun> | null; skip?: string };
+	const jobs: Job[] = [];
 	for (const source of sources) {
 		const search = SEARCHERS[source];
 		if (!search) {
@@ -218,15 +242,19 @@ export async function runSearch(options: SearchOptions) {
 		// "All publications of the picked authors": Semantic Scholar's bulk
 		// search has no author field, so it cannot serve that scope -- said
 		// in the payload instead of returning the query's unrelated head.
+		const needsKey = keyRequirement(source);
+		if (needsKey) {
+			warn(`source '${source}': ${needsKey}`);
+			sourcesSkipped.push({ source, reason: needsKey });
+			continue;
+		}
 		if (authorScope === "all" && source === "semanticscholar") {
 			const note = "not queried: the bulk search has no author field (author scope: all publications)";
 			warn(`source '${source}': ${note}`);
-			sourceFailures.push({ source, error: note });
+			jobs.push({ source, kind: "database", run: null, skip: note });
 			continue;
 		}
-		if (await runSource(source, async (query, scope) => ({ records: await search(query, perSource, scope) }))) {
-			sourcesUsed.push(source);
-		}
+		jobs.push({ source, kind: "database", run: runSource(source, async (query, scope) => ({ records: await search(query, perSource, scope) })) });
 	}
 	// Code-first sources: repositories first, papers resolved from what they
 	// cite. Identification, not enrichment -- they run even with enrich:false.
@@ -238,9 +266,26 @@ export async function runSearch(options: SearchOptions) {
 			warn(`unknown code source '${source}'; skipping (available: ${Object.keys(CODE_SEARCHERS).join(", ")})`);
 			continue;
 		}
-		if (await runSource(source, (query, scope) => search(query, perSource, scope, codeContext))) {
-			codeSourcesUsed.push(source);
+		jobs.push({ source, kind: "code", run: runSource(source, (query, scope) => search(query, perSource, scope, codeContext)) });
+	}
+	// allSettled: every started source finishes (or hits the abort check)
+	// before the run goes on; an abort then surfaces as the thrown error.
+	const settled = await Promise.allSettled(jobs.map((job) => job.run ?? Promise.resolve(null)));
+	for (const [index, job] of jobs.entries()) {
+		const outcome = settled[index];
+		if (outcome.status === "rejected") throw outcome.reason;
+		if (job.skip) {
+			sourceFailures.push({ source: job.source, error: job.skip });
+			continue;
 		}
+		const result = outcome.value as SourceRun;
+		records.push(...result.records);
+		sourceCounts.push(...result.counts);
+		sourceFailures.push(...result.failures);
+		for (const list of result.lists) {
+			if (!listsRead.includes(list)) listsRead.push(list);
+		}
+		if (result.succeeded) (job.kind === "database" ? sourcesUsed : codeSourcesUsed).push(job.source);
 	}
 
 	const { kept, dropped } = filterRecords(records);
@@ -288,6 +333,8 @@ export async function runSearch(options: SearchOptions) {
 	const abstractGate = dropWithoutAbstract(scored, (record) =>
 		options.enrich === false
 			? "no abstract (sources delivered none; enrichment disabled)"
+			: !s2ApiKey()
+				? "no abstract (sources and the OpenAlex lookup delivered none)"
 			: s2Failures.has(record.doi)
 				? "no abstract (sources and the OpenAlex lookup delivered none; the Semantic Scholar lookup failed -- the abstract may exist)"
 				: "no abstract (sources, the OpenAlex and the Semantic Scholar lookup delivered none)");
@@ -322,7 +369,7 @@ export async function runSearch(options: SearchOptions) {
 
 	// Code-link stage: ONE pass over kept + dropped records (interesting
 	// papers land in the dropped table too). The abstract signal is free for
-	// everyone; the capped GitHub search spends its budget kept-on_target
+	// everyone; the capped GitHub search (only with code sources) spends its budget kept-on_target
 	// first, then kept, then dropped (input order -- dropped records carry
 	// no group and sort behind). Rides the enrich switch like every lookup
 	// beyond the search itself.
@@ -332,7 +379,9 @@ export async function runSearch(options: SearchOptions) {
 	let droppedOut = droppedEntries;
 	if (options.enrich !== false) {
 		const combined = [...grouped, ...droppedEntries.map((entry) => entry.record)] as typeof grouped;
-		const withLinks = await addCodeLinks(combined, warn, options.signal);
+		// The per-record GitHub search only when the user asked for code
+		// sources; the free abstract signal always runs.
+		const withLinks = await addCodeLinks(combined, warn, options.signal, codeSources.length > 0);
 		// addCodeLinks maps its input 1:1 (same length, same order). A
 		// violation would silently re-pair drop reasons with the wrong
 		// records, so it fails loudly here instead.
@@ -365,6 +414,7 @@ export async function runSearch(options: SearchOptions) {
 		// source: without this field a rate-limited Semantic Scholar pool is
 		// invisible in the sidecar and its drops read as "the source has no
 		// abstract". One entry per provider (only S2 looks up abstracts today).
+		sources_skipped: sourcesSkipped.length ? sourcesSkipped : null,
 		abstract_lookup_failures: s2Failures.size
 			? [{
 				source: "semanticscholar",

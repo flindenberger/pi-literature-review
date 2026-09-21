@@ -509,14 +509,15 @@ const html = renderHtml(payload);
 	assert.ok(droppedFull.includes('data-sort="4.422208"')); // journal score too
 	assert.ok(droppedFull.includes("crossref, openalex")); // sources stay visible
 	// Dropped rows are selectable for download: checkbox with the fetch id,
-	// and the selection bar renders although results is EMPTY -- it sits
-	// below both tables and covers them together.
+	// and the download steps render although results is EMPTY -- they sit
+	// above the results table and cover both tables together.
 	assert.ok(droppedFull.includes('<input type="checkbox" class="pick" data-id="10.1234/abc"'));
-	assert.ok(droppedFull.includes('<div class="selectbar">'));
-	assert.ok(droppedFull.indexOf('<div class="selectbar">') > droppedFull.indexOf("Dropped records (1)"));
-	assert.ok(droppedFull.includes("results AND dropped"));
-	// sticky selection bar styling is present
-	assert.ok(html.includes("position: sticky; bottom: 0;"));
+	assert.ok(droppedFull.includes('<div class="selectsteps"'));
+	assert.ok(droppedFull.indexOf('<div class="selectsteps"') < droppedFull.indexOf("Dropped records (1)"));
+	assert.ok(droppedFull.includes("the download request\nabove includes them"));
+	// sticky strip styling is present, ticked rows keep the hover tint
+	assert.ok(html.includes("position: sticky; top: 0;"));
+	assert.ok(html.includes("tbody tr:has(input.pick:checked) td { background: #eaeff5; }"));
 }
 
 // BibTeX column: deterministic entry from the record's API
@@ -542,19 +543,25 @@ const html = renderHtml(payload);
 	assert.ok(html.includes("@misc{anon1983component,")); // the dropped row's entry
 }
 
-// selection layer: checkboxes carry the fetch identifier, the bar and the
-// copy sentence exist, and rows without any identifier get no checkbox
+// selection layer: checkboxes carry the fetch identifier, the download steps
+// and the copy sentence exist, and rows without any identifier get no checkbox
 {
 	assert.ok(html.includes('<input type="checkbox" class="pick" data-id="10.1234/abc"'));
 	assert.ok(html.includes('data-id="arXiv:2401.16393v1"'));
-	assert.ok(html.includes('<div class="selectbar">'));
+	assert.ok(html.includes('<div class="selectsteps"'));
 	assert.ok(html.includes("Copy download request"));
-	// v30.15: plain "Select all" (the on_target-only button was useless on
-	// runs without any on_target hit); the copy button is the blue primary.
+	// the three steps, in order, and the state the script switches to
+	const steps = ["Tick papers to download", "Copy the request", "Paste it into the Pi chat"].map((t) => html.indexOf(t));
+	assert.ok(steps.every((i, k) => i > 0 && (k === 0 || i > steps[k - 1])));
+	assert.ok(html.includes("Copied &mdash; now paste in Pi"));
+	assert.ok(html.includes('<svg width="15" height="15"')); // inline icon, no asset
+	// plain "Select all" independent of grouping; the copy button is the blue primary
 	assert.ok(html.includes(">Select all</button>"));
 	assert.ok(!html.includes("Select all on_target"));
-	assert.ok(html.includes("button.copy-selection { background: #2b4a6f"));
-	assert.ok(html.includes("paste it into the Pi chat"));
+	assert.ok(html.includes("background: #2b4a6f; border-color: #223c5b; color: #fff;"));
+	// the strip sits between the results heading and the results table
+	assert.ok(html.indexOf('<div class="selectsteps"') > html.indexOf("Query results ("));
+	assert.ok(html.indexOf('<div class="selectsteps"') < html.indexOf('<table class="sortable records">'));
 	assert.ok(html.includes('"Download these papers: "')); // the copy script's sentence
 
 	// a record with neither DOI nor arXiv ID cannot be fetched -> no checkbox
@@ -564,12 +571,12 @@ const html = renderHtml(payload);
 		dropped: [],
 	});
 	assert.ok(!noId.includes('class="pick"'));
-	assert.ok(!noId.includes('<div class="selectbar">')); // nothing fetchable, no bar
+	assert.ok(!noId.includes('<div class="selectsteps"')); // nothing fetchable, no strip
 
-	// "Select all" is independent of grouping, bar still there
+	// "Select all" is independent of grouping, strip still there
 	const ungrouped = renderHtml({ ...payload, grouping: null });
 	assert.ok(ungrouped.includes(">Select all</button>"));
-	assert.ok(ungrouped.includes('<div class="selectbar">'));
+	assert.ok(ungrouped.includes('<div class="selectsteps"'));
 
 	// hostile identifier text stays inside the escaped attribute
 	const hostile = renderHtml({
@@ -579,9 +586,9 @@ const html = renderHtml(payload);
 	});
 	assert.ok(hostile.includes('data-id="10.1/a&quot;b&lt;c"'));
 
-	// no results -> no selection bar at all
+	// no results -> no download steps at all
 	const bare = renderHtml({ ...payload, results: [], dropped: [] });
-	assert.ok(!bare.includes('<div class="selectbar">'));
+	assert.ok(!bare.includes('<div class="selectsteps"'));
 }
 
 // dropped section: record appears with its reason
@@ -589,10 +596,8 @@ const html = renderHtml(payload);
 	assert.ok(html.includes("Dropped records (1)"));
 	assert.ok(html.includes("Component junk"));
 	assert.ok(html.includes("empty author list"));
-	// Footnotes sit BELOW the dropped table (below both tables),
-	// ahead of the selection bar.
+	// Footnotes sit BELOW the dropped table (below both tables).
 	assert.ok(html.indexOf("&sup1; Journal score") > html.indexOf("Dropped records (1)"));
-	assert.ok(html.indexOf('<div class="selectbar">') > html.indexOf("&sup1; Journal score"));
 }
 
 // no grouping rules and no results: honest fallbacks instead of empty markup
@@ -1173,6 +1178,14 @@ const baseReport: SynthReport = {
 	});
 	assert.ok(failed.includes("<dt>Failed sources</dt>"));
 	assert.ok(failed.includes("arxiv: timeout &lt;60s&gt; (results may be incomplete)"));
+	// a source skipped for a missing optional key: neutral note on the
+	// Sources row, never a failure row
+	const skipped = renderHtml({
+		...payload,
+		sources_skipped: [{ source: "semanticscholar", reason: "not queried: optional, needs a free API key" }],
+	});
+	assert.ok(skipped.includes('<span class="note"> -- semanticscholar not queried: optional, needs a free API key</span></dd>'));
+	assert.ok(!skipped.includes("Failed sources"));
 }
 
 // Failed abstract lookups get their own meta row (2026-08-20: a

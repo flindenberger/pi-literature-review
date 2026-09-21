@@ -17,6 +17,20 @@ const base = {
 	venue_id: undefined as string | undefined,
 };
 
+// Stubbed OpenAlex batch endpoint: answers filter=doi:a|b|... with one work
+// per DOI (10.1/withabs carries an abstract, the rest cites + venue).
+const openalexRequests: string[] = [];
+const batchStub = (async (url: unknown) => {
+	const u = String(url);
+	openalexRequests.push(u);
+	const filter = new URL(u).searchParams.get("filter") ?? "";
+	const dois = filter.replace(/^doi:/, "").split("|").filter(Boolean);
+	const results = dois.map((doi) => doi === "10.1/withabs"
+		? { doi: `https://doi.org/${doi}`, cited_by_count: 3, abstract_inverted_index: { Own: [0], text: [1] } }
+		: { doi: `https://doi.org/${doi}`, cited_by_count: 5, primary_location: { source: { display_name: "V" } } });
+	return new Response(JSON.stringify({ results }), { status: 200 });
+}) as typeof fetch;
+
 // enrichAll: an abstract still missing after the OpenAlex
 // lookup is asked from Semantic Scholar by DOI (injected here; stubbed
 // OpenAlex fetch delivers cites+venue but no abstract); provenance
@@ -29,13 +43,8 @@ const base = {
 // as "lookup failed" instead of "delivered none".
 {
 	const realFetch = globalThis.fetch;
-	globalThis.fetch = (async (url: unknown) => {
-		const u = String(url);
-		if (u.includes("/doi:10.1/withabs")) {
-			return new Response(JSON.stringify({ cited_by_count: 3, abstract_inverted_index: { Own: [0], text: [1] } }), { status: 200 });
-		}
-		return new Response(JSON.stringify({ cited_by_count: 5, primary_location: { source: { display_name: "V" } } }), { status: 200 });
-	}) as typeof fetch;
+	globalThis.fetch = batchStub;
+	openalexRequests.length = 0;
 	try {
 		const asked: Array<{ doi: string; retry: boolean | undefined }> = [];
 		const lookup = async (doi: string, opts?: { retry?: boolean }) => {
@@ -52,7 +61,11 @@ const base = {
 			{ title: "Fail", doi: "10.1/fail", arxiv_id: "", cites: null, venue: "", abstract: "" },
 			{ title: "AlsoFail", doi: "10.1/alsofail", arxiv_id: "", cites: null, venue: "", abstract: "" },
 			{ title: "Late", doi: "10.1/late", arxiv_id: "", cites: null, venue: "", abstract: "" },
-		], (m) => warnings.push(m), lookup);
+		], (m) => warnings.push(m), lookup, true);
+		// ONE batched OpenAlex request for all seven records (incl. the
+		// arXiv DataCite DOI), not one per record
+		assert.equal(openalexRequests.length, 1);
+		assert.ok(openalexRequests[0].includes("10.48550%2Farxiv.2401.00001"));
 		// the first failure degrades instead of skipping: every later record
 		// is still asked, but with retry:false; a recovered pool fills "Late"
 		assert.deepEqual(asked, [
@@ -78,6 +91,32 @@ const base = {
 		assert.ok(warnings.some((m) => m.includes("abstract lookup at Semantic Scholar for \"Fail\" failed: boom") && m.includes("tried once each without retries")));
 		assert.equal(warnings.filter((m) => m.includes("abstract lookup at Semantic Scholar for")).length, 1);
 		assert.ok(warnings.some((m) => m.includes("abstract lookups at Semantic Scholar: 5, 2 abstract(s) filled, 2 lookup(s) failed")));
+	} finally {
+		globalThis.fetch = realFetch;
+	}
+}
+
+// enrichAll WITHOUT an S2 API key: Semantic Scholar is not asked at all
+// (its anonymous pool is saturated nearly always); OpenAlex still fills.
+{
+	const realFetch = globalThis.fetch;
+	globalThis.fetch = batchStub;
+	try {
+		let asked = 0;
+		const lookup = async () => {
+			asked++;
+			return "never";
+		};
+		const warnings: string[] = [];
+		const { records: out, s2AbstractFailures } = await enrichAll([
+			{ title: "N", doi: "10.1/none", arxiv_id: "", cites: null, venue: "", abstract: "" },
+			{ title: "OA", doi: "10.1/withabs", arxiv_id: "", cites: null, venue: "", abstract: "" },
+		], (m) => warnings.push(m), lookup, false);
+		assert.equal(asked, 0);
+		assert.equal(s2AbstractFailures.size, 0);
+		assert.equal(out[0].cites, 5);
+		assert.equal(out[1].abstract, "Own text");
+		assert.ok(!warnings.some((m) => m.includes("Semantic Scholar")));
 	} finally {
 		globalThis.fetch = realFetch;
 	}
@@ -426,6 +465,54 @@ const noPaper = { year: null, title: "" };
 		assert.equal(calls.length, 0);
 		assert.equal(out[0].code_url, "https://github.com/microsoft/ai4g-flood");
 		assert.deepEqual(out[0].enriched, { code_url: "hf-papers" });
+	} finally {
+		globalThis.fetch = realFetch;
+	}
+}
+
+// addCodeLinks without githubLookup (no code sources ticked): the free
+// abstract signal still links, but GitHub is never asked.
+{
+	const calls: string[] = [];
+	const realFetch = globalThis.fetch;
+	globalThis.fetch = (async (url: unknown) => {
+		calls.push(String(url));
+		return new Response(JSON.stringify({ items: [] }), { status: 200 });
+	}) as typeof fetch;
+	try {
+		const out = await addCodeLinks([
+			{ title: "A", doi: "10.1/a", arxiv_id: "", cites: null, venue: "", abstract: "Code at https://github.com/acme/a-repo." },
+			{ title: "B", doi: "", arxiv_id: "2401.00007", cites: null, venue: "" },
+		], () => {}, undefined, false);
+		assert.equal(calls.length, 0);
+		assert.equal(out[0].code_url, "https://github.com/acme/a-repo");
+		assert.equal(out[1].code_url, undefined);
+	} finally {
+		globalThis.fetch = realFetch;
+	}
+}
+
+// addCodeLinks: the first GitHub rate-limit answer ends the lookups of the
+// run -- a single attempt, no backoff sleeps; every further request would
+// only wait.
+{
+	let calls = 0;
+	const realFetch = globalThis.fetch;
+	globalThis.fetch = (async () => {
+		calls++;
+		return new Response("", { status: 403, headers: { "retry-after": "1" } });
+	}) as typeof fetch;
+	try {
+		const warnings: string[] = [];
+		const out = await addCodeLinks([
+			{ title: "B", doi: "", arxiv_id: "2401.00007", cites: null, venue: "" },
+			{ title: "C", doi: "", arxiv_id: "2401.00008", cites: null, venue: "" },
+			{ title: "D", doi: "", arxiv_id: "2401.00009", cites: null, venue: "" },
+		], (m) => warnings.push(m));
+		assert.equal(out.length, 3);
+		assert.equal(calls, 1); // ONE attempt for the first record, then stop
+		assert.ok(warnings.some((m) => m.includes("GitHub rate limit reached; the remaining 2 lookup(s) of this run are skipped")));
+		assert.ok(warnings.some((m) => m.includes("0/1 from GitHub lookup(s)")));
 	} finally {
 		globalThis.fetch = realFetch;
 	}

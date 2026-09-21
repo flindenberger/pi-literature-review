@@ -7,8 +7,9 @@
  * abstract page; 200 (or a redirect) means the preprint exists. Anything
  * else -- wrong status, network failure, no identifier at all -- is the gray
  * zone: verified stays false and verify_note says why. Never silently
- * confirmed. Requests are polite (timeout, pause, User-Agent); the HEAD
- * function is injectable so the decision logic tests offline.
+ * confirmed. Requests are polite (timeout, User-Agent; doi.org HEADs run a
+ * few at a time, arxiv.org ones one by one with a pause); the HEAD function
+ * is injectable so the decision logic tests offline.
  */
 
 import type { MergedRecord } from "./pipeline.ts";
@@ -20,7 +21,8 @@ export interface VerifiedRecord extends MergedRecord {
 }
 
 const VERIFY_TIMEOUT_MS = 10_000; // per HEAD request
-const VERIFY_PAUSE_MS = 200; // between requests; stay polite to doi.org/arxiv.org
+const VERIFY_PAUSE_MS = 200; // between arxiv.org requests (arXiv asks for restraint)
+const DOI_CONCURRENCY = 6; // parallel HEADs to doi.org, a redirect service built for traffic
 
 /** Plain-language reading of an HTTP status, for verify notes. Fixed strings. */
 function explainStatus(status: number | null): string {
@@ -88,25 +90,41 @@ export async function verifyRecord(
 	return { verified: false, note: "no DOI or arXiv ID to verify" };
 }
 
-/** Stamp every record with verified / verify_note. An abort (Esc in the
- * agent) throws between records: an aborted run produces no payload, never
- * a half-verified one. */
+/** Stamp every record with verified / verify_note, in input order. An
+ * abort (Esc in the agent) throws before the next HEAD: an aborted run
+ * produces no payload, never a half-verified one. */
 export async function verifyAll(
 	records: MergedRecord[],
 	onWarn: (message: string) => void = warn,
 	signal?: AbortSignal,
 	head: HeadFn = headStatus,
 ): Promise<VerifiedRecord[]> {
-	const verified: VerifiedRecord[] = [];
-	for (const [index, record] of records.entries()) {
+	const results: Array<{ verified: boolean; note: string }> = new Array(records.length);
+	const check = async (index: number) => {
 		if (signal?.aborted) throw new Error("search aborted during verification");
-		if (index && head === headStatus) await new Promise((resolve) => setTimeout(resolve, VERIFY_PAUSE_MS));
-		const result = await verifyRecord(record, head, signal);
+		results[index] = await verifyRecord(records[index], head, signal);
+	};
+	// DOI records: a small pool of parallel HEADs. arXiv-only records: one
+	// by one with a pause, running alongside the pool.
+	const doiQueue = records.map((record, index) => (record.doi ? index : -1)).filter((index) => index >= 0);
+	const others = records.map((record, index) => (record.doi ? -1 : index)).filter((index) => index >= 0);
+	const doiWorker = async () => {
+		for (let next = doiQueue.shift(); next !== undefined; next = doiQueue.shift()) await check(next);
+	};
+	const arxivLane = async () => {
+		for (const [position, index] of others.entries()) {
+			if (position && head === headStatus) await new Promise((resolve) => setTimeout(resolve, VERIFY_PAUSE_MS));
+			await check(index);
+		}
+	};
+	await Promise.all([arxivLane(), ...Array.from({ length: DOI_CONCURRENCY }, doiWorker)]);
+	// Warnings in record order, whatever order the answers arrived in.
+	return records.map((record, index) => {
+		const result = results[index];
 		if (!result.verified) {
 			const label = record.doi || record.arxiv_id || record.title;
 			onWarn(`unverified "${label}": ${result.note}`);
 		}
-		verified.push({ ...record, verified: result.verified, verify_note: result.note });
-	}
-	return verified;
+		return { ...record, verified: result.verified, verify_note: result.note };
+	});
 }

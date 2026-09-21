@@ -374,6 +374,12 @@ const chatReport: ChatReport = {
 	assert.ok(digest.includes(
 		"SOURCE FAILED: arxiv -- The operation was aborted due to timeout (results may be incomplete)",
 	));
+	const skipped = renderDigest(
+		payload({ sources_skipped: [{ source: "semanticscholar", reason: "not queried: optional, needs a free API key" }], results: [record({})] }),
+		"/data/queries/x.html",
+	);
+	assert.ok(skipped.includes("Source semanticscholar: not queried: optional, needs a free API key"));
+	assert.ok(!skipped.includes("SOURCE FAILED"));
 	// Every source failed: the sources line stays honest instead of empty.
 	const allFailed = renderDigest(
 		payload({ sources_used: [], source_failures: [{ source: "arxiv", error: "boom" }] }),

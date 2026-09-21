@@ -123,7 +123,7 @@ Where each stage lives; the adapter/engine pair shares its basename.
 | `src/verify.ts` | the trust gate: DOI / arXiv ID resolution over HTTP |
 | `src/enrich.ts` | OpenAlex identifier lookup (cites, venue, abstract), journal 2-year citedness, author metrics, code links (abstract URL on any known host, else a GitHub search per arXiv id or DOI with date/owner guards; records already linked by a code-first source are left alone) |
 | `src/intake.ts` | query parsing: block expressions, derived blocks, stopwords, prose detection, variant-line parsing and ordering, year ranges |
-| `src/render.ts` | the results page: tables, sorting, BibTeX, selection bar, search documentation block, footnotes |
+| `src/render.ts` | the results page: tables, sorting, BibTeX, download steps, search documentation block, footnotes |
 | `src/network.ts` | the static citation-graph page (`network.html`) with its embedded fetch + layout script |
 | `src/digest.ts` | the agent-facing digest and the transcript card text |
 | `src/output.ts` | output folders and collision-safe file names |

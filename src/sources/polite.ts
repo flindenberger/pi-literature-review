@@ -1,6 +1,6 @@
 /**
- * Politeness towards the free APIs, shared by every source client: one
- * request at a time per source with a minimum spacing (module-wide, so
+ * Politeness towards the free APIs, shared by every source client: a
+ * minimum spacing between the requests of one source (module-wide, so
  * query variants in one run AND back-to-back runs in one pi session share
  * it), a per-request timeout, and a retry on rate-limit answers that honors
  * a sane numeric Retry-After header. Anything else fails loudly with the
@@ -63,12 +63,19 @@ export function pacedClient(options: PacedClientOptions): PacedFetch {
 	const rateLimitStatuses = options.rateLimitStatuses ?? [429, 503];
 	const passStatuses = options.passStatuses ?? [];
 	let nextRequestAt = 0;
+	// Each attempt reserves its send slot synchronously before sleeping, so
+	// callers running concurrently (parallel sources sharing one server)
+	// queue up one spacing apart instead of firing together.
+	const reserveSlot = (): number => {
+		const spacing = typeof options.spacingMs === "function" ? options.spacingMs() : options.spacingMs;
+		const sendAt = Math.max(Date.now(), nextRequestAt);
+		nextRequestAt = sendAt + spacing;
+		return sendAt - Date.now();
+	};
 	return async (url, init = {}, opts = {}) => {
 		for (let attempt = 0; ; attempt++) {
-			const wait = nextRequestAt - Date.now();
+			const wait = reserveSlot();
 			if (wait > 0) await sleep(wait);
-			const spacing = typeof options.spacingMs === "function" ? options.spacingMs() : options.spacingMs;
-			nextRequestAt = Date.now() + spacing;
 			const response = await fetch(url, { ...init, signal: init.signal ?? AbortSignal.timeout(TIMEOUT_MS) });
 			if (response.ok || passStatuses.includes(response.status)) return response;
 			const rateLimited = rateLimitStatuses.includes(response.status);

@@ -19,7 +19,7 @@ node src/cli.ts "<query>" [-n PER_SOURCE] [-s SOURCES] [-g "a,b;c,d"]
 | Flag | Meaning |
 |---|---|
 | `-n` | number of papers (default 5, maximum 50) |
-| `-s` | comma list of `arxiv`, `crossref`, `openalex`, `semanticscholar` (default all) |
+| `-s` | comma list of `arxiv`, `crossref`, `openalex`, `semanticscholar` (default all; `semanticscholar` only with an API key) |
 | `-g` | the concept blocks: groups separated by `;`, terms by `,` (`"river,fluvial;sandbar,bar;sentinel,s-1,s-2"`), or the AND/OR expression form |
 | `--variant` | an additional query for the same need; results are deduplicated across variants and labeled Q1, Q2, ... |
 | `--html` | without FILE writes `lit-search/<date>_<query>.html` plus the JSON sidecar; with FILE, that path. Without `--html` the JSON payload prints to stdout |
