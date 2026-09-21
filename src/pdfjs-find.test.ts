@@ -5,7 +5,7 @@
  */
 
 import assert from "node:assert/strict";
-import { NFKC_NORMALIZE_CHARS, pdfjsNormalize, pdfjsQueryRegExp, viewerFindsPhrase } from "./pdfjs-find.ts";
+import { NFKC_NORMALIZE_CHARS, pdfjsNormalize, pdfjsQueryRegExp, sumPrecise, viewerFindsPhrase } from "./pdfjs-find.ts";
 
 /* ---------------- the character set ---------------- */
 {
@@ -79,6 +79,20 @@ import { NFKC_NORMALIZE_CHARS, pdfjsNormalize, pdfjsQueryRegExp, viewerFindsPhra
 	const ligature = pdfjsNormalize("validated against oﬃ-\ncial gauge records");
 	assert.equal(viewerFindsPhrase("validated against official gauge records", ligature), false);
 	assert.ok(viewerFindsPhrase("validated against offi- cial gauge records", ligature));
+}
+
+/* ---------------- Math.sumPrecise polyfill ---------------- */
+{
+	// pdf.js sums glyph byte sizes with it: integers must come back exact.
+	assert.equal(sumPrecise([12, 40, 3, 1000]), 1055);
+	assert.equal(sumPrecise(new Set([7])), 7);
+	// Empty list is -0 as the proposal specifies (pdf.js may size an empty
+	// glyph table with it; new ArrayBuffer(-0) is a zero-length buffer).
+	assert.ok(Object.is(sumPrecise([]), -0));
+	// Compensated: the naive float sum 0.1 + 0.2 + 0.3 is 0.6000000000000001.
+	assert.equal(sumPrecise([0.1, 0.2, 0.3]), 0.6);
+	assert.equal(sumPrecise([1e20, 1, -1e20]), 1);
+	assert.throws(() => sumPrecise(["1" as unknown as number]), TypeError);
 }
 
 console.log("pdfjs-find.test.ts: all assertions passed");

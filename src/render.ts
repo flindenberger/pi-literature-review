@@ -1219,17 +1219,46 @@ interface CiteContext {
 }
 
 /** One shared marker renderer per prose unit: replaces [n] markers in an
- * ALREADY-ESCAPED string, consuming the unit's sites in document order. */
+ * ALREADY-ESCAPED string, consuming the unit's sites in document order.
+ * A RUN of neighbouring markers ("[16][26]", also spaced) becomes ONE
+ * superscript whose numbers are comma-separated -- two adjacent <sup>
+ * elements read as a single number ("1626"). Inside the run the numbers
+ * are shown ASCENDING and each number only once (display order only: the
+ * sites are still consumed in the model's marker order, so every number
+ * keeps its own passage link). Fallback markers keep their brackets,
+ * which separate them by themselves. */
 function makeMarkerRenderer(cite?: CiteContext): (escaped: string) => string {
 	let markerIndex = 0;
-	return (escaped) => escaped.replace(/\[(\d+)\]/g, (match, digits: string) => {
+	const render = (digits: string): { label: string; html: string; sup: boolean } => {
 		const site = cite?.sites[markerIndex++];
 		const label = site && cite?.labelFor ? cite.labelFor(site, digits) : digits;
 		const href = site ? cite?.hrefFor(site) : null;
 		if (href) {
-			return `<sup><a class="cite" href="${esc(href)}" target="_blank" rel="noopener">${label}</a></sup>`;
+			return {
+				label, sup: true,
+				html: `<a class="cite" href="${esc(href)}" target="_blank" rel="noopener">${label}</a>`,
+			};
 		}
-		return `<a class="cite" href="#${cite?.anchorPrefix ?? "ref"}-${label}">[${label}]</a>`;
+		return {
+			label, sup: false,
+			html: `<a class="cite" href="#${cite?.anchorPrefix ?? "ref"}-${label}">[${label}]</a>`,
+		};
+	};
+	return (escaped) => escaped.replace(/\[\d+\](?:[ \t]*\[\d+\])*/g, (run) => {
+		const parts = Array.from(run.matchAll(/\[(\d+)\]/g), (marker) => render(marker[1]));
+		// Ascending by number when every label is numeric (a labelFor may
+		// return anything); otherwise the marker order stands.
+		if (parts.every((part) => /^\d+$/.test(part.label))) {
+			parts.sort((a, b) => Number(a.label) - Number(b.label));
+		}
+		const shown: typeof parts = [];
+		for (const part of parts) {
+			if (!shown.some((kept) => kept.label === part.label)) shown.push(part);
+		}
+		if (shown.every((part) => part.sup)) {
+			return `<sup>${shown.map((part) => part.html).join(", ")}</sup>`;
+		}
+		return shown.map((part) => (part.sup ? `<sup>${part.html}</sup>` : part.html)).join("");
 	});
 }
 
@@ -1710,38 +1739,51 @@ const REPORT_STYLE = `
  */
 export function renderSynthReportHtml(report: SynthReport): string {
 	const labels = REPORT_LABELS[report.ui_language === "en" ? "en" : "de"];
-	const singleMode = report.papers.length === 1;
 	const pdfPathByKey = new Map(report.papers.map((paper) => [paper.key, paper.pdf_path]));
+	const paperByKey = new Map(report.papers.map((paper) => [paper.key, paper]));
 
-	// Single-paper mode: number distinct cited passages across all units in
-	// first-citation order (identity: paper, page, chunk text). Each passage
-	// remembers WHERE it came from: per citing unit its retrieval rank and
-	// score -- chunk ids are assigned in score order, so the id IS the rank.
-	const passageOfSite = new Map<CitationSite, number>();
-	const passages: Array<{
+	// Number the distinct cited passages (identity: paper, page, chunk
+	// text) -- in every report, whatever its document count. The superscript
+	// the reader sees is this passage number, never the paper's reference
+	// number: a paper number repeats on every marker of that paper's summary
+	// ("[1][1]") and tells the reader nothing, while a passage number stands
+	// for one page and one excerpt.
+	// The numbering runs PAPER BY PAPER in scope order (inside a paper in
+	// first-citation order), so every paper's block carries ONE contiguous
+	// range. Pure citation order would scatter a paper's numbers across the
+	// whole report, because the cross-paper and review sections cite all
+	// papers again at the end.
+	// Each passage remembers WHERE it came from: per citing unit its
+	// retrieval rank and score -- chunk ids are assigned in score order, so
+	// the id IS the rank.
+	interface Passage {
 		n: number; page: number; text: string; snippet: string | null; paper_key: string;
 		origins: Array<{ unit: string; rank: number; of: number; score: number; lexical: boolean }>;
-	}> = [];
+	}
+	const passageOfSite = new Map<CitationSite, number>();
+	const passages: Passage[] = [];
 	// Identity keys of all CITED chunks -- the advanced rest block below
 	// shows only what was retrieved and NOT cited.
 	const citedChunkKeys = new Set<string>();
-	if (singleMode) {
-		const byKey = new Map<string, number>();
+	{
+		const byKey = new Map<string, Passage>();
+		const found: Passage[] = []; // first-citation order, numbered below
+		const siteOf = new Map<CitationSite, Passage>();
 		for (const unit of report.units) {
 			for (const site of unit.sites) {
 				const chunk = unit.chunks.find((entry) => entry.id === site.chunk_id);
 				const key = `${site.paper_key}\u0000${site.page}\u0000${chunk?.text ?? site.snippet ?? ""}`;
 				citedChunkKeys.add(key);
-				let n = byKey.get(key);
-				if (n === undefined) {
-					n = passages.length + 1;
-					byKey.set(key, n);
-					passages.push({
-						n, page: site.page, text: chunk?.text ?? "", snippet: site.snippet,
+				let passage = byKey.get(key);
+				if (!passage) {
+					passage = {
+						n: 0, page: site.page, text: chunk?.text ?? "", snippet: site.snippet,
 						paper_key: site.paper_key, origins: [],
-					});
+					};
+					byKey.set(key, passage);
+					found.push(passage);
 				}
-				passageOfSite.set(site, n);
+				siteOf.set(site, passage);
 				if (chunk) {
 					const origin = {
 						unit: unitLabel(unit, labels),
@@ -1750,13 +1792,24 @@ export function renderSynthReportHtml(report: SynthReport): string {
 						score: chunk.score,
 						lexical: chunk.lexical === true,
 					};
-					const origins = passages[n - 1].origins;
-					if (!origins.some((seen) => seen.unit === origin.unit && seen.rank === origin.rank)) {
-						origins.push(origin);
+					if (!passage.origins.some((seen) => seen.unit === origin.unit && seen.rank === origin.rank)) {
+						passage.origins.push(origin);
 					}
 				}
 			}
 		}
+		// Group by paper (scope order; a passage of an unlisted paper sorts
+		// last), keep first-citation order inside a paper, then number.
+		const paperRank = (key: string): number => {
+			const index = report.papers.findIndex((paper) => paper.key === key);
+			return index < 0 ? report.papers.length : index;
+		};
+		const foundAt = new Map(found.map((passage, index) => [passage, index]));
+		passages.push(...found.slice().sort((a, b) =>
+			paperRank(a.paper_key) - paperRank(b.paper_key)
+			|| (foundAt.get(a) ?? 0) - (foundAt.get(b) ?? 0)));
+		passages.forEach((passage, index) => { passage.n = index + 1; });
+		for (const [site, passage] of siteOf) passageOfSite.set(site, passage.n);
 	}
 
 	const citeOf = (unit: ReportUnit): CiteContext | undefined => (unit.sites.length
@@ -1766,12 +1819,8 @@ export function renderSynthReportHtml(report: SynthReport): string {
 				const path = pdfPathByKey.get(site.paper_key);
 				return path ? localPdfHref(path, site.page, site.snippet) : null;
 			},
-			...(singleMode
-				? {
-					labelFor: (site: CitationSite, digits: string) => String(passageOfSite.get(site) ?? digits),
-					anchorPrefix: "site",
-				}
-				: {}),
+			labelFor: (site: CitationSite, digits: string) => String(passageOfSite.get(site) ?? digits),
+			anchorPrefix: "site",
 		}
 		: undefined);
 
@@ -1844,14 +1893,13 @@ export function renderSynthReportHtml(report: SynthReport): string {
 ${technicalBlock}
 </section>`);
 
-	// Per-block reference table: only the entries the given units cite,
-	// keeping their GLOBAL [n] numbers. Anchor ids stay unique across the
-	// page (first occurrence wins -- marker fallback links land there). The
-	// retrieval excerpts ride collapsed at the END of this block as an
-	// "advanced" sub-details (the reader wants the cited passages;
-	// similarity scores are for the curious).
+	// Paper-level reference table of a CROSS section (cross questions, the
+	// review): only the papers the given units cite, with their GLOBAL [n]
+	// numbers and cited pages. A paper's own block needs no such table --
+	// its identity sits in the block head. Anchor ids stay unique across
+	// the page (first occurrence wins).
 	const usedRefIds = new Set<number>();
-	const referencesBlock = (units: ReportUnit[], trail: string | null): string | null => {
+	const referencesBlock = (units: ReportUnit[]): string | null => {
 		const cited = new Set(units.flatMap((unit) => unit.sites.map((site) => site.ref)));
 		const refs = report.references.filter((reference) => cited.has(reference.n));
 		if (!refs.length) return null;
@@ -1876,15 +1924,15 @@ ${technicalBlock}
 <tbody>
 ${rows}
 </tbody>
-</table>${trail ? `\n${trail}` : ""}
+</table>
 </details>`;
 	};
 
 	// Per-block evidence trail (the excerpts each unit's model saw), a
-	// NESTED details at the end of the cited-passages block. In single mode
-	// the CITED chunks carry their retrieval detail at the passage itself,
-	// so the trail here shows only what was retrieved and NOT cited
-	// (onlyUncited) -- together they stay the complete trail.
+	// NESTED details at the end of the cited-passages block. The CITED
+	// chunks carry their retrieval detail at the passage itself, so the
+	// trail shows only what was retrieved and NOT cited (onlyUncited) --
+	// together they stay the complete trail.
 	const excerptsBlock = (units: ReportUnit[], onlyUncited = false): string | null => {
 		const chunkKey = (chunk: ReportUnit["chunks"][number]): string =>
 			`${chunk.paper_key}\u0000${chunk.page}\u0000${chunk.text}`;
@@ -1910,6 +1958,62 @@ ${inner}
 </details>`;
 	};
 
+	// Short display label of a paper on a cross section's passage line:
+	// first author's last name, "et al." when several, year -- read off the
+	// verified record; a record without authors shows its file name. The
+	// identity behind the label is the paper block the line links to.
+	const paperLabel = (paper: SynthReport["papers"][number]): string => {
+		const surname = paper.authors[0]?.trim().split(/\s+/).pop();
+		if (!surname) return `${paper.base}.pdf`;
+		const who = paper.authors.length > 1 ? `${surname} et al.` : surname;
+		return paper.year ? `${who} ${paper.year}` : who;
+	};
+
+	// The passages the given units cite, in report numbering order.
+	const citedBy = (units: ReportUnit[]): typeof passages => {
+		const numbers = new Set(units.flatMap((unit) => unit.sites.map((site) => passageOfSite.get(site))));
+		return passages.filter((passage) => numbers.has(passage.n));
+	};
+
+	// The cited passages of a block, numbered as the superscripts are. The
+	// truncated line itself is the expander: a "more" hint at its end opens
+	// the FULL excerpt -- CSS hides the truncated span while open -- plus,
+	// per citing unit, the retrieval rank and similarity. Numbers are
+	// report-global, so every item carries its number explicitly (<li
+	// value>); anchor ids stay unique across the page (first occurrence
+	// wins -- marker fallback links land there). A cross section names the
+	// paper on every line (withPaper), linked to the paper's block. The
+	// uncited evidence trail nests at the end.
+	const usedSiteIds = new Set<number>();
+	const passagesBlock = (subset: typeof passages, withPaper: boolean, trail: string | null): string | null => {
+		if (!subset.length) return null;
+		const items = subset.map((passage) => {
+			const paper = paperByKey.get(passage.paper_key);
+			const pageLabel = `${labels.page} ${passage.page}`;
+			const pageLink = paper ? pdfAnchor(localPdfHref(paper.pdf_path, passage.page, passage.snippet), pageLabel) : esc(pageLabel);
+			const source = withPaper && paper ? `<a href="#paper-${esc(paper.base)}">${esc(paperLabel(paper))}</a>, ` : "";
+			const excerpt = passage.text.length > 160 ? `${passage.text.slice(0, 160)}...` : passage.text;
+			const originLines = passage.origins
+				.map((origin) => `<br>${esc(labels.retrievedAs(origin.unit, origin.rank, origin.of, origin.score.toFixed(3), origin.lexical))}`)
+				.join("");
+			const id = usedSiteIds.has(passage.n) ? "" : ` id="site-${passage.n}"`;
+			usedSiteIds.add(passage.n);
+			const item = `<li${id} value="${passage.n}">`;
+			if (!passage.origins.length && !passage.text) {
+				return `${item}${source}${pageLink} -- ${esc(excerpt)}</li>`;
+			}
+			return `${item}<details class="passage"><summary>${source}${pageLink} -- <span class="short">${esc(excerpt)}</span> <span class="expandhint"><span class="hint-more">${labels.expandMore}</span><span class="hint-less">${labels.expandLess}</span></span></summary>
+<p class="excerpt">${esc(passage.text)}</p>${originLines ? `\n<p class="meta">${originLines.slice("<br>".length)}</p>` : ""}
+</details></li>`;
+		}).join("\n");
+		return `<details class="block"><summary>${labels.passages}</summary>
+<p class="meta">${esc(labels.passagesNote)}</p>
+<ol class="passages">
+${items}
+</ol>${trail ? `\n${trail}` : ""}
+</details>`;
+	};
+
 	// One block per document.
 	for (const paper of report.papers) {
 		const paperTitle = paper.title || `${paper.base}.pdf`;
@@ -1929,48 +2033,14 @@ ${inner}
 			parts.push(`<details class="block"><summary>${labels.questionsLabel}</summary>\n${questionUnits
 				.map((unit) => `<h4>${esc(unit.question ?? "")}</h4>\n${unitHtml(unit)}`).join("\n")}\n</details>`);
 		}
-		// Single mode: cited chunks explain themselves at the passage, so the
-		// trail carries only the uncited leftovers.
-		const trail = excerptsBlock(paperUnits, singleMode);
-		let trailPlaced = false;
-		if (singleMode) {
-			// Single paper: the numbered passages replace the reference table.
-			// The truncated line itself is the expander: a "more" hint at its
-			// end opens the FULL excerpt -- CSS hides the truncated span while
-			// open -- plus, per citing question, the retrieval rank and
-			// similarity.
-			const items = passages.map((passage) => {
-				const href = localPdfHref(paper.pdf_path, passage.page, passage.snippet);
-				const excerpt = passage.text.length > 160 ? `${passage.text.slice(0, 160)}...` : passage.text;
-				const originLines = passage.origins
-					.map((origin) => `<br>${esc(labels.retrievedAs(origin.unit, origin.rank, origin.of, origin.score.toFixed(3), origin.lexical))}`)
-					.join("");
-				if (!passage.origins.length && !passage.text) {
-					return `<li id="site-${passage.n}">${pdfAnchor(href, `${labels.page} ${passage.page}`)} -- ${esc(excerpt)}</li>`;
-				}
-				return `<li id="site-${passage.n}"><details class="passage"><summary>${pdfAnchor(href, `${labels.page} ${passage.page}`)} -- <span class="short">${esc(excerpt)}</span> <span class="expandhint"><span class="hint-more">${labels.expandMore}</span><span class="hint-less">${labels.expandLess}</span></span></summary>
-<p class="excerpt">${esc(passage.text)}</p>${originLines ? `\n<p class="meta">${originLines.slice("<br>".length)}</p>` : ""}
-</details></li>`;
-			}).join("\n");
-			if (items) {
-				parts.push(`<details class="block"><summary>${labels.passages}</summary>
-<p class="meta">${esc(labels.passagesNote)}</p>
-<ol class="passages">
-${items}
-</ol>${trail ? `\n${trail}` : ""}
-</details>`);
-				trailPlaced = true;
-			}
-		} else {
-			const refs = referencesBlock(paperUnits, trail);
-			if (refs) {
-				parts.push(refs);
-				trailPlaced = true;
-			}
-		}
-		// No cited passages at all (e.g. an ungrounded unit): the trail
-		// still appears, honestly, as its own collapsed block.
-		if (trail && !trailPlaced) parts.push(`<details class="block">${trail.slice("<details>".length)}`);
+		// Cited chunks explain themselves at the passage, so the trail
+		// carries only the uncited leftovers. No cited passages at all (e.g.
+		// an ungrounded unit): the trail still appears, honestly, as its own
+		// collapsed block.
+		const trail = excerptsBlock(paperUnits, true);
+		const block = passagesBlock(citedBy(paperUnits), false, trail);
+		if (block) parts.push(block);
+		else if (trail) parts.push(`<details class="block">${trail.slice("<details>".length)}`);
 		const content = parts.length ? parts.join("\n") : `<p class="meta">${esc(labels.noUnits)}</p>`;
 		blocks.push(`<section class="paper" id="paper-${esc(paper.base)}">
 <h2>${esc(paperTitle)}</h2>
@@ -1982,26 +2052,37 @@ ${content}
 </section>`);
 	}
 
-	// Cross-paper detail questions (mode B), with their own references.
-	if (crossUnits.length) {
-		const parts = crossUnits.map((unit) => `<h4>${esc(unit.question ?? "")}</h4>\n${unitHtml(unit)}`);
-		const trail = excerptsBlock(crossUnits);
-		const refs = singleMode ? null : referencesBlock(crossUnits, trail);
-		if (refs) parts.push(refs);
+	// A cross section (cross questions, review) cites several papers: its
+	// passages name the paper per line, and a paper-level reference table
+	// follows for the bibliographic identity of everything cited.
+	const crossParts = (units: ReportUnit[]): string[] => {
+		const parts: string[] = [];
+		const trail = excerptsBlock(units, true);
+		const block = passagesBlock(citedBy(units), true, trail);
+		if (block) parts.push(block);
 		else if (trail) parts.push(`<details class="block">${trail.slice("<details>".length)}`);
+		const refs = referencesBlock(units);
+		if (refs) parts.push(refs);
+		return parts;
+	};
+
+	// Cross-paper detail questions (mode B), with their own passages and
+	// references.
+	if (crossUnits.length) {
+		const parts = [
+			...crossUnits.map((unit) => `<h4>${esc(unit.question ?? "")}</h4>\n${unitHtml(unit)}`),
+			...crossParts(crossUnits),
+		];
 		blocks.push(`<section id="cross-questions">
 <h2>${labels.crossQuestions}</h2>
 ${parts.join("\n")}
 </section>`);
 	}
 
-	// State of the literature (review synthesis), with its own references.
+	// State of the literature (review synthesis), with its own passages and
+	// references.
 	if (reviewUnits.length) {
-		const parts = reviewUnits.map((unit) => unitHtml(unit));
-		const trail = excerptsBlock(reviewUnits);
-		const refs = singleMode ? null : referencesBlock(reviewUnits, trail);
-		if (refs) parts.push(refs);
-		else if (trail) parts.push(`<details class="block">${trail.slice("<details>".length)}`);
+		const parts = [...reviewUnits.map((unit) => unitHtml(unit)), ...crossParts(reviewUnits)];
 		blocks.push(`<section id="review">
 <h2>${labels.review}</h2>
 <div class="reviewnote">${esc(labels.reviewNote)}</div>

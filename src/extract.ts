@@ -11,7 +11,7 @@
  * never silently included as empty context.
  */
 
-import { viewerFindsPhrase } from "./pdfjs-find.ts";
+import { loadUnpdf, viewerFindsPhrase } from "./pdfjs-find.ts";
 
 /**
  * Retrieval target: ~250 tokens of academic prose (~1 paragraph).
@@ -53,12 +53,13 @@ const MIN_TOTAL_LETTERS = 200;
 const MIN_MEAN_LETTERS_PER_PAGE = 25;
 
 /**
- * Raw per-page text via unpdf. Dynamically imported so offline tests (and
- * every non-synthesis code path) never load pdfjs. Failures throw with a
+ * Raw per-page text via unpdf. Loaded through loadUnpdf() (dynamic import
+ * plus the Math.sumPrecise polyfill pdf.js needs on older Node versions)
+ * so offline tests and every non-synthesis code path never load pdfjs. Failures throw with a
  * plain message; the caller reports the paper as unextractable.
  */
 export async function extractPdfPages(bytes: Uint8Array): Promise<string[]> {
-	const { getDocumentProxy, extractText } = await import("unpdf");
+	const { getDocumentProxy, extractText } = await loadUnpdf();
 	// pdfjs may transfer the buffer to a worker; hand over a copy.
 	const document = await getDocumentProxy(new Uint8Array(bytes));
 	const { text } = await extractText(document, { mergePages: false });

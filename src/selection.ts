@@ -18,7 +18,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { join } from "node:path";
 import { identityKey } from "./pipeline.ts";
 import { outputRoot } from "./output.ts";
-import { contactMailto, errorName, firstAuthorLastName, userAgent } from "./types.ts";
+import { asciiPart, contactMailto, errorName, firstAuthorLastName, userAgent } from "./types.ts";
 
 const DOWNLOAD_TIMEOUT_MS = 30_000; // per GET request
 const FETCH_PAUSE_MS = 300; // between papers; stay polite to the free servers
@@ -69,18 +69,6 @@ export function parseIdentifier(raw: string): FetchTarget {
 export function identifierSlug(target: FetchTarget): string {
 	const safe = (value: string) => value.toLowerCase().replace(/[^a-z0-9._-]+/g, "_");
 	return target.kind === "arxiv" ? `arxiv_${safe(target.id)}` : safe(target.id);
-}
-
-/** ASCII-safe filename fragment: German umlauts transliterated, other
- * diacritics stripped, everything else collapsed to underscores. */
-function asciiPart(value: string): string {
-	return value
-		.replaceAll("ä", "ae").replaceAll("ö", "oe").replaceAll("ü", "ue")
-		.replaceAll("Ä", "Ae").replaceAll("Ö", "Oe").replaceAll("Ü", "Ue")
-		.replaceAll("ß", "ss")
-		.normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-		.replace(/[^A-Za-z0-9]+/g, "_")
-		.replace(/^_+|_+$/g, "");
 }
 
 /** Total length cap for the human-readable base name (without ".pdf"). */

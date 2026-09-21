@@ -71,9 +71,26 @@ Three building blocks:
 - detail questions, answered per paper or merged across the scope
 - an optional review synthesis (several documents only)
 
-The HTML report (`lit-synthesis/<date>_Report_...html`) follows the chat
-language, keeps references with their paper, and carries a collapsed
-technical block that explains the retrieval in plain language.
+The HTML report is named after its papers:
+`lit-synthesis/<date>_synthesis_report_<first authors>.html`, e.g.
+`2026-09-18_synthesis_report_Li_Moortgat_Chen.html` -- up to three first
+authors in scope order, `_et_al` when more papers follow (with no author
+data the scope label stands as before).
+
+The page follows the chat language and carries a collapsed technical
+block that explains the retrieval in plain language. Every cited passage
+gets one number, and that number is what the superscripts show: one
+number stands for one page and one excerpt, never for a paper (a paper
+number would repeat on every marker of that paper's summary). The
+numbering runs paper by paper in scope order, so every paper owns one
+contiguous range -- citation order would scatter a paper's numbers over
+the whole report, because the cross-paper and review sections cite all
+papers again at the end. Several passages cited at the same spot share
+ONE superscript and are separated by commas (`1, 6, 26`), ascending, each
+number with its own page link. Each paper's block lists its cited
+passages with page link, excerpt and the retrieval rank per citing
+question; cross-paper sections name the paper on every passage line and
+add a paper-level reference table.
 
 ### Highlighted passages
 

@@ -741,6 +741,40 @@ const chatReport: ChatReport = {
 	assert.ok(html.includes("Antwort mit Marker [1] als Klartext."));
 }
 
+/* ---------------- neighbouring markers share ONE superscript ---------------- */
+{
+	// "[1][2]" as two <sup> elements reads as the single number "12" --
+	// a run of markers becomes one superscript with comma-separated
+	// numbers, and a number repeated inside the run is shown once.
+	const cited: ChatReport = {
+		...chatReport,
+		sites: [
+			{ ref: 1, chunk_id: 1, paper_key: "doi:10.1234/abc", page: 2, snippet: null },
+			{ ref: 1, chunk_id: 2, paper_key: "doi:10.1234/abc", page: 5, snippet: null },
+			{ ref: 1, chunk_id: 1, paper_key: "doi:10.1234/abc", page: 3, snippet: null },
+			{ ref: 1, chunk_id: 2, paper_key: "doi:10.1234/abc", page: 4, snippet: null },
+			{ ref: 1, chunk_id: 1, paper_key: "doi:10.1234/abc", page: 7, snippet: null },
+			{ ref: 1, chunk_id: 2, paper_key: "doi:10.1234/abc", page: 7, snippet: null },
+		],
+		prose: "Zwei Belege [1][2].\n\nMit Leerzeichen [1] [2].\n\nDoppelt [3][3].",
+		rounds: [],
+	};
+	const html = renderPaperChatReportHtml(cited);
+	const supRuns = html.match(/<sup>.*?<\/sup>/g) ?? [];
+	// Adjacent and space-separated runs both collapse into one superscript.
+	assert.equal(supRuns.length, 3);
+	assert.equal(supRuns.filter((run) => run.includes(", ")).length, 2);
+	assert.ok(supRuns[0]?.includes("#page=2") && supRuns[0]?.includes("#page=5"));
+	assert.ok(supRuns[0]?.startsWith('<sup><a class="cite"') && supRuns[0]?.endsWith("</sup>"));
+	assert.ok(!html.includes("</sup><sup>"));
+	// Same number twice in a row: one visible marker (both sites consumed,
+	// so the numbering of later markers does not shift).
+	assert.equal(
+		supRuns[2],
+		'<sup><a class="cite" href="file:///papers%20dir/a.pdf#page=7" target="_blank" rel="noopener">3</a></sup>',
+	);
+}
+
 /* ---------------- chat protocol appendix: rounds with sites link too ---------------- */
 {
 	// A round recorded since v25 carries its own sites -- its markers become
@@ -829,8 +863,8 @@ const baseReport: SynthReport = {
 };
 
 {
-	// SINGLE-paper report: passages numbering replaces the reference table;
-	// two markers citing DIFFERENT chunks show DIFFERENT superscript numbers
+	// SINGLE-paper report: passage numbering, no reference table; two
+	// markers citing DIFFERENT chunks show DIFFERENT superscript numbers
 	// even though both cite reference [1] (the E2b field complaint).
 	const summaryUnit = reportUnit({
 		prose: "- Ziel: Wasserstand [1].\n- Methode: KI [1].",
@@ -892,9 +926,9 @@ const baseReport: SynthReport = {
 	const detailSection = html.slice(html.indexOf("Die Kamera steht"));
 	assert.ok(detailSection.includes('rel="noopener">2</a>'));
 	// The passages list has exactly two entries with page links.
-	assert.ok(html.includes('<li id="site-1">'));
-	assert.ok(html.includes('<li id="site-2">'));
-	assert.ok(!html.includes('<li id="site-3">'));
+	assert.ok(html.includes('<li id="site-1" value="1">'));
+	assert.ok(html.includes('<li id="site-2" value="2">'));
+	assert.ok(!html.includes('id="site-3"'));
 	// Metadata sits BEFORE the paper section; NO table of contents; the
 	// answers live in COLLAPSED blocks under the paper.
 	assert.ok(html.indexOf("Abfrage-Metadaten") < html.indexOf('id="paper-a"'));
@@ -914,8 +948,11 @@ const baseReport: SynthReport = {
 }
 
 {
-	// MULTI-paper report: TOC, <hr> separators, cross section, review with
-	// its note, and the paper-level reference table.
+	// MULTI-paper report: <hr> separators, cross section, review with its
+	// note. Passages are numbered across the whole report exactly as in
+	// single mode (a paper number on every marker of a summary told the
+	// reader nothing); cross sections name the paper per passage line and
+	// keep the paper-level reference table.
 	const unitA = reportUnit({});
 	const unitB = reportUnit({
 		paper_base: "b",
@@ -943,16 +980,73 @@ const baseReport: SynthReport = {
 	assert.ok(html.includes("Detailfragen (paperübergreifend)"));
 	assert.ok(html.includes("Stand der Literatur"));
 	assert.ok(html.includes('class="reviewnote"'));
-	// References live WITH each paper (collapsed), not at the page bottom;
-	// each paper's block lists only ITS cited entries with global numbers.
-	assert.ok(html.includes('<details class="block"><summary>Referenzen</summary>'));
-	assert.ok(html.includes('id="ref-1"') && html.includes('id="ref-2"'));
-	const paperA = html.slice(html.indexOf('id="paper-a"'), html.indexOf('id="paper-b"'));
-	assert.ok(paperA.includes("[1]") && !paperA.includes('<tr id="ref-2">'));
-	// Multi mode keeps the marker's own (paper-level) numbers as labels.
-	assert.ok(html.includes('rel="noopener">1</a>'));
-	assert.ok(html.includes('rel="noopener">2</a>'));
 	assert.ok(html.includes('id="paper-a"') && html.includes('id="paper-b"'));
+	const paperA = html.slice(html.indexOf('id="paper-a"'), html.indexOf('id="paper-b"'));
+	const paperB = html.slice(html.indexOf('id="paper-b"'), html.indexOf('id="cross-questions"'));
+	const cross = html.slice(html.indexOf('id="cross-questions"'), html.indexOf('id="review"'));
+	const review = html.slice(html.indexOf('id="review"'));
+	// Each paper block lists ITS cited passages with report-global numbers
+	// (explicit <li value>), no reference table -- the block head is the
+	// paper's identity.
+	assert.ok(paperA.includes('<summary>Belegstellen</summary>') && !paperA.includes("<summary>Referenzen</summary>"));
+	assert.ok(paperA.includes('<li id="site-1" value="1">') && !paperA.includes('value="2"'));
+	assert.ok(paperB.includes('<li id="site-2" value="2">') && !paperB.includes('value="1"'));
+	// Superscripts show passage numbers: paper A's marker 1, paper B's 2.
+	assert.ok(paperA.includes('rel="noopener">1</a>') && !paperA.includes('rel="noopener">2</a>'));
+	assert.ok(paperB.includes('rel="noopener">2</a>'));
+	// The cross section cites paper A's chunk again -> the SAME passage
+	// number 1; its line names the paper (author, year) linked to the
+	// block, carries no duplicate anchor id, and the paper-level reference
+	// table follows with the cited paper only.
+	assert.ok(cross.includes('<li value="1"><details class="passage"><summary><a href="#paper-a">B 2021</a>, '));
+	assert.ok(!cross.includes('id="site-1"'));
+	assert.ok(cross.includes("<summary>Referenzen</summary>") && cross.includes('<tr id="ref-1">'));
+	assert.ok(!html.includes('id="ref-2"')); // nobody cites paper B across papers
+	assert.ok(review.includes('<li value="1">') && review.includes("<summary>Referenzen</summary>"));
+	// The uncited evidence trail nests at the end of every passages block.
+	assert.ok(!html.includes('<details class="block"><summary>Quell-Textstellen'));
+}
+
+/* ---------------- passage numbers run paper by paper ---------------- */
+{
+	// A cross-paper section citing a NEW passage of the FIRST paper must not
+	// push that passage behind the second paper's numbers: every paper's
+	// block keeps one contiguous range (paper A 1-2, paper B 3), whatever
+	// the order in which the model cited them.
+	const unitA = reportUnit({});
+	const unitB = reportUnit({
+		paper_base: "b",
+		prose: "Antwort [2].",
+		references: [{ n: 2, key: "arxiv:2401.16393", title: "Paper Two", authors: [], year: "2024",
+			doi: "", arxiv_id: "2401.16393", pages: [1], chunk_ids: [1], pdf_path: "/papers/b.pdf" }],
+		sites: [{ ref: 2, chunk_id: 1, paper_key: "arxiv:2401.16393", page: 1, snippet: null }],
+		chunks: [{ id: 1, paper_key: "arxiv:2401.16393", page: 1, score: 0.7, text: "B text." }],
+	});
+	const crossUnit = reportUnit({
+		kind: "detail-cross", paper_base: null, question: "Welche Methoden?", format: undefined,
+		prose: "Beide Paper [1].",
+		sites: [{ ref: 1, chunk_id: 2, paper_key: "doi:10.1/x", page: 9, snippet: null }],
+		chunks: [{ id: 2, paper_key: "doi:10.1/x", page: 9, score: 0.6, text: "A second passage of paper A." }],
+	});
+	const html = renderSynthReportHtml({
+		...baseReport,
+		question: "Report: 2 documents",
+		scope: { papers: ["a", "b"], library: false },
+		papers: [paperOne, paperTwo],
+		units: [unitA, unitB, crossUnit],
+		references: [...unitA.references, ...unitB.references],
+	});
+	const paperA = html.slice(html.indexOf('id="paper-a"'), html.indexOf('id="paper-b"'));
+	const paperB = html.slice(html.indexOf('id="paper-b"'), html.indexOf('id="cross-questions"'));
+	const cross = html.slice(html.indexOf('id="cross-questions"'));
+	// Paper A owns numbers 1 and 2 (2 = the passage only the cross section
+	// cites, listed there), paper B starts at 3 -- in pure citation order
+	// paper A's late passage would have become 3, behind paper B.
+	assert.ok(paperA.includes('<li id="site-1" value="1">') && !paperA.includes('value="2"'));
+	assert.ok(paperB.includes('<li id="site-3" value="3">') && !paperB.includes('value="2"'));
+	assert.ok(cross.includes('<li id="site-2" value="2">'));
+	// The cross section's marker shows paper A's second passage as 2.
+	assert.ok(cross.includes('rel="noopener">2</a>'));
 }
 
 {

@@ -143,12 +143,49 @@ export function viewerFindsPhrase(phrase: string, page: string): boolean {
 }
 
 /**
+ * Math.sumPrecise as the TC39 proposal specifies it (Neumaier-compensated
+ * summation; -0 for an empty list). The pdf.js build bundled in unpdf
+ * calls Math.sumPrecise while parsing fonts and ships no polyfill; Node
+ * versions without it (24 and older) leave every font sanitizer failing,
+ * and a failed font drops its ligature glyphs from the text layer: "fi"
+ * vanishes and "classification" is extracted as "classi cation". The
+ * loss is silent for our own pipeline -- the viewer replica sees the same
+ * broken text, so a highlight phrase "verifies" and then never matches in
+ * a real browser -- so the polyfill is installed before pdf.js loads.
+ * pdf.js only sums byte sizes here (integers, exact under any method);
+ * the compensated form keeps the function honest for other callers.
+ */
+export function sumPrecise(values: Iterable<number>): number {
+	let sum = 0;
+	let compensation = 0;
+	let count = 0;
+	for (const value of values) {
+		if (typeof value !== "number") throw new TypeError("sumPrecise: values must be numbers");
+		const next = sum + value;
+		compensation += Math.abs(sum) >= Math.abs(value) ? (sum - next) + value : (value - next) + sum;
+		sum = next;
+		count++;
+	}
+	return count === 0 ? -0 : sum + compensation;
+}
+
+/** Installs the Math.sumPrecise polyfill when the runtime lacks it (never
+ * over a native one) and returns the unpdf module. The ONE entry point for
+ * pdf.js in this package: both the text extraction and the viewer replica
+ * load it here, so no code path can parse a PDF without the fix. */
+export async function loadUnpdf(): Promise<typeof import("unpdf")> {
+	const math = Math as unknown as { sumPrecise?: (values: Iterable<number>) => number };
+	if (typeof math.sumPrecise !== "function") math.sumPrecise = sumPrecise;
+	return import("unpdf");
+}
+
+/**
  * The searchable text of every page, assembled exactly as the find
  * controller does it. Dynamically imported like the rest of the PDF path
  * so offline code never loads pdfjs.
  */
 export async function viewerPageTexts(bytes: Uint8Array): Promise<string[]> {
-	const { getDocumentProxy } = await import("unpdf");
+	const { getDocumentProxy } = await loadUnpdf();
 	const document = await getDocumentProxy(new Uint8Array(bytes));
 	const pages: string[] = [];
 	for (let number = 1; number <= document.numPages; number++) {

@@ -29,7 +29,7 @@ import { runSearch, SEARCHERS, type SearchOptions } from "./search.ts";
 import { CODE_SEARCHERS } from "./codesearch.ts";
 import { parseGroupTerms } from "./intake.ts";
 import { writeNetworkPage } from "./network.ts";
-import { outputRoot, writeRunOutputs } from "./output.ts";
+import { outputRoot, synthReportName, writeRunOutputs } from "./output.ts";
 import { readCurrentScope } from "./protocol.ts";
 import { resolvePiSessionId } from "./pisession.ts";
 import type { ResultFilters, SortKey } from "./pipeline.ts";
@@ -358,7 +358,8 @@ if (process.argv[2] === "synthesis") {
 			onWarn: warn,
 			onProgress: warn,
 		});
-		const written = writeRunOutputs(renderSynthReportHtml(result), result, htmlArg || undefined, "lit-synthesis");
+		const written = writeRunOutputs(
+			renderSynthReportHtml(result), result, htmlArg || undefined, "lit-synthesis", synthReportName(result.papers));
 		warn(`wrote HTML report to ${written.htmlPath}`);
 		warn(`wrote JSON copy to ${written.jsonPath}`);
 		process.stdout.write(`${renderReportDigest(result, written.htmlPath)}\n`);

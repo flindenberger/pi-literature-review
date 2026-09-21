@@ -114,3 +114,16 @@ export function firstAuthorLastName(authors: string[]): string {
 	const parts = first.split(/\s+/);
 	return parts[parts.length - 1];
 }
+
+/** ASCII-safe filename fragment: German umlauts transliterated, other
+ * diacritics stripped, everything else collapsed to underscores. Shared by
+ * the library filenames and the report filenames. */
+export function asciiPart(value: string): string {
+	return value
+		.replaceAll("ä", "ae").replaceAll("ö", "oe").replaceAll("ü", "ue")
+		.replaceAll("Ä", "Ae").replaceAll("Ö", "Oe").replaceAll("Ü", "Ue")
+		.replaceAll("ß", "ss")
+		.normalize("NFD").replace(/[̀-ͯ]/g, "")
+		.replace(/[^A-Za-z0-9]+/g, "_")
+		.replace(/^_+|_+$/g, "");
+}

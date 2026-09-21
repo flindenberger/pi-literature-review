@@ -362,7 +362,7 @@ const SEARCH_TEXT: Record<DialogLang, {
 		codeHead: "Paper mit Code suchen",
 		codeNext: "Weiter",
 		codeSource: {
-			"hf-papers": ["Hugging Face Papers", "arXiv-Paper mit verlinktem Repository; schnell, eine Anfrage"],
+			"hf-papers": ["Hugging Face Papers", "Suche bei Hugging Face, Paper-Daten von arXiv, GitHub-Link falls vorhanden"],
 			"github-readme": ["GitHub README-Suche", "Repositories, deren README arxiv.org nennt; GitHub-Budget 10/min"],
 			"awesome-lists": ["Kuratierte Listen (awesome.ecosyste.ms)", "Awesome-Listen nach Fachgebiet (GitHub-Topic), Einträge gegen die Blöcke geprüft; anhaken zeigt die Themen"],
 			"gee-github": ["Google Earth Engine (GitHub)", "GEE-Repositories, deren README eine DOI nennt"],
@@ -466,7 +466,7 @@ const SEARCH_TEXT: Record<DialogLang, {
 		codeHead: "Search for papers with code",
 		codeNext: "Next",
 		codeSource: {
-			"hf-papers": ["Hugging Face Papers", "arXiv papers with a linked repository; fast, one request"],
+			"hf-papers": ["Hugging Face Papers", "Hugging Face search, paper details from arXiv, GitHub link if available"],
 			"github-readme": ["GitHub README search", "repositories whose README cites arxiv.org; GitHub budget 10/min"],
 			"awesome-lists": ["Curated lists (awesome.ecosyste.ms)", "awesome lists by field (GitHub topic), entries matched against the blocks; tick to see the topics"],
 			"gee-github": ["Google Earth Engine (GitHub)", "GEE repositories whose README cites a DOI"],

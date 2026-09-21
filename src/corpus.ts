@@ -225,8 +225,10 @@ export function matchLibrary(root: string, onWarn: (message: string) => void): L
  * ------------------------------------------------------------------ */
 
 /** Index file schema; older schemas are silently re-indexed -- an index is
- * derived data, the PDF stays the ground truth. */
-export const INDEX_SCHEMA = 2;
+ * derived data, the PDF stays the ground truth. 3: text extraction runs
+ * with the Math.sumPrecise polyfill (loadUnpdf) -- indexes cut from the
+ * ligature-less text of older schemas must be rebuilt. */
+export const INDEX_SCHEMA = 3;
 
 export interface IndexedChunk {
 	id: number;

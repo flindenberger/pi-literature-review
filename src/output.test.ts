@@ -4,7 +4,7 @@
  */
 
 import assert from "node:assert/strict";
-import { htmlPathFor, jsonPathFor, querySlug } from "./output.ts";
+import { htmlPathFor, jsonPathFor, querySlug, synthReportName } from "./output.ts";
 
 // querySlug: keyword-preserving, deterministic sanitization
 {
@@ -71,6 +71,36 @@ import { htmlPathFor, jsonPathFor, querySlug } from "./output.ts";
 		htmlPathFor("/data", "2026-07-15T09:00:00Z", "q", (p) => taken.has(p), "reviews"),
 		"/data/reviews/2026-07-15_q_2.html",
 	);
+}
+
+/* ---------------- synthReportName: the report names its papers ---------------- */
+{
+	const paper = (authors: string[]) => ({ authors });
+	// First authors' last names in scope order, both API spellings.
+	assert.equal(
+		synthReportName([paper(["Wei Li", "Q Chen"]), paper(["Moortgat, J."]), paper(["Hong Chen"])]),
+		"synthesis_report_Li_Moortgat_Chen",
+	);
+	// One paper: one name, no et_al.
+	assert.equal(synthReportName([paper(["Anna Kryniecka"])]), "synthesis_report_Kryniecka");
+	// More papers than listed names -> et_al (a library report).
+	assert.equal(
+		synthReportName([paper(["A Li"]), paper(["B Moortgat"]), paper(["C Chen"]), paper(["D Vos"])]),
+		"synthesis_report_Li_Moortgat_Chen_et_al",
+	);
+	// Same first author twice counts once, and the remaining paper makes it et_al.
+	assert.equal(
+		synthReportName([paper(["Wei Li"]), paper(["Wei Li"])]),
+		"synthesis_report_Li_et_al",
+	);
+	// Umlauts transliterate; papers without authors contribute nothing.
+	assert.equal(
+		synthReportName([paper([]), paper(["Jürgen Müller"])]),
+		"synthesis_report_Mueller_et_al",
+	);
+	// No name anywhere: the caller's question slug stands.
+	assert.equal(synthReportName([paper([]), paper([""])]), null);
+	assert.equal(synthReportName([]), null);
 }
 
 console.log("output.test.ts: all assertions passed");

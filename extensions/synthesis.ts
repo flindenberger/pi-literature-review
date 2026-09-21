@@ -37,7 +37,7 @@ import { type LibraryPaper, matchLibrary } from "../src/corpus.ts";
 import { renderChatDigest, renderReportDigest } from "../src/digest.ts";
 import { createBackend, type LlmBackend } from "../src/llm.ts";
 import { checkEmbedModel, type DoctorState, pullEmbedModel } from "../src/doctor.ts";
-import { outputRoot, writeRunOutputs } from "../src/output.ts";
+import { outputRoot, synthReportName, writeRunOutputs } from "../src/output.ts";
 import { loadRounds, readCurrentScope, realProtocolDeps, writeCurrentScope } from "../src/protocol.ts";
 import { localPdfHref, renderSynthReportHtml } from "../src/render.ts";
 import {
@@ -1113,7 +1113,8 @@ async function runReportWithUi(
 		let htmlPath: string | null = null;
 		if (saveHtml) {
 			try {
-				const written = writeRunOutputs(renderSynthReportHtml(result), result, undefined, "lit-synthesis");
+				const written = writeRunOutputs(
+					renderSynthReportHtml(result), result, undefined, "lit-synthesis", synthReportName(result.papers));
 				htmlPath = written.htmlPath;
 				diagnostics.push(`wrote HTML report to ${written.htmlPath} and JSON copy to ${written.jsonPath}`);
 			} catch (error) {

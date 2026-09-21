@@ -75,7 +75,7 @@ A user install pulls nine small packages and runs no install scripts:
 | Package | Role |
 |---|---|
 | `fast-xml-parser` | parses the arXiv Atom responses |
-| `unpdf` | extracts text from PDFs (pdf.js bundled inside, no further dependencies) |
+| `unpdf` | extracts text from PDFs (pdf.js bundled inside, no further dependencies); loaded only through `loadUnpdf()` in `src/pdfjs-find.ts`, which first installs a `Math.sumPrecise` polyfill on Node versions without it -- pdf.js needs it while parsing fonts, and without it ligatures such as "fi" vanish from the extracted text |
 | `fast-xml-builder`, `strnum`, `anynum`, `is-unsafe`, `xml-naming`, `path-expression-matcher`, `@nodable/entities` | internal helpers of `fast-xml-parser` |
 
 The Pi packages the extension builds on are not among them; see [Running
