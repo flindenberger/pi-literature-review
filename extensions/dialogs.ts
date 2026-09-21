@@ -22,6 +22,7 @@ import {
 	animateEllipsis,
 	type CheckboxItem,
 	checkboxTypingRow,
+	choiceFieldRow,
 	detectDialogLang,
 	DIALOG_TEXT,
 	type DialogLang,
@@ -413,6 +414,8 @@ async function wizardOverlay(
 					const active = state.tab < state.steps.length ? state.steps[state.tab] : undefined;
 					const onText = active !== undefined && (active.kind === "text" || active.kind === "form"
 						|| (active.kind === "choice" && active.options[state.cursors[state.tab]]?.freeText === true)
+						// the companion field under a choice list types too
+						|| choiceFieldRow(active, state.cursors[state.tab])
 						// Checkbox typing rows (steering row, add row): Space must
 						// TYPE there, not toggle. The row indexes live in the
 						// pure layer (checkboxTypingRow), never re-derived here.
@@ -494,6 +497,7 @@ async function wizardSelectLoop(
 	for (const step of steps) {
 		if (step.kind === "text" && step.initial !== undefined) answers[step.id] = step.initial;
 		if (step.kind === "choice" && step.initialIsAnswer && step.initial !== undefined) answers[step.id] = step.initial;
+		if (step.kind === "choice" && step.field?.initial !== undefined) answers[step.field.id] = step.field.initial;
 		if (step.kind === "form") {
 			for (const field of step.fields) {
 				if (field.initial !== undefined) answers[field.id] = field.initial;
@@ -542,6 +546,10 @@ async function wizardSelectLoop(
 					live[field.id] = typeof value === "string" ? value : "";
 				}
 				continue;
+			}
+			if (step.kind === "choice" && step.field) {
+				const fieldValue = answers[step.field.id];
+				live[step.field.id] = typeof fieldValue === "string" ? fieldValue : "";
 			}
 			const value = answers[step.id];
 			live[step.id] = step.kind === "checkbox" ? (Array.isArray(value) ? value : [])
@@ -625,7 +633,9 @@ async function wizardSelectLoop(
 				const optionLabel = option === undefined ? undefined
 					: typeof option.label === "function" ? option.label(liveAnswers()) : option.label;
 				// A free-entry answer matches no option: show the typed value.
-				return `${step.tab}: ${optionLabel ?? (typeof value === "string" ? value : text.unanswered)}`;
+				const fieldValue = step.field && typeof answers[step.field.id] === "string" ? (answers[step.field.id] as string).trim() : "";
+				return `${step.tab}: ${optionLabel ?? (typeof value === "string" ? value : text.unanswered)}`
+					+ (step.field && fieldValue ? ` · ${step.field.label} ${fieldValue}` : "");
 			});
 			const note = options?.submitNote?.(liveAnswers()) ?? null;
 			const picked = await ctx.ui.select(
@@ -792,12 +802,25 @@ async function wizardSelectLoop(
 			}
 			return `${label}${option.value === current ? " ✔" : ""}${suffix}`;
 		});
+		// The companion field as one more row: picking it edits the value
+		// and reopens the menu (the choice itself is still to be made).
+		const fieldRow = step.field
+			? `${step.field.label} ${typeof answers[step.field.id] === "string" && (answers[step.field.id] as string).trim()
+				? (answers[step.field.id] as string).trim() : adapterText.formOff}`
+			: null;
+		if (fieldRow) rows.push(fieldRow);
 		if (index > 0) rows.push(backRow);
 		const picked = await ctx.ui.select(stepTitle, rows, { signal });
 		if (picked === undefined) return null;
 		if (picked === backRow) {
 			index--;
 			direction = -1;
+			continue;
+		}
+		if (step.field && picked === fieldRow) {
+			const currentField = typeof answers[step.field.id] === "string" ? (answers[step.field.id] as string) : "";
+			const edited = await ctx.ui.editor(`${stepTitle} -- ${step.field.label}`, currentField);
+			if (edited !== undefined) answers[step.field.id] = edited;
 			continue;
 		}
 		const option = step.options[rows.indexOf(picked)];
@@ -836,6 +859,7 @@ function dropDisabled(
 			}
 		} else {
 			delete answers[step.id];
+			if (step.kind === "choice" && step.field) delete answers[step.field.id];
 		}
 	}
 }

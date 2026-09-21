@@ -410,6 +410,12 @@ export type WizardStepDef =
 		 * submit page; every step already carries the proposed value, and
 		 * one Enter runs it -- the old "Run as proposed" ergonomics). */
 		initialIsAnswer?: boolean;
+		/** One optional single-line input UNDER the options (after a blank
+		 * line), with its own answer id -- a companion value that is not a
+		 * choice (the records tab's "Min. citations per paper"). A cursor
+		 * stop; typing edits it, Enter leaves the step; empty = not set.
+		 * The value lives in formTexts[step][0]. */
+		field?: { id: string; label: string; initial?: string };
 		enabledIf?: (answers: WizardAnswers) => boolean;
 		disabledNote?: string;
 	}
@@ -764,6 +770,7 @@ export function initWizard(steps: WizardStepDef[], options?: WizardOptions): Wiz
 				&& !step.options.some((option) => option.value === step.initial) ? step.initial
 			: "")),
 		formTexts: steps.map((step) => {
+			if (step.kind === "choice") return step.field ? [step.field.initial ?? ""] : [];
 			if (step.kind !== "form") return [];
 			const staticInit = step.fields.map((field) => field.initial ?? "");
 			if (!step.grow) return staticInit;
@@ -822,7 +829,21 @@ function rowCount(step: WizardStepDef): number {
 			? (step.grow ? step.grow.max + 1 + (step.fields.length ? 1 : 0) : 0)
 				+ step.fields.length + (step.note ? 1 : 0)
 		// A description adds a dim explanation row under its option.
-		: step.options.length + step.options.filter((option) => option.description !== undefined).length;
+		: step.options.length + step.options.filter((option) => option.description !== undefined).length
+			// the companion field: a blank line plus its row
+			+ (step.field ? 2 : 0);
+}
+
+/** Cursor rows of a choice step: the options, then the companion field
+ * row. Description lines are height only, never cursor stops. */
+function choiceNavRows(step: WizardStepDef & { kind: "choice" }): number {
+	return step.options.length + (step.field ? 1 : 0);
+}
+
+/** True when the cursor of a choice step sits on its companion field row
+ * (the adapter lets printable input TYPE there). Pure. */
+export function choiceFieldRow(step: WizardStepDef | undefined, cursor: number): boolean {
+	return step?.kind === "choice" && step.field !== undefined && cursor === step.options.length;
 }
 
 /** The CURRENT labeled fields of a form step: grow fields first
@@ -1126,6 +1147,7 @@ function rawAnswers(state: WizardState): WizardAnswers {
 			});
 		} else {
 			answers[step.id] = state.chosen[i];
+			if (step.field) answers[step.field.id] = state.formTexts[i][0] ?? "";
 		}
 	});
 	return answers;
@@ -1308,6 +1330,9 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 	// Choice step with the cursor on a free-entry option: typing edits
 	// that option's inline value, stored in texts[tab].
 	const onFreeText = current?.kind === "choice" && current.options[cursor]?.freeText === true;
+	// Choice step with the cursor on its companion field row: typing edits
+	// formTexts[tab][0].
+	const onChoiceField = choiceFieldRow(current, cursor);
 	// Checkbox step with the cursor on the steering input row:
 	// typing edits the DRAFT in texts[tab]; Enter commits it.
 	const onCheckboxInput = current?.kind === "checkbox" && !current.loading
@@ -1332,6 +1357,7 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 	// through formFieldIndex, -1 means no edit target.
 	const formIndex = current?.kind === "form"
 		? formFieldIndex(current, state.formTexts[state.tab], cursor)
+		: onChoiceField ? 0
 		: -1;
 	const withFormText = (value: string): WizardState => ({
 		...state,
@@ -1343,7 +1369,7 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 		addTexts: state.addTexts.map((prev, i) => (i === state.tab ? value : prev)),
 	});
 	const editedValue = onText ? effectiveText(state, state.tab)
-		: onForm ? (formIndex >= 0 ? state.formTexts[state.tab][formIndex] ?? "" : null)
+		: onForm || onChoiceField ? (formIndex >= 0 ? state.formTexts[state.tab][formIndex] ?? "" : null)
 		: onFreeText ? effectiveChoiceText(state, state.tab)
 		: onCheckboxAdd ? state.addTexts[state.tab]
 		: onCheckboxInput || onCheckboxTyping ? state.texts[state.tab]
@@ -1419,12 +1445,12 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 		const chars = sanitizeInput(event.chars, onText && current?.kind === "text" && !current.plain);
 		if (!chars) return { state };
 		const value = editedValue + chars;
-		return { state: onForm ? withFormText(value) : onCheckboxAdd ? withAddText(value) : withText(value) };
+		return { state: onForm || onChoiceField ? withFormText(value) : onCheckboxAdd ? withAddText(value) : withText(value) };
 	}
 	if (event === "backspace") {
 		if (editedValue === null) return { state };
 		const value = editedValue.slice(0, -1);
-		return { state: onForm ? withFormText(value) : onCheckboxAdd ? withAddText(value) : withText(value) };
+		return { state: onForm || onChoiceField ? withFormText(value) : onCheckboxAdd ? withAddText(value) : withText(value) };
 	}
 	// The synthetic submit tab: two actionable rows, Enter decides.
 	if (state.tab === state.steps.length) {
@@ -1466,6 +1492,7 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 	// stay in rowCount -- else dim lines become dead cursor rows).
 	const rows = step.kind === "checkbox" ? checkboxNavRows(step)
 		: step.kind === "form" ? formNavRows(step, state.formTexts[state.tab])
+		: step.kind === "choice" ? choiceNavRows(step)
 		: rowCount(step);
 	const withCursor = withCursorAt;
 	const toggled = (): WizardState => {
@@ -1663,6 +1690,9 @@ export function reduceWizard(state: WizardState, event: WizardEvent): WizardStep
 				}
 				return advance(state);
 			}
+			// Enter on the companion field leaves the step; the choice itself
+			// stays as it is (a bare call still needs an option picked).
+			if (choiceFieldRow(step, cursor)) return advance(state);
 			const option = step.options[cursor];
 			if (option === undefined) return { state };
 			// A free-entry option answers with its TYPED (or seeded) value;
@@ -1699,6 +1729,7 @@ export function wizardResult(state: WizardState): WizardResult {
 			// The finish guard means chosen is set on confirmed wizards; the
 			// fallbacks only serve direct wizardResult calls in tests.
 			result[step.id] = state.chosen[i] ?? step.initial ?? step.options[0].value;
+			if (step.field) result[step.field.id] = state.formTexts[i][0] ?? "";
 		}
 	});
 	return result;
@@ -1781,6 +1812,10 @@ function stepValueLines(state: WizardState, i: number): string[] {
 			const kids = children.filter((child) => state.selected[i].has(child.id));
 			return kids.length ? `${item.label}: ${kids.map((child) => child.label).join(", ")}` : item.label;
 		})];
+	}
+	// A choice with a set companion field adds it as its own line.
+	if (step.kind === "choice" && step.field && (state.formTexts[i][0] ?? "").trim()) {
+		return [stepValueLabel(state, i), `${step.field.label} ${(state.formTexts[i][0] ?? "").trim()}`];
 	}
 	return [stepValueLabel(state, i)];
 }
@@ -2064,6 +2099,15 @@ export function wizardView(state: WizardState): WizardView {
 				});
 			}
 		});
+		if (step.field) {
+			const active = cursor === step.options.length;
+			rows.push({ text: "", active: false });
+			rows.push({
+				// flush with the option numbers: its own topic, not an option
+				text: `${active ? "❯ " : "  "}${step.field.label} ${state.formTexts[state.tab][0] ?? ""}${active ? "_" : ""}`,
+				active,
+			});
+		}
 	}
 	return {
 		tabs,

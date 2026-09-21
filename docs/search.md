@@ -57,29 +57,9 @@ Last 5, 10 or 20 years, all years, or an explicit range (`2015-2024`).
 
 ### Records
 
-Per source: 5, 15, 50 (the politeness cap), or custom.
-
-### Code
-
-Four code-first sources, unticked by default, under a head row "Search for
-papers with code" that ticks or clears them all:
-
-| Source | Finds |
-|---|---|
-| Hugging Face Papers | arXiv papers with the repository linked on their Hugging Face page |
-| GitHub README search | repositories whose README cites arxiv.org |
-| Curated lists | awesome lists found by GitHub topic on awesome.ecosyste.ms; entries matched against the blocks |
-| Google Earth Engine | repositories whose README names the GEE code editor and cites a DOI |
-
-These search repositories FIRST and resolve the papers they cite at arXiv
-/ OpenAlex. A repository created more than a year after its paper is
-usually a project citing it, not its code: the record moves to the dropped
-table with that reason, and beyond five years the pair is not listed at
-all. When the found repository is an overview page, the linked repository
-whose name matches the paper title is taken instead.
-
-The four together add roughly 30-90 seconds per run, which is why they are
-off by default. No key involved.
+Per source: 5, 15, 50 (the politeness cap), or custom. Under the list, an
+optional line "Min. citations per paper" (empty = no filter); records below
+it land in the dropped table with the reason.
 
 ### Journals
 
@@ -139,9 +119,27 @@ arXiv, which know no ids, get the name in their author field; the
 post-filter over the author names is the guarantee everywhere. The
 results page carries an "Author scope" row and the JSON `author_scope`.
 
-### Filters
+### Code
 
-Optional: minimum citations.
+Four code-first sources, unticked by default, under a head row "Search for
+papers with code" that ticks or clears them all:
+
+| Source | Finds |
+|---|---|
+| Hugging Face Papers | arXiv papers with the repository linked on their Hugging Face page |
+| GitHub README search | repositories whose README cites arxiv.org |
+| Curated lists | awesome lists found by GitHub topic on awesome.ecosyste.ms; entries matched against the blocks |
+| Google Earth Engine | repositories whose README names the GEE code editor and cites a DOI |
+
+These search repositories FIRST and resolve the papers they cite at arXiv
+/ OpenAlex. A repository created more than a year after its paper is
+usually a project citing it, not its code: the record moves to the dropped
+table with that reason, and beyond five years the pair is not listed at
+all. When the found repository is an overview page, the linked repository
+whose name matches the paper title is taken instead.
+
+The four together add roughly 30-90 seconds per run, which is why they are
+off by default. No key involved.
 
 ## Block search
 

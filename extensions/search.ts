@@ -315,8 +315,6 @@ const SEARCH_TEXT: Record<DialogLang, {
 	journalIdle: string;
 	journalNoneFound: string;
 	journalFetchFailed: (message: string) => string;
-	filterTab: string;
-	filterTitle: string;
 	minCitesLabel: string;
 	note: (sources: string[], variants: number, keyless: string[]) => string;
 	badYears: (spec: string) => string;
@@ -418,9 +416,7 @@ const SEARCH_TEXT: Record<DialogLang, {
 		journalIdle: "wartet auf eine Suchanfrage",
 		journalNoneFound: "keine Journals zu dieser Suchanfrage gefunden",
 		journalFetchFailed: (message) => `Journal-Liste nicht abrufbar: ${message}`,
-		filterTab: "Filter",
-		filterTitle: "Optionale Filter (leer = aus).",
-		minCitesLabel: "Mindestzitationen",
+		minCitesLabel: "Mindestzitationen je Paper:",
 		note: (sources, variants, keyless) =>
 			`Quellen: ${sources.join(", ")}${variants ? ` · +${variants} Query-Variante(n)` : ""}`
 			+ (keyless.length ? ` · ${keyless.join(", ")} aus (optional, braucht einen kostenlosen API-Schlüssel)` : ""),
@@ -523,9 +519,7 @@ const SEARCH_TEXT: Record<DialogLang, {
 		journalIdle: "waiting for a search query",
 		journalNoneFound: "no journals found for this query",
 		journalFetchFailed: (message) => `journal list not reachable: ${message}`,
-		filterTab: "Filters",
-		filterTitle: "Optional filters (empty = off).",
-		minCitesLabel: "Min. citations",
+		minCitesLabel: "Min. citations per paper:",
 		note: (sources, variants, keyless) =>
 			`Sources: ${sources.join(", ")}${variants ? ` · +${variants} query variant(s)` : ""}`
 			+ (keyless.length ? ` · ${keyless.join(", ")} off (optional, needs a free API key)` : ""),
@@ -775,23 +769,13 @@ async function intakeWizard(
 			// On the proposal-confirm path the proposal IS the answer; a bare
 			// call starts genuinely unanswered (no pre-set check marks).
 			...(query.trim() ? { initialIsAnswer: true } : {}),
-		},
-		{
-			// Code-first search: the four sources are always on screen,
-			// unchecked; the head row "Search for papers with code" is a
-			// master switch (checks all, else clears all), each source stays
-			// individually untickable. Off by default (30-90 s per run); an
-			// agent code_sources proposal arrives with those sources checked.
-			kind: "checkbox", id: "code", tab: text.codeTab, title: text.codeTitle,
-			items: Object.keys(CODE_SEARCHERS).map((id) => {
-				const [label, description] = text.codeSource[id] ?? [id, ""];
-				return { id, label, ...(description ? { description } : {}) };
-			}),
-			selectAllLabel: text.codeHead, nextLabel: text.codeNext, optional: true, masterRow: true,
-			...(proposed.codeSources?.length ? { preselected: proposed.codeSources } : {}),
-			// Own list topic: lands as a child row under "Curated lists",
-			// checked; the topic loader below verifies it on its next pass.
-			addInput: { id: "code_topic_own", label: text.codeTopicOwn, parent: CODE_LIST_SOURCE },
+			// The only numeric filter, as an optional line under the counts
+			// (a per-paper filter -- not in the Authors tab, whose rows carry
+			// the AUTHORS' citation counts). Empty = off.
+			field: {
+				id: "min_cites", label: text.minCitesLabel,
+				...(proposed.minCites !== undefined ? { initial: String(proposed.minCites) } : {}),
+			},
 		},
 		{
 			// Journal filter: the top journals for this query load INTO the
@@ -837,13 +821,23 @@ async function intakeWizard(
 			nextLabel: text.journalNext, optional: true, cursorStart: "next",
 		},
 		{
-			kind: "form", id: "filters", tab: text.filterTab, title: text.filterTitle,
-			fields: [
-				{
-					id: "min_cites", label: text.minCitesLabel,
-					...(proposed.minCites !== undefined ? { initial: String(proposed.minCites) } : {}),
-				},
-			],
+			// Code-first search: the four sources are always on screen,
+			// unchecked; the head row "Search for papers with code" is a
+			// master switch (checks all, else clears all), each source stays
+			// individually untickable. Off by default (30-90 s per run); an
+			// agent code_sources proposal arrives with those sources checked.
+			kind: "checkbox", id: "code", tab: text.codeTab, title: text.codeTitle,
+			// A blank line sets the head row apart from the sources; the
+			// cursor starts on Next (off by default, Enter passes the tab).
+			items: Object.keys(CODE_SEARCHERS).map((id, index) => {
+				const [label, description] = text.codeSource[id] ?? [id, ""];
+				return { id, label, ...(description ? { description } : {}), ...(index === 0 ? { spaceBefore: true } : {}) };
+			}),
+			selectAllLabel: text.codeHead, nextLabel: text.codeNext, optional: true, masterRow: true, cursorStart: "next",
+			...(proposed.codeSources?.length ? { preselected: proposed.codeSources } : {}),
+			// Own list topic: lands as a child row under "Curated lists",
+			// checked; the topic loader below verifies it on its next pass.
+			addInput: { id: "code_topic_own", label: text.codeTopicOwn, parent: CODE_LIST_SOURCE },
 		},
 	];
 	const result = await runWizard(ctx, steps, signal, {

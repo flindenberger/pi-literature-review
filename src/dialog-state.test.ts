@@ -10,6 +10,7 @@ import {
 	type CheckboxItem,
 	type CheckboxState,
 	checkboxTypingRow,
+	choiceFieldRow,
 	detectDialogLang,
 	DIALOG_TEXT,
 	initWizard,
@@ -1612,6 +1613,62 @@ function drive(
 	// Enter on the empty typing row advances (Enter-through = one stroke).
 	moveTo("Type author name");
 	assert.equal(reduceWizard(state, "confirm").state.tab, 1);
+}
+
+// Choice step with a companion field (the records tab's "Min. citations
+// per paper"): Enter on an option still picks and advances; the field row
+// sits under a blank line after the options, is the only extra cursor stop
+// (description lines are none -- they used to be dead cursor rows), types,
+// and Enter there leaves the step; the value exports under its own id and
+// adds a review line only when set.
+{
+	const steps: WizardStepDef[] = [
+		{
+			kind: "choice", id: "count", tab: "Records", title: "How many?",
+			options: [
+				{ value: "5", label: "5", description: "default" },
+				{ value: "15", label: "15" },
+			],
+			field: { id: "min_cites", label: "Min. citations per paper:" },
+		},
+		{ kind: "text", id: "q", tab: "Q", title: "q", plain: true },
+	];
+	let state = initWizard(steps);
+	// down, down -> field row (the description line is skipped)
+	state = reduceWizard(state, "down").state;
+	state = reduceWizard(state, "down").state;
+	assert.ok(choiceFieldRow(state.steps[0], state.cursors[0]));
+	state = reduceWizard(state, { kind: "input", chars: "12" }).state;
+	state = reduceWizard(state, "backspace").state;
+	state = reduceWizard(state, { kind: "input", chars: "0" }).state;
+	const view = wizardView(state);
+	assert.deepEqual(view.rows.slice(-2).map((row) => row.text), ["", "❯ Min. citations per paper: 10_"]);
+	assert.equal(view.rows.filter((row) => row.active).length, 1);
+	// down wraps to the first option: three cursor rows in total
+	state = reduceWizard(state, "down").state;
+	assert.equal(state.cursors[0], 0);
+	// Enter on an option picks it and advances; the field value survives
+	const picked = reduceWizard(state, "confirm").state;
+	assert.equal(picked.tab, 1);
+	assert.equal(picked.chosen[0], "5");
+	const result = wizardResult(picked);
+	assert.equal(result.count, "5");
+	assert.equal(result.min_cites, "10");
+	// Enter ON the field leaves the step without choosing
+	let viaField = initWizard(steps);
+	viaField = reduceWizard(viaField, "up").state; // wraps to the field row
+	assert.ok(choiceFieldRow(viaField.steps[0], viaField.cursors[0]));
+	viaField = reduceWizard(viaField, "confirm").state;
+	assert.equal(viaField.tab, 1);
+	assert.equal(viaField.chosen[0], null);
+	// review: the field adds its own line only when set
+	const submit = { ...picked, tab: steps.length };
+	const lines = wizardView(submit).rows.map((row) => row.text);
+	assert.ok(lines.some((line) => line.includes("Min. citations per paper: 10")));
+	const unset = reduceWizard(initWizard(steps), "confirm").state;
+	assert.ok(!wizardView({ ...unset, tab: steps.length }).rows.some((row) => row.text.includes("Min. citations")));
+	// the height budget covers options, description, blank line and field
+	assert.ok(maxWizardRows(initWizard(steps)) >= 5);
 }
 
 console.log("dialog-state tests passed");
