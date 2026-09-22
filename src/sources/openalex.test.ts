@@ -5,7 +5,7 @@
  */
 
 import assert from "node:assert/strict";
-import { buildAuthorSearchFilter, buildBlockSearch, buildFacetFilter, lookupOpenalexDois, parseFacetPage, parseFacets, toSourceRecord,
+import { accessFromWork, buildAuthorSearchFilter, buildBlockSearch, buildFacetFilter, lookupOpenalexDois, parseFacetPage, parseFacets, toSourceRecord,
 	buildAuthorIdFilter,
 	buildWorksParams,
 	parseAuthorAutocomplete,
@@ -218,6 +218,32 @@ const parseJournalFacetPage = parseFacetPage;
 	// 2026-09-15: the negated pipe form and the comma form agree, 210 -> 188
 	// works for one author), also without any author scope.
 	assert.equal(buildWorksParams("water", 5).get("filter"), "type:!peer-review|supplementary-materials|paratext|dataset|grant");
+}
+
+/* ---------------- accessFromWork ---------------- */
+{
+	// Hybrid article: best location first, then every OTHER open location;
+	// closed locations and image files (graphical abstracts) are left out.
+	const hybrid = accessFromWork({
+		type: "article",
+		open_access: { is_oa: true, oa_status: "hybrid" },
+		best_oa_location: { pdf_url: "https://ars.els-cdn.com/content/image/ga1_lrg.jpg" },
+		locations: [
+			{ is_oa: false, pdf_url: "https://www.sciencedirect.com/closed/pdf" },
+			{ is_oa: true, pdf_url: "https://upcommons.upc.edu/bitstreams/x/download" },
+			{ is_oa: true, pdf_url: "https://upcommons.upc.edu/bitstreams/x/download" },
+			{ is_oa: true, pdf_url: null },
+		],
+	});
+	assert.deepEqual(hybrid, {
+		level: "free",
+		oa_status: "hybrid",
+		pdf_urls: ["https://upcommons.upc.edu/bitstreams/x/download"],
+	});
+	// Conference abstract: abstract_only even though OpenAlex calls it gold.
+	assert.equal(accessFromWork({ type: "conference-abstract", open_access: { is_oa: true, oa_status: "gold" } }).level, "abstract_only");
+	assert.deepEqual(accessFromWork({ type: "article", open_access: { is_oa: false, oa_status: "closed" } }), { level: "restricted", oa_status: "closed" });
+	assert.deepEqual(accessFromWork({}), { level: "unknown" });
 }
 
 console.log("openalex.test.ts: all assertions passed");

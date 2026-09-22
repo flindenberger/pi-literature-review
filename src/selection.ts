@@ -3,14 +3,18 @@
  *
  * Input is a list of identifiers (DOIs / arXiv IDs); a language model only
  * ever transports them, it never chooses, produces or repairs a download
- * link. Each identifier runs through a fixed resolver chain -- pdf_url from
- * the saved search records (lit-search/*.json), then Unpaywall (index of
- * legal open-access copies; needs a contact email), then the arXiv PDF
- * endpoint -- and the first source answering with real PDF bytes (%PDF
- * magic check) is saved to the lit-selection/ library, one file per paper,
- * keyed like dedupe so the same paper is never stored twice. Papers without
- * a free copy are reported with their publisher link ("obtain via
- * authorized access"), never fetched from gray sources. Per-paper report,
+ * link. The access level comes from the saved search (OpenAlex open-access
+ * status), else from a live OpenAlex lookup: restricted papers and
+ * conference abstracts are reported, not tried. Every other identifier runs
+ * through a fixed resolver chain -- pdf_url from the saved search records
+ * (lit-search/*.json), every open PDF location OpenAlex lists, Unpaywall
+ * (index of legal open-access copies; needs a contact email), the
+ * citation_pdf_url of the article page (only where the publisher's
+ * robots.txt allows it), then the arXiv PDF endpoint -- and the first
+ * source answering with real PDF bytes (%PDF magic check) is saved to the
+ * lit-selection/ library, one file per paper, keyed like dedupe so the
+ * same paper is never stored twice. Papers that do not download are listed
+ * with a browser link, never fetched from gray sources. Per-paper report,
  * nothing fails silently. Shared by the pi tool/command and the CLI.
  */
 
@@ -18,6 +22,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { join } from "node:path";
 import { identityKey } from "./pipeline.ts";
 import { outputRoot } from "./output.ts";
+import { type AccessInfo, lookupAccessByDoi } from "./sources/openalex.ts";
 import { asciiPart, contactMailto, errorName, firstAuthorLastName, userAgent } from "./types.ts";
 
 const DOWNLOAD_TIMEOUT_MS = 30_000; // per GET request
@@ -121,20 +126,32 @@ export interface SidecarEntry {
 	/** From the saved search records; used for the human-readable filename. */
 	authors?: string[];
 	year?: string | null;
+	/** Access level and open PDF locations (OpenAlex), when the saved search
+	 * carries them. */
+	access?: AccessInfo;
+}
+
+/** The records of one saved search: the results table, then the dropped
+ * table (its rows are tickable in the report too). */
+function payloadRecords(payload: unknown): unknown[] {
+	const { results, dropped } = (payload ?? {}) as { results?: unknown; dropped?: unknown };
+	return [
+		...(Array.isArray(results) ? results : []),
+		...(Array.isArray(dropped) ? dropped.map((entry) => (entry as { record?: unknown })?.record) : []),
+	];
 }
 
 /**
- * Index every record of the saved searches by its identity key. Later
- * payloads only fill gaps (first title wins, missing pdf_url is completed)
- * -- values are copied from the API-sourced records, never rewritten.
+ * Index every record of the saved searches (results and dropped table) by
+ * its identity key. Later records only fill gaps (first title wins, missing
+ * pdf_url is completed) -- values are copied from the API-sourced records,
+ * never rewritten.
  */
 export function buildSidecarIndex(payloads: unknown[]): Map<string, SidecarEntry> {
 	const index = new Map<string, SidecarEntry>();
 	for (const payload of payloads) {
-		const results = (payload as { results?: unknown })?.results;
-		if (!Array.isArray(results)) continue;
-		for (const record of results) {
-			const { title, pdf_url, doi, arxiv_id, authors, year } = (record ?? {}) as Partial<SidecarEntry>;
+		for (const record of payloadRecords(payload)) {
+			const { title, pdf_url, doi, arxiv_id, authors, year, access } = (record ?? {}) as Partial<SidecarEntry>;
 			const cleanAuthors = Array.isArray(authors)
 				? authors.filter((a): a is string => typeof a === "string")
 				: [];
@@ -149,6 +166,7 @@ export function buildSidecarIndex(payloads: unknown[]): Map<string, SidecarEntry
 					arxiv_id: arxiv_id ?? "",
 					authors: cleanAuthors,
 					year: typeof year === "string" ? year : null,
+					...(access?.level ? { access } : {}),
 				});
 			} else {
 				if (!known.title && title) known.title = title;
@@ -157,6 +175,7 @@ export function buildSidecarIndex(payloads: unknown[]): Map<string, SidecarEntry
 				if (!known.doi && doi) known.doi = doi;
 				if (!known.authors?.length && cleanAuthors.length) known.authors = cleanAuthors;
 				if (!known.year && typeof year === "string") known.year = year;
+				if (!known.access && access?.level) known.access = access;
 			}
 		}
 	}
@@ -205,10 +224,11 @@ export interface PaperMeta {
 	pdf_url: string;
 	/** ISO timestamp of the download (or of the adoption, see src/adopt.ts). */
 	fetched: string;
-	/** Which resolver produced the PDF (record link, Unpaywall, arXiv) --
-	 * or "adopted": the PDF was already on disk and its identity came from
-	 * an identifier found in the PDF text, verified by an API lookup. */
-	via: "record" | "unpaywall" | "arxiv" | "adopted";
+	/** Which resolver produced the PDF (record link, OpenAlex location,
+	 * Unpaywall, article page, arXiv) -- or "adopted": the PDF was already
+	 * on disk and its identity came from an identifier found in the PDF
+	 * text, verified by an API lookup. */
+	via: PdfSource | "adopted";
 }
 
 /** Pure assembly; identifiers fall back to the parsed target so even a
@@ -235,7 +255,14 @@ export function buildPaperMeta(
  * Per-paper fetch -- injectable deps so the chain logic tests offline *
  * ------------------------------------------------------------------ */
 
-export type FetchStatus = "downloaded" | "already" | "not_free" | "dead_link" | "blocked" | "invalid";
+/** The resolvers of the chain, in order. */
+export type PdfSource = "record" | "openalex" | "unpaywall" | "landing" | "arxiv";
+
+/** browser: free to read, but no automatic download worked (publisher
+ * blocks programs, or no link answered with a PDF). restricted: not open
+ * access, not tried. abstract_only: a conference abstract, no PDF exists. */
+export type FetchStatus =
+	| "downloaded" | "already" | "browser" | "restricted" | "abstract_only" | "not_free" | "dead_link" | "invalid";
 
 export interface FetchResult {
 	raw: string;
@@ -250,8 +277,10 @@ export interface FetchResult {
 	detail: string;
 	/** Library path of the PDF (downloaded / already). */
 	path?: string;
-	/** Which resolver produced the PDF: record link, Unpaywall or arXiv. */
-	source?: "record" | "unpaywall" | "arxiv";
+	/** Which resolver produced the PDF. */
+	source?: PdfSource;
+	/** Where to open the paper in a browser when it did not download. */
+	browserUrl?: string;
 	/** Diagnostics collected along the chain (skips, non-PDF answers, ...). */
 	notes: string[];
 }
@@ -266,6 +295,12 @@ export interface FetchDeps {
 	downloadPdf(url: string): Promise<{ ok: true; bytes: Uint8Array } | { ok: false; reason: string; status?: number }>;
 	/** Unpaywall lookup; url=null means no free copy (note says why/skipped). */
 	unpaywallPdfUrl(doi: string): Promise<{ url: string | null; note?: string }>;
+	/** Live OpenAlex access lookup for identifiers without a saved access
+	 * level; access=null when OpenAlex does not list the DOI or failed. */
+	openAlexAccess(doi: string): Promise<{ access: AccessInfo | null; note?: string }>;
+	/** citation_pdf_url of the article page behind the DOI; url=null when
+	 * robots.txt forbids it, the page refuses or names no PDF (note says which). */
+	landingPdfUrl(doi: string): Promise<{ url: string | null; note?: string }>;
 }
 
 export async function fetchOne(
@@ -302,60 +337,95 @@ export async function fetchOne(
 		return result;
 	}
 
-	// Fixed resolver chain; the first source answering with real PDF bytes wins.
-	const candidates: Array<{ url: string; source: FetchResult["source"] }> = [];
-	if (entry?.pdf_url) candidates.push({ url: entry.pdf_url, source: "record" });
-	if (target.kind === "doi") {
-		const { url, note } = await deps.unpaywallPdfUrl(target.id);
-		if (note) result.notes.push(note);
-		if (url) candidates.push({ url, source: "unpaywall" });
+	// Access level: from the saved search, else looked up live (older
+	// searches, identifiers typed by hand).
+	let access = entry?.access ?? null;
+	if (!access && target.kind === "doi") {
+		const answer = await deps.openAlexAccess(target.id);
+		if (answer.note) result.notes.push(answer.note);
+		access = answer.access;
 	}
 	const arxivId = target.kind === "arxiv" ? target.id : entry?.arxiv_id ?? "";
-	if (arxivId) candidates.push({ url: `https://arxiv.org/pdf/${arxivId}`, source: "arxiv" });
-
-	const tried = new Set<string>();
-	let blockedUrl = "";
-	for (const candidate of candidates) {
-		if (tried.has(candidate.url)) continue;
-		tried.add(candidate.url);
-		const answer = await deps.downloadPdf(candidate.url);
-		if (!answer.ok) {
-			result.notes.push(`${candidate.source}: ${answer.reason}`);
-			// 403 on an OA link = the publisher refuses automated clients
-			// (bot detection); a normal browser gets the same file fine.
-			if (answer.status === 403 && !blockedUrl) blockedUrl = candidate.url;
-			continue;
-		}
-		if (!isPdfBytes(answer.bytes)) {
-			result.notes.push(`${candidate.source}: link did not return a PDF`);
-			continue;
-		}
-		deps.saveFile(path, answer.bytes);
-		// Metadata twin: written only for fresh downloads; "already" papers
-		// from before this existed are matched by filename recomputation.
-		deps.saveMeta(
-			path.replace(/\.pdf$/, ".json"),
-			buildPaperMeta(target, entry, candidate.source as PaperMeta["via"], new Date().toISOString()),
-		);
-		result.status = "downloaded";
-		result.detail = `downloaded via ${candidate.source}`;
-		result.path = path;
-		result.source = candidate.source;
+	const doiLink = target.kind === "doi" ? `https://doi.org/${target.id}` : "";
+	// Not tried: no automatic route leads to these (an arXiv copy would,
+	// but such records are "free" by definition).
+	if (!arxivId && access?.level === "abstract_only") {
+		result.status = "abstract_only";
+		result.detail = `only an abstract exists (conference abstract), no PDF to download: ${doiLink}`;
+		return result;
+	}
+	if (!arxivId && access?.level === "restricted") {
+		result.status = "restricted";
+		result.detail = `restricted access (subscription) -- open in your browser, e.g. in your university network: ${doiLink}`;
+		result.browserUrl = doiLink;
 		return result;
 	}
 
-	if (blockedUrl) {
-		result.status = "blocked";
-		result.detail = `publisher blocks automated downloads -- open in your browser: ${blockedUrl}`;
+	// Fixed resolver chain; the first source answering with real PDF bytes
+	// wins. Each step is asked only when the steps before it failed.
+	const noteOf = (answer: { url: string | null; note?: string }) => {
+		if (answer.note) result.notes.push(answer.note);
+		return answer.url ? [answer.url] : [];
+	};
+	const steps: Array<{ source: PdfSource; urls: () => Promise<string[]> }> = [
+		{ source: "record", urls: async () => (entry?.pdf_url ? [entry.pdf_url] : []) },
+		{ source: "openalex", urls: async () => access?.pdf_urls ?? [] },
+		{ source: "unpaywall", urls: async () => (target.kind === "doi" ? noteOf(await deps.unpaywallPdfUrl(target.id)) : []) },
+		{ source: "landing", urls: async () => (target.kind === "doi" ? noteOf(await deps.landingPdfUrl(target.id)) : []) },
+		{ source: "arxiv", urls: async () => (arxivId ? [`https://arxiv.org/pdf/${arxivId}`] : []) },
+	];
+
+	const tried = new Set<string>();
+	let blockedUrl = "";
+	for (const step of steps) {
+		for (const url of await step.urls()) {
+			if (tried.has(url)) continue;
+			tried.add(url);
+			const answer = await deps.downloadPdf(url);
+			if (!answer.ok) {
+				result.notes.push(`${step.source}: ${answer.reason}`);
+				// 403 on an OA link = the publisher refuses automated clients
+				// (bot detection); a normal browser gets the same file fine.
+				if (answer.status === 403 && !blockedUrl) blockedUrl = url;
+				continue;
+			}
+			if (!isPdfBytes(answer.bytes)) {
+				result.notes.push(`${step.source}: link did not return a PDF`);
+				continue;
+			}
+			deps.saveFile(path, answer.bytes);
+			// Metadata twin: written only for fresh downloads; "already" papers
+			// from before this existed are matched by filename recomputation.
+			deps.saveMeta(
+				path.replace(/\.pdf$/, ".json"),
+				buildPaperMeta(target, entry, step.source, new Date().toISOString()),
+			);
+			result.status = "downloaded";
+			result.detail = `downloaded via ${step.source}`;
+			result.path = path;
+			result.source = step.source;
+			return result;
+		}
+	}
+
+	const fallbackLink = doiLink || (arxivId ? `https://arxiv.org/abs/${arxivId}` : "");
+	if (blockedUrl || access?.level === "free") {
+		result.status = "browser";
+		result.browserUrl = blockedUrl || fallbackLink;
+		result.detail = blockedUrl
+			? `free, but the publisher blocks automated downloads -- open in your browser: ${result.browserUrl}`
+			: `free, but no link returned a PDF (${tried.size} tried) -- open in your browser: ${result.browserUrl}`;
 	} else if (tried.size === 0) {
 		result.status = "not_free";
+		result.browserUrl = doiLink || undefined;
 		result.detail = target.kind === "doi"
-			? `not freely available -- obtain via authorized access: https://doi.org/${target.id}`
+			? `not freely available -- obtain via authorized access: ${doiLink}`
 			: "no download source known for this identifier";
 	} else {
 		result.status = "dead_link";
+		result.browserUrl = doiLink || undefined;
 		result.detail = target.kind === "doi"
-			? `no working free link (${tried.size} tried) -- obtain via authorized access: https://doi.org/${target.id}`
+			? `no working free link (${tried.size} tried) -- obtain via authorized access: ${doiLink}`
 			: `no working free link (${tried.size} tried)`;
 	}
 	return result;
@@ -368,9 +438,11 @@ export async function fetchOne(
 const STATUS_LABEL: Record<FetchStatus, string> = {
 	downloaded: "downloaded",
 	already: "already in library",
+	browser: "free, open in browser",
+	restricted: "restricted",
+	abstract_only: "abstract only",
 	not_free: "not freely available",
 	dead_link: "no working free link",
-	blocked: "blocked by publisher",
 	invalid: "invalid identifier",
 };
 
@@ -379,7 +451,9 @@ export function renderFetchReport(results: FetchResult[], papersDir: string): st
 	const lines: string[] = [];
 	lines.push(
 		`Fetch complete: ${count("downloaded")} downloaded, ${count("already")} already in the library, `
-		+ `${count("blocked")} blocked by the publisher (browser link in the report), `
+		+ `${count("browser")} free but to open in your browser (automatic download failed), `
+		+ `${count("restricted")} restricted (browser, e.g. in your university network), `
+		+ `${count("abstract_only")} abstract only (no PDF exists), `
 		+ `${count("not_free") + count("dead_link")} not freely available, ${count("invalid")} invalid.`,
 	);
 	lines.push(`PDF library: ${papersDir}`);
@@ -390,6 +464,21 @@ export function renderFetchReport(results: FetchResult[], papersDir: string): st
 		lines.push(`   ${result.detail}`);
 		for (const note of result.notes) lines.push(`   note: ${note}`);
 	});
+	// One list of everything that needs the browser, free papers first.
+	const toOpen = [
+		...results.filter((r) => r.status === "browser"),
+		...results.filter((r) => r.status === "restricted"),
+		...results.filter((r) => (r.status === "not_free" || r.status === "dead_link") && r.browserUrl),
+	];
+	if (toOpen.length) {
+		lines.push("");
+		lines.push(`Open in your browser (${toOpen.length}): save each PDF into ${papersDir} -- `
+			+ "/lit-synthesis recognises it by the DOI or arXiv ID printed in the PDF.");
+		for (const result of toOpen) {
+			const title = result.title ? ` | ${result.title}` : "";
+			lines.push(`- [${STATUS_LABEL[result.status]}] ${result.browserUrl}${title}`);
+		}
+	}
 	return lines.join("\n");
 }
 
@@ -420,6 +509,168 @@ async function downloadPdfReal(
 		return { ok: true, bytes: new Uint8Array(await response.arrayBuffer()) };
 	} catch (error) {
 		return { ok: false, reason: `network error: ${errorName(error)}` };
+	}
+}
+
+/* ------------------------------------------------------------------ *
+ * robots.txt and the article page -- pure parsers, thin IO           *
+ * ------------------------------------------------------------------ */
+
+/** Product token this tool uses to find its group in a robots.txt. */
+const ROBOTS_AGENT = "pi-literature-review";
+
+/** A robots.txt path pattern as a regular expression: "*" matches any
+ * run of characters, a trailing "$" anchors the end (RFC 9309). */
+function robotsPattern(pattern: string): RegExp {
+	const anchored = pattern.endsWith("$");
+	const body = (anchored ? pattern.slice(0, -1) : pattern)
+		.split("*")
+		.map((part) => part.replace(/[.+?^${}()|[\]\\]/g, "\\$&"))
+		.join(".*");
+	return new RegExp(`^${body}${anchored ? "$" : ""}`);
+}
+
+/**
+ * Whether a robots.txt allows `agent` to fetch `pathAndQuery` (RFC 9309):
+ * the groups naming the agent's product token apply, else the "*" groups,
+ * else everything is allowed; the longest matching rule wins, a tie goes
+ * to Allow. Pure.
+ */
+export function robotsAllows(robotsTxt: string, agent: string, pathAndQuery: string): boolean {
+	type Group = { agents: string[]; rules: Array<{ allow: boolean; pattern: string }> };
+	const groups: Group[] = [];
+	let current: Group | null = null;
+	let lastWasAgent = false;
+	for (const rawLine of robotsTxt.split(/\r?\n/)) {
+		const line = rawLine.replace(/#.*$/, "").trim();
+		const colon = line.indexOf(":");
+		if (colon < 0) continue;
+		const field = line.slice(0, colon).trim().toLowerCase();
+		const value = line.slice(colon + 1).trim();
+		if (field === "user-agent") {
+			if (!current || !lastWasAgent) {
+				current = { agents: [], rules: [] };
+				groups.push(current);
+			}
+			current.agents.push(value.toLowerCase());
+			lastWasAgent = true;
+		} else if ((field === "allow" || field === "disallow") && current) {
+			if (value) current.rules.push({ allow: field === "allow", pattern: value });
+			lastWasAgent = false;
+		} else {
+			lastWasAgent = false;
+		}
+	}
+	const token = agent.toLowerCase();
+	let applicable = groups.filter((group) => group.agents.includes(token));
+	if (!applicable.length) applicable = groups.filter((group) => group.agents.includes("*"));
+	let best: { allow: boolean; length: number } | null = null;
+	for (const rule of applicable.flatMap((group) => group.rules)) {
+		if (!robotsPattern(rule.pattern).test(pathAndQuery)) continue;
+		const length = rule.pattern.length;
+		if (!best || length > best.length || (length === best.length && rule.allow)) {
+			best = { allow: rule.allow, length };
+		}
+	}
+	return best ? best.allow : true;
+}
+
+/** The citation_pdf_url meta tag of an article page (the Highwire tag
+ * publishers set for Google Scholar), resolved against the page URL;
+ * null when the page names none. Pure. */
+export function citationPdfUrl(html: string, pageUrl: string): string | null {
+	for (const tag of html.match(/<meta\b[^>]*>/gi) ?? []) {
+		if (!/\bname\s*=\s*["']citation_pdf_url["']/i.test(tag)) continue;
+		const content = tag.match(/\bcontent\s*=\s*["']([^"']+)["']/i)?.[1];
+		if (!content) continue;
+		try {
+			return new URL(content.replace(/&amp;/g, "&").trim(), pageUrl).href;
+		} catch {
+			return null;
+		}
+	}
+	return null;
+}
+
+/** robots.txt per origin for this run. "" = no rules (allow all), null =
+ * unreachable (disallow all, RFC 9309: 5xx or network error). */
+const robotsCache = new Map<string, Promise<string | null>>();
+
+function robotsText(origin: string, signal?: AbortSignal): Promise<string | null> {
+	let cached = robotsCache.get(origin);
+	if (!cached) {
+		cached = (async () => {
+			try {
+				const response = await fetch(`${origin}/robots.txt`, {
+					headers: { "User-Agent": userAgent() },
+					redirect: "follow",
+					signal: requestSignal(signal),
+				});
+				if (response.status === 200) return await response.text();
+				// 4xx: "unavailable" -- RFC 9309 allows access; 5xx: unreachable.
+				return response.status >= 400 && response.status < 500 ? "" : null;
+			} catch {
+				return null;
+			}
+		})();
+		robotsCache.set(origin, cached);
+	}
+	return cached;
+}
+
+async function robotsAllowedReal(url: string, signal?: AbortSignal): Promise<boolean> {
+	const parsed = new URL(url);
+	const text = await robotsText(parsed.origin, signal);
+	return text !== null && robotsAllows(text, ROBOTS_AGENT, `${parsed.pathname}${parsed.search}`);
+}
+
+/** Redirect hops followed from doi.org to the article page. */
+const MAX_REDIRECTS = 8;
+
+/** Resolve the DOI hop by hop (every hop checked against its robots.txt),
+ * then read the page's citation_pdf_url (checked as well). */
+async function landingPdfUrlReal(
+	doi: string,
+	signal?: AbortSignal,
+): Promise<{ url: string | null; note?: string }> {
+	let url = `https://doi.org/${doi}`;
+	try {
+		for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+			if (!(await robotsAllowedReal(url, signal))) {
+				return { url: null, note: `article page: robots.txt of ${new URL(url).host} does not allow automated access` };
+			}
+			const response = await fetch(url, {
+				headers: { "User-Agent": userAgent() },
+				redirect: "manual",
+				signal: requestSignal(signal),
+			});
+			const location = response.headers.get("location");
+			if (response.status >= 300 && response.status < 400 && location) {
+				url = new URL(location, url).href;
+				continue;
+			}
+			if (response.status !== 200) {
+				return { url: null, note: `article page at ${new URL(url).host} answered ${response.status}` };
+			}
+			const pdf = citationPdfUrl(await response.text(), url);
+			if (!pdf) return { url: null, note: `article page at ${new URL(url).host} names no PDF` };
+			if (!(await robotsAllowedReal(pdf, signal))) {
+				return { url: null, note: `article page: robots.txt of ${new URL(pdf).host} does not allow the PDF` };
+			}
+			return { url: pdf };
+		}
+		return { url: null, note: "article page: too many redirects" };
+	} catch (error) {
+		return { url: null, note: `article page network error: ${errorName(error)}` };
+	}
+}
+
+async function openAlexAccessReal(doi: string): Promise<{ access: AccessInfo | null; note?: string }> {
+	try {
+		const access = (await lookupAccessByDoi([doi])).get(doi.toLowerCase()) ?? null;
+		return access ? { access } : { access: null, note: "OpenAlex does not list this DOI (access unknown)" };
+	} catch (error) {
+		return { access: null, note: `OpenAlex access lookup failed: ${error instanceof Error ? error.message : error}` };
 	}
 }
 
@@ -484,6 +735,8 @@ export async function runSelection(
 		saveMeta: (path, meta) => writeFileSync(path, JSON.stringify(meta, null, 2) + "\n", "utf8"),
 		downloadPdf: (url) => downloadPdfReal(url, options.signal),
 		unpaywallPdfUrl: (doi) => unpaywallPdfUrlReal(doi, mailto, options.signal),
+		openAlexAccess: (doi) => openAlexAccessReal(doi),
+		landingPdfUrl: (doi) => landingPdfUrlReal(doi, options.signal),
 	};
 	const results: FetchResult[] = [];
 	const total = options.identifiers.length;

@@ -21,12 +21,31 @@ Escape cancels the whole run; Escape during a running download aborts it.
 
 ## Resolution
 
-Per identifier a fixed chain, first source with real PDF bytes wins:
+First the access level: taken from the saved search (the search stamps
+every record with its OpenAlex open-access status), else asked live from
+OpenAlex for identifiers outside every saved search. Records from the
+dropped table count as saved too. Two levels are reported without trying
+anything:
+
+- `restricted` (not open access) -- listed with the DOI link to open in the
+  browser, e.g. in a university network whose subscription covers it
+- `abstract only` (OpenAlex type `conference-abstract`) -- no paper PDF
+  exists
+
+Every other identifier runs a fixed chain; the first source with real PDF
+bytes wins, and a later step is only asked when the earlier ones failed:
 
 1. the record's own `pdf_url` from the saved search
-2. Unpaywall (`api.unpaywall.org`, the legal open-access index by the
-   non-profit OurResearch)
-3. the arXiv PDF endpoint
+2. every open-access PDF location OpenAlex lists (publisher, university
+   repositories, preprint servers), in OpenAlex's order
+3. Unpaywall (`api.unpaywall.org`, the legal open-access index by the
+   non-profit OurResearch; needs a contact email)
+4. the article page: the DOI is resolved hop by hop and the page's
+   `citation_pdf_url` meta tag (the tag publishers set for Google Scholar)
+   is read -- only where the site's `robots.txt` allows this tool
+   (RFC 9309: product token `pi-literature-review`, else the `*` rules;
+   an unreachable robots.txt counts as "no"). A 403 is never worked around.
+5. the arXiv PDF endpoint
 
 Every download is checked for the `%PDF` magic bytes, so an HTML error
 page is never saved as a PDF. No gray sources, ever.
@@ -39,9 +58,16 @@ Honest per paper:
 |---|---|
 | `downloaded` | in the library |
 | `already in library` | never fetched twice |
-| `blocked by publisher` | some publishers (MDPI, for example) refuse ALL automated clients with HTTP 403; the report gives the direct link, which opens fine in a browser |
-| `not freely available -- obtain via authorized access` | with the publisher link |
+| `free, open in browser` | open access, but no automatic download worked: the publisher refuses automated clients (HTTP 403; MDPI, Elsevier, Wiley, for example) or no link answered with a PDF. The link opens fine in a browser |
+| `restricted` | not open access, not tried; DOI link to open in the browser |
+| `abstract only` | a conference abstract, no PDF exists |
+| `not freely available -- obtain via authorized access` | access unknown and no free copy found; with the publisher link |
 | `invalid identifier` | -- |
+
+Below the per-paper lines, one list collects every paper to open in the
+browser (free ones first, then restricted, then the rest). Save such a PDF
+into `lit-selection/`: `/lit-synthesis` adopts it by the DOI or arXiv ID
+printed in the PDF (see [synthesis.md](synthesis.md)).
 
 ## Library naming
 

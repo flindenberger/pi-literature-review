@@ -1,6 +1,6 @@
 /**
  * Deterministic metadata enrichment for the search stage -- lookups at open
- * APIs, never scraping, never an LLM. Four stages live here:
+ * APIs, never scraping, never an LLM. Five stages live here:
  *
  *   1. enrichAll: records still missing citations, venue or abstract after
  *      dedupe are looked up at OpenAlex by DOI, in batches (arXiv records
@@ -13,6 +13,9 @@
  *   4. addCodeLinks: a code repository per paper -- from the abstract
  *      text, else one guarded GitHub search per arXiv id or DOI (a
  *      disclosed heuristic).
+ *   5. addAccessStatus: open-access level and open PDF locations per
+ *      paper from OpenAlex, batched (full text free, abstract only,
+ *      restricted, unknown).
  *
  * Only empty fields are filled, never overwritten, and every filled field
  * is recorded in `enriched` (field -> provider) so JSON and HTML can mark
@@ -21,7 +24,7 @@
 
 import { githubToken, s2ApiKey } from "./config.ts";
 import { fetchGithub, GITHUB_SEARCH_URL, githubHeaders, LIST_REPO_NAME } from "./sources/github.ts";
-import { reconstructAbstract } from "./sources/openalex.ts";
+import { type AccessInfo, type AccessLevel, lookupAccessByDoi, reconstructAbstract } from "./sources/openalex.ts";
 import { fetchAbstractByDoi } from "./sources/semanticscholar.ts";
 import { contactMailto, userAgent, warn as defaultWarn } from "./types.ts";
 
@@ -237,6 +240,42 @@ export async function enrichAll<T extends EnrichableRecord>(
 			+ (s2AbstractFailures.size ? `, ${s2AbstractFailures.size} lookup(s) failed` : ""));
 	}
 	return { records: out, s2AbstractFailures };
+}
+
+/* ---------------- Access stage (OpenAlex open-access status) ---------------- */
+
+/**
+ * Stamp every record with its access level and the open PDF locations
+ * OpenAlex lists. Records with a DOI are looked up in batches; an arXiv
+ * record is free in any case (the arXiv PDF endpoint always answers). A
+ * failed lookup leaves the DOI records "unknown", with a warning. Maps
+ * its input 1:1 (same length, same order); the lookup is injectable for
+ * tests.
+ */
+export async function addAccessStatus<T extends EnrichableRecord>(
+	records: T[],
+	warn: (message: string) => void = defaultWarn,
+	lookup: (dois: string[]) => Promise<Map<string, AccessInfo>> = lookupAccessByDoi,
+): Promise<Array<T & { access: AccessInfo }>> {
+	const dois = records.map((record) => record.doi).filter(Boolean);
+	let byDoi = new Map<string, AccessInfo>();
+	if (dois.length) {
+		try {
+			byDoi = await lookup(dois);
+		} catch (error) {
+			warn(`access lookup failed: ${error instanceof Error ? error.message : error}; access shown as unknown`);
+		}
+	}
+	const out = records.map((record) => {
+		const found = record.doi ? byDoi.get(record.doi.toLowerCase()) : undefined;
+		let access: AccessInfo = found ?? { level: "unknown" };
+		if (record.arxiv_id && access.level !== "abstract_only") access = { ...access, level: "free" };
+		return { ...record, access };
+	});
+	const count = (level: AccessLevel) => out.filter((record) => record.access.level === level).length;
+	warn(`access: ${count("free")} full text free, ${count("abstract_only")} abstract only, `
+		+ `${count("restricted")} restricted, ${count("unknown")} unknown`);
+	return out;
 }
 
 /* ---------------- 2. Journal-score stage ---------------- */

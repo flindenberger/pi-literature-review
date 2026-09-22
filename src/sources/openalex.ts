@@ -250,6 +250,89 @@ export async function lookupOpenalexDois(dois: string[]): Promise<SourceRecord[]
 	return records;
 }
 
+/**
+ * Access level of a paper, from the OpenAlex work object:
+ *   free          -- open access per OpenAlex (gold, diamond, hybrid,
+ *                    green, bronze); arXiv records are always free
+ *   abstract_only -- work type conference-abstract: no paper PDF exists
+ *   restricted    -- not open access; a subscription (e.g. a university
+ *                    network) may still reach it in the browser
+ *   unknown       -- no DOI, or OpenAlex does not know it
+ */
+export type AccessLevel = "free" | "abstract_only" | "restricted" | "unknown";
+
+export interface AccessInfo {
+	level: AccessLevel;
+	/** OpenAlex open_access.oa_status verbatim (gold, green, closed, ...). */
+	oa_status?: string;
+	/** Every open-access PDF location OpenAlex lists, best location first. */
+	pdf_urls?: string[];
+}
+
+/** Image files that OpenAlex sometimes lists as a pdf_url (graphical
+ * abstracts) are no PDF and are left out. */
+const IMAGE_URL = /\.(jpe?g|png|gif|webp|svg)(\?|$)/i;
+
+/** Access info from one OpenAlex work object. Pure; every value is copied
+ * from the API answer, the level follows fixed rules. */
+export function accessFromWork(work: Record<string, any>): AccessInfo {
+	const openAccess = work?.open_access ?? {};
+	const oaStatus = typeof openAccess.oa_status === "string" ? openAccess.oa_status : undefined;
+	const urls: string[] = [];
+	const add = (value: unknown) => {
+		if (typeof value !== "string") return;
+		const url = value.trim();
+		if (url && !IMAGE_URL.test(url) && !urls.includes(url)) urls.push(url);
+	};
+	add(work?.best_oa_location?.pdf_url);
+	for (const location of (work?.locations ?? []) as Array<Record<string, any>>) {
+		if (location?.is_oa === true) add(location.pdf_url);
+	}
+	const level: AccessLevel = work?.type === "conference-abstract"
+		? "abstract_only"
+		: openAccess.is_oa === true
+			? "free"
+			: openAccess.is_oa === false
+				? "restricted"
+				: "unknown";
+	return {
+		level,
+		...(oaStatus ? { oa_status: oaStatus } : {}),
+		...(urls.length ? { pdf_urls: urls } : {}),
+	};
+}
+
+/**
+ * Access info for a list of DOIs, keyed by lowercased DOI. Batched 50 per
+ * request; DOIs OpenAlex does not know are absent from the map. Throws on
+ * a non-2xx answer (the caller degrades to "unknown").
+ */
+export async function lookupAccessByDoi(dois: string[]): Promise<Map<string, AccessInfo>> {
+	const unique = [...new Set(dois.map((d) => d.trim().toLowerCase()).filter(Boolean))];
+	const access = new Map<string, AccessInfo>();
+	for (let i = 0; i < unique.length; i += DOI_BATCH_SIZE) {
+		const batch = unique.slice(i, i + DOI_BATCH_SIZE);
+		const params = new URLSearchParams({
+			filter: `doi:${batch.join("|")}`,
+			select: "doi,type,open_access,best_oa_location,locations",
+			"per-page": String(DOI_BATCH_SIZE),
+		});
+		const mailto = contactMailto();
+		if (mailto) params.set("mailto", mailto);
+		const response = await fetch(`${BASE_URL}?${params}`, {
+			headers: { "User-Agent": userAgent(), Accept: "application/json" },
+			signal: AbortSignal.timeout(TIMEOUT_MS),
+		});
+		if (!response.ok) throw new Error(`OpenAlex answered HTTP ${response.status}`);
+		const data = (await response.json()) as Record<string, any>;
+		for (const work of (data?.results ?? []) as Array<Record<string, any>>) {
+			const doi = typeof work?.doi === "string" ? work.doi.replace("https://doi.org/", "").toLowerCase() : "";
+			if (doi) access.set(doi, accessFromWork(work));
+		}
+	}
+	return access;
+}
+
 /** One bucket of a facet query below: plain API metadata. Journals and
  * authors share the shape. */
 export interface Facet {

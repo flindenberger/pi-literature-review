@@ -1260,4 +1260,40 @@ const baseReport: SynthReport = {
 	assert.ok(!renderHtml({ ...payload, author_scope: null }).includes("Author scope"));
 }
 
+/* ---------------- access markers and PDF link rule ---------------- */
+{
+	const row = (doi: string, access: RenderPayload["results"][number]["access"], pdf_url = "") => ({
+		...payload.results[0], title: `Paper ${doi}`, doi, pdf_url, access,
+	});
+	const html = renderHtml({
+		...payload,
+		access_counts: { free: 1, abstract_only: 1, restricted: 1, unknown: 0 },
+		results: [
+			row("10.1/free", { level: "free", oa_status: "hybrid", pdf_urls: ["https://repo.example/free.pdf"] }, "https://publisher.example/free.pdf"),
+			row("10.1/closed", { level: "restricted", oa_status: "closed" }, "https://publisher.example/closed.pdf"),
+			row("10.1/abstract", { level: "abstract_only", oa_status: "gold" }),
+			row("10.1/image", { level: "free", oa_status: "gold" }, "https://cdn.example/ga1_lrg.jpg"),
+		],
+	});
+	assert.ok(html.includes('<span class="access access-free" title="Open access: the full text is legally free (OpenAlex: hybrid)">full text free</span>'));
+	assert.ok(html.includes(">restricted</span>"));
+	assert.ok(html.includes(">abstract only</span>"));
+	// PDF link: OpenAlex location first; none for restricted rows or image files.
+	assert.ok(html.includes('href="https://repo.example/free.pdf"'));
+	assert.ok(!html.includes("publisher.example/free.pdf"));
+	assert.ok(!html.includes("publisher.example/closed.pdf"));
+	assert.ok(!html.includes("ga1_lrg.jpg"));
+	// Checkboxes carry the level for the strip's note.
+	assert.ok(html.includes('data-id="10.1/closed" data-access="restricted"'));
+	assert.ok(html.includes('<span class="accessnote"></span>'));
+	assert.ok(html.includes("restricted (open in your browser, e.g. in your university network)"));
+	// Summary row.
+	assert.ok(html.includes("<dt>Access</dt><dd>1 full text free, 1 abstract only, 1 restricted, 0 unknown"));
+	// Older sidecars: no marker, no row, the source link as before.
+	const old = renderHtml(payload);
+	assert.ok(!old.includes('class="access access-'));
+	assert.ok(!old.includes("<dt>Access</dt>"));
+	assert.ok(old.includes('href="https://example.org/paper.pdf"'));
+}
+
 console.log("render.test.ts: all assertions passed");

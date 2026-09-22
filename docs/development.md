@@ -113,7 +113,7 @@ Where each stage lives; the adapter/engine pair shares its basename.
 |---|---|
 | `extensions/search.ts` | the `pi-literature-search` tool + `/lit-search` command: intake wizard (tabs, variant suggestions via the Pi model, journal/author loaders), digest card |
 | `src/search.ts` | run orchestration: per source and query fetch, pipeline steps in order, payload assembly, source failures |
-| `src/sources/arxiv.ts`, `crossref.ts`, `openalex.ts`, `semanticscholar.ts` | one client per source: query building (booleans, author scope), record normalization; OpenAlex also holds the facet queries and the abstract reconstruction |
+| `src/sources/arxiv.ts`, `crossref.ts`, `openalex.ts`, `semanticscholar.ts` | one client per source: query building (booleans, author scope), record normalization; OpenAlex also holds the facet queries, the abstract reconstruction and the access classification (`accessFromWork`, `lookupAccessByDoi`) |
 | `src/sources/polite.ts` | the shared politeness: per-source request spacing, timeout, retry on rate-limit answers (used by every client) |
 | `src/sources/github.ts` | GitHub: the one search pacer both code directions share, aggregator-name filter, repository search, raw README fetch |
 | `src/sources/huggingface.ts` | Hugging Face Papers search (arXiv id + linked repository per hit; undocumented site API, shape pinned) |
@@ -121,9 +121,9 @@ Where each stage lives; the adapter/engine pair shares its basename.
 | `src/codesearch.ts` | the code-first searchers (hf-papers, github-readme, awesome-lists, gee-github): repositories first, identifiers out of READMEs, resolution at arXiv / OpenAlex, the date gate; injectable clients for offline tests |
 | `src/pipeline.ts` | junk filter, deduplication, term matching, block labeling with evidence, the metadata filters, abstract gate |
 | `src/verify.ts` | the trust gate: DOI / arXiv ID resolution over HTTP |
-| `src/enrich.ts` | OpenAlex identifier lookup (cites, venue, abstract), journal 2-year citedness, author metrics, code links (abstract URL on any known host, else a GitHub search per arXiv id or DOI with date/owner guards; records already linked by a code-first source are left alone) |
+| `src/enrich.ts` | OpenAlex identifier lookup (cites, venue, abstract), journal 2-year citedness, author metrics, code links (abstract URL on any known host, else a GitHub search per arXiv id or DOI with date/owner guards; records already linked by a code-first source are left alone), access status per record (OpenAlex open-access level + open PDF locations, batched) |
 | `src/intake.ts` | query parsing: block expressions, derived blocks, stopwords, prose detection, variant prompts, variant-line parsing and per-role synonym caps, year ranges |
-| `src/render.ts` | the results page: tables, sorting, BibTeX, download steps, search documentation block, footnotes |
+| `src/render.ts` | the results page: tables, sorting, BibTeX, access markers, download steps, search documentation block, footnotes |
 | `src/network.ts` | the static citation-graph page (`network.html`) with its embedded fetch + layout script |
 | `src/digest.ts` | the agent-facing digest and the transcript card text |
 | `src/output.ts` | output folders and collision-safe file names |
@@ -136,7 +136,7 @@ Where each stage lives; the adapter/engine pair shares its basename.
 | File | Holds |
 |---|---|
 | `extensions/selection.ts` | the `pi-literature-selection` tool + `/lit-selection` command: identifier dialog, Unpaywall-email dialog, consent dialog, per-paper report widget |
-| `src/selection.ts` | identifier parsing, resolver chain (record link -> Unpaywall -> arXiv), `%PDF` check, library naming, the report |
+| `src/selection.ts` | identifier parsing, access gate (restricted / abstract only are reported, not tried), resolver chain (record link -> OpenAlex locations -> Unpaywall -> article page `citation_pdf_url` behind a robots.txt check -> arXiv), `%PDF` check, library naming, the report with the browser list |
 
 </details>
 

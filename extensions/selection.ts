@@ -4,8 +4,9 @@
  * lit-selection/ library; a model's only job is to transport identifiers
  * (DOIs / arXiv IDs) -- from the pasted "Download these papers: ..."
  * sentence, from digest lines or from the JSON sidecar. Resolution and
- * download are deterministic code (src/selection.ts): record link ->
- * Unpaywall -> arXiv, %PDF magic check, per-paper report. No LLM ever
+ * download are deterministic code (src/selection.ts): access gate, then
+ * record link -> OpenAlex locations -> Unpaywall -> article page -> arXiv,
+ * %PDF magic check, per-paper report. No LLM ever
  * chooses, produces or repairs a download link.
  *
  * Three code gates before any network request: the identifier dialog
@@ -200,7 +201,7 @@ async function fetchConsentDialog(
 	ctx.ui.setWidget(SELECTION_WIDGET, [
 		`Download ${identifiers.length} paper(s) as PDF`,
 		`Library:  ${root}/lit-selection`,
-		"Sources:  record link, Unpaywall, arXiv (legal open access only)",
+		"Sources:  record link, OpenAlex, Unpaywall, article page, arXiv (legal open access only)",
 		...shown,
 	]);
 	try {
@@ -277,9 +278,10 @@ export default function literatureSelection(pi: ExtensionAPI) {
 			"then a terminal dialog listing what would be downloaded, and nothing is fetched before they confirm. " +
 			"If the result says the user cancelled, ask what they want to change; do not retry unchanged. " +
 			"Resolution is deterministic code over legal open-access sources only (the record's own PDF link, " +
-			"Unpaywall, arXiv); no gray sources. The result is a short per-paper report: downloaded / already in " +
-			"the library / blocked by publisher (with a link the user opens in their browser -- do NOT try to " +
-			"download those another way) / not freely available (with the publisher link for authorized access). " +
+			"OpenAlex locations, Unpaywall, the article page where robots.txt allows it, arXiv); no gray sources. " +
+			"The result is a short per-paper report: downloaded / already in the library / free, open in browser " +
+			"and restricted (both with a link the user opens in their browser -- do NOT try to download those " +
+			"another way) / abstract only (no PDF exists) / not freely available (with the publisher link). " +
 			"When referring to report lines, copy them EXACTLY; never re-type titles or identifiers from memory.",
 		promptSnippet:
 			"Download selected papers as verified PDFs into the lit-selection/ library; returns a short per-paper report",

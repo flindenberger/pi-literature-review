@@ -210,6 +210,11 @@ to ies -- and no stemming or synonyms beyond that.
 8. **Topic gate for code-only finds** -- title + abstract miss the
    required query blocks (see Code above), dropped table.
 9. **Optional filters**, then **labeling**.
+10. **Access status** -- every record of both tables is looked up at
+    OpenAlex by DOI, batched (about one request per 50 records): open-access
+    level and every open PDF location. Stored as `access` in the JSON
+    (`level`, OpenAlex `oa_status` verbatim, `pdf_urls`), counted in
+    `access_counts` for the results table.
 
 Nothing disappears silently: every removed record sits in the dropped
 table with its reason, and a failed source is shown while the run
@@ -239,11 +244,28 @@ labeled by host. Provenance sits in the JSON (`enriched.code_url`:
 abstract, github, or the code-first source that started from the
 repository).
 
+**Access marker**, in the DOI column of every row, from the OpenAlex
+open-access status (the exact OpenAlex category in the tooltip):
+
+| Marker | Rule |
+|---|---|
+| `full text free` | open access (gold, diamond, hybrid, green, bronze); arXiv records always |
+| `abstract only` | OpenAlex type `conference-abstract` (e.g. EGU abstracts): no paper PDF exists |
+| `restricted` | not open access; a subscription, e.g. a university network, often reaches it in the browser |
+| `unknown` | no DOI, or OpenAlex does not list it |
+
+The **PDF** link next to it is the first open PDF location OpenAlex lists,
+else the link the source delivered; restricted rows and image files
+(graphical abstracts listed as PDF) get none. The *Access* row above the
+tables sums the markers of the results table. Every row stays tickable.
+
 **Download steps**: a strip above the results table, sticky while
 scrolling, walks through the handover to `/lit-selection` in three steps:
 tick rows in either table (ticked rows stay tinted), press "Copy download
 request", paste `Download these papers: <id>, ...` into the Pi chat. The
-step markers fill as each step is done.
+step markers fill as each step is done. When ticked rows are restricted
+or abstract only, a note under the steps says how many and what that
+means for the download.
 
 The agent receives only a short digest -- counts, HTML path, one reference
 line per record -- never the full JSON.

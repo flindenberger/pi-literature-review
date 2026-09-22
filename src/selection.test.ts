@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import {
 	buildPaperMeta,
 	buildSidecarIndex,
+	citationPdfUrl,
 	type FetchDeps,
 	fetchOne,
 	identifierSlug,
@@ -17,6 +18,7 @@ import {
 	type PaperMeta,
 	parseIdentifier,
 	renderFetchReport,
+	robotsAllows,
 } from "./selection.ts";
 
 /* ---------------- parseIdentifier ---------------- */
@@ -116,6 +118,23 @@ const payloadB = {
 	// version-tolerant key: v1 record is found via the versionless ID
 	assert.ok(index.get(parseIdentifier("2401.16393").key as string));
 }
+{
+	// Dropped rows are tickable in the report: indexed too, with their access level.
+	const index = buildSidecarIndex([{
+		results: [],
+		dropped: [{
+			reason: "no abstract",
+			record: {
+				title: "Dropped but wanted", pdf_url: "", doi: "10.3390/w8050199", arxiv_id: "",
+				access: { level: "free", oa_status: "gold", pdf_urls: ["https://repo.example/w8050199.pdf"] },
+			},
+		}, { reason: "junk", record: null }],
+	}]);
+	const entry = index.get("doi:10.3390/w8050199");
+	assert.ok(entry);
+	assert.equal(entry.title, "Dropped but wanted");
+	assert.deepEqual(entry.access?.pdf_urls, ["https://repo.example/w8050199.pdf"]);
+}
 
 /* ---------------- buildPaperMeta ---------------- */
 {
@@ -162,6 +181,8 @@ function makeDeps(overrides: Partial<FetchDeps> = {}): {
 			return { ok: true, bytes: pdfBytes };
 		},
 		unpaywallPdfUrl: async () => ({ url: null, note: "Unpaywall: no open copy listed" }),
+		openAlexAccess: async () => ({ access: null, note: "OpenAlex does not list this DOI (access unknown)" }),
+		landingPdfUrl: async () => ({ url: null, note: "article page names no PDF" }),
 		...overrides,
 	};
 	return { deps, saved, urls, metas };
@@ -252,14 +273,15 @@ function makeDeps(overrides: Partial<FetchDeps> = {}): {
 	assert.ok(result.detail.includes("obtain via authorized access"));
 }
 
-// 5b) publisher answers 403 -> honest "blocked" with a browser link
+// 5b) publisher answers 403 -> "browser" with the blocked link to open
 {
 	const { deps } = makeDeps({
 		downloadPdf: async () => ({ ok: false, reason: "server answered 403", status: 403 }),
 		unpaywallPdfUrl: async () => ({ url: "https://www.mdpi.com/blocked.pdf" }),
 	});
 	const result = await fetchOne(parseIdentifier("10.3390/rs13081505"), undefined, "/papers", deps);
-	assert.equal(result.status, "blocked");
+	assert.equal(result.status, "browser");
+	assert.equal(result.browserUrl, "https://www.mdpi.com/blocked.pdf");
 	assert.ok(result.detail.includes("publisher blocks automated downloads"));
 	assert.ok(result.detail.includes("open in your browser: https://www.mdpi.com/blocked.pdf"));
 }
@@ -281,6 +303,120 @@ function makeDeps(overrides: Partial<FetchDeps> = {}): {
 	assert.equal(urls.length, 0);
 }
 
+// 8) restricted (saved access level): nothing tried, browser link to the DOI
+{
+	const { deps, urls } = makeDeps({
+		openAlexAccess: async () => { throw new Error("must not be asked: the entry carries the level"); },
+	});
+	const entry = {
+		title: "Closed", pdf_url: "https://publisher.example/closed.pdf", doi: "10.1016/x", arxiv_id: "",
+		access: { level: "restricted" as const, oa_status: "closed" },
+	};
+	const result = await fetchOne(parseIdentifier("10.1016/x"), entry, "/papers", deps);
+	assert.equal(result.status, "restricted");
+	assert.equal(result.browserUrl, "https://doi.org/10.1016/x");
+	assert.ok(result.detail.includes("university network"));
+	assert.equal(urls.length, 0);
+}
+
+// 9) conference abstract from the live lookup: reported, nothing tried
+{
+	const { deps, urls } = makeDeps({
+		openAlexAccess: async () => ({ access: { level: "abstract_only", oa_status: "gold" } }),
+	});
+	const result = await fetchOne(parseIdentifier("10.5194/egusphere-egu23-6745"), undefined, "/papers", deps);
+	assert.equal(result.status, "abstract_only");
+	assert.ok(result.detail.includes("no PDF to download"));
+	assert.equal(urls.length, 0);
+}
+
+// 10) OpenAlex locations are tried in order after the record link; the
+// later steps are never asked once one of them delivers
+{
+	let landingAsked = false;
+	const { deps, urls } = makeDeps({
+		downloadPdf: async (url) => {
+			urls.push(url);
+			if (url.includes("repo-two")) return { ok: true, bytes: pdfBytes };
+			return url.includes("publisher")
+				? { ok: false, reason: "server answered 403", status: 403 }
+				: { ok: true, bytes: htmlBytes };
+		},
+		landingPdfUrl: async () => { landingAsked = true; return { url: null }; },
+	});
+	const entry = {
+		title: "Hybrid", pdf_url: "https://publisher.example/a.pdf", doi: "10.1016/y", arxiv_id: "",
+		access: { level: "free" as const, pdf_urls: ["https://publisher.example/a.pdf", "https://repo-one.example/a", "https://repo-two.example/a.pdf"] },
+	};
+	const result = await fetchOne(parseIdentifier("10.1016/y"), entry, "/papers", deps);
+	assert.equal(result.status, "downloaded");
+	assert.equal(result.source, "openalex");
+	// The record link equals the first location: asked once only.
+	assert.deepEqual(urls, ["https://publisher.example/a.pdf", "https://repo-one.example/a", "https://repo-two.example/a.pdf"]);
+	assert.equal(landingAsked, false);
+}
+
+// 11) article page: asked after Unpaywall, before arXiv
+{
+	const { deps, urls } = makeDeps({
+		openAlexAccess: async () => ({ access: { level: "free", oa_status: "gold" } }),
+		landingPdfUrl: async (doi) => ({ url: `https://hess.example/${doi.split("/")[1]}.pdf` }),
+	});
+	const result = await fetchOne(parseIdentifier("10.5194/hess-30-797-2026"), undefined, "/papers", deps);
+	assert.equal(result.status, "downloaded");
+	assert.equal(result.source, "landing");
+	assert.deepEqual(urls, ["https://hess.example/hess-30-797-2026.pdf"]);
+}
+
+// 12) free per OpenAlex, but no link answers with a PDF -> browser
+{
+	const { deps } = makeDeps({
+		downloadPdf: async () => ({ ok: true, bytes: htmlBytes }),
+		openAlexAccess: async () => ({ access: { level: "free", oa_status: "gold", pdf_urls: ["https://www.mdpi.com/x/pdf"] } }),
+	});
+	const result = await fetchOne(parseIdentifier("10.3390/w14030309"), undefined, "/papers", deps);
+	assert.equal(result.status, "browser");
+	assert.equal(result.browserUrl, "https://doi.org/10.3390/w14030309");
+	assert.ok(result.detail.includes("no link returned a PDF (1 tried)"));
+}
+
+/* ---------------- robotsAllows / citationPdfUrl ---------------- */
+{
+	const robots = [
+		"User-agent: GPTBot",
+		"Disallow: /",
+		"",
+		"User-agent: *",
+		"Disallow: /cache/",
+		"Disallow: /*.otmi$",
+		"Allow: /cache/public/ # comment",
+	].join("\n");
+	assert.equal(robotsAllows(robots, "pi-literature-review", "/articles/x.pdf"), true);
+	assert.equal(robotsAllows(robots, "pi-literature-review", "/cache/x"), false);
+	assert.equal(robotsAllows(robots, "pi-literature-review", "/cache/public/x"), true); // longest rule wins
+	assert.equal(robotsAllows(robots, "pi-literature-review", "/a/b.otmi"), false);
+	assert.equal(robotsAllows(robots, "pi-literature-review", "/a/b.otmi?x"), true); // $ anchors the end
+	assert.equal(robotsAllows(robots, "GPTBot", "/articles/x.pdf"), false); // own group, not "*"
+	assert.equal(robotsAllows("User-agent: *\nDisallow: /", "pi-literature-review", "/x"), false);
+	assert.equal(robotsAllows("User-agent: *\nDisallow:", "pi-literature-review", "/x"), true); // empty rule
+	assert.equal(robotsAllows("", "pi-literature-review", "/x"), true);
+	// Two agent lines share one group.
+	assert.equal(robotsAllows("User-agent: a\nUser-agent: pi-literature-review\nDisallow: /p", "pi-literature-review", "/p1"), false);
+}
+{
+	const page = `<head><meta name="citation_title" content="T">
+<meta content="/articles/30/797/2026/hess-30-797-2026.pdf" name="citation_pdf_url"></head>`;
+	assert.equal(
+		citationPdfUrl(page, "https://hess.copernicus.org/articles/30/797/2026/"),
+		"https://hess.copernicus.org/articles/30/797/2026/hess-30-797-2026.pdf",
+	);
+	assert.equal(
+		citationPdfUrl(`<meta name='citation_pdf_url' content='https://x.org/a?b=1&amp;c=2'>`, "https://x.org/"),
+		"https://x.org/a?b=1&c=2",
+	);
+	assert.equal(citationPdfUrl("<meta name=\"citation_title\" content=\"T\">", "https://x.org/"), null);
+}
+
 /* ---------------- renderFetchReport ---------------- */
 {
 	const { deps } = makeDeps();
@@ -293,7 +429,17 @@ function makeDeps(overrides: Partial<FetchDeps> = {}): {
 	const notFree = await fetchOne(parseIdentifier("10.5555/paywalled"), undefined, "/papers", makeDeps({
 		unpaywallPdfUrl: async () => ({ url: null, note: "Unpaywall: no open copy listed" }),
 	}).deps);
-	const report = renderFetchReport([downloaded, notFree], "/papers");
+	const restricted = await fetchOne(
+		parseIdentifier("10.1016/closed"),
+		{ title: "Closed paper", pdf_url: "", doi: "10.1016/closed", arxiv_id: "", access: { level: "restricted" } },
+		"/papers",
+		deps,
+	);
+	const report = renderFetchReport([downloaded, notFree, restricted], "/papers");
+	assert.ok(report.includes("1 restricted (browser, e.g. in your university network)"));
+	assert.ok(report.includes("Open in your browser (2): save each PDF into /papers"));
+	assert.ok(report.includes("- [restricted] https://doi.org/10.1016/closed | Closed paper"));
+	assert.ok(report.includes("- [not freely available] https://doi.org/10.5555/paywalled"));
 	assert.ok(report.includes("Fetch complete: 1 downloaded"));
 	assert.ok(report.includes("PDF library: /papers"));
 	assert.ok(report.includes("Vistula sandbars"));

@@ -2,7 +2,7 @@
  * Search engine: runSearch() runs the whole deterministic pipeline
  * (sources incl. the opt-in code-first searchers -> junk filter -> dedupe ->
  * late code pairs to dropped -> verify -> enrich -> abstract gate ->
- * user filters -> sort -> grouping -> code links) and returns the payload
+ * user filters -> sort -> grouping -> code links -> access) and returns the payload
  * that the HTML page, the digest and the JSON sidecar are built from.
  * Shared by the pi tool/command and the CLI. No LLM call anywhere: every
  * record field traces to a search-API response; the only LLM influence
@@ -25,11 +25,11 @@ import {
 } from "./pipeline.ts";
 import { blockQuery, CODE_SEARCHERS, searchWords } from "./codesearch.ts";
 import { codeListTopics, s2ApiKey } from "./config.ts";
-import { addCodeLinks, addJournalScores, enrichAll } from "./enrich.ts";
+import { addAccessStatus, addCodeLinks, addJournalScores, enrichAll } from "./enrich.ts";
 import { queryBlocks } from "./intake.ts";
 import { buildSearchQuery, searchArxiv } from "./sources/arxiv.ts";
 import { buildCrossrefParams, searchCrossref } from "./sources/crossref.ts";
-import { buildWorksParams, searchOpenalex } from "./sources/openalex.ts";
+import { type AccessInfo, type AccessLevel, buildWorksParams, searchOpenalex } from "./sources/openalex.ts";
 import { buildHfQuery } from "./sources/huggingface.ts";
 import { buildBulkQuery, searchSemanticScholar } from "./sources/semanticscholar.ts";
 import type { SourceRecord, SourceScope } from "./types.ts";
@@ -109,6 +109,14 @@ export interface SearchOptions {
 /** What runSearch returns: the HTML page, the digest and the JSON sidecar
  * are built from this. */
 export type SearchPayload = Awaited<ReturnType<typeof runSearch>>;
+
+/** Records per access level (free, abstract_only, restricted, unknown);
+ * records without an access field are not counted. Pure. */
+export function countAccess(records: Array<{ access?: AccessInfo }>): Record<AccessLevel, number> {
+	const counts: Record<AccessLevel, number> = { free: 0, abstract_only: 0, restricted: 0, unknown: 0 };
+	for (const record of records) if (record.access) counts[record.access.level]++;
+	return counts;
+}
 
 export async function runSearch(options: SearchOptions) {
 	const warn = options.onWarn ?? (() => {});
@@ -385,20 +393,24 @@ export async function runSearch(options: SearchOptions) {
 	// beyond the search itself.
 	aborted();
 	const droppedEntries = [...dropped, ...lateGate.dropped, ...abstractGate.dropped, ...topicGate.dropped, ...filterResult.dropped];
-	let results = grouped;
+	let results: Array<(typeof grouped)[number] & { access?: AccessInfo }> = grouped;
 	let droppedOut = droppedEntries;
 	if (options.enrich !== false) {
 		const combined = [...grouped, ...droppedEntries.map((entry) => entry.record)] as typeof grouped;
 		// The per-record GitHub search only when the user asked for code
 		// sources; the free abstract signal always runs.
-		const withLinks = await addCodeLinks(combined, warn, options.signal, codeSources.length > 0);
-		// addCodeLinks maps its input 1:1 (same length, same order). A
+		const linked = await addCodeLinks(combined, warn, options.signal, codeSources.length > 0);
+		// Access stage over the same list: dropped rows are tickable too, so
+		// they need the open-access level and the open PDF locations as well.
+		aborted();
+		const withLinks = await addAccessStatus(linked, warn);
+		// Both stages map their input 1:1 (same length, same order). A
 		// violation would silently re-pair drop reasons with the wrong
 		// records, so it fails loudly here instead.
-		if (withLinks.length !== combined.length) {
-			throw new Error(`code-link stage returned ${withLinks.length} record(s) for ${combined.length} input(s)`);
+		if (linked.length !== combined.length || withLinks.length !== combined.length) {
+			throw new Error(`code-link/access stage returned ${withLinks.length} record(s) for ${combined.length} input(s)`);
 		}
-		results = withLinks.slice(0, grouped.length) as typeof grouped;
+		results = withLinks.slice(0, grouped.length) as typeof results;
 		droppedOut = droppedEntries.map((entry, index) => ({
 			reason: entry.reason,
 			record: withLinks[grouped.length + index],
@@ -515,6 +527,9 @@ export async function runSearch(options: SearchOptions) {
 			excluded_by_filters: filterResult.dropped.length,
 			included: results.length,
 		},
+		// Access levels of the results table (OpenAlex open-access status;
+		// null when enrichment is off).
+		access_counts: options.enrich === false ? null : countAccess(results),
 		filters: filtersActive ? filters : null,
 		sort: options.sort ?? null,
 		results,

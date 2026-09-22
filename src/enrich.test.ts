@@ -6,7 +6,7 @@
  */
 
 import assert from "node:assert/strict";
-import { addCodeLinks, applyEnrichment, applyJournalScores, bareArxivId, codeLookupCandidates, codeSearchKey, codeUrlFromAbstract, enrichAll, lookupDoi, ownerMatchesAuthor, pickCodeRepo } from "./enrich.ts";
+import { addAccessStatus, addCodeLinks, applyEnrichment, applyJournalScores, bareArxivId, codeLookupCandidates, codeSearchKey, codeUrlFromAbstract, enrichAll, lookupDoi, ownerMatchesAuthor, pickCodeRepo } from "./enrich.ts";
 
 const base = {
 	title: "A Title",
@@ -516,6 +516,41 @@ const noPaper = { year: null, title: "" };
 	} finally {
 		globalThis.fetch = realFetch;
 	}
+}
+
+/* ---------------- addAccessStatus (fake lookup) ---------------- */
+{
+	const base = { title: "", cites: null, venue: "" };
+	const records = [
+		{ ...base, doi: "10.3390/W14030309", arxiv_id: "" },
+		{ ...base, doi: "", arxiv_id: "2401.16393" },
+		{ ...base, doi: "10.1016/closed", arxiv_id: "2402.00001" },
+		{ ...base, doi: "10.9/unlisted", arxiv_id: "" },
+		{ ...base, doi: "", arxiv_id: "" },
+	];
+	const asked: string[][] = [];
+	const warnings: string[] = [];
+	const out = await addAccessStatus(records, (m) => warnings.push(m), async (dois) => {
+		asked.push(dois);
+		return new Map([
+			["10.3390/w14030309", { level: "free" as const, oa_status: "gold", pdf_urls: ["https://www.mdpi.com/x/pdf"] }],
+			["10.1016/closed", { level: "restricted" as const, oa_status: "closed" }],
+		]);
+	});
+	assert.equal(out.length, records.length); // 1:1, same order
+	assert.deepEqual(asked, [["10.3390/W14030309", "10.1016/closed", "10.9/unlisted"]]); // only DOI records, one call
+	assert.deepEqual(out[0].access, { level: "free", oa_status: "gold", pdf_urls: ["https://www.mdpi.com/x/pdf"] });
+	assert.equal(out[1].access.level, "free"); // arXiv: always free
+	assert.equal(out[2].access.level, "free"); // arXiv copy beats the closed publisher version
+	assert.equal(out[2].access.oa_status, "closed"); // the OpenAlex value stays verbatim
+	assert.equal(out[3].access.level, "unknown");
+	assert.equal(out[4].access.level, "unknown");
+	assert.ok(warnings.some((w) => w === "access: 3 full text free, 0 abstract only, 0 restricted, 2 unknown"));
+
+	// A failing lookup degrades to unknown, loudly.
+	const failed = await addAccessStatus(records.slice(0, 1), (m) => warnings.push(m), async () => { throw new Error("OpenAlex answered HTTP 503"); });
+	assert.equal(failed[0].access.level, "unknown");
+	assert.ok(warnings.some((w) => w.includes("access lookup failed: OpenAlex answered HTTP 503")));
 }
 
 console.log("enrich.test.ts: all assertions passed");

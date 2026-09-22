@@ -19,6 +19,7 @@ import { pathToFileURL } from "node:url";
 import type { ResultFilters } from "./pipeline.ts";
 import type { CitationSite } from "./protocol.ts";
 import { type ChatReport, highlightPhrase, type ReportUnit, type SynthReport } from "./synthesis.ts";
+import type { AccessInfo, AccessLevel } from "./sources/openalex.ts";
 import { firstAuthorLastName } from "./types.ts";
 
 /** One search record as the page needs it (kept AND dropped records). */
@@ -60,12 +61,17 @@ interface RenderRecord {
 	 * metadata available). */
 	code_gate?: "late" | "unchecked";
 	code_gate_note?: string;
+	/** Open-access level and open PDF locations from OpenAlex (absent in
+	 * sidecars written by older versions and with enrichment off). */
+	access?: AccessInfo;
 }
 
 /** The search payload (runSearch output / JSON sidecar) as the page reads
  * it; optional fields are absent in sidecars written by older versions. */
 export interface RenderPayload {
 	query: string;
+	/** Results per access level (null or absent: not looked up). */
+	access_counts?: Record<AccessLevel, number> | null;
 	/** Additional query phrasings searched in the same run (null: single query). */
 	query_variants?: string[] | null;
 	generated: string;
@@ -211,17 +217,47 @@ function sourcesOf(record: RenderRecord): string[] {
 	return record.sources ?? (record.source ? [record.source] : []);
 }
 
+/** Visible label and tooltip of each access level. */
+const ACCESS_LABEL: Record<AccessLevel, { text: string; title: string }> = {
+	free: { text: "full text free", title: "Open access: the full text is legally free" },
+	abstract_only: { text: "abstract only", title: "Conference abstract: no paper PDF exists" },
+	restricted: { text: "restricted", title: "Subscription needed; often reachable in the browser, e.g. in a university network" },
+	unknown: { text: "unknown", title: "Access status unknown (no DOI, or OpenAlex does not list it)" },
+};
+
+/** The access marker of a row: level label, OpenAlex oa_status in the
+ * tooltip. Empty for records without access info (older sidecars). */
+function accessBadge(record: RenderRecord): string {
+	if (!record.access) return "";
+	const label = ACCESS_LABEL[record.access.level] ?? ACCESS_LABEL.unknown;
+	const status = record.access.oa_status ? ` (OpenAlex: ${record.access.oa_status})` : "";
+	return `<span class="access access-${esc(record.access.level)}" title="${esc(label.title + status)}">${esc(label.text)}</span>`;
+}
+
+/** The PDF link of a row: the first open PDF location OpenAlex lists,
+ * else the link the source delivered. None for restricted papers (a
+ * source's PDF link there leads behind the paywall) and none for image
+ * files (graphical abstracts listed as PDF). */
+function pdfHref(record: RenderRecord): string | null {
+	if (record.access?.level === "restricted") return null;
+	const url = record.access?.pdf_urls?.[0] || record.pdf_url;
+	if (!url || /\.(jpe?g|png|gif|webp|svg)(\?|$)/i.test(url)) return null;
+	return safeHref(url);
+}
+
 /**
  * DOI column: the DOI linked at doi.org, else the arXiv ID at arxiv.org
- * (preprints have no DOI); a direct PDF link on its own line when the APIs
- * delivered one. An identifier that failed the HTTP trust gate is flagged
+ * (preprints have no DOI); the access marker and a direct PDF link on
+ * their own line. An identifier that failed the HTTP trust gate is flagged
  * right here, with the plain-language note from the verifier.
  */
 function doiCell(record: RenderRecord): string {
 	const parts: string[] = [];
 	if (record.doi) parts.push(link(`https://doi.org/${record.doi}`, record.doi));
 	else if (record.arxiv_id) parts.push(link(`https://arxiv.org/abs/${record.arxiv_id}`, `arXiv:${record.arxiv_id}`));
-	if (record.pdf_url) parts.push(link(safeHref(record.pdf_url), "PDF"));
+	const pdf = pdfHref(record);
+	const accessLine = [accessBadge(record), pdf ? link(pdf, "PDF") : ""].filter(Boolean).join(" &middot; ");
+	if (accessLine) parts.push(accessLine);
 	if (record.verified === false) {
 		parts.push(`<span class="unverified">did not verify</span><span class="note">${esc(record.verify_note ?? "")}</span>`);
 	}
@@ -401,7 +437,7 @@ interface TableColumns {
 function leadingCells(record: RenderRecord, index: number, columns: TableColumns): string[] {
 	const fetchId = fetchIdOf(record);
 	const pickBox = fetchId
-		? `<input type="checkbox" class="pick" data-id="${esc(fetchId)}" aria-label="Select for PDF download">`
+		? `<input type="checkbox" class="pick" data-id="${esc(fetchId)}"${record.access ? ` data-access="${esc(record.access.level)}"` : ""} aria-label="Select for PDF download">`
 		: "";
 	const foundBy = columns.queryLabels.size > 1 && record.found_by?.length
 		? `<br><span class="note">${esc(record.found_by.map((q) => columns.queryLabels.get(q) ?? q).join(", "))}</span>`
@@ -496,6 +532,16 @@ const STYLE = `
 		color: #1c1c1c; text-decoration: none; }
 	.graph-link:hover { background: #e6e6df; }
 	td.pickcell { text-align: center; }
+	/* Access marker in the DOI column: full text free / abstract only /
+	   restricted / unknown. */
+	.access { display: inline-block; font-size: 0.72rem; padding: 0 0.3rem; border-radius: 3px;
+		border: 1px solid transparent; white-space: nowrap; }
+	.access-free { color: #1f5f2c; background: #e7f3e9; border-color: #b9dcc0; }
+	.access-abstract_only { color: #6b4f12; background: #faf2de; border-color: #e6d3a3; }
+	.access-restricted { color: #555; background: #eeeeea; border-color: #cfcfc8; }
+	.access-unknown { color: #777; background: transparent; border-color: #ddd; }
+	.selectsteps .accessnote { flex-basis: 100%; font-size: 0.84rem; color: #6b4f12; }
+	.selectsteps .accessnote:empty { display: none; }
 	th.no-sort { cursor: default; }
 	/* Download steps: a sticky strip above the results table that walks the
 	   user through tick -> copy -> paste; ticked rows keep the hover tint. */
@@ -667,6 +713,7 @@ const SELECT_SCRIPT = `
 		const picks = () => Array.from(document.querySelectorAll("input.pick"));
 		const chosen = () => picks().filter((box) => box.checked);
 		const countLabel = bar.querySelector(".selectcount");
+		const accessNote = bar.querySelector(".accessnote");
 		const copyButton = bar.querySelector(".copy-selection");
 		const copyLabel = copyButton.innerHTML;
 		const step = (n) => bar.querySelector(".step" + n);
@@ -677,6 +724,14 @@ const SELECT_SCRIPT = `
 			const n = chosen().length;
 			if (n === 0) copied = false;
 			countLabel.textContent = n ? "(" + n + " ticked)" : "";
+			// Ticked papers that will not download automatically, by level.
+			const level = (name) => chosen().filter((box) => box.dataset.access === name).length;
+			const restricted = level("restricted");
+			const abstractOnly = level("abstract_only");
+			const notes = [];
+			if (restricted) notes.push(restricted + " restricted (open in your browser, e.g. in your university network)");
+			if (abstractOnly) notes.push(abstractOnly + " abstract only (no PDF exists)");
+			accessNote.textContent = notes.length ? "Of the ticked papers: " + notes.join("; ") + "." : "";
 			step(1).classList.toggle("done", n > 0);
 			step(2).classList.toggle("done", copied);
 			step(3).classList.toggle("now", copied);
@@ -1081,6 +1136,13 @@ export function renderHtml(payload: RenderPayload, options?: { network?: boolean
 					filterCategories.length ? ` (${esc(filterCategories.map((c) => `${c.label}: ${c.count}`).join(", "))})` : ""}</dd>`
 				: "")
 		: "";
+	// Access levels of the results (OpenAlex open-access status); absent in
+	// older sidecars and with enrichment off.
+	const accessCounts = payload.access_counts;
+	const accessRow = accessCounts
+		? `\n<dt>Access</dt><dd>${(["free", "abstract_only", "restricted", "unknown"] as AccessLevel[])
+			.map((level) => `${accessCounts[level] ?? 0} ${ACCESS_LABEL[level].text}`).join(", ")}<span class="note"> -- open-access status from OpenAlex; restricted papers are often reachable in the browser, e.g. in a university network</span></dd>`
+		: "";
 	// The verify stage is the trust gate of the whole citation story --
 	// worth its own line in the methods material, from the real numbers.
 	const verificationRow = results.length
@@ -1128,6 +1190,7 @@ export function renderHtml(payload: RenderPayload, options?: { network?: boolean
 <span class="actions"><button type="button" class="select-all">Select all</button>
 <button type="button" class="select-clear">Clear</button>
 <button type="button" class="copy-selection" disabled>${DOWNLOAD_ICON}Copy download request</button></span>
+<span class="accessnote"></span>
 </div>\n`
 		: "";
 
@@ -1186,7 +1249,7 @@ a.flow-download:hover { background: #e6e6df; }
 <dt>Sources</dt><dd>${esc(payload.sources_used.join(", ")) || "none reachable"}${skippedNote}</dd>${codeSourcesRow}${sourceFailureRows}${lookupFailureRows}${
 	payload.per_source ? `\n<dt>Records per source</dt><dd>${esc(payload.per_source)}</dd>` : ""}
 ${authorScopeRow}<dt>User filters</dt><dd>${esc(describeFilters(payload.filters))}</dd>
-<dt>Sort</dt><dd>${esc(payload.sort ?? "source order")}</dd>${flowRow || `
+<dt>Sort</dt><dd>${esc(payload.sort ?? "source order")}</dd>${accessRow}${flowRow || `
 <dt>Results</dt><dd>${results.length}${groupSummary}; ${verifiedCount}/${results.length} identifiers verified; ${payload.dropped.length} dropped</dd>`}
 </dl>
 <details class="prisma"><summary>Search documentation</summary>
