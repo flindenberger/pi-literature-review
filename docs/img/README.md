@@ -1,16 +1,19 @@
 # Screenshots
 
-PNG, about 1200 px wide, under ~300 KB each (images stay in the git
-history forever). Referenced from README.md and docs/*.md by these names:
+PNG, 2400 x 1500 px (16:10, twice the display width so text stays readable
+when the image is opened full size), 256 colours, under ~500 KB each
+(images stay in the git history forever). The teaser is 3200 x 1400.
+GitHub shows README images at column width; a click opens the full image.
+Referenced from README.md and docs/*.md by these names:
 
 | File | Shows | Used in |
 |---|---|---|
-| `teaser.png` | The three stages side by side (search, select, synthesize), three screenshots each; built from `design/2026-09-22_teaser/quelle/teaser.html`, 1600x700, 256 colours | README (hero image) |
-| `search-variants-tab.png` | The /lit-search wizard on the Query variants tab: locked main query with its dim block chain, suggestions incl. the "arXiv/CS phrasing" tagged row, add row, steering row | docs/search.md |
-| `search-results-page.png` | Top of a results page with the "Search documentation" section OPENED (Sent-to rows, Records identified, Flow) and the first result rows | README, docs/search.md |
-| `network-graph.png` | The citation graph of one paper, a circle hovered (focus + tooltip) | README, docs/search.md |
-| `search-code-column.png` | Result rows with the Code column filled (GitHub / Hugging Face links), ideally with the dropped table showing a "probably a project citing the paper" row | README, docs/search.md |
-| `search-selection-bar.png` | A few ticked rows and the blue "Copy download request" bar at the bottom of the results page | README, docs/selection.md |
-| `synthesis-highlight.png` | A report citation superscript next to the PDF opened at the page with the passage highlighted (Firefox) | README, docs/synthesis.md |
-| `synthesis-report.png` | A multi-paper synthesis report: query metadata, two or three collapsed per-paper blocks, the review synthesis with superscripts | README, docs/synthesis.md |
-| `synthesis-chat-card.png` (optional) | A grounded chat answer card with reference lines and the yellow paper-chat mode line | docs/synthesis.md |
+| `teaser.png` | The three stages side by side (search, select, synthesize), three screenshots each; built from `design/2026-09-22_teaser/quelle/teaser.html` | README (hero image) |
+| `search-variants-tab.png` | The /lit-search wizard on the Query variants tab: main query, a ticked variant, further suggestions, the rows to add or generate variants | docs/search.md |
+| `search-results-page.png` | The "Search documentation" section opened: records identified per source and query, exclusions, verification, targeting, the PRISMA flow diagram, then the start of the results table | README, docs/search.md |
+| `network-graph.png` | The citation graph of one paper, the paper's circle hovered (focus + tooltip) | README, docs/search.md |
+| `search-code-column.png` | A results page from a run with code sources: the Code sources and Access rows, result rows with GitHub links in the Code column | README |
+| `search-selection-bar.png` | The download steps above the results table with two ticked rows, access markers in the DOI column | README |
+| `synthesis-highlight.png` | Composite: a report answer with citation superscript 6 (left) and the PDF opened at the cited page with the passage highlighted in Firefox (right) | README, docs/synthesis.md |
+| `synthesis-report.png` | A synthesis report over two papers: per-paper blocks with the answer to the same question and citation superscripts | README |
+| `synthesis-chat-card.png` (optional, not taken yet) | A grounded chat answer card with reference lines and the yellow paper-chat mode line | -- |
