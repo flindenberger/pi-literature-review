@@ -5,7 +5,8 @@ history forever). Referenced from README.md and docs/*.md by these names:
 
 | File | Shows | Used in |
 |---|---|---|
-| `search-variants-tab.png` | The /lit-search wizard on the Query variants tab: locked main query with its dim block chain, suggestions incl. the "arXiv/CS phrasing" tagged row, add row, steering row | README (hero image), docs/search.md |
+| `teaser.png` | The three stages side by side (search, select, synthesize), three screenshots each; built from `design/2026-09-22_teaser/quelle/teaser.html`, 1600x700, 256 colours | README (hero image) |
+| `search-variants-tab.png` | The /lit-search wizard on the Query variants tab: locked main query with its dim block chain, suggestions incl. the "arXiv/CS phrasing" tagged row, add row, steering row | docs/search.md |
 | `search-results-page.png` | Top of a results page with the "Search documentation" section OPENED (Sent-to rows, Records identified, Flow) and the first result rows | README, docs/search.md |
 | `network-graph.png` | The citation graph of one paper, a circle hovered (focus + tooltip) | README, docs/search.md |
 | `search-code-column.png` | Result rows with the Code column filled (GitHub / Hugging Face links), ideally with the dropped table showing a "probably a project citing the paper" row | README, docs/search.md |

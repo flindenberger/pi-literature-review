@@ -16,7 +16,7 @@ Metadata, abstracts, PDF text, filtering, verification and citations are handled
 
 
 
-![The /lit-search wizard](docs/img/search-variants-tab.png)
+![Search, select, synthesize: the three stages of pi-literature-review](docs/img/teaser.png)
 
 ## How it works
 
