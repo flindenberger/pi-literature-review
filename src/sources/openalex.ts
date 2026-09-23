@@ -8,12 +8,47 @@
  */
 
 import { contactMailto, type SourceRecord, type SourceScope, userAgent } from "../types.ts";
+import { pacedClient } from "./polite.ts";
 
 const BASE_URL = "https://api.openalex.org/works";
 const AUTOCOMPLETE_URL = "https://api.openalex.org/autocomplete/authors";
-const TIMEOUT_MS = 30_000;
 /** OpenAlex accepts up to 50 pipe-joined values in one filter. */
 const DOI_BATCH_SIZE = 50;
+
+/** Appended to a rate-limit failure: OpenAlex names the way out itself. */
+const RATE_LIMIT_HINT = "OpenAlex throttles anonymous search while its search cluster is under"
+	+ " load and names a Retry-After; a FREE API key lifts this (openalex.org/rest-api)";
+
+/**
+ * Three clients, because the endpoints have different needs. All three talk
+ * to one server, so each keeps its own spacing module-wide and the retry
+ * honors a Retry-After header (see polite.ts).
+ *
+ * Search cluster: the works search and the facet pre-queries. This is the
+ * endpoint OpenAlex throttles; a 429 here is a wait, not a dead source.
+ */
+const fetchSearch = pacedClient({ label: "OpenAlex", spacingMs: 1_000, rateLimitHint: RATE_LIMIT_HINT });
+
+/** Identifier lookups (DOI batches, enrichment). Not throttled, but batched
+ * and running alongside the other sources -- a small spacing keeps the burst
+ * civil. Shared with enrich.ts so both paths queue in one line. */
+export const fetchLookup = pacedClient({ label: "OpenAlex", spacingMs: 250 });
+
+/** The wizard's author typing row. A retry would sleep seconds and freeze
+ * the keystroke, so its caller sends a single attempt. */
+const fetchType = pacedClient({ label: "OpenAlex", spacingMs: 100 });
+
+/** Headers every OpenAlex request carries. */
+const HEADERS = (): Record<string, string> => ({ "User-Agent": userAgent(), Accept: "application/json" });
+
+/** Query parameters every OpenAlex request carries: the contact address
+ * opts into the polite pool whenever one is configured. One place, so no
+ * call site can forget it. */
+function withContact(params: URLSearchParams): URLSearchParams {
+	const mailto = contactMailto();
+	if (mailto) params.set("mailto", mailto);
+	return params;
+}
 
 /** Rebuild the abstract text from OpenAlex's inverted index. String ops
  * only; the enrichment stage fills missing abstracts from the same work
@@ -97,14 +132,13 @@ export function parseAuthorAutocomplete(data: unknown): AuthorMatch[] {
 /** Author name lookup for the wizard's typing row: GET /autocomplete/
  * authors?q=<prefix>, the best ten. An optional signal bounds the wait. */
 export async function autocompleteAuthors(prefix: string, signal?: AbortSignal): Promise<AuthorMatch[]> {
-	const params = new URLSearchParams({ q: prefix.trim() });
-	const mailto = contactMailto();
-	if (mailto) params.set("mailto", mailto);
-	const response = await fetch(`${AUTOCOMPLETE_URL}?${params}`, {
-		headers: { "User-Agent": userAgent(), Accept: "application/json" },
-		signal: signal ?? AbortSignal.timeout(TIMEOUT_MS),
-	});
-	if (!response.ok) throw new Error(`OpenAlex answered HTTP ${response.status}`);
+	const params = withContact(new URLSearchParams({ q: prefix.trim() }));
+	// retry: false -- a rate-limit sleep here would freeze the typing row.
+	const response = await fetchType(
+		`${AUTOCOMPLETE_URL}?${params}`,
+		{ headers: HEADERS(), ...(signal ? { signal } : {}) },
+		{ retry: false },
+	);
 	return parseAuthorAutocomplete(await response.json());
 }
 
@@ -163,17 +197,8 @@ export function buildWorksParams(query: string, rows: number, scope?: SourceScop
 }
 
 export async function searchOpenalex(query: string, rows: number, scope?: SourceScope): Promise<SourceRecord[]> {
-	const params = buildWorksParams(query, rows, scope);
-	const mailto = contactMailto();
-	if (mailto) params.set("mailto", mailto);
-
-	const response = await fetch(`${BASE_URL}?${params}`, {
-		headers: { "User-Agent": userAgent(), Accept: "application/json" },
-		signal: AbortSignal.timeout(TIMEOUT_MS),
-	});
-	if (!response.ok) {
-		throw new Error(`OpenAlex answered HTTP ${response.status}`);
-	}
+	const params = withContact(buildWorksParams(query, rows, scope));
+	const response = await fetchSearch(`${BASE_URL}?${params}`, { headers: HEADERS() });
 	const data = (await response.json()) as Record<string, any>;
 	const items: Array<Record<string, any>> = (data?.results ?? []).slice(0, rows);
 
@@ -231,19 +256,11 @@ export async function lookupOpenalexDois(dois: string[]): Promise<SourceRecord[]
 	const records: SourceRecord[] = [];
 	for (let i = 0; i < unique.length; i += DOI_BATCH_SIZE) {
 		const batch = unique.slice(i, i + DOI_BATCH_SIZE);
-		const params = new URLSearchParams({
+		const params = withContact(new URLSearchParams({
 			filter: `doi:${batch.join("|")}`,
 			"per-page": String(DOI_BATCH_SIZE),
-		});
-		const mailto = contactMailto();
-		if (mailto) params.set("mailto", mailto);
-		const response = await fetch(`${BASE_URL}?${params}`, {
-			headers: { "User-Agent": userAgent(), Accept: "application/json" },
-			signal: AbortSignal.timeout(TIMEOUT_MS),
-		});
-		if (!response.ok) {
-			throw new Error(`OpenAlex answered HTTP ${response.status}`);
-		}
+		}));
+		const response = await fetchLookup(`${BASE_URL}?${params}`, { headers: HEADERS() });
 		const data = (await response.json()) as Record<string, any>;
 		records.push(...((data?.results ?? []) as Array<Record<string, any>>).map(toSourceRecord));
 	}
@@ -312,18 +329,12 @@ export async function lookupAccessByDoi(dois: string[]): Promise<Map<string, Acc
 	const access = new Map<string, AccessInfo>();
 	for (let i = 0; i < unique.length; i += DOI_BATCH_SIZE) {
 		const batch = unique.slice(i, i + DOI_BATCH_SIZE);
-		const params = new URLSearchParams({
+		const params = withContact(new URLSearchParams({
 			filter: `doi:${batch.join("|")}`,
 			select: "doi,type,open_access,best_oa_location,locations",
 			"per-page": String(DOI_BATCH_SIZE),
-		});
-		const mailto = contactMailto();
-		if (mailto) params.set("mailto", mailto);
-		const response = await fetch(`${BASE_URL}?${params}`, {
-			headers: { "User-Agent": userAgent(), Accept: "application/json" },
-			signal: AbortSignal.timeout(TIMEOUT_MS),
-		});
-		if (!response.ok) throw new Error(`OpenAlex answered HTTP ${response.status}`);
+		}));
+		const response = await fetchLookup(`${BASE_URL}?${params}`, { headers: HEADERS() });
 		const data = (await response.json()) as Record<string, any>;
 		for (const work of (data?.results ?? []) as Array<Record<string, any>>) {
 			const doi = typeof work?.doi === "string" ? work.doi.replace("https://doi.org/", "").toLowerCase() : "";
@@ -431,15 +442,8 @@ async function facetPage(query: string, groupBy: string, limit: number, scope?: 
 	const params = new URLSearchParams({ search: query, group_by: groupBy });
 	const filter = buildFacetFilter(scope ?? {});
 	if (filter) params.set("filter", filter);
-	const mailto = contactMailto();
-	if (mailto) params.set("mailto", mailto);
-	const response = await fetch(`${BASE_URL}?${params}`, {
-		headers: { "User-Agent": userAgent(), Accept: "application/json" },
-		signal: AbortSignal.timeout(TIMEOUT_MS),
-	});
-	if (!response.ok) {
-		throw new Error(`OpenAlex answered HTTP ${response.status}`);
-	}
+	// search= -- same cluster as the works search, same throttle.
+	const response = await fetchSearch(`${BASE_URL}?${withContact(params)}`, { headers: HEADERS() });
 	return parseFacetPage(await response.json(), limit);
 }
 

@@ -6,9 +6,11 @@
 
 import assert from "node:assert/strict";
 import { accessFromWork, buildAuthorSearchFilter, buildBlockSearch, buildFacetFilter, lookupOpenalexDois, parseFacetPage, parseFacets, toSourceRecord,
+	autocompleteAuthors,
 	buildAuthorIdFilter,
 	buildWorksParams,
 	parseAuthorAutocomplete,
+	searchOpenalex,
 } from "./openalex.ts";
 
 /** v30.11: journals and authors share the facet parser. */
@@ -244,6 +246,44 @@ const parseJournalFacetPage = parseFacetPage;
 	assert.equal(accessFromWork({ type: "conference-abstract", open_access: { is_oa: true, oa_status: "gold" } }).level, "abstract_only");
 	assert.deepEqual(accessFromWork({ type: "article", open_access: { is_oa: false, oa_status: "closed" } }), { level: "restricted", oa_status: "closed" });
 	assert.deepEqual(accessFromWork({}), { level: "unknown" });
+}
+
+// Rate limiting: the works search goes through the paced search client, so
+// a 429 is retried after the server's Retry-After (not dropped as a dead
+// source) and the failure names the free key. The wizard's author typing
+// row sends ONE attempt: a retry sleep there would freeze the keystroke.
+{
+	const realFetch = globalThis.fetch;
+	const sentAt: number[] = [];
+	let answers: number[] = [];
+	globalThis.fetch = (async () => {
+		sentAt.push(Date.now());
+		const status = answers.shift() ?? 200;
+		const body = status === 200 ? JSON.stringify({ results: [{ doi: "https://doi.org/10.1/ok", title: "Ok" }] }) : "";
+		// Retry-After 1 keeps the test fast; the rule itself (header wins
+		// over the fixed 5 s backoff) is covered in polite.test.ts.
+		return new Response(body, { status, headers: { "retry-after": "1" } });
+	}) as typeof fetch;
+	try {
+		answers = [429];
+		const records = await searchOpenalex("x", 5);
+		assert.equal(sentAt.length, 2); // one retry, then the answer
+		assert.ok(sentAt[1] - sentAt[0] >= 990, `retry after ${sentAt[1] - sentAt[0]} ms, expected the Retry-After second`);
+		assert.deepEqual(records.map((r) => r.doi), ["10.1/ok"]);
+		// Budget used up -> the error carries the key hint.
+		sentAt.length = 0;
+		answers = [429, 429, 429];
+		await assert.rejects(() => searchOpenalex("x", 5), /OpenAlex answered HTTP 429 .*FREE API key/);
+		// Typing row: exactly one request, immediate failure, no sleep.
+		sentAt.length = 0;
+		answers = [429];
+		const before = Date.now();
+		await assert.rejects(() => autocompleteAuthors("Moortgat"), /OpenAlex answered HTTP 429/);
+		assert.equal(sentAt.length, 1);
+		assert.ok(Date.now() - before < 900, "autocomplete must not sleep on a rate limit");
+	} finally {
+		globalThis.fetch = realFetch;
+	}
 }
 
 console.log("openalex.test.ts: all assertions passed");

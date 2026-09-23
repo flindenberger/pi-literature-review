@@ -24,14 +24,19 @@
 
 import { githubToken, s2ApiKey } from "./config.ts";
 import { fetchGithub, GITHUB_SEARCH_URL, githubHeaders, LIST_REPO_NAME } from "./sources/github.ts";
-import { type AccessInfo, type AccessLevel, lookupAccessByDoi, reconstructAbstract } from "./sources/openalex.ts";
+import {
+	type AccessInfo,
+	type AccessLevel,
+	fetchLookup,
+	lookupAccessByDoi,
+	reconstructAbstract,
+} from "./sources/openalex.ts";
 import { fetchAbstractByDoi } from "./sources/semanticscholar.ts";
 import { contactMailto, userAgent, warn as defaultWarn } from "./types.ts";
 
 const BASE_URL = "https://api.openalex.org/works";
 const SOURCES_URL = "https://api.openalex.org/sources";
 const AUTHORS_URL = "https://api.openalex.org/authors";
-const TIMEOUT_MS = 30_000;
 /** OpenAlex allows up to ~100 OR-joined values per filter; stay well under. */
 const BATCH_SIZE = 50;
 
@@ -43,13 +48,14 @@ function apiQuery(params: Record<string, string> = {}): string {
 	return Object.keys(merged).length ? `?${new URLSearchParams(merged)}` : "";
 }
 
-/** One OpenAlex GET; non-2xx answers throw with the status. */
+/** One OpenAlex GET; non-2xx answers throw with the status. Uses the shared
+ * lookup client from the OpenAlex module, so enrichment and the search stage
+ * queue in one line towards the same server and a rate-limit answer is
+ * retried instead of losing the field. */
 async function fetchJson(url: string): Promise<Record<string, any>> {
-	const response = await fetch(url, {
+	const response = await fetchLookup(url, {
 		headers: { "User-Agent": userAgent(), Accept: "application/json" },
-		signal: AbortSignal.timeout(TIMEOUT_MS),
 	});
-	if (!response.ok) throw new Error(`OpenAlex answered HTTP ${response.status}`);
 	return (await response.json()) as Record<string, any>;
 }
 
