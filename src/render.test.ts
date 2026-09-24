@@ -1232,7 +1232,7 @@ const baseReport: SynthReport = {
 	assert.ok(codeRun.includes("community-linked, not an author declaration"));
 	assert.ok(codeRun.includes("<dt>Matched against curated lists</dt><dd>lists tagged remote-sensing;"));
 	assert.ok(codeRun.includes("hf-papers: 2 (resolved from 7 repository candidate(s))"));
-	assert.ok(codeRun.includes("1 code pair(s) moved to dropped (repository created long after the paper)"));
+	assert.ok(codeRun.includes("1 code pair(s) moved to dropped (repository created more than 1 year after the paper)"));
 	assert.ok(codeRun.includes("Repository first (code sources, when enabled)"));
 	assert.ok(codeRun.includes("repos.ecosyste.ms (data CC-BY-SA)"));
 	assert.ok(codeRun.includes("abstract | github | hf-papers | github-readme | awesome-lists | gee-github"));

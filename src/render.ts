@@ -891,7 +891,7 @@ export function flowDiagramSvg(
 		`duplicate records merged: n = ${flow.duplicates_removed}`,
 	];
 	const side2Lines = [`Records excluded: n = ${excludedTotal}`];
-	if (flow.late_code_pairs_removed) side2Lines.push(`code repository long after the paper: n = ${flow.late_code_pairs_removed}`);
+	if (flow.late_code_pairs_removed) side2Lines.push(`code repository > 1 year after paper: n = ${flow.late_code_pairs_removed}`);
 	if (extras.abstractNone) side2Lines.push(`no abstract available: n = ${extras.abstractNone}`);
 	if (extras.abstractFailed) side2Lines.push(`abstract retrieval failed: n = ${extras.abstractFailed}`);
 	if (flow.off_topic_code_removed) side2Lines.push(`code-only find off topic: n = ${flow.off_topic_code_removed}`);
@@ -1114,7 +1114,7 @@ export function renderHtml(payload: RenderPayload, options?: { network?: boolean
 	const flowRow = flow
 		? `\n<dt>Screening flow</dt><dd>${flow.identified} record(s) identified &rarr; ${flow.junk_removed} removed as uncitable (no title or no authors) &rarr; ${flow.duplicates_removed} duplicate(s) merged &rarr; ${flow.screened} screened${
 			typeof flow.late_code_pairs_removed === "number"
-				? ` &rarr; ${flow.late_code_pairs_removed} code pair(s) moved to dropped (repository created long after the paper)`
+				? ` &rarr; ${flow.late_code_pairs_removed} code pair(s) moved to dropped (repository created more than 1 year after the paper)`
 				: ""}${
 			typeof flow.no_abstract_removed === "number"
 				? ` &rarr; ${flow.no_abstract_removed} removed without abstract`
