@@ -53,6 +53,8 @@ The `/lit-search`-wizard starts from user defined keyword blocks or free text. T
 
 It can also help identify relevant journals and authors, and lets you filter the results. Each result shows which query found it and which terms matched.
 
+![The /lit-search wizard: keyword blocks, query variants, filters, then the search](docs/img/wizard.gif)
+
 ### HTML literature-search report
 
 Each search run produces a sortable HTML results page and a JSON file.
@@ -61,7 +63,7 @@ Results include bibliographic metadata, verified DOI, BibTeX, citation and open-
 
 The page also contains the exact database queries, raw hit counts and a PRISMA-2020-style flow diagram.
 
-![Search results and search documentation](docs/img/search-results-page.png)
+![Search results: sorting, an abstract, the search documentation with the PRISMA flow diagram](docs/img/search-results-page.gif)
 
 ### Citation graphs
 
@@ -69,7 +71,7 @@ Each result can open a citation graph showing references, citing works and relat
 
 The graph is fetched from OpenAlex when opened; only the DOI or title leaves your machine.
 
-![Citation graph](docs/img/network-graph.png)
+![Citation graph of one result: hover for details, filter by cited and citing works](docs/img/network-graph.gif)
 
 ### Papers with code
 
@@ -77,8 +79,8 @@ Optionally search for papers with code using Hugging Face Papers, GitHub READMEs
 
 Known repositories and data archives are shown directly in the results: links named in the abstract and archives the publisher deposited at CrossRef appear in every search, no tick needed.
 
-![Results with code links](docs/img/search-code-column.png)
-    
+![Results with code links: a repository opened from the Code / data column](docs/img/search-code-column.gif)
+
 ### Legal open-access downloads
 
 Select papers directly from the results page and copy a download request.
@@ -93,7 +95,7 @@ Synthesis answers and reports cite the page containing the supporting passage.
 
 Clicking a citation opens the PDF at the relevant page and highlights the cited text.
 
-![Page-exact citation](docs/img/synthesis-highlight.png)
+![Page-exact citation: a citation in the report opens the PDF at the highlighted passage](docs/img/synthesis-highlight.gif)
 
 ### Synthesis across a paper library
 
@@ -101,7 +103,7 @@ Clicking a citation opens the PDF at the relevant page and highlights the cited 
 
 It can provide per-paper summaries, answer questions about individual or multiple papers, and optionally produce a cross-paper review synthesis.
 
-![Synthesis report](docs/img/synthesis-report.png)
+![Synthesis report: the /lit-synthesis wizard, the report card, then the HTML report and a cited passage](docs/img/synthesis-report.gif)
 
 
 ## Install
@@ -115,7 +117,7 @@ pi install npm:pi-literature-review
 Or directly from the repository:
 
 ```bash
-pi install git:github.com/florian-lindenberger/pi-literature-review
+pi install git:github.com/flindenberger/pi-literature-review
 ```
 
 Search and selection work without a model selected in Pi.
@@ -138,7 +140,7 @@ Used services include:
 
 There is no account requirement, scraping or telemetry.
 
-An optional contact email can be supplied to Unpaywall. Paper text is processed locally by the embedding server and by the model selected in Pi. With local models, the paper text stays on your machine. With a cloud model or remote backend, excerpts are sent to that provider.
+An optional contact email (required by Unpaywall) is sent with every API request once it is set. Paper text is processed locally by the embedding server and by the model selected in Pi. With local models, the paper text stays on your machine. With a cloud model or remote backend, excerpts are sent to that provider.
 
 Check the papers' licenses and your institution's rules before using a remote model. See [Configuration](docs/configuration.md).
 
@@ -156,7 +158,7 @@ Check the papers' licenses and your institution's rules before using a remote mo
 
 ## Limits
 
-* Search covers titles, abstracts and metadata, not full paper text.
+* Search runs on titles, abstracts and metadata; OpenAlex also matches full text where it has it. The on_target label only looks at title and abstract.
 * Scopus, Web of Science and Sci-Hub are not used.
 * Short result lists are not padded: if a query finds two papers, it returns two.
 * Source metadata is passed through as delivered, including broken characters.
