@@ -27,8 +27,11 @@ export interface SourceRecord {
 	/** Journal-level 2-yr mean citedness from OpenAlex; set by enrichment. */
 	journal_2yr_citedness?: number;
 	/** Code repository URL: set by the code-first searchers (codesearch.ts)
-	 * or, later, by the code-link stage (enrich.ts). Never overwritten. */
+	 * or by the abstract code-link stage (enrich.ts). Never overwritten. */
 	code_url?: string;
+	/** Data and code archives the publisher linked to the paper in its
+	 * CrossRef record (set by the data-link stage, enrich.ts). */
+	data_links?: DataLink[];
 	/** Provenance of filled fields (field -> provider), see enrich.ts. */
 	enriched?: Record<string, string>;
 	/** Code-first records only: which database delivered the metadata
@@ -41,6 +44,13 @@ export interface SourceRecord {
 	code_gate?: "late" | "unchecked";
 	/** Human-readable reason for a "late" gate result. */
 	code_gate_note?: string;
+}
+
+/** A data or code archive entry the publisher linked to a paper. */
+export interface DataLink {
+	url: string;
+	/** Display name of the archive ("Zenodo", "PANGAEA", ...). */
+	archive: string;
 }
 
 /**

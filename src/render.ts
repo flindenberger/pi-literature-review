@@ -49,10 +49,13 @@ interface RenderRecord {
 	found_by?: string[];
 	/** Journal-level 2-yr mean citedness from OpenAlex (open JIF analog). */
 	journal_2yr_citedness?: number | null;
-	/** Repository named in the abstract, found by the identifier search, or
-	 * the repository a code-first source started from -- a disclosed
-	 * heuristic, not a verified artifact link. */
+	/** Repository named in the abstract, or the repository a code-first
+	 * source started from -- a disclosed heuristic, not a verified
+	 * artifact link. */
 	code_url?: string;
+	/** Data and code archives the publisher linked to the paper in its
+	 * CrossRef record. */
+	data_links?: Array<{ url: string; archive: string }>;
 	/** Code-first records: the database that delivered the metadata
 	 * ("arxiv" | "openalex") while `sources` names the code platform. */
 	resolved_via?: string;
@@ -394,13 +397,19 @@ export function codeLinkLabel(url: string): string {
 	return labels[host] ?? "Code";
 }
 
-/** The Code cell, shared by BOTH tables: sort key 0/1 so the first header
- * click puts records WITH code on top. Only present when the page has any
- * code link at all. */
+/** The Code / data cell, shared by BOTH tables: the code link first, then
+ * each data archive by name, one per line. Sort key 0/1 so the first
+ * header click puts records WITH a link on top. Only present when the page
+ * has any code or data link at all. */
 function codeCells(record: RenderRecord, withCode: boolean): string[] {
 	if (!withCode) return [];
-	return [cell(record.code_url ? "0" : "1",
-		record.code_url ? link(safeHref(record.code_url), codeLinkLabel(record.code_url)) : "&mdash;")];
+	const links: string[] = [];
+	if (record.code_url) links.push(link(safeHref(record.code_url), codeLinkLabel(record.code_url)));
+	for (const data of record.data_links ?? []) {
+		if (data.url === record.code_url) continue;
+		links.push(link(safeHref(data.url), esc(data.archive)));
+	}
+	return [cell(links.length ? "0" : "1", links.length ? links.join("<br>") : "&mdash;", "codecell")];
 }
 
 /** The Network cell: a link into the static network.html written NEXT TO
@@ -527,6 +536,9 @@ const STYLE = `
 		background: #f1f1ec; border: 1px solid #c9c9c2; border-radius: 3px; }
 	.bibtex-copy:hover { background: #e6e6df; }
 	td.graphcell { text-align: center; }
+	/* Archive names break between words only ("Mendeley Data"), never
+	   inside one ("PANG|AEA"). */
+	table.records td.codecell { overflow-wrap: normal; word-break: keep-all; }
 	.graph-link { display: inline-block; font-size: 0.72rem; padding: 0.15rem 0.4rem;
 		background: #f1f1ec; border: 1px solid #c9c9c2; border-radius: 3px;
 		color: #1c1c1c; text-decoration: none; }
@@ -661,7 +673,7 @@ for (const table of document.querySelectorAll("table.sortable")) {
  * with an unexplained footnote mark would be noise). */
 function resultHeaders(withCode: boolean, withNetwork: boolean): string {
 	return "<tr><th class=\"no-sort\" title=\"Select rows, then copy the download request below\"></th><th>#</th><th>Article</th><th>Authors</th><th>Year</th><th>Journal</th><th>Journal score&sup1;</th><th>Citations</th><th>DOI</th><th class=\"no-sort\">BibTeX</th>"
-		+ (withCode ? "<th>Code&sup2;</th>" : "")
+		+ (withCode ? "<th>Code / data&sup2;</th>" : "")
 		+ (withNetwork ? "<th class=\"no-sort\">Network</th>" : "")
 		+ "<th>Data source</th><th>Label</th></tr>";
 }
@@ -675,8 +687,8 @@ function resultColgroup(withCode: boolean, withNetwork: boolean): string {
 	// column takes 4% from Article/DOI/Label when present.
 	const widths = withCode
 		? (withNetwork
-			? [2.2, 2.8, 18, 12.5, 4.3, 8.5, 5.5, 6, 11, 5, 4.2, 4, 7, 9]
-			: [2.2, 2.8, 20, 12.5, 4.3, 8.5, 5.5, 6, 12, 5, 4.2, 7, 10])
+			? [2.2, 2.8, 17.4, 12.5, 4.3, 8.5, 5.5, 6, 10.3, 5, 5.5, 4, 7, 9]
+			: [2.2, 2.8, 19.4, 12.5, 4.3, 8.5, 5.5, 6, 11.3, 5, 5.5, 7, 10])
 		: (withNetwork
 			? [2.2, 2.8, 18, 12.5, 4.3, 8.5, 5.5, 6, 13, 5, 4, 8, 10.2]
 			: [2.2, 2.8, 20, 12.5, 4.3, 8.5, 5.5, 6, 14, 5, 8, 11.2]);
@@ -956,11 +968,11 @@ export function renderHtml(payload: RenderPayload, options?: { network?: boolean
 	// full columns): a star or score appearing only on a dropped row still
 	// needs its explanation.
 	const allRecords = [...results, ...payload.dropped.map((entry) => entry.record)];
-	// The code column has its own footnote (&sup2;) -- its provenance entry
-	// must not pull "github" into the asterisk note, which describes FILLED
-	// metadata fields.
+	// The code / data column has its own footnote (&sup2;) -- its provenance
+	// entries must not pull "abstract" or "crossref" into the asterisk note,
+	// which describes FILLED metadata fields.
 	const enrichedProviders = [...new Set(allRecords.flatMap((r) =>
-		Object.entries(r.enriched ?? {}).filter(([field]) => field !== "code_url").map(([, provider]) => provider)))]
+		Object.entries(r.enriched ?? {}).filter(([field]) => field !== "code_url" && field !== "data_links").map(([, provider]) => provider)))]
 		.map((provider) => PROVIDER_LABELS[provider] ?? provider);
 	const enrichmentFootnote = enrichedProviders.length
 		? `\n<p class="meta">* Value filled in by a deterministic identifier lookup at ${esc(enrichedProviders.join(", "))} because the original search source did not deliver this field (arXiv, for example, carries no citation counts or journal names). Looked up from an open API, never generated; each record's <code>enriched</code> field in the JSON names the filled fields.</p>`
@@ -973,9 +985,10 @@ export function renderHtml(payload: RenderPayload, options?: { network?: boolean
 	const scoreFootnote = allRecords.length
 		? `\n<p class="meta">&sup1; Journal score = the journal's 2-year mean citedness from OpenAlex (api.openalex.org): average citations received in the last two years by works the journal published in the two years before. It is the open analog of the proprietary journal impact factor; values are computed over the OpenAlex citation graph and differ somewhat from Clarivate's JIF. It rates the journal, not the paper.</p>`
 		: "";
-	// The Code column exists only when any record carries a link; column and
-	// &sup2; footnote share this ONE flag so they can never drift apart.
-	const withCode = allRecords.some((r) => r.code_url);
+	// The Code / data column exists only when any record carries a link;
+	// column and &sup2; footnote share this ONE flag so they can never drift
+	// apart.
+	const withCode = allRecords.some((r) => r.code_url || r.data_links?.length);
 	// The Network column: only when the caller wrote the network.html
 	// sidecar page, and only when any row exists to link from. Its
 	// explanation is an unmarked footnote -- a numbered mark would renumber
@@ -985,7 +998,7 @@ export function renderHtml(payload: RenderPayload, options?: { network?: boolean
 		? `\n<p class="meta">Network = opens a citation-context graph of the paper in a new tab: its references and citing works, related by the classic bibliometric similarity measures (bibliographic coupling, Kessler 1963; co-citation analysis, Small 1973 -- the graph page explains how each is used). The page fetches this live from the open OpenAlex API when opened (internet needed then; only the paper's DOI or title is sent, never paper content) and involves no language model.</p>`
 		: "";
 	const codeFootnote = withCode
-		? `\n<p class="meta">&sup2; Code = a repository found deterministically, by one of two paths. Paper first: preferably the code URL the paper's own abstract names (GitHub, GitLab, Bitbucket, Codeberg, Hugging Face, Zenodo, OSF), else the best-matching repository from one GitHub search per record -- by arXiv id, or by DOI for journal papers (the repository mentions the identifier in its name, description or README; aggregator/reading-list repositories and repositories created more than a year after the paper are skipped, and a DOI match is only linked when the repository owner's name matches an author). Repository first (code sources, when enabled): repositories are searched for the query and the paper is resolved from the identifiers they cite -- Hugging Face Papers (repository as linked on the paper's Hugging Face page by the community), GitHub README searches, curated awesome lists (awesome.ecosyste.ms) and Google Earth Engine repositories; the paper's metadata then comes from arXiv or OpenAlex (<code>resolved_via</code>), and a repository created more than a year after the paper moves the record to the dropped table with the reason (usually a project citing the paper, not its code; more than five years after and the pair is not listed at all); when the found repository is a paper list, the linked repository whose name matches the paper title is taken instead; repository creation dates come from repos.ecosyste.ms (data CC-BY-SA). Both paths are heuristic pointers to likely code, not verified artifact links -- follow it and judge. Recorded in the JSON as <code>code_url</code>, provenance in <code>enriched</code> (abstract | github | hf-papers | github-readme | awesome-lists | gee-github).</p>`
+		? `\n<p class="meta">&sup2; Code / data = links found deterministically, never generated, from three places. (1) The paper's own abstract: a code URL it names (GitHub, GitLab, Bitbucket, Codeberg, Hugging Face, Zenodo, OSF). (2) The publisher's CrossRef record: data and code archives deposited as related material (relation types is-supplemented-by, is-part-of, references; shown only for known archives -- Zenodo, PANGAEA, Mendeley Data, Dryad, figshare, Dataverse, HydroShare, OSF, Eawag, GitHub, GitLab -- labelled by archive name). (3) Repository first (code sources, when enabled): repositories are searched for the query and the paper is resolved from the identifiers they cite -- Hugging Face Papers (repository as linked on the paper's Hugging Face page by the community), GitHub README searches, curated awesome lists (awesome.ecosyste.ms) and Google Earth Engine repositories; the paper's metadata then comes from arXiv or OpenAlex (<code>resolved_via</code>), and a repository created more than a year after the paper moves the record to the dropped table with the reason (usually a project citing the paper, not its code; more than five years after and the pair is not listed at all); when the found repository is a paper list, the linked repository whose name matches the paper title is taken instead; repository creation dates come from repos.ecosyste.ms (data CC-BY-SA). Code links are pointers to likely code, not verified artifact links -- follow them and judge. Recorded in the JSON as <code>code_url</code> and <code>data_links</code>, provenance in <code>enriched</code> (abstract | crossref | hf-papers | github-readme | awesome-lists | gee-github).</p>`
 		: "";
 
 	const variants = payload.query_variants ?? [];
@@ -1145,6 +1158,12 @@ export function renderHtml(payload: RenderPayload, options?: { network?: boolean
 		: "";
 	// The verify stage is the trust gate of the whole citation story --
 	// worth its own line in the methods material, from the real numbers.
+	// Where the code and data links came from, counted over both tables.
+	const abstractLinks = allRecords.filter((r) => r.enriched?.code_url === "abstract").length;
+	const crossrefLinks = allRecords.filter((r) => r.data_links?.length).length;
+	const linkRow = abstractLinks || crossrefLinks
+		? `\n<dt>Code and data links</dt><dd>${abstractLinks} record(s) with a code link named in the abstract; ${crossrefLinks} record(s) with data or code archives from the publisher's CrossRef record (see footnote &sup2;).</dd>`
+		: "";
 	const verificationRow = results.length
 		? `\n<dt>Verification</dt><dd>${verifiedCount} of ${results.length} retained record(s) carry an identifier that resolved via HTTP at doi.org / arxiv.org; unverified records are flagged in the table.</dd>`
 		: "";
@@ -1268,7 +1287,7 @@ ${authorScopeRow}<dt>User filters</dt><dd>${esc(describeFilters(payload.filters)
 		? `\n<h3>Database-specific search translation</h3>\n<dl class="meta">${arxivQueryRows}${openalexQueryRows}${crossrefQueryRows}${semanticscholarQueryRows}${codeQueryRows}\n</dl>`
 		: ""}
 <h3>Retrieval and screening</h3>
-<dl class="meta">${identifiedRows}${excludedRows}${verificationRow}${groupingRows}
+<dl class="meta">${identifiedRows}${excludedRows}${verificationRow}${linkRow}${groupingRows}
 </dl>${diagramBlock}${
 	sourceFailureRows || lookupFailureRows
 		? `\n<h3>Limitations</h3>\n<dl class="meta">${sourceFailureRows}${lookupFailureRows}\n</dl>`

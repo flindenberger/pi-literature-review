@@ -1,9 +1,8 @@
 /**
  * Code-first search: find repositories for the query FIRST, read the paper
  * identifiers they name, then resolve those identifiers to real records at
- * arXiv / OpenAlex. The reverse of the code-link stage in enrich.ts (paper
- * first, repository second); both directions share the GitHub client and
- * the field-measured date gate.
+ * arXiv / OpenAlex. Uses the GitHub client (sources/github.ts) and the
+ * field-measured date gate (createdTooLate, enrich.ts).
  *
  * Four searchers, same signature as the database searchers plus a context:
  *   hf-papers      Hugging Face Papers search (arXiv id + linked repo per hit)

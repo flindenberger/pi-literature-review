@@ -22,7 +22,7 @@
 import { pathToFileURL } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { cardLine } from "../src/cardtext.ts";
+import { cardLine, hyperlinksSupported, linkFileUrl, piTuiHyperlinks } from "../src/cardtext.ts";
 import { configuredGenerateModel, llmConfig } from "../src/config.ts";
 import {
 	type CheckboxItem,
@@ -1640,7 +1640,9 @@ export default async function literatureSynthesis(pi: ExtensionAPI) {
 	// text). pi-tui exists only at pi runtime; fall back to the capped
 	// widget (and, for messages, to pi's default markdown rendering).
 	try {
-		const { Box, Text } = await import("@earendil-works/pi-tui");
+		const tui = await import("@earendil-works/pi-tui");
+		const { Box, Text } = tui;
+		const links = hyperlinksSupported(process.env, piTuiHyperlinks(tui));
 		type CardData = { paper: string; text: string; grounded: boolean; heading?: string };
 		type CardTheme = { bg(key: string, text: string): string; bold(text: string): string };
 		const buildCard = (data: CardData, theme: CardTheme) => {
@@ -1654,7 +1656,9 @@ export default async function literatureSynthesis(pi: ExtensionAPI) {
 			// background wrapper survives mid-line styling.
 			for (const line of data.text.split("\n")) {
 				const { prefix, segments } = cardLine(line);
-				box.addChild(new Text(prefix + segments.map((s) => (s.bold ? theme.bold(s.text) : s.text)).join("")));
+				// file:// URLs (page links, HTML report) become short clickable
+				// links, as on the search card -- a raw URL wraps and breaks.
+				box.addChild(new Text(linkFileUrl(prefix + segments.map((s) => (s.bold ? theme.bold(s.text) : s.text)).join(""), links)));
 			}
 			return box;
 		};

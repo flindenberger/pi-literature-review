@@ -25,14 +25,14 @@ import {
 } from "./pipeline.ts";
 import { blockQuery, CODE_SEARCHERS, searchWords } from "./codesearch.ts";
 import { codeListTopics, s2ApiKey } from "./config.ts";
-import { addAccessStatus, addCodeLinks, addJournalScores, enrichAll } from "./enrich.ts";
+import { addAccessStatus, addCodeLinks, addDataLinks, addJournalScores, enrichAll } from "./enrich.ts";
 import { queryBlocks } from "./intake.ts";
 import { buildSearchQuery, searchArxiv } from "./sources/arxiv.ts";
-import { buildCrossrefParams, searchCrossref } from "./sources/crossref.ts";
+import { buildCrossrefParams, lookupDataLinksByDoi, searchCrossref } from "./sources/crossref.ts";
 import { type AccessInfo, type AccessLevel, buildWorksParams, searchOpenalex } from "./sources/openalex.ts";
 import { buildHfQuery } from "./sources/huggingface.ts";
 import { buildBulkQuery, searchSemanticScholar } from "./sources/semanticscholar.ts";
-import type { SourceRecord, SourceScope } from "./types.ts";
+import type { DataLink, SourceRecord, SourceScope } from "./types.ts";
 import { verifyAll } from "./verify.ts";
 
 type Searcher = (query: string, perSource: number, scope?: SourceScope) => Promise<SourceRecord[]>;
@@ -71,7 +71,7 @@ export interface SearchOptions {
 	sources?: string[];
 	/** Code-first sources (codesearch.ts: hf-papers, github-readme,
 	 * awesome-lists, gee-github): repositories first, their papers resolved
-	 * at arXiv/OpenAlex. Off unless named -- costs 30-90 s per run. Runs
+	 * at arXiv/OpenAlex. Off unless named -- costs up to ~40 s per run. Runs
 	 * regardless of `enrich` (identification, not enrichment). */
 	codeSources?: string[];
 	/** GitHub topics for the awesome-lists searcher; default from config
@@ -116,6 +116,32 @@ export function countAccess(records: Array<{ access?: AccessInfo }>): Record<Acc
 	const counts: Record<AccessLevel, number> = { free: 0, abstract_only: 0, restricted: 0, unknown: 0 };
 	for (const record of records) if (record.access) counts[record.access.level]++;
 	return counts;
+}
+
+/**
+ * Data links for `dois`, taken from the lookup started early in the run
+ * (`early`, over `earlyDois`); DOIs that entered the record set only later
+ * are looked up now. A failed early lookup is rethrown here, so the link
+ * stage degrades it like any other failure. Exported for tests.
+ */
+export async function collectDataLinks(
+	early: Promise<{ links: Map<string, DataLink[]>; error: unknown }> | null,
+	earlyDois: string[],
+	dois: string[],
+	lookup: (dois: string[]) => Promise<Map<string, DataLink[]>> = lookupDataLinksByDoi,
+): Promise<Map<string, DataLink[]>> {
+	const links = new Map<string, DataLink[]>();
+	if (early) {
+		const outcome = await early;
+		if (outcome.error) throw outcome.error;
+		for (const [doi, found] of outcome.links) links.set(doi, found);
+	}
+	const asked = new Set(earlyDois.map((doi) => doi.toLowerCase()));
+	const late = dois.filter((doi) => !asked.has(doi.toLowerCase()));
+	if (late.length) {
+		for (const [doi, found] of await lookup(late)) links.set(doi, found);
+	}
+	return links;
 }
 
 export async function runSearch(options: SearchOptions) {
@@ -306,6 +332,19 @@ export async function runSearch(options: SearchOptions) {
 	if (deduped.length < kept.length) {
 		warn(`dedupe merged ${kept.length - deduped.length} duplicate record(s)`);
 	}
+	// The data-link lookup needs only DOIs, and they are known from here on:
+	// it starts now and runs alongside verification and enrichment (CrossRef
+	// takes 1-3 s per batch); the link stage collects it. The outcome is
+	// captured, never left as a floating rejection.
+	const earlyDataDois = options.enrich === false
+		? []
+		: [...deduped, ...dropped.map((entry) => entry.record)].map((record) => record.doi).filter(Boolean);
+	const earlyDataLinks = earlyDataDois.length
+		? lookupDataLinksByDoi(earlyDataDois).then(
+			(links) => ({ links, error: null as unknown }),
+			(error: unknown) => ({ links: new Map<string, DataLink[]>(), error }),
+		)
+		: null;
 	// Code pairs that failed the date gate: records only a code source
 	// delivered move to the dropped table (listed, selectable, reason named);
 	// records a database also delivered lose the late link instead.
@@ -385,30 +424,31 @@ export async function runSearch(options: SearchOptions) {
 		warn("no grouping rules supplied; results are ungrouped");
 	}
 
-	// Code-link stage: ONE pass over kept + dropped records (interesting
-	// papers land in the dropped table too). The abstract signal is free for
-	// everyone; the capped GitHub search (only with code sources) spends its budget kept-on_target
-	// first, then kept, then dropped (input order -- dropped records carry
-	// no group and sort behind). Rides the enrich switch like every lookup
-	// beyond the search itself.
+	// Link stages: ONE pass over kept + dropped records (interesting papers
+	// land in the dropped table too). Ride the enrich switch like every
+	// lookup beyond the search itself.
 	aborted();
 	const droppedEntries = [...dropped, ...lateGate.dropped, ...abstractGate.dropped, ...topicGate.dropped, ...filterResult.dropped];
 	let results: Array<(typeof grouped)[number] & { access?: AccessInfo }> = grouped;
 	let droppedOut = droppedEntries;
 	if (options.enrich !== false) {
 		const combined = [...grouped, ...droppedEntries.map((entry) => entry.record)] as typeof grouped;
-		// The per-record GitHub search only when the user asked for code
-		// sources; the free abstract signal always runs.
-		const linked = await addCodeLinks(combined, warn, options.signal, codeSources.length > 0);
+		// Code links named in the abstracts (no request), then the data and
+		// code archives the publishers deposited at CrossRef (one batched
+		// request per 40 DOIs) -- both on every search, for kept AND dropped
+		// rows.
+		const linked = addCodeLinks(combined, warn);
+		aborted();
+		const withData = await addDataLinks(linked, warn, (dois) => collectDataLinks(earlyDataLinks, earlyDataDois, dois));
 		// Access stage over the same list: dropped rows are tickable too, so
 		// they need the open-access level and the open PDF locations as well.
 		aborted();
-		const withLinks = await addAccessStatus(linked, warn);
-		// Both stages map their input 1:1 (same length, same order). A
+		const withLinks = await addAccessStatus(withData, warn);
+		// All three stages map their input 1:1 (same length, same order). A
 		// violation would silently re-pair drop reasons with the wrong
 		// records, so it fails loudly here instead.
-		if (linked.length !== combined.length || withLinks.length !== combined.length) {
-			throw new Error(`code-link/access stage returned ${withLinks.length} record(s) for ${combined.length} input(s)`);
+		if (linked.length !== combined.length || withData.length !== combined.length || withLinks.length !== combined.length) {
+			throw new Error(`code-link/data-link/access stage returned ${withLinks.length} record(s) for ${combined.length} input(s)`);
 		}
 		results = withLinks.slice(0, grouped.length) as typeof results;
 		droppedOut = droppedEntries.map((entry, index) => ({

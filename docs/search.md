@@ -74,7 +74,8 @@ it land in the dropped table with the reason.
 
 ### Journals
 
-The top journals OpenAlex holds for this query, loaded as a checkbox
+The top journals OpenAlex holds for this query (same expression as the
+author list below, title and abstract only), loaded as a checkbox
 list with hit counts and the journal's 2-year citedness (an open
 impact-factor analog), plus an "Other journals" row for everything
 unlisted. An EXCLUSION list: every row arrives checked (all included),
@@ -88,10 +89,16 @@ whitelist instead.
 Two sections in one tab, each under its own heading; the rows carry no
 numbers.
 
-**Authors for this query, ranked by citations.** Loads when the tab is
-reached: the top authors OpenAlex holds for this query, period and
-journals, with hit counts, total citations, h-index and topics, ordered
-by the author's total citations, plus an "Other authors" row. It is an
+**Authors with the most works on this query.** Loads when the tab is
+reached: the authors with the most OpenAlex works on this query, period
+and journals, ordered by that count, with their total career citations,
+h-index and topics as context, plus an "Other authors" row. The count
+uses the search's own boolean expression, matched in title and abstract
+only: matched anywhere in the full text, "water level" AND monitoring AND
+river reaches ~77,000 works and lists prolific authors of neighbouring
+fields; in title and abstract ~3,300 works and the people working on the
+topic (measured 2026-09-24). Ranking by career citations was dropped for
+the same reason. It is an
 EXCLUSION list: all rows arrive checked, unticking excludes, all or none
 checked means no filter, removals survive a reload, and the head row
 "All authors included (Enter: deselect all)" toggles the whole list. When
@@ -159,8 +166,15 @@ as the labeling. Otherwise it moves to the dropped table, reason naming
 the repository and the hit count. Papers a database also found are not
 affected.
 
-The four together add roughly 30-90 seconds per run, which is why they are
-off by default. No key involved.
+The four together add up to roughly 40 seconds per run (measured 25 s on
+a three-block query), which is why they are off by default. No key
+involved.
+
+Without any tick the search still shows code and data links it can read
+for free: a code URL named in the abstract, and the data or code archives
+the publisher deposited in the paper's CrossRef record (see the Code /
+data column below). There is no per-paper GitHub search: measured on the
+user's searches it found no additional link while costing up to 80 s.
 
 ## Block search
 
@@ -201,11 +215,13 @@ to ies -- and no stemming or synonyms beyond that.
    Scholar by DOI and marked `*` (Semantic Scholar only with an API
    key). Plus a code link, taken from the abstract when it names a known
    host (GitHub, GitLab, Bitbucket, Codeberg, Hugging Face, Zenodo,
-   OSF); when code sources are ticked, also from one GitHub repository
-   search per record by arXiv id or DOI (at most 12, stopped at the
-   first GitHub rate limit). Searched matches skip repositories created
-   more than a year after the paper, and a DOI match is linked only when
-   the repository owner's name matches an author.
+   OSF), and data links from the paper's CrossRef record: relation types
+   is-supplemented-by, is-part-of and references pointing to a known
+   data or code archive (Zenodo, PANGAEA, Mendeley Data, Dryad,
+   figshare, Dataverse, HydroShare, OSF, Eawag, GitHub, GitLab). One
+   batched CrossRef request per 40 DOIs, started right after
+   deduplication so it runs alongside verification and enrichment.
+   Both run for kept and dropped records.
 7. **Abstract gate** -- no abstract, dropped table.
 8. **Topic gate for code-only finds** -- title + abstract miss the
    required query blocks (see Code above), dropped table.
@@ -239,10 +255,15 @@ removed without abstract -> excluded by filters -> included) and the
 labeling rule. That is the material of a PRISMA-2020 flow diagram and a
 PRISMA-S methods section.
 
-**Code column**, shown only when a record carries a link: the repository,
-labeled by host. Provenance sits in the JSON (`enriched.code_url`:
-abstract, github, or the code-first source that started from the
-repository).
+**Code / data column**, shown only when a record carries a link: the
+code repository labeled by host, then each data archive by name, one per
+line. Provenance sits in the JSON (`enriched.code_url`: abstract or the
+code-first source that started from the repository; `enriched.data_links`:
+crossref; the links themselves in `code_url` and `data_links`). The
+search documentation counts both kinds in a "Code and data links" row.
+Measured on 446 DOIs of real searches, about 2 % carry a data link --
+mostly Copernicus journals (HESS, NHESS, ESSD), which deposit their "Code
+and data availability" assets at CrossRef.
 
 **Access marker**, in the DOI column of every row, from the OpenAlex
 open-access status (the exact OpenAlex category in the tooltip):

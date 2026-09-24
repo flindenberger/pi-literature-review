@@ -75,7 +75,7 @@ The graph is fetched from OpenAlex when opened; only the DOI or title leaves you
 
 Optionally search for papers with code using Hugging Face Papers, GitHub READMEs, curated awesome-lists and Google Earth Engine repositories.
 
-Known repositories are shown directly in the results.
+Known repositories and data archives are shown directly in the results: links named in the abstract and archives the publisher deposited at CrossRef appear in every search, no tick needed.
 
 ![Results with code links](docs/img/search-code-column.png)
 

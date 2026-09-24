@@ -24,7 +24,7 @@ node src/cli.ts "<query>" [-n PER_SOURCE] [-s SOURCES] [-g "a,b;c,d"]
 | `--variant` | an additional query for the same need; results are deduplicated across variants and labeled Q1, Q2, ... |
 | `--html` | without FILE writes `lit-search/<date>_<query>.html` plus the JSON sidecar; with FILE, that path. Without `--html` the JSON payload prints to stdout |
 | `--digest` | prints the agent-facing digest instead of the JSON |
-| `--code` | comma list of code-first sources (`hf-papers`, `github-readme`, `awesome-lists`, `gee-github`): repositories are searched first and the papers they cite resolved at arXiv / OpenAlex; adds 30-90 s. `awesome-lists` reads the topics of [`codeListTopics`](configuration.md#keys-and-contact-data) (no model proposal on the command line) |
+| `--code` | comma list of code-first sources (`hf-papers`, `github-readme`, `awesome-lists`, `gee-github`): repositories are searched first and the papers they cite resolved at arXiv / OpenAlex; adds up to ~40 s. `awesome-lists` reads the topics of [`codeListTopics`](configuration.md#keys-and-contact-data) (no model proposal on the command line) |
 | `--author "Name"` | papers by this author (repeatable): the name goes into each source's author field and a post-filter keeps only records naming it; paired with `--author-id`, OpenAlex filters by the exact person |
 | `--author-id A...` | OpenAlex author id for the `--author` in the same position (repeatable) |
 | `--author-position first\|contributing\|any` | required position of the picked author (default any); a post-filter over the first name of each record's author list |

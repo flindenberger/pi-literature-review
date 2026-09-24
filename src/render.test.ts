@@ -192,8 +192,8 @@ const html = renderHtml(payload);
 	assert.ok(html.includes("<summary>Abstract</summary>")); // own abstracts stay unstarred
 }
 
-// code column: GitHub link plus the heuristic footnote; a page
-// without any code_url drops the WHOLE column and its footnote
+// code / data column: GitHub link plus the footnote; a page without any
+// code or data link drops the WHOLE column and its footnote
 // (an all-dash column with an unexplained &sup2; would be noise)
 {
 	const withCode = renderHtml({
@@ -202,13 +202,13 @@ const html = renderHtml(payload);
 		dropped: [],
 	});
 	assert.ok(withCode.includes('<a href="https://github.com/acme/sandbar-net" target="_blank" rel="noopener">GitHub</a>'));
-	assert.ok(withCode.includes("<th>Code&sup2;</th>"));
-	assert.ok(withCode.includes("&sup2; Code = "));
-	assert.ok(!html.includes("<th>Code&sup2;</th>")); // no code link anywhere -> no column
-	assert.ok(!html.includes("&sup2; Code = "));
-	// Dropped records carry code links too (the engine
-	// passes them through the lookup at lowest cap priority): a link on a
-	// dropped row alone brings the column AND the footnote to BOTH tables.
+	assert.ok(withCode.includes("<th>Code / data&sup2;</th>"));
+	assert.ok(withCode.includes("&sup2; Code / data = "));
+	assert.ok(!html.includes("<th>Code / data&sup2;</th>")); // no code link anywhere -> no column
+	assert.ok(!html.includes("&sup2; Code / data = "));
+	// Dropped records carry code links too (the engine passes kept and
+	// dropped rows through the link stages): a link on a dropped row alone
+	// brings the column AND the footnote to BOTH tables.
 	const droppedCode = renderHtml({
 		...payload,
 		results: [payload.results[0]],
@@ -218,11 +218,35 @@ const html = renderHtml(payload);
 		}],
 	});
 	assert.ok(droppedCode.includes('<a href="https://github.com/acme/dropped-net" target="_blank" rel="noopener">GitHub</a>'));
-	assert.equal(droppedCode.split("<th>Code&sup2;</th>").length - 1, 2);
-	assert.ok(droppedCode.includes("&sup2; Code = "));
-	// The footnote discloses the field-measured guards (2026-09-02).
-	assert.ok(withCode.includes("created more than a year after the paper are skipped"));
-	assert.ok(withCode.includes("owner's name matches an author"));
+	assert.equal(droppedCode.split("<th>Code / data&sup2;</th>").length - 1, 2);
+	assert.ok(droppedCode.includes("&sup2; Code / data = "));
+	// The footnote names the three places and no longer the removed
+	// per-paper GitHub search.
+	assert.ok(withCode.includes("The paper's own abstract"));
+	assert.ok(withCode.includes("The publisher's CrossRef record"));
+	assert.ok(!withCode.includes("one GitHub search per record"));
+	// Data links alone bring the column: each archive by name, one per
+	// line after the code link; the search documentation counts both kinds;
+	// the crossref provenance stays out of the asterisk footnote.
+	const withData = renderHtml({
+		...payload,
+		results: [
+			{ ...payload.results[0], code_url: "https://github.com/acme/sandbar-net", enriched: { code_url: "abstract" },
+				data_links: [{ url: "https://doi.org/10.5281/zenodo.4300845", archive: "Zenodo" }, { url: "https://doi.org/10.1594/PANGAEA.1", archive: "PANGAEA" }] },
+			{ ...payload.results[1], data_links: [{ url: "https://doi.org/10.17632/x.1", archive: "Mendeley Data" }], enriched: { data_links: "crossref" } },
+		],
+		dropped: [],
+	});
+	assert.ok(withData.includes('GitHub</a><br><a href="https://doi.org/10.5281/zenodo.4300845" target="_blank" rel="noopener">Zenodo</a><br><a href="https://doi.org/10.1594/PANGAEA.1" target="_blank" rel="noopener">PANGAEA</a>'));
+	assert.ok(withData.includes(">Mendeley Data</a>"));
+	assert.ok(withData.includes("<dt>Code and data links</dt><dd>1 record(s) with a code link named in the abstract; 2 record(s) with data or code archives from the publisher's CrossRef record"));
+	assert.ok(!withData.includes("identifier lookup at crossref"));
+	const dataOnly = renderHtml({
+		...payload,
+		results: [{ ...payload.results[0], data_links: [{ url: "https://doi.org/10.5281/zenodo.1", archive: "Zenodo" }] }],
+		dropped: [],
+	});
+	assert.ok(dataOnly.includes("<th>Code / data&sup2;</th>"));
 }
 
 // code cell label follows the link's host (2026-09-02: the abstract may
@@ -1235,7 +1259,7 @@ const baseReport: SynthReport = {
 	assert.ok(codeRun.includes("1 code pair(s) moved to dropped (repository created more than 1 year after the paper)"));
 	assert.ok(codeRun.includes("Repository first (code sources, when enabled)"));
 	assert.ok(codeRun.includes("repos.ecosyste.ms (data CC-BY-SA)"));
-	assert.ok(codeRun.includes("abstract | github | hf-papers | github-readme | awesome-lists | gee-github"));
+	assert.ok(codeRun.includes("abstract | crossref | hf-papers | github-readme | awesome-lists | gee-github"));
 	assert.ok(codeRun.includes("https://github.com/x/cropmask"));
 	assert.ok(codeRun.includes("created 2 years after the paper"));
 	assert.ok(!html.includes("<dt>Code sources</dt>"));

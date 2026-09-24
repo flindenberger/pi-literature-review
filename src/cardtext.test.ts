@@ -5,7 +5,7 @@
  */
 
 import assert from "node:assert/strict";
-import { cardLine, cardSegments } from "./cardtext.ts";
+import { cardLine, cardSegments, hyperlinksSupported, linkFileUrl, piTuiHyperlinks } from "./cardtext.ts";
 
 // Plain text stays one plain segment.
 assert.deepEqual(cardSegments("no markup here"), [{ text: "no markup here", bold: false }]);
@@ -66,5 +66,38 @@ assert.deepEqual(cardLine("----"), { prefix: "", segments: [{ text: "----", bold
 assert.equal(cardLine("**Ziel und Ansatz**").prefix, "");
 assert.equal(cardLine("[1] 2026 | 10.5194/hess-30-797-2026 | Title (p. 4)").prefix, "");
 assert.equal(cardLine("*").prefix, "");
+
+// linkFileUrl: the file:// URL becomes an OSC 8 link whose text is the
+// decoded basename (page anchor kept); the rest of the line is untouched;
+// lines without a file:// URL pass through.
+{
+	const url = "file:///home/u/lit-synthesis/2026-09-24_synthesis_report_Blanch.html";
+	assert.equal(linkFileUrl(`HTML-Report: ${url}`),
+		`HTML-Report: \x1b]8;;${url}\x072026-09-24_synthesis_report_Blanch.html\x1b]8;;\x07`);
+	const page = "file:///home/u/lit-selection/2025_Blanch_%C3%A4.pdf#page=4";
+	assert.equal(linkFileUrl(`  [1] p. 4: ${page}`),
+		`  [1] p. 4: \x1b]8;;${page}\x072025_Blanch_ä.pdf#page=4\x1b]8;;\x07`);
+	assert.equal(linkFileUrl("no link here"), "no link here");
+	// Without link support the full URL stays (clickable or copyable).
+	assert.equal(linkFileUrl(`HTML-Report: ${url}`, false), `HTML-Report: ${url}`);
+}
+
+// hyperlinksSupported: pi's override first, then pi-tui's detection, then
+// VTE (GNOME Terminal & co., not in pi-tui's list) outside tmux/screen;
+// the legacy Windows console and unknown terminals get the plain URL.
+{
+	assert.equal(hyperlinksSupported({ WT_SESSION: "x" }, true), true); // Windows Terminal via pi-tui
+	assert.equal(hyperlinksSupported({}, false), false); // legacy console, unknown
+	assert.equal(hyperlinksSupported({ VTE_VERSION: "8400", TERM: "xterm-256color" }, false), true);
+	assert.equal(hyperlinksSupported({ VTE_VERSION: "4800" }, false), false); // before VTE 0.50
+	assert.equal(hyperlinksSupported({ VTE_VERSION: "8400", TMUX: "/tmp/tmux" }, false), false);
+	assert.equal(hyperlinksSupported({ VTE_VERSION: "8400", TERM: "screen-256color" }, false), false);
+	assert.equal(hyperlinksSupported({ PI_HYPERLINKS: "1" }, false), true);
+	assert.equal(hyperlinksSupported({ PI_HYPERLINKS: "0", VTE_VERSION: "8400" }, true), false);
+	assert.equal(piTuiHyperlinks({ getCapabilities: () => ({ hyperlinks: true }) }), true);
+	assert.equal(piTuiHyperlinks({ getCapabilities: () => ({ hyperlinks: false }) }), false);
+	assert.equal(piTuiHyperlinks({}), false);
+	assert.equal(piTuiHyperlinks({ getCapabilities: () => { throw new Error("x"); } }), false);
+}
 
 console.log("cardtext.test.ts: all assertions passed");

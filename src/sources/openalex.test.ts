@@ -5,7 +5,7 @@
  */
 
 import assert from "node:assert/strict";
-import { accessFromWork, buildAuthorSearchFilter, buildBlockSearch, buildFacetFilter, lookupOpenalexDois, parseFacetPage, parseFacets, toSourceRecord,
+import { accessFromWork, buildAuthorSearchFilter, buildBlockSearch, buildFacetFilter, buildFacetParams, lookupOpenalexDois, parseFacetPage, parseFacets, toSourceRecord,
 	autocompleteAuthors,
 	buildAuthorIdFilter,
 	buildWorksParams,
@@ -284,6 +284,26 @@ const parseJournalFacetPage = parseFacetPage;
 	} finally {
 		globalThis.fetch = realFetch;
 	}
+}
+
+// buildFacetParams: the pickers ask with the works search's own boolean
+// expression, in title and abstract only, with the same type exclusion and
+// the live scope; no search= and no per-page (per-page collapses group_by
+// to one bucket). Commas and pipes cannot live inside a filter value.
+{
+	const params = buildFacetParams("(Water Level) AND (Monitoring) AND (River)", "authorships.author.id", {
+		yearFrom: 2017, sourceIds: ["S1"], blocks: [["water level"], ["monitoring"], ["river"]],
+	});
+	assert.equal(params.get("search"), null);
+	assert.equal(params.get("per-page"), null);
+	assert.equal(params.get("group_by"), "authorships.author.id");
+	assert.equal(params.get("filter"),
+		'title_and_abstract.search:"water level" AND monitoring AND river,'
+		+ "type:!peer-review|supplementary-materials|paratext|dataset|grant,"
+		+ "from_publication_date:2017-01-01,primary_location.source.id:S1");
+	// Without blocks (quoted or field-syntax queries) the text goes as is.
+	assert.ok(buildFacetParams("sar, flood | mapping", "primary_location.source.id").get("filter")!
+		.startsWith("title_and_abstract.search:sar flood mapping,type:!"));
 }
 
 console.log("openalex.test.ts: all assertions passed");

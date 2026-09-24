@@ -418,6 +418,9 @@ export interface FacetScope {
 	yearTo?: number;
 	/** OpenAlex source ids ("S...") of picked journals. */
 	sourceIds?: string[];
+	/** Concept blocks of the query (the same structure the works search
+	 * sends as its boolean expression); absent: the plain query text. */
+	blocks?: string[][];
 }
 
 /** Build the OpenAlex filter= value for a facet scope: documented from/to
@@ -432,17 +435,37 @@ export function buildFacetFilter(scope: FacetScope): string {
 }
 
 /**
+ * Parameters of a facet pre-query: the SAME boolean block expression the
+ * works search sends (phrases quoted), matched in title and abstract only,
+ * the same record-type exclusion, plus the live scope. Title and abstract
+ * keep the lists on topic: matched anywhere in the full text, a query like
+ * "water level" AND monitoring AND river reaches ~77,000 works and lists
+ * prolific authors of neighbouring fields; in title and abstract ~3,300
+ * works and the people who work on the topic (measured 2026-09-24).
+ * Commas and pipes would split the filter value and are dropped from the
+ * expression. NO per-page: sent alongside group_by it makes OpenAlex
+ * return a single bucket; bare group_by returns 200. Pure.
+ */
+export function buildFacetParams(query: string, groupBy: string, scope: FacetScope = {}): URLSearchParams {
+	const expression = (buildBlockSearch(scope.blocks) || query).replace(/[,|]/g, " ").replace(/\s+/g, " ").trim();
+	const parts = [
+		`title_and_abstract.search:${expression}`,
+		`type:!${OPENALEX_EXCLUDED_TYPES.join("|")}`,
+	];
+	const scoped = buildFacetFilter(scope);
+	if (scoped) parts.push(scoped);
+	return new URLSearchParams({ filter: parts.join(","), group_by: groupBy });
+}
+
+/**
  * ONE cheap facet request over the query's works, grouped by the given
- * field -- the pre-query behind the wizard's pickers. Deterministic API
- * data; the LLM is nowhere near it.
+ * field -- the pre-query behind the wizard's pickers. Buckets arrive
+ * ordered by their work count. Deterministic API data; the LLM is nowhere
+ * near it.
  */
 async function facetPage(query: string, groupBy: string, limit: number, scope?: FacetScope): Promise<FacetPage> {
-	// NO per-page here: sending it alongside group_by makes OpenAlex return
-	// a single bucket; bare group_by returns 200.
-	const params = new URLSearchParams({ search: query, group_by: groupBy });
-	const filter = buildFacetFilter(scope ?? {});
-	if (filter) params.set("filter", filter);
-	// search= -- same cluster as the works search, same throttle.
+	const params = buildFacetParams(query, groupBy, scope);
+	// Same cluster as the works search, same throttle.
 	const response = await fetchSearch(`${BASE_URL}?${withContact(params)}`, { headers: HEADERS() });
 	return parseFacetPage(await response.json(), limit);
 }
@@ -453,9 +476,9 @@ export function journalFacets(query: string, limit: number, scope?: FacetScope):
 	return facetPage(query, "primary_location.source.id", limit, scope);
 }
 
-/** Which authors publish the results for this query -- the same mechanics
- * as the journal list, one request; scoped to the live period AND the
- * picked journals. */
+/** Which authors publish most on this query -- the same mechanics as the
+ * journal list, one request; scoped to the live period AND the picked
+ * journals; ordered by the number of matching works. */
 export function authorFacets(query: string, limit: number, scope?: FacetScope): Promise<FacetPage> {
 	return facetPage(query, "authorships.author.id", limit, scope);
 }

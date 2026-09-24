@@ -63,7 +63,7 @@ function usage(): never {
 	warn("       (the full JSON payload is always written next to the HTML, same basename)");
 	warn("       --variant adds an alternative phrasing; results are deduplicated across variants");
 	warn("       --digest prints the agent-facing digest instead of JSON (combine with --html for real paths)");
-	warn("       --code searches code repositories FIRST and resolves the papers they cite (30-90 s extra)");
+	warn("       --code searches code repositories FIRST and resolves the papers they cite (up to ~40 s extra)");
 	warn(`available sources: ${Object.keys(SEARCHERS).join(", ")}`);
 	warn(`available code sources: ${Object.keys(CODE_SEARCHERS).join(", ")}`);
 	warn("or:    node src/cli.ts selection <DOI-or-arXiv-ID> [more ...]");

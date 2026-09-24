@@ -5,7 +5,7 @@
  * the source boundary; no field is ever invented.
  */
 
-import { contactMailto, type SourceRecord, type SourceScope, userAgent } from "../types.ts";
+import { contactMailto, type DataLink, type SourceRecord, type SourceScope, userAgent } from "../types.ts";
 import { pacedClient } from "./polite.ts";
 
 const BASE_URL = "https://api.crossref.org/works";
@@ -143,4 +143,107 @@ export async function searchCrossref(query: string, rows: number, scope?: Source
 			abstract: stripJats(item.abstract),
 		};
 	});
+}
+
+/* ---------------- Data and code links from CrossRef relation metadata ---------------- */
+
+/** Relation types that point from a paper to its own material. Copernicus
+ * journals deposit their "Code and data availability" assets as
+ * is-part-of; other publishers use is-supplemented-by or references.
+ * Preprint, review and comment relations are never material. */
+export const DATA_RELATION_TYPES = ["is-supplemented-by", "is-part-of", "references"];
+
+/** Known data and code archives, matched by DOI prefix or by URL. A target
+ * outside this list is not shown: the relation field also carries links to
+ * other papers, which are not material. */
+export const DATA_ARCHIVES: Array<{ archive: string; doi?: RegExp; url?: RegExp }> = [
+	{ archive: "Zenodo", doi: /^10\.5281\/zenodo\./i, url: /^https?:\/\/(?:www\.)?zenodo\.org\//i },
+	{ archive: "PANGAEA", doi: /^10\.1594\/pangaea\./i, url: /^https?:\/\/(?:doi\.)?pangaea\.de\//i },
+	{ archive: "Mendeley Data", doi: /^10\.17632\//, url: /^https?:\/\/data\.mendeley\.com\//i },
+	{ archive: "Dryad", doi: /^10\.5061\/dryad\./i, url: /^https?:\/\/(?:www\.)?datadryad\.org\//i },
+	{ archive: "figshare", doi: /^10\.6084\/m9\.figshare\./i, url: /^https?:\/\/(?:[\w-]+\.)?figshare\.com\//i },
+	{ archive: "Dataverse", doi: /^10\.7910\/dvn\//i, url: /^https?:\/\/dataverse\.[\w.-]+\//i },
+	{ archive: "HydroShare", doi: /^10\.4211\//, url: /^https?:\/\/(?:www\.)?hydroshare\.org\//i },
+	{ archive: "OSF", doi: /^10\.17605\/osf\.io\//i, url: /^https?:\/\/osf\.io\/\w+/i },
+	{ archive: "Eawag", doi: /^10\.25678\//, url: /^https?:\/\/opendata\.eawag\.ch\//i },
+	{ archive: "GitHub", url: /^https?:\/\/(?:www\.)?github\.com\/[\w.-]+\/[\w.-]+/i },
+	{ archive: "GitLab", url: /^https?:\/\/(?:www\.)?gitlab\.com\/[\w.-]+\/[\w.-]+/i },
+];
+
+/** The archive a relation target belongs to, with the link to show, or
+ * null for anything outside DATA_ARCHIVES. DOIs become doi.org links;
+ * a doi.org URL is read as its DOI. Pure. */
+export function dataLinkFor(idType: unknown, id: unknown): DataLink | null {
+	if (typeof id !== "string" || !id.trim()) return null;
+	let value = id.trim();
+	let kind = typeof idType === "string" ? idType.toLowerCase() : "";
+	const doiUrl = /^https?:\/\/(?:dx\.)?doi\.org\/(.+)$/i.exec(value);
+	if (doiUrl) {
+		value = decodeURIComponent(doiUrl[1]);
+		kind = "doi";
+	}
+	if (kind === "doi") {
+		const archive = DATA_ARCHIVES.find((entry) => entry.doi?.test(value));
+		return archive ? { url: `https://doi.org/${value}`, archive: archive.archive } : null;
+	}
+	if (/^https?:\/\//i.test(value)) {
+		const archive = DATA_ARCHIVES.find((entry) => entry.url?.test(value));
+		return archive ? { url: value.replace(/[.,;]+$/, ""), archive: archive.archive } : null;
+	}
+	return null;
+}
+
+/** Data and code links from one CrossRef `relation` object: only the
+ * material relation types, only known archives, each link once (case-
+ * insensitive), in the order CrossRef lists them. Pure. */
+export function dataLinksFromRelation(relation: unknown): DataLink[] {
+	if (!relation || typeof relation !== "object") return [];
+	const links: DataLink[] = [];
+	const seen = new Set<string>();
+	for (const type of DATA_RELATION_TYPES) {
+		const targets = (relation as Record<string, unknown>)[type];
+		if (!Array.isArray(targets)) continue;
+		for (const target of targets as Array<Record<string, unknown>>) {
+			const link = dataLinkFor(target?.["id-type"], target?.id);
+			if (!link || seen.has(link.url.toLowerCase())) continue;
+			seen.add(link.url.toLowerCase());
+			links.push(link);
+		}
+	}
+	return links;
+}
+
+/** DOIs per relation lookup; 40 keeps the filter URL short. */
+const RELATION_BATCH_SIZE = 40;
+
+/**
+ * Data and code links for a list of DOIs, keyed by lower-case DOI. One
+ * batched request per 40 DOIs (filter doi:a,doi:b,..., only the DOI and
+ * relation fields), through the paced CrossRef client. DOIs CrossRef does
+ * not hold (arXiv's DataCite DOIs, for example) are simply absent from the
+ * answer; DOIs containing a comma are skipped because the filter syntax
+ * cannot carry them. Records without links are absent from the map. A
+ * non-2xx answer throws; the caller degrades.
+ */
+export async function lookupDataLinksByDoi(dois: string[]): Promise<Map<string, DataLink[]>> {
+	const unique = [...new Set(dois.map((doi) => doi.trim().toLowerCase())
+		.filter((doi) => doi && !doi.includes(",") && !doi.startsWith("10.48550/")))];
+	const links = new Map<string, DataLink[]>();
+	for (let i = 0; i < unique.length; i += RELATION_BATCH_SIZE) {
+		const batch = unique.slice(i, i + RELATION_BATCH_SIZE);
+		const params = new URLSearchParams({
+			filter: batch.map((doi) => `doi:${doi}`).join(","),
+			select: "DOI,relation",
+			rows: String(batch.length),
+		});
+		const mailto = contactMailto();
+		if (mailto) params.set("mailto", mailto);
+		const data = await fetchWorks(params);
+		for (const item of (data?.message?.items ?? []) as Array<Record<string, any>>) {
+			const doi = typeof item?.DOI === "string" ? item.DOI.trim().toLowerCase() : "";
+			const found = dataLinksFromRelation(item?.relation);
+			if (doi && found.length) links.set(doi, found);
+		}
+	}
+	return links;
 }

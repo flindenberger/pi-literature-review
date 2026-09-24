@@ -33,7 +33,8 @@ import { CODE_SEARCHERS } from "../src/codesearch.ts";
 import { codeListTopics } from "../src/config.ts";
 import { listsForTopic } from "../src/sources/ecosystems.ts";
 import { type AuthorMatch, autocompleteAuthors } from "../src/sources/openalex.ts";
-import type { ResultFilters } from "../src/pipeline.ts";
+import { hyperlinksSupported, linkFileUrl, piTuiHyperlinks } from "../src/cardtext.ts";
+import { type ResultFilters, sanitizeTermGroups } from "../src/pipeline.ts";
 import {
 	type BlockFormQuery,
 	blocksForEditing,
@@ -115,6 +116,12 @@ const QUERY_BLOCK_MAX = 8;
  * fields query_block_1..max plus the free-text field (a filled free text
  * wins). The single source of truth -- the loader keys, the base row, the
  * facet requests and the submit mapping all read the query through it. */
+/** The concept blocks the search will send for this query -- the journal
+ * and author lists ask OpenAlex with the same boolean expression, so the
+ * pickers show what the run itself will search. */
+function facetBlocks(query: string): string[][] {
+	return sanitizeTermGroups(queryBlocks(query));
+}
 function composedQuery(answers: Record<string, unknown>): BlockFormQuery {
 	return queryFromBlockAnswers(
 		Array.from({ length: QUERY_BLOCK_MAX }, (_, n) => String(answers[`query_block_${n + 1}`] ?? "")),
@@ -362,7 +369,7 @@ const SEARCH_TEXT: Record<DialogLang, {
 		countTab: "Treffer",
 		countTitle: "Wie viele Treffer je Quelle (arXiv, CrossRef, OpenAlex, Semantic Scholar)?",
 		codeTab: "Code",
-		codeTitle: "Zusätzlich Code-Repositories durchsuchen und die Paper auflösen, die sie zitieren (Repository zuerst, Paper danach). Kostet je nach Auswahl etwa 30-90 s pro Lauf.",
+		codeTitle: "Zusätzlich Code-Repositories durchsuchen und die Paper auflösen, die sie zitieren (Repository zuerst, Paper danach). Kostet je nach Auswahl bis etwa 40 s pro Lauf. Code- und Datenlinks aus dem Abstract oder aus dem CrossRef-Eintrag des Verlags werden immer angezeigt.",
 		codeHead: "Paper mit Code suchen und hinzufügen",
 		codeNext: "Weiter",
 		codeSource: {
@@ -390,7 +397,7 @@ const SEARCH_TEXT: Record<DialogLang, {
 			`(${count} Treffer${score !== undefined ? ` · 2-Jahres-Rate ${score}` : ""})`,
 		journalOther: "Andere Journals/Quellen (hier nicht gelistet)",
 		authorTab: "Autoren",
-		authorTitle: "Autoren zu dieser Anfrage, nach Zitationen sortiert",
+		authorTitle: "Autoren mit den meisten Werken zu dieser Anfrage (Begriffe in Titel oder Abstract)",
 		authorSearchLabel: "Autorenname tippen",
 		authorLookupIdle: "",
 		authorLookupLoading: "suche Autoren bei OpenAlex ...",
@@ -411,7 +418,7 @@ const SEARCH_TEXT: Record<DialogLang, {
 		authorSelectAll: "Alle auswählen",
 		authorAllSelected: "Alle Autoren drin (Enter: alle abwählen)",
 		authorItem: (count, metrics) =>
-			`(${count} Treffer${metrics.cites !== undefined ? ` · ${metrics.cites} Zitationen` : ""}`
+			`(${count} Werke zur Anfrage${metrics.cites !== undefined ? ` · ${metrics.cites} Zitationen gesamt` : ""}`
 			+ `${metrics.hIndex !== undefined ? ` · h-Index ${metrics.hIndex}` : ""}`
 			+ `${metrics.topics?.length ? ` · ${metrics.topics.join(", ")}` : ""})`,
 		authorOther: "Andere Autorinnen und Autoren (hier nicht gelistet)",
@@ -470,7 +477,7 @@ const SEARCH_TEXT: Record<DialogLang, {
 		countTab: "Records",
 		countTitle: "How many records per source (arXiv, CrossRef, OpenAlex, Semantic Scholar)?",
 		codeTab: "Code",
-		codeTitle: "Additionally search code repositories and resolve the papers they cite (repository first, paper second). Adds roughly 30-90 s per run depending on the selection.",
+		codeTitle: "Additionally search code repositories and resolve the papers they cite (repository first, paper second). Adds up to roughly 40 s per run depending on the selection. Code and data links named in an abstract or in the publisher's CrossRef record are always shown.",
 		codeHead: "Search and add papers with Code",
 		codeNext: "Next",
 		codeSource: {
@@ -498,7 +505,7 @@ const SEARCH_TEXT: Record<DialogLang, {
 			`(${count} hits${score !== undefined ? ` · 2-yr rate ${score}` : ""})`,
 		journalOther: "Other journals/sources (not listed here)",
 		authorTab: "Authors",
-		authorTitle: "Authors for this query, ranked by citations",
+		authorTitle: "Authors with the most works on this query (terms in title or abstract)",
 		authorSearchLabel: "Type author name",
 		authorLookupIdle: "",
 		authorLookupLoading: "looking up authors at OpenAlex ...",
@@ -519,7 +526,7 @@ const SEARCH_TEXT: Record<DialogLang, {
 		authorSelectAll: "Select all",
 		authorAllSelected: "All authors included (Enter: deselect all)",
 		authorItem: (count, metrics) =>
-			`(${count} hits${metrics.cites !== undefined ? ` · ${metrics.cites} citations` : ""}`
+			`(${count} works on this query${metrics.cites !== undefined ? ` · ${metrics.cites} citations in total` : ""}`
 			+ `${metrics.hIndex !== undefined ? ` · h-index ${metrics.hIndex}` : ""}`
 			+ `${metrics.topics?.length ? ` · ${metrics.topics.join(", ")}` : ""})`,
 		authorOther: "Other authors (not listed here)",
@@ -835,7 +842,7 @@ async function intakeWizard(
 			// Code-first search: the four sources are always on screen,
 			// unchecked; the head row "Search for papers with code" is a
 			// master switch (checks all, else clears all), each source stays
-			// individually untickable. Off by default (30-90 s per run); an
+			// individually untickable. Off by default (up to ~40 s per run); an
 			// agent code_sources proposal arrives with those sources checked.
 			kind: "checkbox", id: "code", tab: text.codeTab, title: text.codeTitle,
 			// A blank line sets the head row apart from the sources; the
@@ -1060,8 +1067,9 @@ async function intakeWizard(
 			step: "journals",
 			key: (answers) => `${composedQuery(answers).query.toLowerCase()}|${scopeKey(liveYearScope(answers))}`,
 			load: async (answers) => {
+				const query = composedQuery(answers).query;
 				const page = await journalFacets(
-					composedQuery(answers).query, JOURNAL_PICK_LIMIT, liveYearScope(answers),
+					query, JOURNAL_PICK_LIMIT, { ...liveYearScope(answers), blocks: facetBlocks(query) },
 				);
 				const scores = await fetchJournalScores(page.listed.map((facet) => facet.id), () => {});
 				// Remember what the list SHOWED: the "other" row is defined
@@ -1154,13 +1162,17 @@ async function intakeWizard(
 					scopeKey({ ...liveYearScope(answers), sourceIds: livePickedSourceIds(answers) })}`;
 			},
 			load: async (answers) => {
-				const page = await authorFacets(composedQuery(answers).query, AUTHOR_PICK_LIMIT, {
+				const query = composedQuery(answers).query;
+				const page = await authorFacets(query, AUTHOR_PICK_LIMIT, {
 					...liveYearScope(answers),
 					sourceIds: livePickedSourceIds(answers),
+					blocks: facetBlocks(query),
 				});
 				const metrics = await fetchAuthorMetrics(page.listed.map((facet) => facet.id), () => {});
-				const ranked = [...page.listed].sort((a, b) =>
-					(metrics.get(b.id)?.cites ?? -1) - (metrics.get(a.id)?.cites ?? -1) || b.count - a.count);
+				// Order as OpenAlex delivers it: most works on THIS query first.
+				// Career citations stay on the line as context; ranking by them
+				// lifted prolific names of neighbouring fields to the top.
+				const ranked = page.listed;
 				listedAuthors = ranked.map((facet) => facet.name);
 				const noPick = (live: WizardAnswers): boolean => !hasPickedAuthor(live);
 				const items: CheckboxItem[] = ranked.map((facet) => ({
@@ -1342,32 +1354,17 @@ export default function literatureSearch(pi: ExtensionAPI) {
 	// without it the capped widget stays the fallback.
 	void (async () => {
 		try {
-			const { Box, Text } = await import("@earendil-works/pi-tui");
+			const tui = await import("@earendil-works/pi-tui");
+			const { Box, Text } = tui;
 			tuiText = Text as unknown as new (text: string) => unknown;
-			// A raw file:// URL WRAPS across card lines in narrow terminals and
-			// the click target breaks. Display-only fix: the card renders the
-			// URL as an OSC 8 hyperlink with the short basename as its text --
-			// short text never wraps. pi-tui explicitly supports OSC 8
-			// (visibleWidth strips it, the wrap tracker re-opens it per line;
-			// BEL terminator because some terminals only click BEL-terminated
-			// links). The digest STRING stays a plain URL (LLM context, widget
-			// fallback, protocol).
-			const linkified = (line: string): string => {
-				const match = line.match(/file:\/\/\S+/);
-				if (!match) return line;
-				const url = match[0];
-				let label = url.split("/").pop() || url;
-				try {
-					label = decodeURIComponent(label);
-				} catch {
-					// keep the raw basename
-				}
-				return line.replace(url, `\x1b]8;;${url}\x07${label}\x1b]8;;\x07`);
-			};
+			// file:// URLs render as short clickable links where the terminal
+			// supports them (cardtext.ts); the digest STRING stays a plain URL
+			// (LLM context, widget fallback).
+			const links = hyperlinksSupported(process.env, piTuiHyperlinks(tui));
 			const buildCard = (data: { heading: string; text: string }, theme: { bg(color: string, line: string): string; bold(text: string): string }) => {
 				const box = new Box(1, 1, (line: string) => theme.bg("customMessageBg", line));
 				box.addChild(new Text(theme.bold(data.heading)));
-				for (const line of data.text.split("\n")) box.addChild(new Text(linkified(line)));
+				for (const line of data.text.split("\n")) box.addChild(new Text(linkFileUrl(line, links)));
 				return box;
 			};
 			pi.registerEntryRenderer(DIGEST_ENTRY, (entry, _state, theme) =>
@@ -1439,7 +1436,7 @@ export default function literatureSearch(pi: ExtensionAPI) {
 				description: `Sources to query, default all of: ${Object.keys(SEARCHERS).join(", ")} (semanticscholar only when an API key is configured)`,
 			})),
 			code_sources: Type.Optional(Type.Array(Type.String(), {
-				description: `Code-first sources: search code repositories FIRST and resolve the papers they cite (repository link attached, metadata from arXiv/OpenAlex). Use when the user asks for papers WITH code / implementations. Any of: ${Object.keys(CODE_SEARCHERS).join(", ")}. Default: none (adds 30-90 s per run). In the wizard this only prefills the Code tab.`,
+				description: `Code-first sources: search code repositories FIRST and resolve the papers they cite (repository link attached, metadata from arXiv/OpenAlex). Use when the user asks for papers WITH code / implementations. Any of: ${Object.keys(CODE_SEARCHERS).join(", ")}. Default: none (adds up to ~40 s per run). In the wizard this only prefills the Code tab.`,
 			})),
 			code_list_topics: Type.Optional(Type.Array(Type.String(), {
 				description: "GitHub topics of the research FIELD whose curated awesome lists the awesome-lists code source reads (e.g. remote-sensing, bioinformatics -- fields, not query words). Prefills the topic rows of the Code tab; default from the config.",
@@ -1489,7 +1486,7 @@ export default function literatureSearch(pi: ExtensionAPI) {
 				description: "Override for the HTML output path. Default (recommended): omit, and the deterministic location lit-search/<date>_<query>.html in the working directory is used. The page is generated from the JSON payload by fixed code, never by a model.",
 			})),
 			enrich: Type.Optional(Type.Boolean({
-				description: "Fill missing citation counts / journal names via a deterministic OpenAlex identifier lookup (open API, no scraping), and attach code repository links (abstract URL, else a guarded GitHub search per arXiv id or DOI). Filled fields are listed per record under 'enriched' and marked with * in the HTML. Default: true.",
+				description: "Fill missing citation counts / journal names via a deterministic OpenAlex identifier lookup (open API, no scraping), and attach code and data links (a code URL named in the abstract; data/code archives from the publisher's CrossRef record). Filled fields are listed per record under 'enriched' and marked with * in the HTML. Default: true.",
 			})),
 		}),
 		async execute(_toolCallId, params, signal, onUpdate, ctx) {

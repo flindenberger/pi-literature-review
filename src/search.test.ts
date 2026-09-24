@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { keyRequirement, runSearch, SEARCHERS } from "./search.ts";
+import { collectDataLinks, keyRequirement, runSearch, SEARCHERS } from "./search.ts";
 import type { SourceRecord } from "./types.ts";
 
 // Hermetic config: an empty config dir, no S2 key in the environment.
@@ -86,6 +86,30 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 		globalThis.fetch = realFetch;
 		delete SEARCHERS.fast;
 	}
+}
+
+// collectDataLinks: the lookup started early in the run answers for the
+// DOIs it was given; only DOIs that entered later are asked now (case-
+// insensitive); a failed early lookup surfaces at the link stage.
+{
+	const zenodo = [{ url: "https://doi.org/10.5281/zenodo.1", archive: "Zenodo" }];
+	const pangaea = [{ url: "https://doi.org/10.1594/PANGAEA.2", archive: "PANGAEA" }];
+	const early = Promise.resolve({ links: new Map([["10.1/a", zenodo]]), error: null as unknown });
+	const asked: string[][] = [];
+	const links = await collectDataLinks(early, ["10.1/A", "10.1/b"], ["10.1/a", "10.1/b", "10.1/late"], async (dois) => {
+		asked.push(dois);
+		return new Map([["10.1/late", pangaea]]);
+	});
+	assert.deepEqual(asked, [["10.1/late"]]);
+	assert.deepEqual(links.get("10.1/a"), zenodo);
+	assert.deepEqual(links.get("10.1/late"), pangaea);
+	assert.equal(links.get("10.1/b"), undefined);
+
+	const none = await collectDataLinks(early, ["10.1/a"], ["10.1/a"], async () => { throw new Error("must not be asked"); });
+	assert.deepEqual(none.get("10.1/a"), zenodo);
+
+	const failed = Promise.resolve({ links: new Map(), error: new Error("CrossRef answered HTTP 503") as unknown });
+	await assert.rejects(collectDataLinks(failed, ["10.1/a"], ["10.1/a"]), /HTTP 503/);
 }
 
 console.log("search.test.ts: all assertions passed");
