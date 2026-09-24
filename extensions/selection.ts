@@ -126,8 +126,8 @@ async function mailtoDialog(
 		"Unpaywall (unpaywall.org, by the non-profit OurResearch) indexes legal",
 		"free PDF copies of papers. Using its API requires a contact email --",
 		"that is their usage policy, so they can reach out if a client",
-		"misbehaves. The address is sent only to api.unpaywall.org and is not",
-		"used for anything else. Without it, downloads still work through the",
+		"misbehaves. Once set, the address goes with every API request of this",
+		"package (as contact in the User-Agent). Without it, downloads still work through the",
 		"record's own PDF link and arXiv; Unpaywall is what finds free copies",
 		"beyond those.",
 	]);

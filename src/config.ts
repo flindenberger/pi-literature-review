@@ -13,9 +13,9 @@
  * Deliberately NOT ~/.pi/agent (that is Pi's own config domain and rebranded
  * distributions rename it) and NOT the package folder (replaced on update).
  * The PI_LITERATURE_REVIEW_MAILTO environment variable always overrides the
- * stored value (see types.ts). The email is sent only to api.unpaywall.org
- * (and as polite-pool contact in the User-Agent); it never leaves the
- * machine otherwise.
+ * stored value (see types.ts). Once set, the email goes with every API
+ * request of the package (contact in the User-Agent; CrossRef, OpenAlex and
+ * Unpaywall also get it as a parameter).
  */
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";

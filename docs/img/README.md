@@ -25,7 +25,7 @@ Referenced from README.md and docs/*.md by these names:
 | `network-graph.gif` | A Graph button clicked, the citation graph builds, circles hovered, the cited / citing filters toggled | README |
 | `network-graph.png` | The citation graph of one paper, the paper's circle hovered (focus + tooltip) | docs/search.md |
 | `search-code-column.gif` | Result rows with links in the Code / data column; one repository opened on GitHub | README |
-| `search-selection-bar.png` | The download steps above the results table with two ticked rows, access markers in the DOI column | README |
+| `search-selection-bar.gif` | A paper ticked on the results page, the download request copied and pasted into Pi, the consent dialog, the PDF downloaded | README |
 | `synthesis-highlight.gif` | A synthesis report in the browser: a citation superscript clicked, the PDF opens at the cited page with the passage highlighted | README |
 | `synthesis-highlight.png` | Composite: a report answer with citation superscript 6 (left) and the PDF opened at the cited page with the passage highlighted in Firefox (right) | docs/synthesis.md |
 | `synthesis-report.gif` | The /lit-synthesis wizard, the model run (sped up), the report card with page links, then the HTML report and a cited passage in the PDF | README |
