@@ -11,7 +11,7 @@
  * never silently included as empty context.
  */
 
-import { loadUnpdf, viewerFindsPhrase } from "./pdfjs-find.ts";
+import { loadUnpdf, PDFJS_OPTIONS, viewerFindsPhrase } from "./pdfjs-find.ts";
 
 /**
  * Retrieval target: ~250 tokens of academic prose (~1 paragraph).
@@ -61,7 +61,7 @@ const MIN_MEAN_LETTERS_PER_PAGE = 25;
 export async function extractPdfPages(bytes: Uint8Array): Promise<string[]> {
 	const { getDocumentProxy, extractText } = await loadUnpdf();
 	// pdfjs may transfer the buffer to a worker; hand over a copy.
-	const document = await getDocumentProxy(new Uint8Array(bytes));
+	const document = await getDocumentProxy(new Uint8Array(bytes), PDFJS_OPTIONS);
 	const { text } = await extractText(document, { mergePages: false });
 	return text;
 }

@@ -5,7 +5,7 @@
  */
 
 import assert from "node:assert/strict";
-import { NFKC_NORMALIZE_CHARS, pdfjsNormalize, pdfjsQueryRegExp, sumPrecise, viewerFindsPhrase } from "./pdfjs-find.ts";
+import { NFKC_NORMALIZE_CHARS, PDFJS_OPTIONS, pdfjsNormalize, pdfjsQueryRegExp, sumPrecise, viewerFindsPhrase } from "./pdfjs-find.ts";
 
 /* ---------------- the character set ---------------- */
 {
@@ -94,5 +94,9 @@ import { NFKC_NORMALIZE_CHARS, pdfjsNormalize, pdfjsQueryRegExp, sumPrecise, vie
 	assert.equal(sumPrecise([1e20, 1, -1e20]), 1);
 	assert.throws(() => sumPrecise(["1" as unknown as number]), TypeError);
 }
+
+// pdf.js runs at "errors only": its font-repair warnings would otherwise
+// print into pi's TUI (field case: "Warning: TT: undefined function: 3").
+assert.equal(PDFJS_OPTIONS.verbosity, 0);
 
 console.log("pdfjs-find.test.ts: all assertions passed");

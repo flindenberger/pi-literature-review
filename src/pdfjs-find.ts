@@ -169,6 +169,18 @@ export function sumPrecise(values: Iterable<number>): number {
 	return count === 0 ? -0 : sum + compensation;
 }
 
+/**
+ * Options for every pdf.js document this package opens. verbosity 0 =
+ * errors only: pdf.js otherwise prints font-repair notes such as "Warning:
+ * TT: undefined function: 3" (a TrueType hinting program calling an
+ * undefined function; pdf.js drops the hinting and carries on) through
+ * console.warn, which pi does not capture -- the line lands in the middle
+ * of the TUI. Hinting only affects on-screen glyph rendering; the
+ * extracted text is identical either way (measured on the affected paper,
+ * same page texts byte for byte). Real failures still throw.
+ */
+export const PDFJS_OPTIONS = { verbosity: 0 } as const;
+
 /** Installs the Math.sumPrecise polyfill when the runtime lacks it (never
  * over a native one) and returns the unpdf module. The ONE entry point for
  * pdf.js in this package: both the text extraction and the viewer replica
@@ -186,7 +198,7 @@ export async function loadUnpdf(): Promise<typeof import("unpdf")> {
  */
 export async function viewerPageTexts(bytes: Uint8Array): Promise<string[]> {
 	const { getDocumentProxy } = await loadUnpdf();
-	const document = await getDocumentProxy(new Uint8Array(bytes));
+	const document = await getDocumentProxy(new Uint8Array(bytes), PDFJS_OPTIONS);
 	const pages: string[] = [];
 	for (let number = 1; number <= document.numPages; number++) {
 		const page = await document.getPage(number);
