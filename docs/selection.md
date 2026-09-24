@@ -78,9 +78,10 @@ records. When year, author or title is unknown, the identifier slug
 
 ## The Unpaywall email
 
-Unpaywall's usage policy requires a contact email, sent only to
-api.unpaywall.org. While none is configured, the dialog explains this and
-offers three ways on:
+Unpaywall's usage policy requires a contact email. Once set, it is sent
+with every API request of the package (in the User-Agent; CrossRef,
+OpenAlex and Unpaywall also get it as a parameter). While none is
+configured, the dialog explains this and offers three ways on:
 
 - enter it for this run only
 - enter and save it to the config file

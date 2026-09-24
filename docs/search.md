@@ -19,7 +19,7 @@ The dialog follows the language of the chat (only English or German available).
 ![Query variants tab](img/search-variants-tab.png)
 
 ### Query
-There are two options to peform a query:
+There are two options to perform a query:
 
 1) A keyword-block form: one concept per field (Keyword block 1: satellite imagery), with synonyms within a field separated by OR or commas. The
 blocks are linked with AND. Five fields are shown by default; an
@@ -86,19 +86,15 @@ whitelist instead.
 
 ### Authors
 
-Two sections in one tab, each under its own heading; the rows carry no
-numbers.
+Two sections in one tab, each under its own heading.
 
 **Authors with the most works on this query.** Loads when the tab is
 reached: the authors with the most OpenAlex works on this query, period
 and journals, ordered by that count, with their total career citations,
 h-index and topics as context, plus an "Other authors" row. The count
-uses the search's own boolean expression, matched in title and abstract
-only: matched anywhere in the full text, "water level" AND monitoring AND
-river reaches ~77,000 works and lists prolific authors of neighbouring
-fields; in title and abstract ~3,300 works and the people working on the
-topic (measured 2026-09-24). Ranking by career citations was dropped for
-the same reason. It is an
+uses the search's own query, matched in title and abstract only.
+Matching the full text, or ranking by career citations, would put
+prolific authors from neighbouring fields on top. It is an
 EXCLUSION list: all rows arrive checked, unticking excludes, all or none
 checked means no filter, removals survive a reload, and the head row
 "All authors included (Enter: deselect all)" toggles the whole list. When
@@ -166,15 +162,14 @@ as the labeling. Otherwise it moves to the dropped table, reason naming
 the repository and the hit count. Papers a database also found are not
 affected.
 
-The four together add up to roughly 40 seconds per run (measured 25 s on
-a three-block query), which is why they are off by default. No key
-involved.
+The four together add up to about 40 seconds per run, so they are off by
+default. No key needed.
 
 Without any tick the search still shows code and data links it can read
 for free: a code URL named in the abstract, and the data or code archives
 the publisher deposited in the paper's CrossRef record (see the Code /
-data column below). There is no per-paper GitHub search: measured on the
-user's searches it found no additional link while costing up to 80 s.
+data column below). There is no per-paper GitHub search: in tests it
+found no extra links and cost up to 80 s.
 
 ## Block search
 
@@ -213,24 +208,23 @@ to ies -- and no stemming or synonyms beyond that.
    citation counts, journal names, journal 2-year citedness, and
    abstracts filled from OpenAlex or, failing that, from Semantic
    Scholar by DOI and marked `*` (Semantic Scholar only with an API
-   key). Plus a code link, taken from the abstract when it names a known
-   host (GitHub, GitLab, Bitbucket, Codeberg, Hugging Face, Zenodo,
-   OSF), and data links from the paper's CrossRef record: relation types
-   is-supplemented-by, is-part-of and references pointing to a known
-   data or code archive (Zenodo, PANGAEA, Mendeley Data, Dryad,
-   figshare, Dataverse, HydroShare, OSF, Eawag, GitHub, GitLab). One
-   batched CrossRef request per 40 DOIs, started right after
-   deduplication so it runs alongside verification and enrichment.
-   Both run for kept and dropped records.
+   key).
 7. **Abstract gate** -- no abstract, dropped table.
 8. **Topic gate for code-only finds** -- title + abstract miss the
    required query blocks (see Code above), dropped table.
 9. **Optional filters**, then **labeling**.
-10. **Access status** -- every record of both tables is looked up at
-    OpenAlex by DOI, batched (about one request per 50 records): open-access
-    level and every open PDF location. Stored as `access` in the JSON
-    (`level`, OpenAlex `oa_status` verbatim, `pdf_urls`), counted in
-    `access_counts` for the results table.
+10. **Links and access status**, for every record of both tables:
+    - a code link, taken from the abstract when it names a known host
+      (GitHub, GitLab, Bitbucket, Codeberg, Hugging Face, Zenodo, OSF);
+    - data links from the paper's CrossRef record (relation types
+      is-supplemented-by, is-part-of, references) to a known data or code
+      archive (Zenodo, PANGAEA, Mendeley Data, Dryad, figshare, Dataverse,
+      HydroShare, OSF, Eawag, GitHub, GitLab); one CrossRef request per 40
+      DOIs, started right after deduplication so it runs in parallel;
+    - the access status from OpenAlex by DOI (about one request per 50
+      records): open-access level and every open PDF location, stored as
+      `access` in the JSON (`level`, OpenAlex `oa_status` verbatim,
+      `pdf_urls`) and counted in `access_counts`.
 
 Nothing disappears silently: every removed record sits in the dropped
 table with its reason, and a failed source is shown while the run

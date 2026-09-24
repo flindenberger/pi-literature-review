@@ -1,6 +1,6 @@
 # pi-literature-review
 
-Local, open, login-free literature review for the [Pi coding agent](https://pi.dev).
+Local, open, login-free academic literature review for the [Pi coding agent](https://pi.dev).
 
 One package, three tools:
 
@@ -53,8 +53,6 @@ The `/lit-search`-wizard starts from user defined keyword blocks or free text. T
 
 It can also help identify relevant journals and authors, and lets you filter the results. Each result shows which query found it and which terms matched.
 
-![The /lit-search wizard: keyword blocks, query variants, filters, then the search](docs/img/wizard.gif)
-
 ### HTML literature-search report
 
 Each search run produces a sortable HTML results page and a JSON file.
@@ -63,7 +61,7 @@ Results include bibliographic metadata, verified DOI, BibTeX, citation and open-
 
 The page also contains the exact database queries, raw hit counts and a PRISMA-2020-style flow diagram.
 
-![Search results: sorting, an abstract, the search documentation with the PRISMA flow diagram](docs/img/search-results-page.gif)
+![Search results and search documentation](docs/img/search-results-page.png)
 
 ### Citation graphs
 
@@ -71,7 +69,7 @@ Each result can open a citation graph showing references, citing works and relat
 
 The graph is fetched from OpenAlex when opened; only the DOI or title leaves your machine.
 
-![Citation graph of one result: hover for details, filter by cited and citing works](docs/img/network-graph.gif)
+![Citation graph](docs/img/network-graph.png)
 
 ### Papers with code
 
@@ -79,8 +77,8 @@ Optionally search for papers with code using Hugging Face Papers, GitHub READMEs
 
 Known repositories and data archives are shown directly in the results: links named in the abstract and archives the publisher deposited at CrossRef appear in every search, no tick needed.
 
-![Results with code links: a repository opened from the Code / data column](docs/img/search-code-column.gif)
-
+![Results with code links](docs/img/search-code-column.png)
+    
 ### Legal open-access downloads
 
 Select papers directly from the results page and copy a download request.
@@ -95,7 +93,7 @@ Synthesis answers and reports cite the page containing the supporting passage.
 
 Clicking a citation opens the PDF at the relevant page and highlights the cited text.
 
-![Page-exact citation: a citation in the report opens the PDF at the highlighted passage](docs/img/synthesis-highlight.gif)
+![Page-exact citation](docs/img/synthesis-highlight.png)
 
 ### Synthesis across a paper library
 
@@ -103,7 +101,7 @@ Clicking a citation opens the PDF at the relevant page and highlights the cited 
 
 It can provide per-paper summaries, answer questions about individual or multiple papers, and optionally produce a cross-paper review synthesis.
 
-![Synthesis report: the /lit-synthesis wizard, the report card, then the HTML report and a cited passage](docs/img/synthesis-report.gif)
+![Synthesis report](docs/img/synthesis-report.png)
 
 
 ## Install
@@ -117,7 +115,7 @@ pi install npm:pi-literature-review
 Or directly from the repository:
 
 ```bash
-pi install git:github.com/flindenberger/pi-literature-review
+pi install git:github.com/florian-lindenberger/pi-literature-review
 ```
 
 Search and selection work without a model selected in Pi.
@@ -183,6 +181,8 @@ Forks are welcome, whether for another research field or another agent. Please k
 ## License and attribution
 
 MIT — see [LICENSE](LICENSE). If this package supports your academic work, please cite it using [`CITATION.cff`](CITATION.cff). GitHub also provides APA and BibTeX entries under **Cite this repository**.
+
+The package started from the wish to use [OpenScholar](https://github.com/akariasai/openscholar) (Asai et al., 2024, [arXiv:2411.14199](https://arxiv.org/abs/2411.14199)) on local PDFs.
 
 The multi-source search design was inspired by [paper-search-mcp](https://github.com/openags/paper-search-mcp), released under MIT by OPENAGS. 
 

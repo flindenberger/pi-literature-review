@@ -75,7 +75,7 @@ The HTML report is named after its papers:
 `lit-synthesis/<date>_synthesis_report_<first authors>.html`, e.g.
 `2026-09-18_synthesis_report_Li_Moortgat_Chen.html` -- up to three first
 authors in scope order, `_et_al` when more papers follow (with no author
-data the scope label stands as before).
+data the scope label is used).
 
 The page follows the chat language and carries a collapsed technical
 block that explains the retrieval in plain language. Every cited passage
@@ -113,8 +113,8 @@ file through.
 
 Answers, summaries and reviews run on the model selected in Pi.
 Optionally `llm.generateModel` routes the review genres to a dedicated
-model, for example an OpenScholar-8B GGUF imported into Ollama; the report
-names the model that ran. Embeddings always run on the embedding backend
+model, for example [OpenScholar-8B](https://github.com/akariasai/openscholar) (Asai et al., 2024, [arXiv:2411.14199](https://arxiv.org/abs/2411.14199)) as a GGUF imported
+into Ollama; the report names the model that ran. Embeddings always run on the embedding backend
 -- see [Configuration](configuration.md).
 
 ### Thinking is off

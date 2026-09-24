@@ -115,7 +115,7 @@ Where each stage lives; the adapter/engine pair shares its basename.
 | `src/search.ts` | run orchestration: per source and query fetch, pipeline steps in order, payload assembly, source failures |
 | `src/sources/arxiv.ts`, `crossref.ts`, `openalex.ts`, `semanticscholar.ts` | one client per source: query building (booleans, author scope), record normalization; OpenAlex also holds the facet queries, the abstract reconstruction and the access classification (`accessFromWork`, `lookupAccessByDoi`); CrossRef also the data-link lookup (`lookupDataLinksByDoi`, archive list `DATA_ARCHIVES`) |
 | `src/sources/polite.ts` | the shared politeness: per-source request spacing, timeout, retry on rate-limit answers (used by every client) |
-| `src/sources/github.ts` | GitHub: the one search pacer both code directions share, aggregator-name filter, repository search, raw README fetch |
+| `src/sources/github.ts` | GitHub: the search pacer of the code-first sources, aggregator-name filter, repository search, raw README fetch |
 | `src/sources/huggingface.ts` | Hugging Face Papers search (arXiv id + linked repository per hit; undocumented site API, shape pinned) |
 | `src/sources/ecosystems.ts` | repos.ecosyste.ms (repository created date for the pair gate) and awesome.ecosyste.ms (lists by topic, structured list entries; slug URLs only) |
 | `src/codesearch.ts` | the code-first searchers (hf-papers, github-readme, awesome-lists, gee-github): repositories first, identifiers out of READMEs, resolution at arXiv / OpenAlex, the date gate; injectable clients for offline tests |
@@ -169,7 +169,7 @@ Where each stage lives; the adapter/engine pair shares its basename.
 | `src/config.ts` | the config file and environment overrides |
 | `src/cli.ts` | the standalone command line over all three engines |
 | `src/types.ts` | shared record shapes and small helpers (user agent, contact email, warnings) |
-| `src/cardtext.ts` | bold/bullet formatting for transcript cards |
+| `src/cardtext.ts` | transcript cards: bold/bullet formatting, file:// URLs as short clickable terminal links where the terminal supports them |
 | `index.ts` | registers the three tools |
 
 </details>

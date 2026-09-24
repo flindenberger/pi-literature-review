@@ -30,7 +30,7 @@ node src/cli.ts "<query>" [-n PER_SOURCE] [-s SOURCES] [-g "a,b;c,d"]
 | `--author-position first\|contributing\|any` | required position of the picked author (default any); a post-filter over the first name of each record's author list |
 | `--author-scope query\|all` | `all` = every publication of the picked authors regardless of the query (Semantic Scholar is skipped and noted); default `query` = author AND query |
 
-Example -- the release acceptance query:
+Example:
 
 ```
 node src/cli.ts "Satellite and Field Data Fusion for Rivers" -n 5 \
