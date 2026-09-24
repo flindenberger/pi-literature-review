@@ -1,11 +1,38 @@
 {
   "name": "pi-literature-review",
   "version": "0.1.0",
-  "description": "Local, login-free literature review tooling for the Pi coding agent: deterministic search today, retrieval and synthesis as later tools over the same data. No LLM in the citation path; every DOI/arXiv ID is HTTP-verified before it is shown.",
+  "description": "Local, login-free literature review for the Pi coding agent: multi-source search (arXiv, Crossref, OpenAlex, Semantic Scholar) with HTTP-verified identifiers, legal open-access PDF selection, and grounded synthesis over local PDFs with page-exact citations. No LLM in the citation path.",
   "type": "module",
   "license": "MIT",
+  "author": "Florian Lindenberger",
+  "homepage": "https://github.com/flindenberger/pi-literature-review#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/flindenberger/pi-literature-review.git"
+  },
+  "bugs": {
+    "url": "https://github.com/flindenberger/pi-literature-review/issues"
+  },
   "keywords": [
-    "pi-package"
+    "pi-package",
+    "literature-review",
+    "systematic-review",
+    "prisma",
+    "openalex",
+    "arxiv",
+    "crossref",
+    "semantic-scholar",
+    "open-access",
+    "citations"
+  ],
+  "files": [
+    "index.ts",
+    "extensions/",
+    "src/",
+    "!src/**/*.test.ts",
+    "!src/fixtures/",
+    "docs/*.md",
+    "CITATION.cff"
   ],
   "pi": {
     "extensions": [

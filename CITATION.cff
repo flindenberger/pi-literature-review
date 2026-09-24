@@ -16,9 +16,9 @@ authors:
     given-names: "Florian"
     orcid: "https://orcid.org/0009-0008-1759-3515"
 version: "0.1.0"
-date-released: "2026-08-20"
+date-released: "2026-09-24"
 license: MIT
-repository-code: "https://github.com/florian-lindenberger/pi-literature-review"
+repository-code: "https://github.com/flindenberger/pi-literature-review"
 keywords:
   - literature review
   - systematic review

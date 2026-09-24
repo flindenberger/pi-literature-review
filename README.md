@@ -117,7 +117,7 @@ pi install npm:pi-literature-review
 Or directly from the repository:
 
 ```bash
-pi install git:github.com/florian-lindenberger/pi-literature-review
+pi install git:github.com/flindenberger/pi-literature-review
 ```
 
 Search and selection work without a model selected in Pi.
