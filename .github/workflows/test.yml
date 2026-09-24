@@ -1,0 +1,28 @@
+# Type check and offline tests on every push and pull request.
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Type check
+        run: node node_modules/typescript/bin/tsc -p tsconfig.json
+      - name: Tests
+        run: |
+          status=0
+          for f in src/*.test.ts src/sources/*.test.ts; do
+            node "$f" > /dev/null || { echo "FAIL $f"; status=1; }
+          done
+          exit $status
+      - name: Extension entry loads
+        run: node -e "import('./index.ts').then(() => console.log('index loads'))"

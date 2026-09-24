@@ -32,7 +32,8 @@
     "!src/**/*.test.ts",
     "!src/fixtures/",
     "docs/*.md",
-    "CITATION.cff"
+    "CITATION.cff",
+    "CHANGELOG.md"
   ],
   "pi": {
     "extensions": [

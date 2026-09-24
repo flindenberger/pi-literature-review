@@ -7,3 +7,9 @@ index/
 reviews/
 chats/
 pi-literature-review/
+# Output of a run started in this folder (research data, not code)
+lit-search/
+lit-selection/
+lit-synthesis/
+# Claude Code session state
+.claude/
