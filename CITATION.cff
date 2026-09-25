@@ -19,6 +19,14 @@ version: "0.1.0"
 date-released: "2026-09-24"
 license: MIT
 repository-code: "https://github.com/flindenberger/pi-literature-review"
+doi: "10.5281/zenodo.22954995"
+identifiers:
+  - type: doi
+    value: "10.5281/zenodo.22954995"
+    description: "Concept DOI, resolves to the latest version"
+  - type: doi
+    value: "10.5281/zenodo.22954996"
+    description: "Version DOI for v0.1.0"
 keywords:
   - literature review
   - systematic review

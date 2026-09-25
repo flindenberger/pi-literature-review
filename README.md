@@ -1,5 +1,7 @@
 # pi-literature-review
 
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22954995.svg)](https://doi.org/10.5281/zenodo.22954995)
+
 ![Search, select, synthesize: the three stages of pi-literature-review](docs/img/teaser.png)
 
 Local, open, login-free academic literature review for the [Pi coding agent](https://pi.dev).
@@ -181,7 +183,7 @@ Forks are welcome, whether for another research field or another agent. Please k
 
 ## License and attribution
 
-MIT — see [LICENSE](LICENSE). If this package supports your academic work, please cite it using [`CITATION.cff`](CITATION.cff). GitHub also provides APA and BibTeX entries under **Cite this repository**.
+MIT — see [LICENSE](LICENSE). If this package supports your academic work, please cite it using [`CITATION.cff`](CITATION.cff) or the Zenodo DOI [10.5281/zenodo.22954995](https://doi.org/10.5281/zenodo.22954995). GitHub also provides APA and BibTeX entries under **Cite this repository**.
 
 The package started from the wish to use [OpenScholar](https://github.com/akariasai/openscholar) (Asai et al., 2024, [arXiv:2411.14199](https://arxiv.org/abs/2411.14199)) on local PDFs.
 
