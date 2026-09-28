@@ -4,6 +4,24 @@ All notable changes to this package are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.1.1] - 2026-09-28
+
+### Added
+
+- Gallery preview image (`pi.image`) for the Pi package gallery.
+- `CONTRIBUTING.md` and `SECURITY.md`; the README's Contributing section
+  links to them.
+
+### Fixed
+
+- README images now load on pi.dev: they are referenced by absolute
+  repository URLs, since `docs/img/` is not part of the npm package.
+
+### Changed
+
+- Republished so that the npm search index picks the package up; version
+  0.1.0 stayed unindexed and therefore missing from the gallery list.
+
 ## [0.1.0] - 2026-09-24
 
 First public release: three tools for a local, login-free literature review
@@ -25,4 +43,5 @@ in the Pi coding agent.
   per-paper summaries, detail questions and an optional review synthesis.
 - Command line for all three stages without Pi.
 
+[0.1.1]: https://github.com/flindenberger/pi-literature-review/releases/tag/v0.1.1
 [0.1.0]: https://github.com/flindenberger/pi-literature-review/releases/tag/v0.1.0

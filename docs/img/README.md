@@ -29,4 +29,5 @@ Referenced from README.md and docs/*.md by these names:
 | `synthesis-highlight.gif` | A synthesis report in the browser: a citation superscript clicked, the PDF opens at the cited page with the passage highlighted | README |
 | `synthesis-highlight.png` | Composite: a report answer with citation superscript 6 (left) and the PDF opened at the cited page with the passage highlighted in Firefox (right) | docs/synthesis.md |
 | `synthesis-report.gif` | The /lit-synthesis wizard, the model run (sped up), the report card with page links, then the HTML report and a cited passage in the PDF | README |
+| `gallery.gif` | Gallery preview for pi.dev/packages (`pi.image` in package.json): title, the three stages, the citation graph animated; 1200 x 750, 128 colours, built from `network-graph.gif` in `design/2026-09-28_gallery_vorschau_entwuerfe/` | package.json (not the README) |
 | `synthesis-chat-card.png` (optional, not taken yet) | A grounded chat answer card with reference lines and the yellow paper-chat mode line | -- |

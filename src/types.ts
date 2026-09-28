@@ -78,7 +78,7 @@ export interface SourceScope {
 	blocks?: string[][];
 }
 
-export const VERSION = "0.1.0";
+export const VERSION = "0.1.1";
 
 /**
  * Polite User-Agent. The contact address is configurable and defaults to

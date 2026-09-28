@@ -1,6 +1,6 @@
 {
   "name": "pi-literature-review",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Local, login-free literature review for the Pi coding agent: multi-source search (arXiv, Crossref, OpenAlex, Semantic Scholar) with HTTP-verified identifiers, legal open-access PDF selection, and grounded synthesis over local PDFs with page-exact citations. No LLM in the citation path.",
   "type": "module",
   "license": "MIT",
@@ -38,7 +38,8 @@
   "pi": {
     "extensions": [
       "./index.ts"
-    ]
+    ],
+    "image": "https://raw.githubusercontent.com/flindenberger/pi-literature-review/main/docs/img/gallery.gif"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
