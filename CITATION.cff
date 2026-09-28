@@ -27,6 +27,9 @@ identifiers:
   - type: doi
     value: "10.5281/zenodo.22954996"
     description: "Version DOI for v0.1.0"
+  - type: doi
+    value: "10.5281/zenodo.23015407"
+    description: "Version DOI for v0.1.1"
 keywords:
   - literature review
   - systematic review
