@@ -5,6 +5,10 @@ on:
   push:
   pull_request:
 
+# The job only reads the repository; it never writes to it.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
