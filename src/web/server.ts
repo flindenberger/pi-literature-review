@@ -55,7 +55,8 @@ import {
 import { writeNetworkPage } from "../network.ts";
 import { outputRoot, synthReportName, writeRunOutputs } from "../output.ts";
 import { sanitizeTermGroups } from "../pipeline.ts";
-import type { ModelProvider } from "../provider.ts";
+import type { ModelProvider, ProviderStatus } from "../provider.ts";
+import { clearConversations, deleteConversation, historyDir, listConversations, loadConversation, newConversationId, saveConversation } from "./history.ts";
 import { renderHtml, renderPaperChatReportHtml, renderSynthReportHtml, webPdfHref } from "../render.ts";
 import { keyRequirement, runSearch, SEARCHERS, type SearchOptions, type SearchPayload } from "../search.ts";
 import { parseIdentifier, renderFetchReport, runSelection, type SelectionRunOptions } from "../selection.ts";
@@ -104,6 +105,9 @@ export interface WebDeps {
 	listsForTopic: (topic: string, signal: AbortSignal) => Promise<{ lists: number; names: string[] } | null>;
 	checkEmbedModel: (signal?: AbortSignal) => Promise<DoctorState>;
 	pullEmbedModel: (onProgress: (line: string) => void, signal: AbortSignal) => Promise<void>;
+	/** True when an HTTP server answers at the address (any status), false
+	 * on a network error (nothing listening, timeout). */
+	probe: (baseUrl: string, signal: AbortSignal) => Promise<boolean>;
 }
 
 export interface WebServerOptions {
@@ -111,6 +115,8 @@ export interface WebServerOptions {
 	root?: string;
 	/** Working directory for the loose-PDF folder chain; default process.cwd(). */
 	cwd?: string;
+	/** Folder of the conversation history; default historyDir() (next to the configuration file). */
+	historyDir?: string;
 	/** 0 (default) = any free port. */
 	port?: number;
 	token?: string;
@@ -171,8 +177,25 @@ export function realWebDeps(): WebDeps {
 		},
 		checkEmbedModel: (signal) => checkEmbedModel(llmConfig(), fetch, signal),
 		pullEmbedModel: (onProgress, signal) => pullEmbedModel(llmConfig(), onProgress, fetch, signal),
+		probe: probeServer,
 	};
 }
+
+/** Is a server listening at a model address? One GET of `<base>/models`
+ * (OpenAI-compatible servers, llama.cpp and Ollama all answer it); any
+ * HTTP status counts as alive, only a network error as down. */
+async function probeServer(baseUrl: string, signal: AbortSignal): Promise<boolean> {
+	try {
+		const response = await fetch(`${baseUrl.replace(/\/+$/, "")}/models`, { signal });
+		await response.body?.cancel();
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/** Addresses on this machine: probed for the rail's status dots. */
+const LOCAL_URL = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\]|0\.0\.0\.0)(:|\/|$)/i;
 
 class HttpError extends Error {
 	readonly status: number;
@@ -546,6 +569,73 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 
 	let dialog: DialogState = initialDialog(dialogContext());
 	const dialogView = () => ({ ...dialog, stage: stageOfStep(dialog.step), chatSession });
+	const broadcastDialog = (): void => {
+		const view = dialogView();
+		for (const connection of connections) connection.send("dialog", view);
+	};
+
+	/* ---------------- conversation history ---------------- */
+
+	/** Conversations live as JSON snapshots in the history folder
+	 * (history.ts); the current one is the live `dialog`, saved after every
+	 * change once it has a title. "+" starts an empty conversation under a
+	 * new id; opening an entry loads its file. A conversation without a
+	 * request or question (only chip clicks) has no title and is never
+	 * saved. */
+	const historyRoot = options.historyDir ?? historyDir();
+	let currentId = newConversationId();
+	let dialogStarted = new Date().toISOString();
+	/** "Search: <request>", "Report: <first question>" or "Chat: <question>";
+	 * null while the conversation has none of these. */
+	const conversationTitle = (state: DialogState): string | null => {
+		const a = state.answers;
+		const clip = (text: string) => text.trim().replace(/\s+/g, " ").slice(0, 90);
+		if (a.topic?.trim()) return `Search: ${clip(a.topic)}`;
+		if (a.questions?.length) return `Report: ${clip(a.questions[0])}`;
+		if (a.lastQuestion?.trim()) return `Chat: ${clip(a.lastQuestion)}`;
+		return null;
+	};
+	/** Save the current conversation when it has a title. A failed write
+	 * (read-only folder, full disk) must not break the chat: it is reported
+	 * once per server run as a dialog note instead. */
+	let saveFailureReported = false;
+	const persistCurrent = (): void => {
+		const title = conversationTitle(dialog);
+		if (title === null) return;
+		try {
+			saveConversation(historyRoot, { version: 1, id: currentId, started: dialogStarted, updated: new Date().toISOString(), root, chatSession, title, dialog });
+		} catch (error) {
+			if (saveFailureReported) return;
+			saveFailureReported = true;
+			applyDialog({ kind: "effectFailed", effect: "newChatSession", error: `the conversation could not be saved to ${historyRoot}: ${errorMessage(error)}` });
+		}
+	};
+	/** Every saved conversation plus the current one, newest change first;
+	 * `here` = belongs to this data folder, `current` = the live one. */
+	const historyView = () => {
+		const { conversations, skipped } = listConversations(historyRoot);
+		const title = conversationTitle(dialog);
+		const live = title !== null && !conversations.some((entry) => entry.id === currentId)
+			? [{ id: currentId, title, started: dialogStarted, updated: new Date().toISOString(), root, steps: dialog.trail.length }]
+			: [];
+		return {
+			history: [...live, ...conversations].map((entry) => ({ ...entry, current: entry.id === currentId, here: entry.root === root })),
+			skipped,
+			dir: historyRoot,
+		};
+	};
+	const startFresh = (): void => {
+		currentId = newConversationId();
+		dialogStarted = new Date().toISOString();
+		chatSession = webSessionId();
+		applyDialog({ kind: "restart" });
+	};
+	/** Swapping conversations while a job or a model call is in flight
+	 * would deliver its outcome to the wrong conversation. */
+	const requireIdle = (): void => {
+		if (jobs.snapshot().current) throw new HttpError(409, "a job is running -- wait for it or stop it in its box");
+		if (dialog.pending) throw new HttpError(409, "the model is still answering -- wait a moment");
+	};
 
 	/** Apply one event, tell every tab, run the effects it asked for. */
 	const applyDialog = (event: DialogEvent): void => {
@@ -553,6 +643,7 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 		dialog = next;
 		const view = dialogView();
 		for (const connection of connections) connection.send("dialog", view);
+		persistCurrent();
 		for (const effect of effects) void runEffect(effect);
 	};
 
@@ -633,7 +724,21 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 
 	/* ---------------- state and listings ---------------- */
 
-	const state = () => {
+	/** Local model servers are probed on every state read (1.5 s cap each)
+	 * so the rail shows red when llama.cpp or Ollama is not running;
+	 * remote services are not probed (null). */
+	const reachability = async (status: ProviderStatus): Promise<{ modelReachable: boolean | null; embeddingsReachable: boolean | null }> => {
+		const check = async (url: string | null): Promise<boolean | null> => {
+			if (!url || !LOCAL_URL.test(url)) return null;
+			return deps.probe(url, AbortSignal.timeout(1500));
+		};
+		const [modelReachable, embeddingsReachable] = await Promise.all([check(status.model ? status.baseUrl : null), check(status.embeddingsBaseUrl)]);
+		return { modelReachable, embeddingsReachable };
+	};
+
+	const state = async () => {
+		const status = provider.status();
+		const reachable = await reachability(status);
 		const runs = listSearchRuns(root);
 		const library = listLibrary(root, cwd, deps.matchLibrary(root));
 		const reports = listReports(root);
@@ -644,7 +749,7 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 			root,
 			cwd,
 			url: `http://127.0.0.1:${port}/`,
-			provider: provider.status(),
+			provider: { ...status, ...reachable },
 			job: jobs.snapshot().current,
 			chatSession,
 			counts: {
@@ -736,7 +841,7 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 		if (!path.startsWith("/api/")) throw new HttpError(404, "not found");
 		const route = `${method} ${path}`;
 
-		if (route === "GET /api/state") return json(res, 200, state());
+		if (route === "GET /api/state") return json(res, 200, await state());
 		if (route === "GET /api/events") {
 			const connection = openSse(res);
 			connections.add(connection);
@@ -942,13 +1047,53 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 			applyDialog({ kind: "restart" });
 			return json(res, 200, dialogView());
 		}
-		// Show one of the three data folders in the file manager (the folder
-		// button of a file card). Only those folders, nothing else.
+		// "+" on the page: the current conversation stays saved, an empty one starts.
+		if (route === "POST /api/dialog/new") {
+			requireIdle();
+			startFresh();
+			return json(res, 200, dialogView());
+		}
+		if (route === "GET /api/history") return json(res, 200, historyView());
+		// Continue a saved conversation; the current one stays saved.
+		if (route === "POST /api/history/open") {
+			const body = (await readBody(req)) as Record<string, unknown>;
+			const id = typeof body.id === "string" ? body.id : "";
+			if (id === currentId) return json(res, 200, { ...dialogView(), otherRoot: null });
+			requireIdle();
+			const entry = loadConversation(historyRoot, id);
+			if (!entry) throw new HttpError(404, "no such conversation");
+			persistCurrent();
+			dialog = entry.dialog;
+			currentId = entry.id;
+			chatSession = entry.chatSession;
+			dialogStarted = entry.started;
+			broadcastDialog();
+			return json(res, 200, { ...dialogView(), otherRoot: entry.root === root ? null : entry.root });
+		}
+		// Delete one conversation file; deleting the current one starts an empty conversation.
+		if (route === "POST /api/history/delete") {
+			const body = (await readBody(req)) as Record<string, unknown>;
+			const id = typeof body.id === "string" ? body.id : "";
+			if (id === currentId) requireIdle();
+			const deleted = deleteConversation(historyRoot, id);
+			if (id === currentId) startFresh();
+			return json(res, 200, { deleted, dialog: dialogView() });
+		}
+		if (route === "POST /api/history/clear") {
+			requireIdle();
+			const deleted = clearConversations(historyRoot);
+			startFresh();
+			return json(res, 200, { deleted, dialog: dialogView() });
+		}
+		// Show a data folder in the file manager: one of the three stage
+		// folders (the folder button of a file card) or the data root itself
+		// (the folder icon in the rail). Nothing else.
 		if (route === "POST /api/reveal") {
 			const body = (await readBody(req)) as Record<string, unknown>;
-			const stage = stageOf(typeof body.stage === "string" ? body.stage.replace(/\/$/, "") : "");
-			if (!stage) throw new HttpError(400, "unknown folder");
-			const folder = join(root, stage);
+			const wanted = typeof body.stage === "string" ? body.stage.replace(/\/$/, "") : "";
+			const stage = wanted === "root" ? "" : stageOf(wanted);
+			if (stage === null) throw new HttpError(400, "unknown folder");
+			const folder = stage ? join(root, stage) : root;
 			if (!existsSync(folder)) throw new HttpError(404, `${stage}/ does not exist yet`);
 			revealFolder(folder);
 			return json(res, 200, { opened: folder });
@@ -956,7 +1101,7 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 
 		/* ---- settings ---- */
 		if (route === "GET /api/settings") {
-			return json(res, 200, { ...storedConfigView(), path: configPath(), resolved: llmConfig(), mailtoResolved: contactMailto(), embedState });
+			return json(res, 200, { ...storedConfigView(), path: configPath(), resolved: llmConfig(), mailtoResolved: contactMailto(), embedState, historyDir: historyRoot, conversations: listConversations(historyRoot).conversations.length });
 		}
 		if (route === "POST /api/settings") {
 			const body = (await readBody(req)) as Record<string, unknown>;

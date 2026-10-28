@@ -46,6 +46,7 @@ copies a provider key from Pi's own configuration.
 | `llm.generateBaseUrl`, `llm.generateApi` | `PI_LITERATURE_REVIEW_GENERATE_URL`, `_GENERATE_API` | Per-role split: a separate backend for generation. Unset roles use the shared `baseUrl`/`api`. |
 | `llm.apiKey` | `PI_LITERATURE_REVIEW_LLM_API_KEY` | Bearer token sent on every LLM-backend request; opens the `openai` dialect to REMOTE providers. |
 | -- | `PI_LITERATURE_REVIEW_HOME` | Root folder for the `lit-*` output folders (default: the working directory). |
+| -- | `PI_LITERATURE_REVIEW_HISTORY` | Folder of the web interface's conversation history (default: `history/` next to the configuration file). |
 
 ## Examples
 

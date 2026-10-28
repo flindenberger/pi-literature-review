@@ -8,6 +8,21 @@ All notable changes to this package are listed here. The format follows
 
 ### Added
 
+- Web interface rail: a **+** button starts a new conversation and keeps
+  the current one in a collapsible **History** list. Conversations are
+  saved as one JSON file each next to the configuration file
+  (`~/.config/pi-literature-review/history/`, `PI_LITERATURE_REVIEW_HISTORY`
+  overrides), survive server and pi restarts, are named after the request
+  or question with the start time below, grouped by data folder, the
+  current one marked; a click continues one, the trash icon deletes one,
+  Settings can delete all. A local model
+  or embedding server that is not running shows a red dot with a hint
+  (the server probes 127.0.0.1 addresses). The folder path became a
+  folder icon that opens the data folder in the file manager, Settings a
+  gear icon; the Start
+  over and Stop buttons are gone (typed `start over` still works; the
+  server stops from pi or with Ctrl-C).
+
 - Web interface: `/pi-literature-review` starts a local server inside Pi
   (127.0.0.1, token cookie) and opens a chat in the browser that walks
   through the three stages -- the request split into keyword blocks

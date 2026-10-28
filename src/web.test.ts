@@ -6,7 +6,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readdirSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,6 +21,7 @@ import { parseWebArgs } from "../extensions/web.ts";
 import { webPdfHref } from "./render.ts";
 
 const root = mkdtempSync(join(tmpdir(), "plr-web-"));
+const HIST = join(root, "history-store");
 mkdirSync(join(root, "lit-search"), { recursive: true });
 mkdirSync(join(root, "lit-selection"), { recursive: true });
 mkdirSync(join(root, "lit-synthesis", "protocols"), { recursive: true });
@@ -158,13 +159,13 @@ writeFileSync(join(root, "lit-synthesis", "protocols", "2026-10-15_paper.json"),
 
 // ---- the server ----
 const provider: ModelProvider = {
-	status: () => ({ kind: "endpoint", model: "stub-model", via: "stub", embeddings: "stub-embed", embeddingsVia: "stub", remote: false }),
+	status: () => ({ kind: "endpoint", model: "stub-model", via: "stub", embeddings: "stub-embed", embeddingsVia: "stub", remote: false, baseUrl: "http://127.0.0.1:9", embeddingsBaseUrl: "http://127.0.0.1:11434" }),
 	hasModel: () => true,
 	generate: async () => "(river OR stream) AND (bathymetry OR depth)\n(river OR stream OR channel) AND (bathymetry OR depth OR water depth)\narxiv: (river) AND (depth)",
 	wiring: () => ({ backend: { embed: async (texts) => texts.map(() => [0.1, 0.2]), generate: async () => "ok" }, explainModel: "stub-model", reviewModel: "stub-model" }),
 };
 const seen: string[] = [];
-const server = await startWebServer({
+const server = await startWebServer({ historyDir: HIST,
 	root,
 	cwd: root,
 	provider,
@@ -193,6 +194,8 @@ const server = await startWebServer({
 		},
 		matchLibrary: () => ({ matched: [], unmatched: [], papersDir: join(root, "lit-selection") }),
 		checkEmbedModel: async () => ({ state: "ok" }),
+		// The model server (port 9) is down, the embedding server answers.
+		probe: async (url) => !url.includes(":9"),
 		journalFacets: async () => ({ listed: [{ id: "S1", name: "Water Resources Research", count: 14 }, { id: "S2", name: "Remote Sensing", count: 11 }], otherCount: 30 }),
 		journalScores: async () => new Map([["S1", 4.2]]),
 		authorFacets: async (_query, _limit, scope) => { seen.push(`authors:${(scope.sourceIds ?? []).join(",")}`); return { listed: [{ id: "A1", name: "Carl J. Legleiter", count: 9 }], otherCount: 50 }; },
@@ -223,6 +226,8 @@ try {
 	// Bearer header works too (curl, tests).
 	const state = await (await fetch(`${base}/api/state`, { headers: { authorization: "Bearer t0ken" } })).json();
 	assert.equal(state.provider.model, "stub-model");
+	assert.equal(state.provider.modelReachable, false);
+	assert.equal(state.provider.embeddingsReachable, true);
 	assert.equal(state.counts.runs, 1);
 	assert.equal(state.root, root);
 	// Path traversal and unknown names are 404; the saved report is served.
@@ -279,7 +284,7 @@ try {
 	assert.equal((await fetch(`${base}/api/selection/run`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ identifiers: ["10.1000/abc"], confirmed: true }) })).status, 400);
 	assert.equal((await fetch(`${base}/api/report`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ papers: [] }) })).status, 400);
 	// Cancel: a report job whose stub waits on the signal.
-	const cancelServer = await startWebServer({
+	const cancelServer = await startWebServer({ historyDir: HIST,
 		root, cwd: root, provider, token: "t2",
 		deps: {
 			matchLibrary: () => ({ matched: [], unmatched: [], papersDir: join(root, "lit-selection") }),
@@ -368,8 +373,41 @@ try {
 	assert.equal(fileCard.card.url, "/files/lit-search/2026-10-15_stub.html");
 	assert.ok(seen.includes("search:(river) AND (bathymetry)"));
 	// Answers while a job runs are refused with 409 (the slow report stub below shows it on another server).
-	// Reveal: only the three data folders.
+	// Reveal: only the three data folders and the root ("bogus" is refused; "root" resolves to the data folder).
 	assert.equal((await fetch(`${base}/api/reveal`, { method: "POST", headers, body: JSON.stringify({ stage: "bogus" }) })).status, 400);
+	assert.equal((await fetch(`${base}/api/reveal`, { method: "POST", headers, body: JSON.stringify({ stage: "../" }) })).status, 400);
+	// "+" archives the conversation in History and starts an empty one;
+	// opening the entry brings it back and lists nothing (the empty one
+	// has no typed text, so it is not kept).
+	// The conversation was saved as a JSON file once it had a title; the list shows it as current.
+	const listed = (await (await fetch(`${base}/api/history`, { headers: auth })).json());
+	assert.equal(listed.dir, HIST);
+	assert.equal(listed.skipped, 0);
+	assert.deepEqual(listed.history.map((entry: { title: string; current: boolean; here: boolean }) => [entry.title, entry.current, entry.here]), [["Search: river depth from satellites", true, true]]);
+	assert.equal(readdirSync(HIST).length, 1);
+	assert.match(readdirSync(HIST)[0], /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}_[0-9a-f]{4}\.json$/);
+	const fresh = await (await fetch(`${base}/api/dialog/new`, { method: "POST", headers })).json();
+	assert.equal(fresh.step, "start");
+	assert.equal(fresh.messages.length, 1);
+	const past = (await (await fetch(`${base}/api/history`, { headers: auth })).json()).history;
+	assert.equal(past.length, 1);
+	assert.equal(past[0].title, "Search: river depth from satellites");
+	assert.equal(past[0].current, false);
+	assert.ok(past[0].steps > 1);
+	assert.equal((await fetch(`${base}/api/history/open`, { method: "POST", headers, body: JSON.stringify({ id: "nope" }) })).status, 404);
+	const reopened = await (await fetch(`${base}/api/history/open`, { method: "POST", headers, body: JSON.stringify({ id: past[0].id }) })).json();
+	assert.equal(reopened.step, view.step);
+	assert.equal(reopened.messages.length, view.messages.length);
+	// The continued conversation is the current entry; the empty one left behind was never saved.
+	const again = (await (await fetch(`${base}/api/history`, { headers: auth })).json()).history;
+	assert.deepEqual(again.map((entry: { id: string; current: boolean; started: string }) => [entry.id, entry.current, entry.started]), [[past[0].id, true, past[0].started]]);
+	// Delete the current one: file gone, an empty conversation starts; clear reports the count.
+	const removed = await (await fetch(`${base}/api/history/delete`, { method: "POST", headers, body: JSON.stringify({ id: past[0].id }) })).json();
+	assert.equal(removed.deleted, true);
+	assert.equal(removed.dialog.step, "start");
+	assert.deepEqual(readdirSync(HIST), []);
+	const cleared = await (await fetch(`${base}/api/history/clear`, { method: "POST", headers })).json();
+	assert.equal(cleared.deleted, 0);
 	// Restart clears the conversation.
 	const restarted = await (await fetch(`${base}/api/dialog/restart`, { method: "POST", headers })).json();
 	assert.equal(restarted.step, "start");

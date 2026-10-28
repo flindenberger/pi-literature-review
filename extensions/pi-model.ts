@@ -101,6 +101,8 @@ export function piSessionProvider(ctx: ExtensionContext): ModelProvider {
 				embeddings: cfg.embedModel,
 				embeddingsVia: `${cfg.embedApi ?? cfg.api} at ${cfg.embedBaseUrl || cfg.baseUrl}`,
 				remote: model ? !localUrl : null,
+				baseUrl: baseUrl || null,
+				embeddingsBaseUrl: cfg.embedBaseUrl || cfg.baseUrl || null,
 			};
 		},
 		hasModel: () => Boolean(ctx.model),

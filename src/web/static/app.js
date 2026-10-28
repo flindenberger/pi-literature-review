@@ -406,11 +406,16 @@ ${refs ? `<p class="trail">Papers (verified records):<br>${refs}</p>` : ""}
 	async function loadState() {
 		try { state.info = await get("/api/state"); } catch (error) { $("status").innerHTML = `<span class="dot bad"></span>${esc(error.message)}`; return; }
 		const info = state.info;
-		$("brand-where").textContent = `${info.url.replace(/^https?:\/\//, "").replace(/\/$/, "")} · ${info.root}`;
+		$("btn-folder").title = `Working folder: ${info.root}`;
 		const p = info.provider;
+		// A local server that does not answer turns its dot red (the server
+		// probes 127.0.0.1 addresses on every state read); remote services
+		// are not probed.
+		const dot = (reachable) => `<span class="dot ${reachable === false ? "bad" : ""}"></span>`;
+		const down = (reachable, what) => (reachable === false ? ` <span class="down">-- not running: start ${what} first</span>` : "");
 		$("status").innerHTML = p.model
-			? `<span class="dot"></span>model <b>${esc(p.model)}</b> ${esc(p.via)}${p.remote ? " (remote service)" : p.remote === false ? ", local" : ""}<br><span class="dot"></span>embeddings <b>${esc(p.embeddings)}</b>, ${esc(p.embeddingsVia)}`
-			: `<span class="dot bad"></span>no model selected ${p.kind === "pi" ? "(choose one with /model in pi)" : "(set the generation model in Settings)"}<br><span class="dot"></span>embeddings <b>${esc(p.embeddings)}</b>`;
+			? `${dot(p.modelReachable)}model <b>${esc(p.model)}</b> ${esc(p.via)}${p.remote ? " (remote service)" : p.remote === false ? ", local" : ""}${down(p.modelReachable, "the model server")}<br>${dot(p.embeddingsReachable)}embeddings <b>${esc(p.embeddings)}</b>, ${esc(p.embeddingsVia)}${down(p.embeddingsReachable, "the embedding server")}`
+			: `<span class="dot bad"></span>no model selected ${p.kind === "pi" ? "(choose one with /model in pi)" : "(set the generation model in Settings)"}<br>${dot(p.embeddingsReachable)}embeddings <b>${esc(p.embeddings)}</b>${down(p.embeddingsReachable, "the embedding server")}`;
 		$("cnt-reports").textContent = String(info.counts.runs + info.counts.reports);
 		$("cnt-pdfs").textContent = String(info.counts.pdfs);
 	}
@@ -440,9 +445,57 @@ ${refs ? `<p class="trail">Papers (verified records):<br>${refs}</p>` : ""}
 			box.innerHTML = `<div class="rail-note">${esc(error.message)}</div>`;
 		}
 	}
+	/** Saved conversations (JSON files in the history folder, see
+	 * src/web/history.ts): this data folder first, other folders collapsed.
+	 * Name from the request or question ("Search: ...", "Report: ...",
+	 * "Chat: ..."), the start time small below; the current one is marked. */
+	async function loadHistory() {
+		const box = $("rail-history-list");
+		try {
+			const data = await get("/api/history");
+			$("cnt-history").textContent = data.history.length ? String(data.history.length) : "";
+			const when = (iso) => { const d = new Date(iso); return Number.isNaN(d.getTime()) ? "" : d.toLocaleString(undefined, { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }); };
+			const trash = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>';
+			const item = (entry) => `<a class="item past ${entry.current ? "current" : ""}" data-history="${esc(entry.id)}" title="${entry.current ? "the current conversation" : "click to continue this conversation"} · ${entry.steps} step${entry.steps === 1 ? "" : "s"}${entry.here ? "" : ` · data folder ${esc(entry.root)}`}"><span>${esc(entry.title)}</span><small>${esc(when(entry.started))}</small><button type="button" class="trash" data-del="${esc(entry.id)}" title="Delete this conversation" aria-label="Delete">${trash}</button></a>`;
+			const here = data.history.filter((entry) => entry.here);
+			const other = data.history.filter((entry) => !entry.here);
+			box.innerHTML = (here.map(item).join("") || '<div class="rail-note">no saved conversations for this data folder</div>')
+				+ (other.length ? `<details class="other"><summary>other data folders (${other.length})</summary>${other.map(item).join("")}</details>` : "")
+				+ (data.skipped ? `<div class="rail-note">${data.skipped} unreadable file${data.skipped === 1 ? "" : "s"} skipped in ${esc(data.dir)}</div>` : "");
+		} catch (error) {
+			box.innerHTML = `<div class="rail-note">${esc(error.message)}</div>`;
+		}
+	}
+	$("rail-history").addEventListener("toggle", () => { if ($("rail-history").open) loadHistory(); });
 	$("rail-reports").addEventListener("toggle", () => { if ($("rail-reports").open) loadReports(); });
 	$("rail-library").addEventListener("toggle", () => { if ($("rail-library").open) loadLibrary(); });
-	document.querySelector(".rail").addEventListener("click", (event) => {
+	document.querySelector(".rail").addEventListener("click", async (event) => {
+		const del = event.target.closest("button.trash[data-del]");
+		if (del) {
+			event.preventDefault();
+			event.stopPropagation();
+			if (!confirm("Delete this conversation? Its reports and PDFs on disk stay.")) return;
+			try {
+				const result = await post("/api/history/delete", { id: del.dataset.del });
+				state.dialog = result.dialog;
+				render();
+				loadHistory();
+				toast(result.deleted ? "Conversation deleted." : "Nothing to delete.");
+			} catch (error) { toast(error.message); }
+			return;
+		}
+		const past = event.target.closest("a.item[data-history]");
+		if (past) {
+			event.preventDefault();
+			try {
+				const view = await post("/api/history/open", { id: past.dataset.history });
+				state.dialog = view;
+				render();
+				loadHistory();
+				if (view.otherRoot) toast(`This conversation belongs to another data folder: ${view.otherRoot}. Its reports and PDFs are there.`);
+			} catch (error) { toast(error.message); }
+			return;
+		}
 		const item = event.target.closest("a.item[data-url]");
 		if (!item) return;
 		event.preventDefault();
@@ -457,14 +510,13 @@ ${refs ? `<p class="trail">Papers (verified records):<br>${refs}</p>` : ""}
 		el.title = `Switch to ${el.querySelector("div").firstChild.textContent.trim()}`;
 		el.addEventListener("click", () => answer({ chip }));
 	}
-	$("btn-restart").addEventListener("click", async () => {
-		if (!confirm("Start over? The conversation is cleared; files on disk stay.")) return;
-		try { state.dialog = await post("/api/dialog/restart"); render(); } catch (error) { toast(error.message); }
+	// "+": the current conversation moves to History, an empty one starts.
+	$("btn-new").addEventListener("click", async () => {
+		try { state.dialog = await post("/api/dialog/new"); render(); loadHistory(); } catch (error) { toast(error.message); }
 	});
-	$("btn-stop").addEventListener("click", async () => {
-		if (!confirm("Stop the web server? The page stops working; pi keeps running. Start it again with /pi-literature-review.")) return;
-		try { await post("/api/stop"); } catch { /* the socket closes */ }
-		document.body.innerHTML = '<div style="padding:4rem;color:#6b6b6b">Server stopped. In pi, type /pi-literature-review to start it again.</div>';
+	// Opens the data folder in the file manager (same launcher as the file cards).
+	$("btn-folder").addEventListener("click", () => {
+		post("/api/reveal", { stage: "root" }).then((r) => toast(`Opened ${r.opened} in the file manager.`)).catch((error) => toast(error.message));
 	});
 
 	/* ---------------- SSE ---------------- */
@@ -497,6 +549,7 @@ ${refs ? `<p class="trail">Papers (verified records):<br>${refs}</p>` : ""}
 		source.addEventListener("dialog", (event) => {
 			state.dialog = JSON.parse(event.data);
 			render();
+			if ($("rail-history").open) loadHistory();
 		});
 		source.onerror = () => {
 			$("status").innerHTML = '<span class="dot bad"></span>connection to the server lost -- is pi still running?';
@@ -511,6 +564,8 @@ ${refs ? `<p class="trail">Papers (verified records):<br>${refs}</p>` : ""}
 	async function loadSettings() {
 		let data;
 		try { data = await get("/api/settings"); } catch (error) { $("set-error").textContent = error.message; return; }
+		state.settingsConversations = data.conversations || 0;
+		$("set-history").textContent = `${data.conversations || 0} saved conversation${data.conversations === 1 ? "" : "s"} in ${data.historyDir} (one JSON file each; PI_LITERATURE_REVIEW_HISTORY moves the folder).`;
 		const info = state.info || {};
 		const p = info.provider || {};
 		$("set-path").textContent = `Configuration file: ${data.path}`;
@@ -546,6 +601,18 @@ ${refs ? `<p class="trail">Papers (verified records):<br>${refs}</p>` : ""}
 	}
 	$("btn-settings").addEventListener("click", async () => { $("set-error").textContent = ""; await loadSettings(); $("settings").showModal(); });
 	$("btn-settings-close").addEventListener("click", () => $("settings").close());
+	$("btn-history-clear").addEventListener("click", async () => {
+		const n = state.settingsConversations || 0;
+		if (!confirm(`Delete all ${n} saved conversation${n === 1 ? "" : "s"}? Reports and PDFs on disk stay.`)) return;
+		try {
+			const result = await post("/api/history/clear");
+			state.dialog = result.dialog;
+			render();
+			loadHistory();
+			await loadSettings();
+			toast(`${result.deleted} conversation${result.deleted === 1 ? "" : "s"} deleted.`);
+		} catch (error) { $("set-error").textContent = error.message; }
+	});
 	$("btn-settings-save").addEventListener("click", async () => {
 		$("set-error").textContent = "";
 		try {
@@ -584,6 +651,7 @@ ${refs ? `<p class="trail">Papers (verified records):<br>${refs}</p>` : ""}
 	/* ---------------- start ---------------- */
 	(async () => {
 		await loadState();
+		loadHistory();
 		try { state.dialog = await get("/api/dialog"); render(); } catch (error) { toast(error.message); }
 		setTimeout(connectEvents, 50);
 	})();

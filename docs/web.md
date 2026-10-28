@@ -42,15 +42,45 @@ directory, `PI_LITERATURE_REVIEW_HOME` overrides).
 
 ## The page
 
-Left, a slim rail: the three stages as a progress indicator, two collapsed
-lists (**HTML reports** from `lit-search/` and `lit-synthesis/`, **PDF
-library** with every PDF in `lit-selection/` and the working folder,
-rescanned when opened; a click opens the file in the panel), the model in
-use, and Settings, Start over, Stop. In the middle, the conversation with
+Left, a slim rail: a **+** button (new conversation; the current one moves
+to History), the three stages as a progress indicator, three collapsed
+lists (**History** with the saved conversations, see below; **HTML reports** from
+`lit-search/` and `lit-synthesis/`; **PDF library** with every PDF in
+`lit-selection/` and the working folder, rescanned when opened; a click
+opens the file in the panel), the model in use (a local model or embedding
+server that is not running shows a red dot: the server probes 127.0.0.1
+addresses on every state read), a folder icon that opens the data folder
+in the file manager (tooltip: its path), and a gear icon for Settings. The server is stopped from
+pi (`/pi-literature-review stop`) or with Ctrl-C. In the middle, the conversation with
 one input box. On the right, the report panel: it opens when a search or a
 synthesis has written an HTML file, **Enlarge** shows it large over the
 page (Esc closes), **New tab** opens the file on its own, **Close** hides
 the panel (any file card in the chat brings it back).
+
+### Conversation history
+
+Every conversation with a request or question is saved as one JSON file
+(a snapshot of the dialog as the page shows it, some tens of kilobytes)
+in the history folder next to the configuration file:
+`~/.config/pi-literature-review/history/` on Linux and macOS,
+`%APPDATA%\pi-literature-review\history\` on Windows;
+`PI_LITERATURE_REVIEW_HISTORY` moves the folder. Bundled with the
+configuration on purpose: one place for everything the package keeps
+outside the data folders, like pi keeps everything under `~/.pi/agent`.
+The file is rewritten after every change (temporary file + rename, so a
+crash never leaves a half-written conversation); a conversation with only
+chip clicks has no title and is never saved.
+
+The **History** list in the rail shows the saved conversations, newest
+change first, named after the request or question ("Search: ...",
+"Report: ...", "Chat: ...") with the start time below; the current one is
+marked. Conversations of this data folder come first, those of other data
+folders sit under "other data folders" (their reports and PDFs are there,
+the page says so when you open one). A click continues a conversation;
+the trash icon deletes its file (reports and PDFs stay); **Delete all
+conversations** in Settings empties the folder. Switching is refused
+while a job runs or the model is answering. The server starts with an
+empty conversation; pick one from the list to continue it.
 
 ### The conversation
 
@@ -58,7 +88,7 @@ The order and wording of the questions are fixed in the code
 (`src/web/dialog.ts`); the model only proposes content. Every question
 offers answer chips; typing works as well and is read by fixed rules (no
 guessing). `back` returns to the previous question, `start over` clears
-the conversation.
+the conversation (the **+** button keeps it in History instead).
 
 | Step | The assistant asks | You answer |
 |---|---|---|

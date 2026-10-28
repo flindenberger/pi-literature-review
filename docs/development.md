@@ -168,13 +168,14 @@ Where each stage lives; the adapter/engine pair shares its basename.
 | File | Holds |
 |---|---|
 | `extensions/web.ts` | the `/pi-literature-review` command: start/stop, browser launch, `session_shutdown` close |
-| `src/web/server.ts` | the node:http server: token + cookie + Host checks, static page, `/files` and `/pdf` routes (synthesis pages re-rendered with `/pdf/` links), the stage routes (`/api/search/*`, `/api/selection/*`, `/api/index`, `/api/report`, `/api/chat*`, `/api/settings*`), the dialog routes (`/api/dialog`, `/api/dialog/answer`, `/api/dialog/restart`) that run the state machine's effects, `/api/reveal` (show a data folder in the file manager), SSE at `/api/events` (`line`, `job`, `dialog`); every engine call injectable (`WebDeps`) |
+| `src/web/server.ts` | the node:http server: token + cookie + Host checks, static page, `/files` and `/pdf` routes (synthesis pages re-rendered with `/pdf/` links), the stage routes (`/api/search/*`, `/api/selection/*`, `/api/index`, `/api/report`, `/api/chat*`, `/api/settings*`), the dialog routes (`/api/dialog`, `/api/dialog/answer`, `/api/dialog/restart`, `/api/dialog/new`) that run the state machine's effects, the history routes (`/api/history`, `/api/history/open|delete|clear`), `/api/reveal` (show a data folder in the file manager), SSE at `/api/events` (`line`, `job`, `dialog`); every engine call injectable (`WebDeps`) |
 | `src/web/dialog.ts` | the chat dialog as a pure state machine: fixed question order and wording, answer chips, free-text parsers (years, numbers, identifiers, tweaks), `reduce(state, event, ctx)` returning the next state and the effects the server runs (model proposal, OpenAlex lookups, job starts) |
 | `src/web/jobs.ts` | one job at a time with its own `AbortController`, progress ring buffer, subscribers |
 | `src/web/sse.ts` | Server-Sent Events framing and keepalive |
 | `src/web/files.ts` | listings of search runs, library + index state, reports, chat sessions; safe file names |
 | `src/web/intake.ts` | the posted search form as `SearchOptions` + filters (same rules as the wizard) |
 | `src/web/open.ts` | open the browser or a folder without a shell |
+| `src/web/history.ts` | the conversation history: one JSON snapshot per conversation in the history folder (next to the configuration file, `PI_LITERATURE_REVIEW_HISTORY` overrides), atomic save, listing, load, delete, clear; ids are file names, never paths |
 | `src/web/static/` | the page: `index.html`, `app.js` (plain JavaScript: renders the dialog state, sends answers, SSE client, report panel, rail lists, Settings dialog), `style.css` (the report look) |
 | `src/provider.ts` | the model provider interface (`status`, `generate`, `wiring`) and the endpoint provider for standalone use |
 

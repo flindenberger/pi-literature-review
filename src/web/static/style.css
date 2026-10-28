@@ -51,11 +51,27 @@ button.primary:hover { background: #1f3752; }
 .rail details summary .cnt { margin-left: auto; color: var(--muted); font-weight: 400; }
 .rail-list a.item { display: block; padding: 0.2rem 0.3rem 0.2rem 0.9rem; color: var(--accent); text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-radius: 3px; cursor: pointer; }
 .rail-list a.item:hover { background: #fff; }
+.rail-list a.item.past { white-space: normal; line-height: 1.25; padding-top: 0.3rem; padding-bottom: 0.3rem; }
+.rail-list a.item.past span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-list a.item.past small { display: block; color: var(--muted); font-size: 0.7rem; }
+.rail-list a.item.past.current { background: #fff; border-left: 2px solid var(--accent); cursor: default; }
+.rail-list a.item.past { position: relative; padding-right: 1.6rem; }
+.rail-list a.item.past .trash { position: absolute; right: 0.2rem; top: 0.3rem; padding: 0.1rem; border: 0; background: transparent; color: var(--muted); display: none; border-radius: 4px; }
+.rail-list a.item.past .trash svg { width: 0.95rem; height: 0.95rem; }
+.rail-list a.item.past:hover .trash { display: inline-flex; }
+.rail-list a.item.past .trash:hover { color: var(--red); background: #f1f1ec; }
+.rail-list details.other { margin: 0.2rem 0 0 0.4rem; font-size: 0.78rem; }
+.rail-list details.other summary { font-weight: 400; color: var(--muted); }
 .rail-list .sub { padding: 0.35rem 0.3rem 0.1rem 0.9rem; color: var(--muted); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
 .rail-note { font-size: 0.72rem; color: var(--muted); padding: 0.15rem 0.3rem 0 0.9rem; }
 .rail .spacer { flex: 1; }
 .rail .status { font-size: 0.76rem; color: #3d3d3d; border-top: 1px solid var(--line); padding-top: 0.7rem; }
 .rail .links { display: flex; gap: 0.4rem; margin-top: 0.6rem; flex-wrap: wrap; }
+.rail .rail-icon { padding: 0.3rem; border: 1px solid transparent; background: transparent; color: #3d3d3d; display: inline-flex; align-items: center; gap: 0.4rem; border-radius: 6px; font-size: 0.84rem; }
+.rail .rail-icon svg { width: 1.15rem; height: 1.15rem; flex: none; }
+.rail .rail-icon:hover { background: #fff; border-color: var(--line); }
+.rail .rail-icon.new { align-self: flex-start; color: var(--accent); margin-bottom: 0.3rem; padding-right: 0.6rem; }
+.rail .status .down { color: var(--red); }
 
 /* Chat column: a centred, narrow conversation */
 .chat { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--line); }

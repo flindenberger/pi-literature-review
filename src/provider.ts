@@ -38,6 +38,12 @@ export interface ProviderStatus {
 	/** True when the writing model runs on a remote service (data leaves
 	 * the machine) -- the interface discloses it. Null when unknown. */
 	remote: boolean | null;
+	/** Address of the writing model's server, null when unknown; the web
+	 * interface probes local addresses so the page shows a server that is
+	 * not running. */
+	baseUrl: string | null;
+	/** Address of the embedding server. */
+	embeddingsBaseUrl: string | null;
 }
 
 export interface EngineWiring {
@@ -75,6 +81,8 @@ export function endpointProvider(cfg = llmConfig()): ModelProvider {
 			embeddings: cfg.embedModel,
 			embeddingsVia: `${cfg.embedApi ?? cfg.api} at ${embedBase}`,
 			remote: !local(generateBase),
+			baseUrl: generateBase || null,
+			embeddingsBaseUrl: embedBase || null,
 		}),
 		hasModel: () => Boolean(cfg.generateModel),
 		generate: async (call) => backend.generate(call.system, call.user, {
