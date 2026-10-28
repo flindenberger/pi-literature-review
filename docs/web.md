@@ -42,10 +42,18 @@ directory, `PI_LITERATURE_REVIEW_HOME` overrides).
 
 ## The page
 
-A new conversation opens on a start screen: the question "What would you
-like to do today?" and two tiles, **search & select** and **summarize &
-synthesize** (the second is greyed until the library holds a PDF);
-typing a request there starts a search as well. Left, a slim rail: the
+Every page load, and a click on the package name in the rail, opens a
+new conversation on the start screen (the one before stays in History;
+while a job runs the live conversation shows instead): four lines that
+build up once per browser session -- "Search the literature. Select the
+papers. Summarize and synthesize." slide in, "Powered by the AI models
+you run, even small, local ones." is typed in two colours and settles to
+black -- then two tiles, **search & select** and **summarize &
+synthesize**, each with one small line on what it does (without PDFs in
+the library the second one leads to a note that says what to do); typing
+a request there starts a search as well. The **i** button next to the gear says where the data
+goes (sources, model, embeddings, citations by code, open-access
+downloads). A plain Greek pi stands next to the name. Left, a slim rail: the
 two stages -- **SEARCH & SELECT** (magnifier with a download arrow) and
 **SUMMARIZE & SYNTHESIZE** (sheet with a pen).
 Nothing is selected until you click; a click opens a stage's block and

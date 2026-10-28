@@ -15,8 +15,12 @@ All notable changes to this package are listed here. The format follows
   chips from code (Continue, Edit keyword blocks, Back, Start over). A
   question-like input that a step's parser does not recognise goes to the
   helper instead of a bare "I did not recognise".
-- Web interface rail: two stages -- Search and selection, Summary and
-  synthesis -- each with its own **+** (New search, New paper chat) that
+- Web interface start screen: four lines that build up once per browser
+  session (the last one typed in two colours), two tiles with what each
+  stage does, an info button for sources and data flow; every page load
+  and the package name return to it. The chat's accent colour is now a
+  near-black instead of blue (hover, selection, primary buttons). Rail: two stages -- SEARCH & SELECT,
+  SUMMARIZE & SYNTHESIZE -- each with its own **+** (New search, New paper chat) that
   starts a new conversation at that stage and keeps the current one in a
   collapsible **History** list. Conversations are
   saved as one JSON file each next to the configuration file

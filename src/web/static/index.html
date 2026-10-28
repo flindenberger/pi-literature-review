@@ -4,13 +4,21 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>pi-literature-review</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Ctext x=%2716%27 y=%2725%27 text-anchor=%27middle%27 font-family=%27Georgia,serif%27 font-weight=%27700%27 font-style=%27italic%27 font-size=%2730%27 fill=%27%231c1c1c%27%3E%CF%80%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 
 <div class="shell no-report" id="shell">
   <aside class="rail">
-    <div class="brand">pi-literature-review</div>
+    <!-- Two marks: inside pi the three-colour logo from pi.dev/press-kit
+         (logo.svg, inlined, links to pi.dev); everywhere (for now) the same bold italic serif pi as the favicon.
+         app.js shows one of them from the provider kind. -->
+    <div class="brand">
+      <a class="mark mark-pi" href="https://pi.dev" target="_blank" rel="noopener" title="pi.dev -- the coding agent this package extends" hidden><svg viewBox="140 140 520 520" aria-hidden="true"><path fill="#F09082" d="M165.29 165.29H517.36V400H400V282.65H165.29Z"/><path fill="#4D9ABF" d="M165.29 282.65H282.65V400H400V517.36H282.65V634.72H165.29Z"/><path fill="#F1BE58" d="M517.36 400H634.72V634.72H517.36Z"/></svg></a>
+      <span class="mark mark-glyph" aria-hidden="true"><svg viewBox="0 0 32 32"><text x="16" y="26" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-weight="700" font-style="italic" font-size="30" fill="currentColor">&pi;</text></svg></span>
+      <button type="button" id="brand-home" title="Back to the start screen (the current conversation stays in History)">pi-literature-review</button>
+    </div>
     <details class="block" id="block-1">
       <summary class="stage" id="stage-1"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L21 21M10.5 7.5v6M8.3 11.3l2.2 2.2 2.2-2.2"/></svg><div><span class="name">Search &amp; select</span></div></summary>
       <div class="block-body">
@@ -50,6 +58,8 @@
     <div class="status" id="status"><span class="dot idle"></span>connecting ...</div>
     <div class="links">
       <button id="btn-folder" type="button" class="rail-icon" title="Open the working folder in the file manager" aria-label="Open the working folder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></button>
+      <div class="info-pop" id="info-pop" hidden></div>
+      <button id="btn-info" type="button" class="rail-icon" title="About this tool and where your data goes" aria-label="About"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 16v-5M12 8h.01"/></svg></button>
       <button id="btn-settings" type="button" class="rail-icon" title="Settings" aria-label="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
     </div>
   </aside>

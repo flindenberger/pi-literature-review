@@ -9,6 +9,11 @@
 	const $ = (id) => document.getElementById(id);
 	const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
+	/** pi.dev's three-colour logo is shown inside pi only once its use is
+	 * confirmed with pi.dev (press kit names no terms); until then the plain
+	 * Greek pi stands everywhere. */
+	const PI_DEV_MARK_ALLOWED = false;
+
 	const state = {
 		dialog: null,
 		/** Progress lines per job id (from the SSE stream). */
@@ -199,7 +204,7 @@ ${refs ? `<p class="trail">Papers (verified records):<br>${refs}</p>` : ""}
 	function placeholderFor(step) {
 		switch (step) {
 			case "ask": case "finished": return "Ask a question about the PDFs ...";
-			case "topic": return "Describe what you are looking for ...";
+			case "start": case "topic": return "Describe what you are looking for ...";
 			case "blocks": return "Confirm or edit the blocks above, or type new lines ...";
 			case "period": return "Pick a period, or type a range such as 2015-2024 ...";
 			case "journals": return "Tick journals above, or type numbers, a name, or \"all\" ...";
@@ -213,18 +218,62 @@ ${refs ? `<p class="trail">Papers (verified records):<br>${refs}</p>` : ""}
 	}
 
 	/** The start screen: the opening question and two tiles, nothing else. */
-	function heroHtml(view) {
-		const first = view.messages[0] || {};
+	/** The start screen (design/2026-10-28_startseite_entwuerfe, variant F
+	 * "two groups"): three lines slide in one after another, the fourth is
+	 * typed letter by letter in two colours -- sage up to "you run,", rosé
+	 * for "even small, local ones." -- and settles to ink. Played once per
+	 * browser session; reduced-motion users and later visits see the
+	 * settled state at once. The wording never changes with the setup. */
+	const HERO_LINES = ["Search the literature.", "Select the papers.", "Summarize and synthesize."];
+	const HERO_LAST = [["Powered by the AI models you run,", "g1"], [" even small, local ones.", "g2"]];
+	function heroHtml() {
 		const stroke = 'fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"';
-		const noPdfs = !(state.info && state.info.counts && state.info.counts.pdfs);
-		return `<div class="hero">
-<h1>${esc(first.text || "What would you like to do today?")}</h1>
+		let played = false;
+		try { played = sessionStorage.getItem("plr-hero-played") === "1"; } catch { /* storage blocked: animate every time */ }
+		const reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+		const animate = !played && !reduce;
+		const last = animate ? "" : HERO_LAST.map(([text, group]) => `<i class="${group}">${esc(text)}</i>`).join("");
+		return `<div class="hero ${animate ? "animate" : "settled"}">
+<h1>${HERO_LINES.map((line, i) => `<span class="fly" style="animation-delay: ${0.2 + i * 0.75}s">${esc(line)}</span>`).join("")}<span class="typed" id="hero-typed">${last}</span></h1>
 <div class="tiles">
-<button type="button" class="tile" data-chip="search" title="Search papers, tick the ones you want, download the open-access PDFs"><svg viewBox="0 0 24 24" ${stroke}><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L21 21M10.5 7.5v6M8.3 11.3l2.2 2.2 2.2-2.2"/></svg><span>search &amp; select</span></button>
-<button type="button" class="tile" data-chip="goSynthesis" ${noPdfs ? 'disabled title="No PDFs in the library yet: search first, or put PDFs into lit-selection/"' : 'title="Chat about one PDF, or write a report over several"'}><svg viewBox="0 0 24 24" ${stroke}><path d="M7 3h8l4 4v6"/><path d="M15 3v4h4M7 3v18h6"/><path d="M20.5 12.5l-6 6-2.5.6.6-2.5 6-6a1.3 1.3 0 0 1 1.9 1.9z"/></svg><span>summarize &amp; synthesize</span></button>
+<button type="button" class="tile" data-chip="search" title="Search papers, tick the ones you want, download the open-access PDFs"><svg viewBox="0 0 24 24" ${stroke}><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L21 21M10.5 7.5v6M8.3 11.3l2.2 2.2 2.2-2.2"/></svg><span>search &amp; select</span><small>Searches arXiv, Crossref, OpenAlex and code repositories. Open-access PDFs download directly.</small></button>
+<button type="button" class="tile" data-chip="goSynthesis" title="Chat about one PDF, or write a report over several"><svg viewBox="0 0 24 24" ${stroke}><path d="M7 3h8l4 4v6"/><path d="M15 3v4h4M7 3v18h6"/><path d="M20.5 12.5l-6 6-2.5.6.6-2.5 6-6a1.3 1.3 0 0 1 1.9 1.9z"/></svg><span>summarize &amp; synthesize</span><small>AI chat about one paper, synthesis reports over many. Citations are highlighted directly in the PDF.</small></button>
 </div>
-${first.note ? `<p class="hint">${esc(first.note)}</p>` : ""}
 </div>`;
+	}
+
+	/** Type the fourth line (two colour groups) after the first three stand. */
+	function heroAnimate() {
+		const el = $("hero-typed");
+		const hero = el && el.closest(".hero.animate");
+		if (!hero || hero.dataset.started) return;
+		hero.dataset.started = "1";
+		try { sessionStorage.setItem("plr-hero-played", "1"); } catch { /* fine */ }
+		const chars = [];
+		for (const [text, group] of HERO_LAST) for (const ch of text) chars.push([ch, group]);
+		let k = 0;
+		const step = () => {
+			if (!document.body.contains(el)) return; // the conversation moved on
+			const [ch, group] = chars[k++];
+			const i = document.createElement("i");
+			i.textContent = ch;
+			i.className = group;
+			el.appendChild(i);
+			if (k < chars.length) { setTimeout(step, 34); return; }
+			el.classList.remove("caret");
+			hero.querySelector(".tiles").classList.add("in");
+			setTimeout(() => hero.classList.add("settled"), 1600);
+		};
+		// Start typing when the third line has finished sliding in (its
+		// animationend event), never on a fixed clock: browsers start CSS
+		// animations late on a busy first paint, and the fourth line must
+		// not overtake the third. A long fallback covers a missing event.
+		let started = false;
+		const begin = () => { if (started) return; started = true; el.classList.add("caret"); step(); };
+		const lines = hero.querySelectorAll("h1 span.fly");
+		const third = lines[lines.length - 1];
+		if (third) third.addEventListener("animationend", () => setTimeout(begin, 250), { once: true });
+		setTimeout(begin, 6000);
 	}
 
 	function render() {
@@ -232,9 +281,13 @@ ${first.note ? `<p class="hint">${esc(first.note)}</p>` : ""}
 		if (!view) return;
 		const thread = $("thread");
 		const fresh = view.step === "start" && view.messages.length === 1 && !view.pending && !view.activeJob;
-		const parts = fresh ? [heroHtml(view)] : view.messages.map(messageHtml);
+		// A fresh start screen is not rebuilt while it is already showing
+		// (dialog frames arrive during the build-up; a rebuild would restart it).
+		if (fresh && thread.querySelector(".hero")) { renderStages(view); return; }
+		const parts = fresh ? [heroHtml()] : view.messages.map(messageHtml);
 		if (view.pending) parts.push(`<div class="msg pending"><span class="dot busy"></span>${esc(view.pending)} ...</div>`);
 		thread.innerHTML = parts.join("");
+		if (fresh) heroAnimate();
 		// Every dialog change follows an answer or finishes a wait: show it.
 		thread.scrollTop = thread.scrollHeight;
 		renderStages(view);
@@ -427,6 +480,11 @@ ${first.note ? `<p class="hint">${esc(first.note)}</p>` : ""}
 		const info = state.info;
 		$("btn-folder").title = `Working folder: ${info.root}`;
 		const p = info.provider;
+		// The brand mark: a plain Greek pi everywhere until pi.dev's permission
+		// for its logo is confirmed; then the logo inside pi, the glyph standalone.
+		const piDevMark = PI_DEV_MARK_ALLOWED && p.kind === "pi";
+		document.querySelector(".brand .mark-pi").hidden = !piDevMark;
+		document.querySelector(".brand .mark-glyph").hidden = piDevMark;
 		// A local server that does not answer turns its dot red (the server
 		// probes 127.0.0.1 addresses on every state read); remote services
 		// are not probed.
@@ -541,6 +599,18 @@ ${first.note ? `<p class="hint">${esc(first.note)}</p>` : ""}
 	};
 	$("btn-new-search").addEventListener("click", () => startNew("search"));
 	$("btn-new-chat").addEventListener("click", () => startNew("synthesis"));
+	// The package name returns to the start screen (a new conversation; the current one stays in History).
+	$("brand-home").addEventListener("click", () => startNew());
+	// Info: where the data goes and which sources are asked, from the server's state.
+	$("btn-info").addEventListener("click", () => {
+		const pop = $("info-pop");
+		if (!pop.hidden) { pop.hidden = true; return; }
+		const p = state.info && state.info.provider;
+		const model = p && p.model ? `${esc(p.model)}${p.remote ? " (a remote service: the passages you ask about go there)" : " (local)"}` : "none selected yet";
+		pop.innerHTML = `<p><b>Where your data goes.</b> Search queries go to arXiv, Crossref and OpenAlex (open, no account; Semantic Scholar only with a free key). Your PDFs stay on this machine. Writing model: ${model}. Embeddings: ${esc(p ? p.embeddings : "")}, local.</p><p><b>Citations</b> are inserted and checked by code, never written by the model.</p><p><b>Downloads</b> are legal open access only; restricted papers are listed with a browser link.</p>`;
+		pop.hidden = false;
+	});
+	document.addEventListener("click", (event) => { if (!event.target.closest("#btn-info") && !event.target.closest("#info-pop")) $("info-pop").hidden = true; });
 	// Opens the data folder in the file manager (same launcher as the file cards).
 	$("btn-folder").addEventListener("click", () => {
 		post("/api/reveal", { stage: "root" }).then((r) => toast(`Opened ${r.opened} in the file manager.`)).catch((error) => toast(error.message));
@@ -679,7 +749,16 @@ ${first.note ? `<p class="hint">${esc(first.note)}</p>` : ""}
 	(async () => {
 		await loadState();
 		loadHistory();
-		try { state.dialog = await get("/api/dialog"); render(); } catch (error) { toast(error.message); }
+		// A page load (or reload) always begins on the start screen: the
+		// conversation so far stays in History. While a job or a model call
+		// is running the server refuses (409) and the live conversation shows.
+		try {
+			state.dialog = await post("/api/dialog/new");
+		} catch {
+			try { state.dialog = await get("/api/dialog"); } catch (error) { toast(error.message); }
+		}
+		render();
+		loadHistory();
 		setTimeout(connectEvents, 50);
 	})();
 })();
