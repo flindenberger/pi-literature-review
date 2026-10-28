@@ -365,7 +365,7 @@ try {
 	await readUntil(/event: dialog\ndata: .*"step":"pick"/);
 	view = await dialogGet();
 	assert.equal(view.step, "pick");
-	assert.equal(view.stage.stage, 2);
+	assert.equal(view.stage.stage, 1);
 	assert.equal(view.activeJob, null);
 	const working = view.messages.find((message: { role: string }) => message.role === "working");
 	assert.equal(working.jobState, "done");
@@ -389,6 +389,9 @@ try {
 	const fresh = await (await fetch(`${base}/api/dialog/new`, { method: "POST", headers })).json();
 	assert.equal(fresh.step, "start");
 	assert.equal(fresh.messages.length, 1);
+	// "+ New search" starts the next conversation straight at the request question.
+	const freshSearch = await (await fetch(`${base}/api/dialog/new`, { method: "POST", headers, body: JSON.stringify({ start: "search" }) })).json();
+	assert.equal(freshSearch.step, "topic");
 	const past = (await (await fetch(`${base}/api/history`, { headers: auth })).json()).history;
 	assert.equal(past.length, 1);
 	assert.equal(past[0].title, "Search: river depth from satellites");
@@ -408,6 +411,18 @@ try {
 	assert.deepEqual(readdirSync(HIST), []);
 	const cleared = await (await fetch(`${base}/api/history/clear`, { method: "POST", headers })).json();
 	assert.equal(cleared.deleted, 0);
+	// The question channel over the route: ask:true never moves the step; the stub model's text becomes a help message.
+	const beforeAsk = await dialogGet();
+	const asked = await dialogAnswer({ text: "can i change the keywords?", ask: true });
+	assert.equal(asked.status, 200);
+	assert.equal(asked.body.step, beforeAsk.step);
+	assert.equal(asked.body.accepts, "text");
+	await settled();
+	const helped = await dialogGet();
+	const helpMessage = helped.messages[helped.messages.length - 1];
+	assert.equal(helpMessage.help, "model");
+	assert.ok(helpMessage.chips.some((chip: { id: string }) => chip.id === "continue"));
+	assert.equal(helped.step, beforeAsk.step);
 	// Restart clears the conversation.
 	const restarted = await (await fetch(`${base}/api/dialog/restart`, { method: "POST", headers })).json();
 	assert.equal(restarted.step, "start");

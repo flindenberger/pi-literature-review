@@ -1,6 +1,6 @@
 # Web interface
 
-The three stages as a chat in your browser, served by a small local
+The two stages as a chat in your browser, served by a small local
 server that runs inside Pi (or standalone, see below). The assistant asks
 one question at a time, you answer with a click or a few words, and
 search, selection and synthesis run through the very same engines as the
@@ -42,11 +42,20 @@ directory, `PI_LITERATURE_REVIEW_HOME` overrides).
 
 ## The page
 
-Left, a slim rail: a **+** button (new conversation; the current one moves
-to History), the three stages as a progress indicator, three collapsed
-lists (**History** with the saved conversations, see below; **HTML reports** from
-`lit-search/` and `lit-synthesis/`; **PDF library** with every PDF in
-`lit-selection/` and the working folder, rescanned when opened; a click
+A new conversation opens on a start screen: the question "What would you
+like to do today?" and two tiles, **search & select** and **summarize &
+synthesize** (the second is greyed until the library holds a PDF);
+typing a request there starts a search as well. Left, a slim rail: the
+two stages -- **SEARCH & SELECT** (magnifier with a download arrow) and
+**SUMMARIZE & SYNTHESIZE** (sheet with a pen).
+Nothing is selected until you click; a click opens a stage's block and
+marks it: its **+** (New search, New paper chat: a new conversation that
+starts at that stage; the current one stays in History), its **History**
+(search conversations under stage 1, chats and reports under stage 2) and
+its **HTML reports** (`lit-search/` under stage 1, `lit-synthesis/` under
+stage 2; full date, the query as tooltip). The block of the stage a
+conversation is in opens by itself. Empty lists show a dash. Below, one collapsed
+list (**PDF library** with every PDF in `lit-selection/` and the working folder, rescanned when opened; a click
 opens the file in the panel), the model in use (a local model or embedding
 server that is not running shows a red dot: the server probes 127.0.0.1
 addresses on every state read), a folder icon that opens the data folder
@@ -81,6 +90,27 @@ the trash icon deletes its file (reports and PDFs stay); **Delete all
 conversations** in Settings empties the folder. Switching is refused
 while a job runs or the model is answering. The server starts with an
 empty conversation; pick one from the list to continue it.
+
+### Answers and questions
+
+The one input box serves two channels, and the code decides which.
+**Answering**: the open question's parser reads the text (row numbers,
+DOIs, years, `all`, `code`, tweaks). **Asking**: the text is a question
+about the step; it never moves the wizard. On steps that only take chips
+every typed text is a question (unless it names a chip, or is yes/no);
+on text steps a question-like input that the parser does not recognise
+("can I change the keywords?", "i want to change keywords") goes to the
+question channel by itself, with the parser's note first. A leading `?`
+forces the question channel.
+
+The helper answers from a fixed help text per step (`src/web/help.ts`:
+what the question means, accepted inputs, what the chips do, how to go
+back) and a summary of what the dialog knows; the model may tailor that
+text to the question (three sentences, 30 s), and without a model, or
+when it fails, the fixed text itself is shown and labelled so. Navigation
+chips under a help answer come from code: Continue, Edit keyword blocks,
+Back, Start over. The helper cannot change the search; what it can do is
+explain and link.
 
 ### The conversation
 

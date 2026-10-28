@@ -57,6 +57,7 @@ import { outputRoot, synthReportName, writeRunOutputs } from "../output.ts";
 import { sanitizeTermGroups } from "../pipeline.ts";
 import type { ModelProvider, ProviderStatus } from "../provider.ts";
 import { clearConversations, deleteConversation, historyDir, listConversations, loadConversation, newConversationId, saveConversation } from "./history.ts";
+import { STEP_ACCEPTS } from "./help.ts";
 import { renderHtml, renderPaperChatReportHtml, renderSynthReportHtml, webPdfHref } from "../render.ts";
 import { keyRequirement, runSearch, SEARCHERS, type SearchOptions, type SearchPayload } from "../search.ts";
 import { parseIdentifier, renderFetchReport, runSelection, type SelectionRunOptions } from "../selection.ts";
@@ -568,7 +569,9 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 	};
 
 	let dialog: DialogState = initialDialog(dialogContext());
-	const dialogView = () => ({ ...dialog, stage: stageOfStep(dialog.step), chatSession });
+	/** The page reads what the open step accepts from here (one source of
+	 * truth: help.ts); on chip-only steps its placeholder invites a question. */
+	const dialogView = () => ({ ...dialog, stage: stageOfStep(dialog.step), chatSession, accepts: STEP_ACCEPTS[dialog.step] });
 	const broadcastDialog = (): void => {
 		const view = dialogView();
 		for (const connection of connections) connection.send("dialog", view);
@@ -619,7 +622,7 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 			? [{ id: currentId, title, started: dialogStarted, updated: new Date().toISOString(), root, steps: dialog.trail.length }]
 			: [];
 		return {
-			history: [...live, ...conversations].map((entry) => ({ ...entry, current: entry.id === currentId, here: entry.root === root })),
+			history: [...live, ...conversations].map((entry) => ({ ...entry, current: entry.id === currentId, here: entry.root === root, kind: entry.title.startsWith("Search:") ? "search" : "synthesis" })),
 			skipped,
 			dir: historyRoot,
 		};
@@ -665,6 +668,17 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 				case "proposeBlocks": {
 					const { variants, note } = await proposeVariants(effect.query, "", true);
 					applyDialog({ kind: "blocks", variants, ...(note ? { error: note } : {}) });
+					return;
+				}
+				// The helper: one short model call over the step's help text; any
+				// failure (no answer, timeout) falls back to the fixed help text.
+				case "helpAnswer": {
+					try {
+						const text = await provider.generate({ system: effect.system, user: effect.user, maxTokens: 300, temperature: 0.2, signal: AbortSignal.timeout(30_000) });
+						applyDialog({ kind: "helpAnswered", text });
+					} catch (error) {
+						applyDialog({ kind: "helpAnswered", text: null, error: errorMessage(error) });
+					}
 					return;
 				}
 				case "loadTopics": {
@@ -1039,6 +1053,7 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 				ids: strings(body.ids),
 				blocks: strings(body.blocks),
 				toggles: strings(body.toggles),
+				ask: body.ask === true,
 			});
 			return json(res, 200, dialogView());
 		}
@@ -1047,10 +1062,14 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 			applyDialog({ kind: "restart" });
 			return json(res, 200, dialogView());
 		}
-		// "+" on the page: the current conversation stays saved, an empty one starts.
+		// "+ New search" / "+ New paper chat": the current conversation stays
+		// saved, an empty one starts, optionally straight at that stage.
 		if (route === "POST /api/dialog/new") {
+			const body = (await readBody(req)) as Record<string, unknown>;
 			requireIdle();
 			startFresh();
+			if (body.start === "search") applyDialog({ kind: "answer", chip: "goSearch" });
+			else if (body.start === "synthesis") applyDialog({ kind: "answer", chip: "goSynthesis" });
 			return json(res, 200, dialogView());
 		}
 		if (route === "GET /api/history") return json(res, 200, historyView());

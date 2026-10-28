@@ -18,6 +18,8 @@
 		report: { url: null, name: null },
 		panelClosedByUser: false,
 		renderedKey: "",
+		/** Stage whose rail block was opened last by the dialog (not by the user). */
+		lastStage: null,
 	};
 
 	/* ---------------- HTTP ---------------- */
@@ -189,7 +191,7 @@ ${refs ? `<p class="trail">Papers (verified records):<br>${refs}</p>` : ""}
 			case "answer":
 				return `<div class="msg assistant ${message.spent ? "spent" : ""}" data-id="${message.id}" data-step="${esc(message.step || "")}">${answerHtml(message.answer)}${chipsHtml(message)}</div>`;
 			default:
-				return `<div class="msg assistant ${message.spent ? "spent" : ""}" data-id="${message.id}" data-step="${esc(message.step || "")}" ${message.single ? 'data-single="1"' : ""}>${message.text ? `<p>${markup(message.text)}</p>` : ""}${editorHtml(message)}${message.note ? `<p class="small">${markup(message.note)}</p>` : ""}${listHtml(message)}${chipsHtml(message)}</div>`;
+				return `<div class="msg assistant ${message.spent ? "spent" : ""} ${message.help ? "help" : ""}" data-id="${message.id}" data-step="${esc(message.step || "")}" ${message.single ? 'data-single="1"' : ""}>${message.text ? `<p>${markup(message.text)}</p>` : ""}${editorHtml(message)}${message.note ? `<p class="small">${markup(message.note)}</p>` : ""}${listHtml(message)}${chipsHtml(message)}</div>`;
 		}
 	}
 
@@ -210,11 +212,27 @@ ${refs ? `<p class="trail">Papers (verified records):<br>${refs}</p>` : ""}
 		}
 	}
 
+	/** The start screen: the opening question and two tiles, nothing else. */
+	function heroHtml(view) {
+		const first = view.messages[0] || {};
+		const stroke = 'fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"';
+		const noPdfs = !(state.info && state.info.counts && state.info.counts.pdfs);
+		return `<div class="hero">
+<h1>${esc(first.text || "What would you like to do today?")}</h1>
+<div class="tiles">
+<button type="button" class="tile" data-chip="search" title="Search papers, tick the ones you want, download the open-access PDFs"><svg viewBox="0 0 24 24" ${stroke}><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L21 21M10.5 7.5v6M8.3 11.3l2.2 2.2 2.2-2.2"/></svg><span>search &amp; select</span></button>
+<button type="button" class="tile" data-chip="goSynthesis" ${noPdfs ? 'disabled title="No PDFs in the library yet: search first, or put PDFs into lit-selection/"' : 'title="Chat about one PDF, or write a report over several"'}><svg viewBox="0 0 24 24" ${stroke}><path d="M7 3h8l4 4v6"/><path d="M15 3v4h4M7 3v18h6"/><path d="M20.5 12.5l-6 6-2.5.6.6-2.5 6-6a1.3 1.3 0 0 1 1.9 1.9z"/></svg><span>summarize &amp; synthesize</span></button>
+</div>
+${first.note ? `<p class="hint">${esc(first.note)}</p>` : ""}
+</div>`;
+	}
+
 	function render() {
 		const view = state.dialog;
 		if (!view) return;
 		const thread = $("thread");
-		const parts = view.messages.map(messageHtml);
+		const fresh = view.step === "start" && view.messages.length === 1 && !view.pending && !view.activeJob;
+		const parts = fresh ? [heroHtml(view)] : view.messages.map(messageHtml);
 		if (view.pending) parts.push(`<div class="msg pending"><span class="dot busy"></span>${esc(view.pending)} ...</div>`);
 		thread.innerHTML = parts.join("");
 		// Every dialog change follows an answer or finishes a wait: show it.
@@ -223,7 +241,9 @@ ${refs ? `<p class="trail">Papers (verified records):<br>${refs}</p>` : ""}
 		const busy = Boolean(view.activeJob) || Boolean(view.pending);
 		$("input").disabled = busy;
 		$("btn-send").disabled = busy;
-		$("input").placeholder = view.activeJob ? "Please wait, or stop the job ..." : view.pending ? "One moment ..." : placeholderFor(view.step);
+		// One plain input box. On chip-only steps typed text is a question for
+		// the helper (the server routes it); the placeholder says so.
+		$("input").placeholder = view.activeJob ? "Please wait, or stop the job ..." : view.pending ? "One moment ..." : view.accepts === "choice" ? "Pick an answer above, or ask a question ..." : placeholderFor(view.step);
 		if (!busy) $("input").focus();
 		// A fresh file card opens the panel (unless the user closed it for this card already).
 		const cards = view.messages.filter((message) => message.role === "card" && message.card.url);
@@ -246,19 +266,12 @@ ${refs ? `<p class="trail">Papers (verified records):<br>${refs}</p>` : ""}
 		thread.scrollTop = thread.scrollHeight;
 	}
 
+	/** The rail shows no progress text; the block of a stage opens by itself
+	 * once the conversation is inside that stage (never at the start). */
 	function renderStages(view) {
+		if (view.step === "start") return;
 		const current = view.stage ? view.stage.stage : 1;
-		const skipped = current === 3 && !(view.answers && view.answers.search);
-		for (const n of [1, 2, 3]) {
-			const el = $(`stage-${n}`);
-			el.classList.remove("active", "done", "skipped");
-			if (n < current) el.classList.add(skipped ? "skipped" : "done");
-			if (n === current) el.classList.add("active");
-			const label = $(`stage-${n}-label`);
-			if (n === current) label.textContent = view.stage.label;
-			else if (n < current) label.textContent = skipped ? "skipped" : "done";
-			else label.textContent = n === 2 ? "PDF download" : n === 3 ? "questions + report" : "asking";
-		}
+		if (state.lastStage !== current) { state.lastStage = current; $(`block-${current}`).open = true; }
 	}
 
 	/* ---------------- answering ---------------- */
@@ -306,10 +319,16 @@ ${refs ? `<p class="trail">Papers (verified records):<br>${refs}</p>` : ""}
 		const text = $("input").value.trim();
 		if (!text) return;
 		$("input").value = "";
-		answer({ text, ...collect(currentQuestion()) });
+		// A leading "?" sends the text to the helper; otherwise the server
+		// decides (parser answer, or a question when the step takes chips only
+		// or the parser does not recognise a question-like text).
+		const ask = text.startsWith("?");
+		answer({ text: text.replace(/^\?\s*/, ""), ...(ask ? { ask: true } : collect(currentQuestion())) });
 	});
 
 	$("thread").addEventListener("click", (event) => {
+		const tile = event.target.closest(".hero .tile[data-chip]");
+		if (tile && !tile.disabled) { answer({ chip: tile.dataset.chip }); return; }
 		const chip = event.target.closest(".chips button[data-chip]");
 		if (chip) {
 			const node = chip.closest(".msg");
@@ -416,22 +435,29 @@ ${refs ? `<p class="trail">Papers (verified records):<br>${refs}</p>` : ""}
 		$("status").innerHTML = p.model
 			? `${dot(p.modelReachable)}model <b>${esc(p.model)}</b> ${esc(p.via)}${p.remote ? " (remote service)" : p.remote === false ? ", local" : ""}${down(p.modelReachable, "the model server")}<br>${dot(p.embeddingsReachable)}embeddings <b>${esc(p.embeddings)}</b>, ${esc(p.embeddingsVia)}${down(p.embeddingsReachable, "the embedding server")}`
 			: `<span class="dot bad"></span>no model selected ${p.kind === "pi" ? "(choose one with /model in pi)" : "(set the generation model in Settings)"}<br>${dot(p.embeddingsReachable)}embeddings <b>${esc(p.embeddings)}</b>${down(p.embeddingsReachable, "the embedding server")}`;
-		$("cnt-reports").textContent = String(info.counts.runs + info.counts.reports);
+		$("cnt-reports-1").textContent = info.counts.runs ? String(info.counts.runs) : "";
+		$("cnt-reports-2").textContent = info.counts.reports ? String(info.counts.reports) : "";
 		$("cnt-pdfs").textContent = String(info.counts.pdfs);
 	}
 
+	/** Search reports under stage 1, synthesis reports under stage 2. */
 	async function loadReports() {
-		const box = $("rail-reports-list");
 		try {
 			const data = await get("/api/runs");
-			const short = (name) => name.replace(/^(\d{4})-(\d{2})-(\d{2})_/, "$2-$3 ").replace(/_/g, " ");
-			const runs = data.runs.filter((run) => run.htmlUrl).map((run) => `<a class="item" data-url="${esc(run.htmlUrl)}" data-name="${esc(run.name)}.html" title="${esc(run.query)} · ${run.included} included">${esc(short(run.name))}</a>`).join("");
-			const reports = data.reports.filter((report) => report.htmlUrl).map((report) => `<a class="item" data-url="${esc(report.htmlUrl)}" data-name="${esc(report.name)}.html" title="${esc(report.kind)}">${esc(short(report.name))}</a>`).join("");
-			box.innerHTML = `<div class="sub">lit-search/</div>${runs || '<div class="rail-note">no search reports yet</div>'}<div class="sub">lit-synthesis/</div>${reports || '<div class="rail-note">no synthesis reports yet</div>'}`;
+			// Full date, then the file's own words; the query as tooltip when the run has one.
+			const short = (name) => name.replace(/_/g, " ");
+			const runs = data.runs.filter((run) => run.htmlUrl).map((run) => `<a class="item" data-url="${esc(run.htmlUrl)}" data-name="${esc(run.name)}.html" title="${esc(run.query || run.name)}">${esc(short(run.name))}</a>`).join("");
+			const reports = data.reports.filter((report) => report.htmlUrl).map((report) => `<a class="item" data-url="${esc(report.htmlUrl)}" data-name="${esc(report.name)}.html" title="${esc(report.name)}">${esc(short(report.name))}</a>`).join("");
+			$("reports-1-list").innerHTML = runs || '<div class="rail-note">-</div>';
+			$("reports-2-list").innerHTML = reports || '<div class="rail-note">-</div>';
+			$("cnt-reports-1").textContent = data.runs.length ? String(data.runs.length) : "";
+			$("cnt-reports-2").textContent = data.reports.length ? String(data.reports.length) : "";
 		} catch (error) {
-			box.innerHTML = `<div class="rail-note">${esc(error.message)}</div>`;
+			$("reports-1-list").innerHTML = $("reports-2-list").innerHTML = `<div class="rail-note">${esc(error.message)}</div>`;
 		}
 	}
+	const reportsOpen = () => $("reports-1").open || $("reports-2").open;
+	const historyOpen = () => $("hist-1").open || $("hist-2").open;
 
 	async function loadLibrary() {
 		const box = $("rail-library-list");
@@ -439,7 +465,7 @@ ${refs ? `<p class="trail">Papers (verified records):<br>${refs}</p>` : ""}
 			const data = await get("/api/library");
 			$("rail-library-dirs").textContent = `${(data.dirs || []).join(", ") || "lit-selection/"} · rescanned on open`;
 			box.innerHTML = data.papers.map((paper) => `<a class="item" data-url="${esc(paper.pdfUrl)}" data-name="${esc(paper.base)}.pdf" title="${esc(paper.title || paper.base)}${paper.index ? ` · indexed (${paper.index.chunks} passages)` : " · not indexed yet"}">${esc(paper.year || "n.d.")} ${esc(authorsShort(paper.authors))}${paper.authors && paper.authors.length ? " · " : ""}${esc(paper.title || paper.base)}</a>`).join("")
-				|| '<div class="rail-note">no PDFs yet</div>';
+				|| '<div class="rail-note">-</div>';
 			$("cnt-pdfs").textContent = String(data.papers.length);
 		} catch (error) {
 			box.innerHTML = `<div class="rail-note">${esc(error.message)}</div>`;
@@ -450,24 +476,27 @@ ${refs ? `<p class="trail">Papers (verified records):<br>${refs}</p>` : ""}
 	 * Name from the request or question ("Search: ...", "Report: ...",
 	 * "Chat: ..."), the start time small below; the current one is marked. */
 	async function loadHistory() {
-		const box = $("rail-history-list");
 		try {
 			const data = await get("/api/history");
-			$("cnt-history").textContent = data.history.length ? String(data.history.length) : "";
 			const when = (iso) => { const d = new Date(iso); return Number.isNaN(d.getTime()) ? "" : d.toLocaleString(undefined, { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }); };
 			const trash = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>';
 			const item = (entry) => `<a class="item past ${entry.current ? "current" : ""}" data-history="${esc(entry.id)}" title="${entry.current ? "the current conversation" : "click to continue this conversation"} · ${entry.steps} step${entry.steps === 1 ? "" : "s"}${entry.here ? "" : ` · data folder ${esc(entry.root)}`}"><span>${esc(entry.title)}</span><small>${esc(when(entry.started))}</small><button type="button" class="trash" data-del="${esc(entry.id)}" title="Delete this conversation" aria-label="Delete">${trash}</button></a>`;
-			const here = data.history.filter((entry) => entry.here);
-			const other = data.history.filter((entry) => !entry.here);
-			box.innerHTML = (here.map(item).join("") || '<div class="rail-note">no saved conversations for this data folder</div>')
-				+ (other.length ? `<details class="other"><summary>other data folders (${other.length})</summary>${other.map(item).join("")}</details>` : "")
-				+ (data.skipped ? `<div class="rail-note">${data.skipped} unreadable file${data.skipped === 1 ? "" : "s"} skipped in ${esc(data.dir)}</div>` : "");
+			// Search conversations under stage 1, chats and reports under stage 2.
+			for (const [n, kind] of [[1, "search"], [2, "synthesis"]]) {
+				const mine = data.history.filter((entry) => entry.kind === kind);
+				const here = mine.filter((entry) => entry.here);
+				const other = mine.filter((entry) => !entry.here);
+				$(`hist-${n}-list`).innerHTML = (here.map(item).join("") || '<div class="rail-note">-</div>')
+					+ (other.length ? `<details class="other"><summary>other data folders (${other.length})</summary>${other.map(item).join("")}</details>` : "")
+					+ (n === 1 && data.skipped ? `<div class="rail-note">${data.skipped} unreadable file${data.skipped === 1 ? "" : "s"} skipped in ${esc(data.dir)}</div>` : "");
+				$(`cnt-hist-${n}`).textContent = mine.length ? String(mine.length) : "";
+			}
 		} catch (error) {
-			box.innerHTML = `<div class="rail-note">${esc(error.message)}</div>`;
+			$("hist-1-list").innerHTML = $("hist-2-list").innerHTML = `<div class="rail-note">${esc(error.message)}</div>`;
 		}
 	}
-	$("rail-history").addEventListener("toggle", () => { if ($("rail-history").open) loadHistory(); });
-	$("rail-reports").addEventListener("toggle", () => { if ($("rail-reports").open) loadReports(); });
+	for (const id of ["hist-1", "hist-2"]) $(id).addEventListener("toggle", () => { if ($(id).open) loadHistory(); });
+	for (const id of ["reports-1", "reports-2"]) $(id).addEventListener("toggle", () => { if ($(id).open) loadReports(); });
 	$("rail-library").addEventListener("toggle", () => { if ($("rail-library").open) loadLibrary(); });
 	document.querySelector(".rail").addEventListener("click", async (event) => {
 		const del = event.target.closest("button.trash[data-del]");
@@ -504,16 +533,14 @@ ${refs ? `<p class="trail">Papers (verified records):<br>${refs}</p>` : ""}
 		else showReport(item.dataset.url, item.dataset.name);
 	});
 
-	// The stages are buttons: switch within the same conversation.
-	for (const [n, chip] of [[1, "goSearch"], [2, "goSelection"], [3, "goSynthesis"]]) {
-		const el = $(`stage-${n}`);
-		el.title = `Switch to ${el.querySelector("div").firstChild.textContent.trim()}`;
-		el.addEventListener("click", () => answer({ chip }));
-	}
-	// "+": the current conversation moves to History, an empty one starts.
-	$("btn-new").addEventListener("click", async () => {
-		try { state.dialog = await post("/api/dialog/new"); render(); loadHistory(); } catch (error) { toast(error.message); }
-	});
+	// A stage block opens on click (its +, History and HTML reports); the
+	// block of the active stage opens by itself when the stage changes.
+	// "+": the current conversation stays in History, a new one starts at that stage.
+	const startNew = async (start) => {
+		try { state.dialog = await post("/api/dialog/new", { start }); render(); loadHistory(); } catch (error) { toast(error.message); }
+	};
+	$("btn-new-search").addEventListener("click", () => startNew("search"));
+	$("btn-new-chat").addEventListener("click", () => startNew("synthesis"));
 	// Opens the data folder in the file manager (same launcher as the file cards).
 	$("btn-folder").addEventListener("click", () => {
 		post("/api/reveal", { stage: "root" }).then((r) => toast(`Opened ${r.opened} in the file manager.`)).catch((error) => toast(error.message));
@@ -544,12 +571,12 @@ ${refs ? `<p class="trail">Papers (verified records):<br>${refs}</p>` : ""}
 			const job = JSON.parse(event.data).job;
 			state.job = job.state === "running" ? job : null;
 			if (job.kind === "check" || job.kind === "pull") renderSettingsProgress();
-			if (job.state !== "running") { loadState(); if ($("rail-library").open) loadLibrary(); if ($("rail-reports").open) loadReports(); }
+			if (job.state !== "running") { loadState(); if ($("rail-library").open) loadLibrary(); if (reportsOpen()) loadReports(); }
 		});
 		source.addEventListener("dialog", (event) => {
 			state.dialog = JSON.parse(event.data);
 			render();
-			if ($("rail-history").open) loadHistory();
+			if (historyOpen()) loadHistory();
 		});
 		source.onerror = () => {
 			$("status").innerHTML = '<span class="dot bad"></span>connection to the server lost -- is pi still running?';

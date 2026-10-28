@@ -11,19 +11,35 @@
 <div class="shell no-report" id="shell">
   <aside class="rail">
     <div class="brand">pi-literature-review</div>
-    <button id="btn-new" type="button" class="rail-icon new" title="New conversation (the current one moves to History)" aria-label="New conversation"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg><span>New conversation</span></button>
-    <div class="stage" id="stage-1"><b>1</b><div>Search<small id="stage-1-label">asking</small></div></div>
-    <div class="stage" id="stage-2"><b>2</b><div>Selection<small id="stage-2-label">PDF download</small></div></div>
-    <div class="stage" id="stage-3"><b>3</b><div>Synthesis<small id="stage-3-label">questions + report</small></div></div>
+    <details class="block" id="block-1">
+      <summary class="stage" id="stage-1"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M15.5 15.5L21 21M10.5 7.5v6M8.3 11.3l2.2 2.2 2.2-2.2"/></svg><div><span class="name">Search &amp; select</span></div></summary>
+      <div class="block-body">
+        <button id="btn-new-search" type="button" class="rail-icon new" title="Start a new search (the current conversation stays in History)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg><span>New search</span></button>
+        <details id="hist-1" class="sub">
+          <summary>History <span class="cnt" id="cnt-hist-1"></span></summary>
+          <div id="hist-1-list" class="rail-list"><div class="rail-note">loading ...</div></div>
+        </details>
+        <details id="reports-1" class="sub">
+          <summary>HTML reports <span class="cnt" id="cnt-reports-1"></span></summary>
+          <div id="reports-1-list" class="rail-list"><div class="rail-note">loading ...</div></div>
+        </details>
+      </div>
+    </details>
+    <details class="block" id="block-2">
+      <summary class="stage" id="stage-2"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3h8l4 4v6"/><path d="M15 3v4h4M7 3v18h6"/><path d="M20.5 12.5l-6 6-2.5.6.6-2.5 6-6a1.3 1.3 0 0 1 1.9 1.9z"/></svg><div><span class="name">Summarize &amp; synthesize</span></div></summary>
+      <div class="block-body">
+        <button id="btn-new-chat" type="button" class="rail-icon new" title="Start a new chat or report over your PDFs (the current conversation stays in History)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg><span>New paper chat</span></button>
+        <details id="hist-2" class="sub">
+          <summary>History <span class="cnt" id="cnt-hist-2"></span></summary>
+          <div id="hist-2-list" class="rail-list"><div class="rail-note">loading ...</div></div>
+        </details>
+        <details id="reports-2" class="sub">
+          <summary>HTML reports <span class="cnt" id="cnt-reports-2"></span></summary>
+          <div id="reports-2-list" class="rail-list"><div class="rail-note">loading ...</div></div>
+        </details>
+      </div>
+    </details>
 
-    <details id="rail-history">
-      <summary>History <span class="cnt" id="cnt-history"></span></summary>
-      <div id="rail-history-list" class="rail-list"><div class="rail-note">loading ...</div></div>
-    </details>
-    <details id="rail-reports">
-      <summary>HTML reports <span class="cnt" id="cnt-reports"></span></summary>
-      <div id="rail-reports-list" class="rail-list"><div class="rail-note">loading ...</div></div>
-    </details>
     <details id="rail-library">
       <summary>PDF library <span class="cnt" id="cnt-pdfs"></span></summary>
       <div class="rail-note" id="rail-library-dirs"></div>

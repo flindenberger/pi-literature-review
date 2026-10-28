@@ -34,6 +34,7 @@ import type { ChatAnswer } from "../synthesis.ts";
 import type { Stage } from "./files.ts";
 import type { SearchForm } from "./intake.ts";
 import type { JobInfo } from "./jobs.ts";
+import { fallbackText, helpPrompt, HELP_SYSTEM, looksLikeQuestion, looksLikeSmallTalk, navigationChips, STEP_ACCEPTS } from "./help.ts";
 
 /* ------------------------------------------------------------------ *
  * Types                                                               *
@@ -107,6 +108,9 @@ export interface Message {
 	card?: FileCard;
 	answer?: AnswerView;
 	spent?: boolean;
+	/** A help answer (question channel): written by the model over the
+	 * step's help text, or the fixed help text itself. */
+	help?: "model" | "fixed";
 }
 
 export interface JournalRow {
@@ -218,10 +222,15 @@ export interface DialogState {
 	/** Steps asked so far ("back" returns to the previous one). */
 	trail: StepId[];
 	counter: number;
+	/** The parser's note while a help answer is pending (shown first). */
+	helpNote?: string | null;
 }
 
 export type DialogEvent =
-	| { kind: "answer"; text?: string; chip?: string; ids?: string[]; blocks?: string[]; toggles?: string[] }
+	/** `ask`: the text is a question for the helper, not an answer (question
+	 * mode on the page, or a leading "?"). */
+	| { kind: "answer"; text?: string; chip?: string; ids?: string[]; blocks?: string[]; toggles?: string[]; ask?: boolean }
+	| { kind: "helpAnswered"; text: string | null; error?: string }
 	| { kind: "blocks"; variants: VariantSuggestion[] | null; error?: string }
 	| { kind: "topics"; topics: TopicRow[]; error?: string }
 	| { kind: "journals"; journals: JournalRow[]; error?: string }
@@ -245,7 +254,10 @@ export type Effect =
 	 * of the user's own questions (German or English, like the terminal
 	 * wizard follows the chat); the chat itself stays English. */
 	| { kind: "startReport"; papers: string[] | "library"; questions: string[]; summary: "bullets" | "none"; detailMode: "per-paper" | "cross-paper"; includeReview: boolean; language: DialogLang }
-	| { kind: "newChatSession" };
+	| { kind: "newChatSession" }
+	/** One model call over the step's help text; the reducer built both
+	 * prompts, the server only runs the model. */
+	| { kind: "helpAnswer"; step: StepId; question: string; system: string; user: string };
 
 /** What the server knows at reduce time; read fresh on every event. */
 export interface DialogContext {
@@ -529,9 +541,9 @@ function startMessage(ctx: DialogContext): Omit<Message, "id" | "role" | "step">
 		text: TEXT.start,
 		note: `${n ? `Your library holds ${n} PDF${n === 1 ? "" : "s"}.` : "Your library holds no PDFs yet."} ${where}`,
 		chips: [
-			{ id: "search", label: "Search literature", primary: true },
+			{ id: "search", label: "Search and select papers", primary: true },
 			{ id: "pdfChat", label: "Chat about one PDF", disabled: n === 0, title: n === 0 ? TEXT.noLibrary : undefined },
-			{ id: "pdfReport", label: "Synthesis report over several papers", disabled: n === 0, title: n === 0 ? TEXT.noLibrary : undefined },
+			{ id: "pdfReport", label: "Report over several PDFs", disabled: n === 0, title: n === 0 ? TEXT.noLibrary : undefined },
 		],
 	};
 }
@@ -877,9 +889,38 @@ export function reduce(state: DialogState, event: DialogEvent, ctx: DialogContex
 			return onJob(state, event, ctx);
 		case "effectFailed":
 			return onEffectFailed(state, event, ctx);
+		case "helpAnswered":
+			return result(helpMessage(state, event.text?.trim() ? "model" : "fixed", event.text?.trim() || fallbackText(state.step, state.helpNote ?? undefined), event.error));
 		default:
 			return result(state);
 	}
+}
+
+/* ---- the question channel ---- */
+
+/**
+ * A question or wish typed while a wizard question is open: the helper
+ * answers from the step's help text; the open question and the answers
+ * stay untouched. With a model the answer is written over the help text
+ * (effect); without one the help text itself is shown. `note` is what
+ * the parser would have said (kept as the first sentence).
+ */
+function onHelp(state: DialogState, question: string, ctx: DialogContext, note?: string, fixedOnly = false): ReduceResult {
+	if (!ctx.hasModel || fixedOnly) return result(helpMessage(state, "fixed", fallbackText(state.step, note, fixedOnly)));
+	const user = helpPrompt(state.step, question, state, ctx, note);
+	return result(pending({ ...state, helpNote: note ?? null }, "looking up the help"), { kind: "helpAnswer", step: state.step, question, system: HELP_SYSTEM, user });
+}
+
+function helpMessage(state: DialogState, help: "model" | "fixed", text: string, error?: string): DialogState {
+	const note = help === "fixed" ? (error ? `Fixed help text (the model did not answer: ${error}).` : "Fixed help text.") : "Help, written by the model over the fixed help text.";
+	return push({ ...state, pending: null, helpNote: null }, { role: "assistant", text, note, chips: navigationChips(state), help });
+}
+
+/** Parser miss on a text step: a question-like input goes to the helper
+ * with the parser's note; anything else is re-asked as before. */
+function unclear(state: DialogState, text: string, note: string, ctx: DialogContext, reask: () => DialogState): ReduceResult {
+	if (looksLikeQuestion(text)) return onHelp(state, text, ctx, note);
+	return result(reask());
 }
 
 /* ---- answers ---- */
@@ -898,6 +939,16 @@ function onAnswer(state: DialogState, event: Extract<DialogEvent, { kind: "answe
 
 	const shown = chip ? chipLabel(state, chip) ?? chip : text;
 	const echoed = shown ? userSaid(state, shown) : spend(state);
+
+	// The question channel: question mode on the page, a leading "?", or
+	// typed text on a step that only takes chips (unless it names a chip).
+	const asked = text.startsWith("?") ? text.slice(1).trim() : text;
+	if ((event.ask || text.startsWith("?")) && asked) return onHelp(asked === text ? echoed : userSaid(spend(state), asked), asked, ctx);
+	if (text && !chip && STEP_ACCEPTS[state.step] === "choice" && !chipByText(state, text)) return onHelp(echoed, text, ctx);
+	// Navigation chips under a help answer.
+	if (chip === "continue") return result(reask(echoed, state.step, ctx));
+	if (chip === "goBlocks") return result(echoed.answers.blocks.length ? askBlocks(echoed, ctx) : askTopic(echoed));
+	if (chip === "back") return goBack(echoed, ctx);
 
 	// The rail's stages switch within the same conversation.
 	if (chip === "goSearch") return result(askTopic(echoed));
@@ -918,6 +969,10 @@ function onAnswer(state: DialogState, event: Extract<DialogEvent, { kind: "answe
 			if (chip === "pdfChat" && ctx.library.length) return result(askPickPaper(echoed, ctx));
 			if (chip === "pdfReport" && ctx.library.length) return result(askPickPapers(echoed, ctx));
 			if (chip === "search" || !text) return result(askTopic(echoed));
+			// "hello", "what can you do?": the tool says what it is (fixed text), it
+			// does not chat. A question CAN be a research request, so only small
+			// talk is caught here.
+			if (looksLikeSmallTalk(text)) return onHelp(echoed, text, ctx, undefined, true);
 			return onTopic(echoed, text, ctx);
 		case "topic":
 			if (!text) return result(say(echoed, TEXT.topic));
@@ -950,7 +1005,7 @@ function onAnswer(state: DialogState, event: Extract<DialogEvent, { kind: "answe
 				return result(askPeriod(withAnswers(echoed, { topicsOn: on })));
 			}
 			const slug = topicSlug(text);
-			if (!slug) return result(askTopics(echoed));
+			if (!slug) return unclear(echoed, text, "A topic is one GitHub slug such as remote-sensing.", ctx, () => askTopics(echoed));
 			const on = [...new Set([...(event.toggles ?? echoed.answers.topicsOn), slug])];
 			const topics = echoed.answers.topics.some((row) => row.topic === slug) ? echoed.answers.topics : [...echoed.answers.topics, { topic: slug, lists: null }];
 			return result(askTopics(withAnswers(echoed, { topics, topicsOn: on }), `Added "${slug}". ${TEXT.topicsNote}`));
@@ -958,7 +1013,7 @@ function onAnswer(state: DialogState, event: Extract<DialogEvent, { kind: "answe
 		case "period": {
 			const preset = ["5y", "10y", "20y", "all"].includes(chip) ? chip as PeriodChoice["preset"] : null;
 			const period = preset ? { preset } : parsePeriodAnswer(text, ctx.thisYear);
-			if (!period) return result(askPeriod(echoed, TEXT.periodUnclear));
+			if (!period) return unclear(echoed, text, TEXT.periodUnclear, ctx, () => askPeriod(echoed, TEXT.periodUnclear));
 			return loadJournals(withAnswers(echoed, { period }), ctx);
 		}
 		case "journals":
@@ -973,7 +1028,7 @@ function onAnswer(state: DialogState, event: Extract<DialogEvent, { kind: "answe
 			return onPick(echoed, event, text, chip, ctx);
 		case "mailto": {
 			if (chip === "without" || /^(without|skip|continue without unpaywall|no)$/i.test(text)) return result(askDownload(withAnswers(echoed, { mailto: "", withoutUnpaywall: true })));
-			if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text)) return result(askMailto(echoed, TEXT.mailtoBad));
+			if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text)) return unclear(echoed, text, TEXT.mailtoBad, ctx, () => askMailto(echoed, TEXT.mailtoBad));
 			return result(askMailtoSave(withAnswers(echoed, { mailto: text, withoutUnpaywall: false })));
 		}
 		case "mailtoSave":
@@ -993,7 +1048,7 @@ function onAnswer(state: DialogState, event: Extract<DialogEvent, { kind: "answe
 				const typed = parseListAnswer(text, ctx.library.map(libraryLabel));
 				if (typed.kind === "all") return result(askAsk(withAnswers(echoed, { scope: "library" }), ctx));
 				if (typed.kind === "picked") return result(askAsk(withAnswers(echoed, { scope: [ctx.library[typed.indexes[0]].base] }), ctx));
-				return result(askPickPaper(say(echoed, "Tick one paper, or choose the whole library."), ctx));
+				return unclear(echoed, text, "Tick one paper, or choose the whole library.", ctx, () => askPickPaper(say(echoed, "Tick one paper, or choose the whole library."), ctx));
 			}
 			return result(askAsk(withAnswers(echoed, { scope: [toggles[0]] }), ctx));
 		}
@@ -1004,7 +1059,7 @@ function onAnswer(state: DialogState, event: Extract<DialogEvent, { kind: "answe
 				const typed = parseListAnswer(text, ctx.library.map(libraryLabel));
 				if (typed.kind === "all") return result(askQuestions(withAnswers(echoed, { scope: "library" })));
 				if (typed.kind === "picked") return result(askQuestions(withAnswers(echoed, { scope: typed.indexes.map((index) => ctx.library[index].base) })));
-				return result(askPickPapers(say(echoed, "Tick at least one paper, or choose the whole library."), ctx));
+				return unclear(echoed, text, "Tick at least one paper, or choose the whole library.", ctx, () => askPickPapers(say(echoed, "Tick at least one paper, or choose the whole library."), ctx));
 			}
 			return result(askQuestions(withAnswers(echoed, { scope: toggles })));
 		}
@@ -1028,6 +1083,14 @@ function onAnswer(state: DialogState, event: Extract<DialogEvent, { kind: "answe
 }
 
 const RAIL_LABELS: Record<string, string> = { goSearch: "1 Search", goSelection: "2 Selection", goSynthesis: "3 Synthesis" };
+
+/** A typed text that names a chip of the open question (id or label,
+ * case-insensitive) counts as that answer, also on choice steps. */
+function chipByText(state: DialogState, text: string): boolean {
+	const open = [...state.messages].reverse().find((message) => message.role === "assistant" && message.chips && !message.spent);
+	const wanted = text.trim().toLowerCase();
+	return (open?.chips ?? []).some((chip) => chip.id.toLowerCase() === wanted || chip.label.toLowerCase() === wanted) || /^(yes|y|no|n|ok)$/i.test(wanted);
+}
 
 function chipLabel(state: DialogState, chipId: string): string | null {
 	if (chipId in RAIL_LABELS) return RAIL_LABELS[chipId];
@@ -1080,6 +1143,7 @@ function onBlocks(state: DialogState, event: Extract<DialogEvent, { kind: "answe
 		return result(pending(state, "asking the model for keyword blocks"), { kind: "proposeBlocks", query: state.answers.topic });
 	}
 	const edited = (event.blocks ?? []).map((line) => line.trim()).filter(Boolean);
+	if (!chip && !edited.length && text && looksLikeQuestion(text)) return onHelp(state, text, ctx);
 	const typed = !chip && text ? parseBlockLines(text) : [];
 	const blocks = edited.length ? edited : typed.length ? typed : state.answers.blocks;
 	if (!blocks.length || !composedQuery({ ...state.answers, blocks })) {
@@ -1129,7 +1193,7 @@ function onListStep(state: DialogState, event: Extract<DialogEvent, { kind: "ans
 	if (which === "authors" && text.length >= 3 && /\p{L}/u.test(text)) {
 		return result(pending(state, `looking up "${text}" on OpenAlex`), { kind: "lookupAuthor", prefix: text });
 	}
-	return result(reask(say(state, `I did not find "${text}" in the list.`)));
+	return unclear(state, text, `I did not find "${text}" in the list.`, ctx, () => reask(say(state, `I did not find "${text}" in the list.`)));
 }
 
 function onConfirm(state: DialogState, text: string, chip: string, ctx: DialogContext): ReduceResult {
@@ -1151,7 +1215,7 @@ function onConfirm(state: DialogState, text: string, chip: string, ctx: DialogCo
 	}
 	if (/^(search|go|yes|ok|start)$/i.test(text)) return startSearch(state, ctx);
 	const tweak = parseTweak(text);
-	if (!tweak) return result(askConfirm(say(state, "Pick a button, or type `count 30`, `cites 5`, `code on` or `code off`."), ctx));
+	if (!tweak) return unclear(state, text, "Pick a button, or type `count 30`, `cites 5`, `code on` or `code off`.", ctx, () => askConfirm(say(state, "Pick a button, or type `count 30`, `cites 5`, `code on` or `code off`."), ctx));
 	if (tweak.kind === "count") return result(askConfirm(withAnswers(state, { perSource: tweak.value }), ctx));
 	if (tweak.kind === "cites") return result(askConfirm(withAnswers(state, { minCites: tweak.value }), ctx));
 	if (!tweak.on) return result(askConfirm(withAnswers(state, { codeSources: [], topicsOn: [] }), ctx));
@@ -1178,7 +1242,7 @@ function onPick(state: DialogState, event: Extract<DialogEvent, { kind: "answer"
 		if (parsed.kind === "none") {
 			// Ticks sent along with free text count too.
 			ids = (event.ids ?? []).map((id) => id.trim()).filter(Boolean);
-			if (!ids.length) return result(askPick(state, ctx, TEXT.pickUnclear));
+			if (!ids.length) return unclear(state, text, TEXT.pickUnclear, ctx, () => askPick(state, ctx, TEXT.pickUnclear));
 		} else if (parsed.kind === "all") ids = candidates.filter((candidate) => candidate.group === "on_target" && !candidate.inLibrary).map((candidate) => candidate.id);
 		else if (parsed.kind === "code") ids = candidates.filter((candidate) => candidate.code && !candidate.inLibrary).map((candidate) => candidate.id);
 		else ids = parsed.ids;
@@ -1364,20 +1428,22 @@ function reask(state: DialogState, step: StepId, ctx: DialogContext): DialogStat
 }
 
 /** Convenience for the server: the stage the dialog is in (rail). */
-export function stageOfStep(step: StepId): { stage: 1 | 2 | 3; label: string } {
+export function stageOfStep(step: StepId): { stage: 1 | 2; label: string } {
 	switch (step) {
 		case "start": case "topic": case "blocks": case "code": case "codeSources": case "topics": case "period":
 		case "journals": case "authors": case "authorScope": case "confirm": case "confirmRestart":
 			return { stage: 1, label: "asking" };
 		case "searching":
-			return { stage: 1, label: "running" };
+			return { stage: 1, label: "searching" };
 		case "pick": case "mailto": case "mailtoSave": case "download":
-			return { stage: 2, label: "choose papers" };
+			return { stage: 1, label: "choose papers" };
 		case "downloading":
-			return { stage: 2, label: "running" };
-		case "answering": case "reporting":
-			return { stage: 3, label: "running" };
+			return { stage: 1, label: "downloading" };
+		case "answering":
+			return { stage: 2, label: "answering" };
+		case "reporting":
+			return { stage: 2, label: "writing the report" };
 		default:
-			return { stage: 3, label: "questions + report" };
+			return { stage: 2, label: "questions + report" };
 	}
 }

@@ -8,8 +8,17 @@ All notable changes to this package are listed here. The format follows
 
 ### Added
 
-- Web interface rail: a **+** button starts a new conversation and keeps
-  the current one in a collapsible **History** list. Conversations are
+- Web interface: a question channel beside the wizard answers, decided
+  by code behind one plain input box: typed text on a chip-only step, a
+  question-like text the step's parser does not recognise, or a leading
+  `?` goes to a helper that answers from a fixed per-step help text, tailored by the model when one is available, with navigation
+  chips from code (Continue, Edit keyword blocks, Back, Start over). A
+  question-like input that a step's parser does not recognise goes to the
+  helper instead of a bare "I did not recognise".
+- Web interface rail: two stages -- Search and selection, Summary and
+  synthesis -- each with its own **+** (New search, New paper chat) that
+  starts a new conversation at that stage and keeps the current one in a
+  collapsible **History** list. Conversations are
   saved as one JSON file each next to the configuration file
   (`~/.config/pi-literature-review/history/`, `PI_LITERATURE_REVIEW_HISTORY`
   overrides), survive server and pi restarts, are named after the request

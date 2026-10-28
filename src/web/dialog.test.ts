@@ -118,7 +118,9 @@ function job(kind: JobInfo["kind"], id: string, state: JobInfo["state"] = "runni
 	assert.ok(isHandBuilt("(river OR stream) AND (depth)"));
 	assert.ok(isHandBuilt("river,stream;depth"));
 	assert.ok(!isHandBuilt("methods using satellite imagery (Sentinel 2) to classify water"));
-	assert.deepEqual(stageOfStep("pick"), { stage: 2, label: "choose papers" });
+	assert.deepEqual(stageOfStep("pick"), { stage: 1, label: "choose papers" });
+	assert.deepEqual(stageOfStep("ask"), { stage: 2, label: "questions + report" });
+	assert.deepEqual(stageOfStep("reporting"), { stage: 2, label: "writing the report" });
 }
 
 // ---- the search walk-through ----
@@ -538,6 +540,80 @@ function job(kind: JobInfo["kind"], id: string, state: JobInfo["state"] = "runni
 	s2 = step(s2, { kind: "answer", chip: "pdfReport" }).state;
 	s2 = step(s2, { kind: "answer", text: "2" }).state;
 	assert.deepEqual(s2.answers.scope, ["2022_Salavitabar"]);
+}
+
+// ---- the question channel: asking instead of answering never moves the wizard ----
+{
+	// Question mode on a text step: pending + one helpAnswer effect, the step and answers untouched.
+	let s = step(initialDialog(context()), { kind: "answer", chip: "goSearch" }).state;
+	assert.equal(s.step, "topic");
+	let r = step(s, { kind: "answer", text: "can i search in german?", ask: true });
+	assert.equal(r.state.step, "topic");
+	assert.equal(r.state.answers.topic, "");
+	assert.equal(r.state.pending, "looking up the help");
+	assert.equal(r.effects.length, 1);
+	assert.equal(r.effects[0].kind, "helpAnswer");
+	if (r.effects[0].kind === "helpAnswer") {
+		assert.equal(r.effects[0].step, "topic");
+		assert.ok(r.effects[0].user.includes("USER QUESTION: can i search in german?"));
+		assert.ok(r.effects[0].user.includes("Open question: Answering: what you are looking for"));
+	}
+	assert.equal(last(r.state).role, "user");
+	// The model's answer lands as a help message with navigation chips; "continue" re-asks the open question.
+	s = step(r.state, { kind: "helpAnswered", text: "Yes, any language works." }).state;
+	assert.equal(s.pending, null);
+	assert.equal(last(s).help, "model");
+	assert.equal(last(s).text, "Yes, any language works.");
+	assert.deepEqual(chipIds(s), ["continue", "back", "restart"]);
+	s = step(s, { kind: "answer", chip: "continue" }).state;
+	assert.equal(s.step, "topic");
+	assert.equal(last(s).text?.startsWith("What are you looking for?"), true);
+	// No model: the fixed help text, no effect. A leading "?" is question mode too.
+	r = step(s, { kind: "answer", text: "? how do I go back" }, context({ hasModel: false }));
+	assert.equal(r.effects.length, 0);
+	assert.equal(last(r.state).help, "fixed");
+	assert.ok(last(r.state).text?.includes("Accepted input:"));
+	assert.equal(r.state.messages[r.state.messages.length - 2].text, "how do I go back");
+	// A failed model call also falls back to the fixed text, with the error in the note.
+	r = step(s, { kind: "answer", text: "hello?", ask: true });
+	s = step(r.state, { kind: "helpAnswered", text: null, error: "timeout" }).state;
+	assert.equal(last(s).help, "fixed");
+	assert.ok(last(s).note?.includes("timeout"));
+	assert.equal(s.step, "topic");
+
+	// Small talk at the start: the fixed text says what the tool is, no model call, the step stays.
+	r = step(initialDialog(context()), { kind: "answer", text: "what can you do?" });
+	assert.equal(r.effects.length, 0);
+	assert.equal(r.state.step, "start");
+	assert.equal(last(r.state).help, "fixed");
+	assert.ok(last(r.state).text?.includes("literature tool"));
+	// A parser miss on a text step: question-like input goes to the helper with the parser's note; a plain miss is re-asked as before.
+	s = step(s, { kind: "answer", text: "river depth" }).state;
+	s = step(s, { kind: "blocks", variants: null }).state;
+	assert.equal(s.step, "blocks");
+	r = step(s, { kind: "answer", text: "can i add synonyms?" });
+	assert.equal(r.effects[0]?.kind, "helpAnswer");
+	assert.deepEqual(r.state.answers.blocks, ["river", "depth"]);
+	s = step(step(r.state, { kind: "helpAnswered", text: "Edit the lines." }).state, { kind: "answer", chip: "use" }).state;
+	assert.equal(s.step, "code");
+	// A choice step: typed text that names no chip is a question; "no" names a chip and answers.
+	r = step(s, { kind: "answer", text: "what does this cost?" });
+	assert.equal(r.effects[0]?.kind, "helpAnswer");
+	assert.equal(r.state.step, "code");
+	s = step(step(r.state, { kind: "helpAnswered", text: "Up to 40 s." }).state, { kind: "answer", text: "no" }).state;
+	assert.equal(s.step, "period");
+	// "Edit keyword blocks" from a help answer returns to the blocks.
+	r = step(s, { kind: "answer", text: "which years make sense?" });
+	assert.equal(r.effects[0]?.kind, "helpAnswer");
+	assert.ok(r.effects[0]?.kind === "helpAnswer" && r.effects[0].user.includes("NOTE (say this first, briefly): I did not understand the years."));
+	s = step(r.state, { kind: "helpAnswered", text: "Recent years." }).state;
+	assert.ok(chipIds(s).includes("goBlocks"));
+	assert.equal(step(s, { kind: "answer", chip: "goBlocks" }).state.step, "blocks");
+	// A plain miss stays a plain miss.
+	r = step(s, { kind: "answer", text: "whenever" });
+	assert.equal(r.effects.length, 0);
+	assert.equal(r.state.step, "period");
+	assert.ok(last(r.state).note?.includes("I did not understand the years"));
 }
 
 console.log("dialog tests passed");
