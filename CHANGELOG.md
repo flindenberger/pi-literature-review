@@ -4,6 +4,34 @@ All notable changes to this package are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Web interface: `/pi-literature-review` starts a local server inside Pi
+  (127.0.0.1, token cookie) and opens a chat in the browser that walks
+  through the three stages -- the request split into keyword blocks
+  (proposed by the model, confirmed or edited by you), papers with code,
+  period, journals and authors from OpenAlex, then the search; papers
+  ticked in the report or named by row number, the legal PDF download;
+  questions over the PDFs with page citations and the synthesis report.
+  The question order and wording are fixed in code; the model only
+  proposes content. Reports open in a panel beside the chat (enlarge,
+  new tab, close), file cards name every written HTML file with a button
+  that shows the folder in the file manager, and the rail lists all
+  HTML reports and the PDF library. Progress streams over Server-Sent
+  Events; the model is the one selected in Pi. `node src/cli.ts web`
+  runs the same interface without Pi on the configured backend.
+  Documentation in `docs/web.md`.
+- `renderSynthReportHtml` and `renderPaperChatReportHtml` accept a
+  `pdfHref` link builder; `webPdfHref` builds server links.
+
+### Changed
+
+- Model calls on the Pi model go through Pi's model registry
+  (`streamSimple`) instead of the deprecated `pi-ai/compat` entry, so
+  request-time credentials, base URL and provider environment apply.
+
 ## [0.1.1] - 2026-09-28
 
 ### Added

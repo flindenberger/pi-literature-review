@@ -11,6 +11,8 @@ src/                the engines, Pi-free: search pipeline, render, network graph
 src/sources/        the source clients (arxiv, crossref, openalex, semanticscholar), the
                     code-side clients (github, huggingface, ecosystems) and polite.ts, the
                     shared paced/retrying request helper
+src/web/            the web interface: server (routes), the chat dialog state machine,
+                    jobs, SSE, file listings, form intake, static/ (the page)
 docs/               this documentation, screenshots under docs/img/
 tsconfig.json       type-check settings (strict, NodeNext, .ts imports) for the editor and `tsc`
 ```
@@ -146,7 +148,7 @@ Where each stage lives; the adapter/engine pair shares its basename.
 | File | Holds |
 |---|---|
 | `extensions/synthesis.ts` | the `pi-literature-synthesis` tool + `/lit-synthesis` command: the wizard, answer/report cards, paper-chat mode, HTML-write gate, embedding-model doctor dialog |
-| `extensions/pi-model.ts` | one completion call on the model selected in Pi (used for the search wizard's variant suggestions) |
+| `extensions/pi-model.ts` | the model selected in Pi through Pi's model registry: one completion call (search wizard variants), the synthesis backend's generate half, and the session provider of the web interface |
 | `src/synthesis.ts` | the engine: chat rounds, composable reports, prompts, the citation gate (marker validation, reference insertion), report assembly |
 | `src/retrieve.ts` | shared retrieval: query variants, lexical layer, embedding ranking, union |
 | `src/extract.ts` | PDF text extraction, cleanup, bibliography cut, chunking, highlight-phrase measurement |
@@ -161,6 +163,24 @@ Where each stage lives; the adapter/engine pair shares its basename.
 </details>
 
 <details>
+<summary>Web interface</summary>
+
+| File | Holds |
+|---|---|
+| `extensions/web.ts` | the `/pi-literature-review` command: start/stop, browser launch, `session_shutdown` close |
+| `src/web/server.ts` | the node:http server: token + cookie + Host checks, static page, `/files` and `/pdf` routes (synthesis pages re-rendered with `/pdf/` links), the stage routes (`/api/search/*`, `/api/selection/*`, `/api/index`, `/api/report`, `/api/chat*`, `/api/settings*`), the dialog routes (`/api/dialog`, `/api/dialog/answer`, `/api/dialog/restart`) that run the state machine's effects, `/api/reveal` (show a data folder in the file manager), SSE at `/api/events` (`line`, `job`, `dialog`); every engine call injectable (`WebDeps`) |
+| `src/web/dialog.ts` | the chat dialog as a pure state machine: fixed question order and wording, answer chips, free-text parsers (years, numbers, identifiers, tweaks), `reduce(state, event, ctx)` returning the next state and the effects the server runs (model proposal, OpenAlex lookups, job starts) |
+| `src/web/jobs.ts` | one job at a time with its own `AbortController`, progress ring buffer, subscribers |
+| `src/web/sse.ts` | Server-Sent Events framing and keepalive |
+| `src/web/files.ts` | listings of search runs, library + index state, reports, chat sessions; safe file names |
+| `src/web/intake.ts` | the posted search form as `SearchOptions` + filters (same rules as the wizard) |
+| `src/web/open.ts` | open the browser or a folder without a shell |
+| `src/web/static/` | the page: `index.html`, `app.js` (plain JavaScript: renders the dialog state, sends answers, SSE client, report panel, rail lists, Settings dialog), `style.css` (the report look) |
+| `src/provider.ts` | the model provider interface (`status`, `generate`, `wiring`) and the endpoint provider for standalone use |
+
+</details>
+
+<details>
 <summary>Shared</summary>
 
 | File | Holds |
@@ -170,6 +190,6 @@ Where each stage lives; the adapter/engine pair shares its basename.
 | `src/cli.ts` | the standalone command line over all three engines |
 | `src/types.ts` | shared record shapes and small helpers (user agent, contact email, warnings) |
 | `src/cardtext.ts` | transcript cards: bold/bullet formatting, file:// URLs as short clickable terminal links where the terminal supports them |
-| `index.ts` | registers the three tools |
+| `index.ts` | registers the three tools and the web command |
 
 </details>

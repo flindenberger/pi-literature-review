@@ -31,6 +31,10 @@ The workflow has three stages:
 
 Each command opens its wizard-dialog directly in Pi. Dialogs can be cancelled with `Esc` before anything is sent.
 
+Prefer a chat in the browser? `/pi-literature-review` starts a local web
+interface that walks through the same three stages as a conversation
+(see [Web interface](docs/web.md)).
+
 You can also just describe the task in chat and let the agent invoke the
 same tools:
 
@@ -154,6 +158,7 @@ Check the papers' licenses and your institution's rules before using a remote mo
 | [Selection](docs/selection.md)               | PDF downloads and resolution        |
 | [Synthesis](docs/synthesis.md)               | Indexing, chat and reports          |
 | [Configuration](docs/configuration.md)       | Optional backends, models and keys  |
+| [Web interface](docs/web.md)                 | The stages as a chat in the browser |
 | [Command line](docs/cli.md)                  | Use without the Pi agent            |
 | [Development and tests](docs/development.md) | Development, testing and releases   |
 

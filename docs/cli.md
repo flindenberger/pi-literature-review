@@ -37,6 +37,15 @@ node src/cli.ts "Satellite and Field Data Fusion for Rivers" -n 5 \
   -s arxiv,crossref,openalex -g "river,fluvial;sandbar,bar;sentinel,s-1,s-2" --html --digest
 ```
 
+## Web interface
+
+```
+node src/cli.ts web [--port N] [--no-open] [--root DIR]
+```
+
+Starts the browser interface without Pi (see [Web interface](web.md)).
+The writing model is `llm.generateModel` of the configuration.
+
 ## Selection
 
 ```

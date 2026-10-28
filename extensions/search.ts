@@ -213,7 +213,7 @@ interface IntakeValues {
 	 * resolved from what they cite. Empty/undefined = off. */
 	codeSources?: string[] | undefined;
 	/** GitHub topics whose curated lists the awesome-lists source reads
-	 * (the topic rows under "Curated lists"). undefined = the config
+	 * (the topic rows under "Awesome lists"). undefined = the config
 	 * default (no rows were offered, e.g. the RPC fallback). */
 	codeListTopics?: string[] | undefined;
 }
@@ -375,10 +375,10 @@ const SEARCH_TEXT: Record<DialogLang, {
 		codeSource: {
 			"hf-papers": ["Hugging Face Papers", "Suche bei Hugging Face, Paper-Daten von arXiv, GitHub-Link falls vorhanden"],
 			"github-readme": ["GitHub README-Suche", "Suche auf GitHub nach Repos, deren README ein arXiv-Paper nennt, Paper-Daten von arXiv"],
-			"awesome-lists": ["Kuratierte Listen (awesome.ecosyste.ms)", "Awesome-Listen nach Fachgebiet (GitHub-Topic), Einträge gegen die Blöcke geprüft; anhaken zeigt die Themen"],
+			"awesome-lists": ["Awesome-Listen (awesome.ecosyste.ms)", "Awesome-Listen nach Fachgebiet (GitHub-Topic), Einträge gegen die Blöcke geprüft; anhaken zeigt die Themen"],
 			"gee-github": ["Google Earth Engine (GitHub)", "Suche auf GitHub nach Earth-Engine-Repos, Paper-Daten von OpenAlex über die DOI in der README"],
 		},
-		codeTopicOwn: "+ Eigenes Listen-Thema für Kuratierte Listen (Enter fügt hinzu und hakt an)",
+		codeTopicOwn: "+ Eigenes Listen-Thema für Awesome-Listen (Enter fügt hinzu und hakt an)",
 		codeTopicsLoading: "Listen-Themen für das Fachgebiet werden vorgeschlagen und geprüft ...",
 		codeTopicsNone: "keine Listen-Themen",
 		codeTopicsFailed: (message) => `Themenvorschlag fehlgeschlagen: ${message}; nur die konfigurierten Themen`,
@@ -483,10 +483,10 @@ const SEARCH_TEXT: Record<DialogLang, {
 		codeSource: {
 			"hf-papers": ["Hugging Face Papers", "Hugging Face search, paper details from arXiv, GitHub link if available"],
 			"github-readme": ["GitHub README search", "GitHub search for repos whose README cites an arXiv paper, paper details from arXiv"],
-			"awesome-lists": ["Curated lists (awesome.ecosyste.ms)", "awesome lists by field (GitHub topic), entries matched against the blocks; tick to see the topics"],
+			"awesome-lists": ["Awesome lists (awesome.ecosyste.ms)", "awesome lists by field (GitHub topic), entries matched against the blocks; tick to see the topics"],
 			"gee-github": ["Google Earth Engine (GitHub)", "GitHub search for Earth Engine repos, paper details from OpenAlex via the README's DOI"],
 		},
-		codeTopicOwn: "+ Own list topic for Curated lists (Enter adds and checks it)",
+		codeTopicOwn: "+ Own list topic for Awesome lists (Enter adds and checks it)",
 		codeTopicsLoading: "suggesting and checking list topics for the field ...",
 		codeTopicsNone: "no list topics",
 		codeTopicsFailed: (message) => `topic suggestion failed: ${message}; configured topics only`,
@@ -684,7 +684,7 @@ async function intakeWizard(
 		Array.isArray(answers.author_pick) && (answers.author_pick as string[]).includes(AUTHOR_SCOPE_ALL);
 	const positionBoxOn = (answers: WizardAnswers): boolean => hasPickedAuthor(answers) && !scopeAllOn(answers);
 	const positionBoxNote = (answers: WizardAnswers): string => (hasPickedAuthor(answers) ? text.authorScopeNote : "");
-	// List-topic rows under "Curated lists" (code tab): ids the loader has
+	// List-topic rows under "Awesome lists" (code tab): ids the loader has
 	// produced or verified, ids the user typed on the add row (kept in the
 	// list even when unticked), and whether rows were offered at all -- the
 	// submit mapping passes the ticked topics only when they were.
@@ -853,7 +853,7 @@ async function intakeWizard(
 			}),
 			selectAllLabel: text.codeHead, nextLabel: text.codeNext, optional: true, masterRow: true, cursorStart: "next",
 			...(proposed.codeSources?.length ? { preselected: proposed.codeSources } : {}),
-			// Own list topic: lands as a child row under "Curated lists",
+			// Own list topic: lands as a child row under "Awesome lists",
 			// checked; the topic loader below verifies it on its next pass.
 			addInput: { id: "code_topic_own", label: text.codeTopicOwn, parent: CODE_LIST_SOURCE },
 		},
@@ -973,7 +973,7 @@ async function intakeWizard(
 			emptyNote: text.variantsNoneFound,
 			failedNote: text.variantsFailed,
 		}, {
-			// List topics under "Curated lists" (child loader): the rows
+			// List topics under "Awesome lists" (child loader): the rows
 			// appear once the source is ticked and vanish when it is unticked.
 			// Rows = the configured topics, an agent proposal, up to five
 			// FIELD topics named by the model selected in pi (awesome lists
@@ -1250,7 +1250,7 @@ async function intakeWizard(
 	const codeRows = Array.isArray(result.code) ? (result.code as string[]) : [];
 	const codePicked = codeRows.filter((id) => id in CODE_SEARCHERS);
 	values.codeSources = codePicked.length ? codePicked : undefined;
-	// The ticked topic rows under "Curated lists" are what the source reads
+	// The ticked topic rows under "Awesome lists" are what the source reads
 	// -- exactly the rows shown, an empty tick set reads nothing. Without
 	// offered rows (RPC fallback) the config default applies.
 	const topicRows = codeRows.filter((id) => !(id in CODE_SEARCHERS)).map(topicSlug).filter(Boolean);

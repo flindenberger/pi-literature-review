@@ -8,6 +8,7 @@
  *     node src/cli.ts index [--reindex]                                      library match + embedding index
  *     node src/cli.ts extract <file.pdf>                                     what the PDF-to-text step sees
  *     node src/cli.ts llm-check                                              backend config + round-trip
+ *     node src/cli.ts web [--port N] [--no-open] [--root DIR]                 the web interface without pi
  *
  * Results go to stdout, warnings and diagnostics to stderr (see usage()
  * for every flag). A failing search source degrades gracefully and never
@@ -70,6 +71,9 @@ function usage(): never {
 	warn("       downloads legal open-access PDFs into lit-selection/ in the working directory");
 	warn("or:    node src/cli.ts llm-check");
 	warn("       resolves the LLM backend config and round-trips embed + generate");
+	warn("or:    node src/cli.ts web [--port N] [--no-open] [--root DIR]");
+	warn("       starts the web interface (a chat through search, selection, synthesis) on 127.0.0.1");
+	warn("       without pi; the writing model is llm.generateModel of the config (Ollama, llama.cpp, ...)");
 	warn("or:    node src/cli.ts extract <file.pdf>");
 	warn("       shows pages, the usability gate and the chunking for one PDF");
 	warn("or:    node src/cli.ts index [--reindex]");
@@ -193,6 +197,42 @@ function parseArgs(argv: string[]): CliArgs {
 		authorIds: authorIds.length ? authorIds : undefined,
 		authorScope,
 	};
+}
+
+if (process.argv[2] === "web") {
+	// The web interface without pi: the configured llm backend is the
+	// writing model (endpointProvider), everything else as in pi.
+	const argv = process.argv.slice(3);
+	let port: number | undefined;
+	let open = true;
+	for (let i = 0; i < argv.length; i++) {
+		const arg = argv[i];
+		if (arg === "--port") {
+			port = parseIntArg(argv[++i]);
+		} else if (arg === "--no-open") {
+			open = false;
+		} else if (arg === "--root") {
+			const root = (argv[++i] ?? "").trim();
+			if (!root) usage();
+			process.env.PI_LITERATURE_REVIEW_HOME = root;
+		} else {
+			usage();
+		}
+	}
+	const { startWebServer } = await import("./web/server.ts");
+	const { endpointProvider } = await import("./provider.ts");
+	const { openBrowser } = await import("./web/open.ts");
+	const server = await startWebServer({ port, provider: endpointProvider(), onStop: () => process.exit(0) });
+	warn(`web interface: ${server.url}`);
+	warn(`data folder:   ${server.root}`);
+	warn("Ctrl+C stops the server");
+	if (open) openBrowser(server.url);
+	const shutdown = () => {
+		void server.close().then(() => process.exit(0));
+	};
+	process.on("SIGINT", shutdown);
+	process.on("SIGTERM", shutdown);
+	await new Promise(() => {}); // runs until stopped
 }
 
 if (process.argv[2] === "llm-check") {

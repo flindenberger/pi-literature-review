@@ -5,7 +5,8 @@
  * "pi-literature-review" (pi labels the entry with the entry file's parent
  * directory).
  *
- * Delegates setup to the pipeline modules (search, selection, synthesis) under ./extensions/ in order.
+ * Delegates setup to the pipeline modules (search, selection, synthesis)
+ * under ./extensions/ in order, then the web interface command.
  * User configuration is resolved by src/config.ts and lives outside the
  * package folder, which pi owns and resets on update.
  */
@@ -14,6 +15,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import literatureSearch from "./extensions/search.ts";
 import literatureSelection from "./extensions/selection.ts";
 import literatureSynthesis from "./extensions/synthesis.ts";
+import literatureWeb from "./extensions/web.ts";
 
 export default async function literatureReview(pi: ExtensionAPI) {
 	literatureSearch(pi);
@@ -21,4 +23,6 @@ export default async function literatureReview(pi: ExtensionAPI) {
 	// Awaited: the fused synthesize adapter lazily imports pi-tui to register
 	// its transcript renderer; pi awaits this factory before startup.
 	await literatureSynthesis(pi);
+	// The browser front end over the same engines (/pi-literature-review).
+	literatureWeb(pi);
 }

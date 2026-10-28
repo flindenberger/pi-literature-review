@@ -40,13 +40,13 @@ import { checkEmbedModel, type DoctorState, pullEmbedModel } from "../src/doctor
 import { outputRoot, synthReportName, writeRunOutputs } from "../src/output.ts";
 import { loadRounds, readCurrentScope, realProtocolDeps, writeCurrentScope } from "../src/protocol.ts";
 import { localPdfHref, renderSynthReportHtml } from "../src/render.ts";
+import { piModelBackend } from "./pi-model.ts";
 import {
 	type ChatAnswer,
 	type ChatDeps,
 	chatPool,
 	DEFAULT_TOP_K,
 	MAX_TOP_K,
-	OUTPUT_RESERVE_TOKENS,
 	type ReferenceEntry,
 	type ReportOptions,
 	runReport,
@@ -385,63 +385,6 @@ function startElapsedTicker(update: (line: string) => void): () => void {
 		update(`working -- ${seconds}s elapsed (embedding and generation do not stream; a run with many units can take minutes)`);
 	}, 5000);
 	return () => clearInterval(interval);
-}
-
-/**
- * Generator = the model currently selected in pi, called in a SEPARATE,
- * excerpts-only completion; embeddings stay on the configured embedding
- * server. Review-genre units (mode B + review synthesis) run on the pi
- * model too; only an EXPLICITLY configured llm.generateModel routes them
- * to the local generator -- this backend dispatches on the model name per
- * call, localModels empty when nothing is configured.
- */
-function piModelBackend(ctx: ExtensionContext, local: LlmBackend, localModels: string[]): LlmBackend {
-	const model = ctx.model!;
-	return {
-		label: `model selected in pi (${model.api} at ${model.baseUrl})`,
-		embed: (texts, signal) => local.embed(texts, signal),
-		generate: async (system, user, options, signal) => {
-			// Review-genre calls name a configured local model -- run them there.
-			if (options?.model && localModels.includes(options.model)) {
-				return local.generate(system, user, options, signal);
-			}
-			// pi's extension loader provides this module at runtime; imported
-			// lazily so the file stays loadable outside pi (smoke tests).
-			const { completeSimple } = await import("@earendil-works/pi-ai/compat");
-			const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-			if (!auth.ok) throw new Error(`no credentials for ${model.provider}/${model.id}: ${auth.error}`);
-			const response = await completeSimple(model, {
-				systemPrompt: system,
-				messages: [{ role: "user", content: user, timestamp: Date.now() }],
-			}, {
-				apiKey: auth.apiKey,
-				headers: auth.headers,
-				temperature: options?.temperature,
-				// Thinking OFF and a hard output cap (hidden reasoning would eat
-				// the whole budget invisibly). No `reasoning` level = pi-ai sends
-				// no reasoning effort, which disables template thinking
-				// (enable_thinking: false for qwen-style models).
-				maxTokens: options?.maxTokens ?? OUTPUT_RESERVE_TOKENS,
-				signal,
-			});
-			if (response.stopReason === "error" || response.stopReason === "aborted") {
-				throw new Error(response.errorMessage || `generation ${response.stopReason}`);
-			}
-			const text = response.content
-				.filter((part): part is { type: "text"; text: string } => part.type === "text")
-				.map((part) => part.text)
-				.join("");
-			if (!text.trim()) {
-				const thought = response.content.some((part) => part.type === "thinking");
-				throw new Error(
-					`the model returned no answer text (stop reason: ${response.stopReason}`
-					+ `${thought ? "; it produced only hidden reasoning" : ""}) -- ask again, `
-					+ "rephrase, or select a non-thinking model in pi",
-				);
-			}
-			return text;
-		},
-	};
 }
 
 /** The pi session id scopes the sticky scope and the protocol rounds;

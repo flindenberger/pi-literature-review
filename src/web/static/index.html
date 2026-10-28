@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pi-literature-review</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<div class="shell no-report" id="shell">
+  <aside class="rail">
+    <div class="brand">pi-literature-review <span id="brand-where"></span></div>
+    <div class="stage" id="stage-1"><b>1</b><div>Search<small id="stage-1-label">asking</small></div></div>
+    <div class="stage" id="stage-2"><b>2</b><div>Selection<small id="stage-2-label">PDF download</small></div></div>
+    <div class="stage" id="stage-3"><b>3</b><div>Synthesis<small id="stage-3-label">questions + report</small></div></div>
+
+    <details id="rail-reports">
+      <summary>HTML reports <span class="cnt" id="cnt-reports"></span></summary>
+      <div id="rail-reports-list" class="rail-list"><div class="rail-note">loading ...</div></div>
+    </details>
+    <details id="rail-library">
+      <summary>PDF library <span class="cnt" id="cnt-pdfs"></span></summary>
+      <div class="rail-note" id="rail-library-dirs"></div>
+      <div id="rail-library-list" class="rail-list"></div>
+    </details>
+
+    <div class="spacer"></div>
+    <div class="status" id="status"><span class="dot idle"></span>connecting ...</div>
+    <div class="links">
+      <button id="btn-settings" type="button">Settings</button>
+      <button id="btn-restart" type="button" title="Clear the conversation and start again">Start over</button>
+      <button id="btn-stop" type="button" title="Stop the local server">Stop</button>
+    </div>
+  </aside>
+
+  <section class="chat">
+    <div class="thread" id="thread"></div>
+    <div class="composer-wrap">
+      <form class="composer" id="composer" autocomplete="off">
+        <input id="input" type="text" placeholder="Type your answer or question ..." autocomplete="off">
+        <button class="primary" type="submit" id="btn-send">Send</button>
+      </form>
+    </div>
+  </section>
+
+  <section class="report" id="report">
+    <div class="head">
+      <span>Report</span><b id="report-name"></b><span class="ticked" id="ticked"></span>
+      <button id="btn-enlarge" type="button" class="icon" title="Enlarge over the page (Esc shrinks it again)" aria-label="Enlarge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7"/></svg></button>
+      <button id="btn-newtab" type="button" class="icon" title="Open the file in a new browser tab" aria-label="New tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M20 4L11 13M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"/></svg></button>
+      <button id="btn-close-panel" type="button" class="icon" title="Hide the panel; a card in the chat brings it back" aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+    </div>
+    <div class="empty" id="report-empty">The report appears here when a search or synthesis has finished.</div>
+    <iframe id="frame" title="report" hidden></iframe>
+  </section>
+</div>
+
+<div class="backdrop" id="backdrop" hidden></div>
+<div class="toast" id="toast" hidden></div>
+
+<dialog id="settings">
+  <h3>Settings</h3>
+  <p class="hint" id="set-path"></p>
+  <p class="hint" id="set-model"></p>
+  <p class="hint" id="set-model-hint"></p>
+
+  <h4>Writing model (standalone)</h4>
+  <div class="grid2">
+    <label>API dialect<select id="set-api"><option value="">(default)</option><option value="ollama">ollama</option><option value="openai">openai</option></select></label>
+    <label>Shared address<input id="set-base-url" type="text"></label>
+    <label>Generation model<input id="set-generate-model" type="text" placeholder="e.g. qwen3:8b"></label>
+    <label>Generation address (optional)<input id="set-generate-url" type="text"></label>
+  </div>
+
+  <h4>Embeddings (always local)</h4>
+  <div class="grid2">
+    <label>Embedding model<input id="set-embed-model" type="text"></label>
+    <label>Embedding address (optional)<input id="set-embed-url" type="text"></label>
+  </div>
+  <p class="hint" id="set-embed-state"></p>
+
+  <h4>Contact and lists</h4>
+  <label>Contact email for Unpaywall and the OpenAlex polite pool<input id="set-mailto" type="text"></label>
+  <p class="hint" id="set-mailto-hint"></p>
+  <label>Stored GitHub list topics (comma-separated)<input id="set-topics" type="text"></label>
+  <table class="keys"><tbody id="set-keys"></tbody></table>
+  <p class="hint">Keys are edited in the configuration file by hand; this page shows only whether they are set.</p>
+
+  <pre class="progress" id="progress-settings"></pre>
+  <p class="hint error" id="set-error"></p>
+  <div class="row">
+    <button id="btn-settings-test" type="button">Test setup</button>
+    <button id="btn-pull-embed" type="button">Fetch embedding model</button>
+    <button id="btn-settings-save" type="button" class="primary">Save</button>
+    <button id="btn-settings-close" type="button">Close</button>
+  </div>
+</dialog>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

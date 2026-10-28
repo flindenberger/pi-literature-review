@@ -41,7 +41,7 @@ export function isPlausibleMailto(value: string): boolean {
 	return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value.trim());
 }
 
-interface StoredConfig {
+export interface StoredConfig {
 	mailto?: string;
 	/** Optional GitHub token for the code-link lookup: raises the search
 	 * rate limit from 10 to 30 requests/min. Never required. */
@@ -78,12 +78,43 @@ export function storedMailto(): string {
  * Mode 0600: only the owning account reads it (ignored on Windows, where
  * the user-profile ACL protects %APPDATA%). */
 export function storeMailto(mailto: string): string {
+	return updateStoredConfig({ mailto: mailto.trim() });
+}
+
+/**
+ * Merge a patch into the stored config and persist it (same file, same
+ * mode); the in-memory cache follows, so every later read sees the new
+ * values without a restart. Keys set to undefined are removed; an "llm"
+ * patch replaces the whole llm block. Returns the config file path.
+ */
+export function updateStoredConfig(patch: Partial<StoredConfig>): string {
 	const path = configPath();
-	const config: StoredConfig = { ...loadStoredConfig(), mailto: mailto.trim() };
+	const merged: StoredConfig = { ...loadStoredConfig(), ...patch };
+	for (const key of Object.keys(merged) as Array<keyof StoredConfig>) {
+		if (merged[key] === undefined) delete merged[key];
+	}
 	mkdirSync(dirname(path), { recursive: true });
-	writeFileSync(path, JSON.stringify(config, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
-	cache = config;
+	writeFileSync(path, JSON.stringify(merged, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+	cache = merged;
 	return path;
+}
+
+/** The stored config as written (keys included only as set/unset flags
+ * where they are secrets -- see storedConfigView). */
+export function storedConfigView(): {
+	mailto: string;
+	codeListTopics: string[] | undefined;
+	llm: Partial<LlmConfig> & { chatModel?: string };
+	keys: { s2ApiKey: boolean; githubToken: boolean; llmApiKey: boolean };
+} {
+	const stored = loadStoredConfig();
+	const { apiKey, ...llm } = stored.llm ?? {};
+	return {
+		mailto: (stored.mailto ?? "").trim(),
+		codeListTopics: stored.codeListTopics,
+		llm,
+		keys: { s2ApiKey: Boolean(stored.s2ApiKey), githubToken: Boolean(stored.githubToken), llmApiKey: Boolean(apiKey) },
+	};
 }
 
 /**

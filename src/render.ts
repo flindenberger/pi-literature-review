@@ -1514,6 +1514,33 @@ export function localPdfHref(pdfPath: string, page?: number, snippet?: string | 
 	return href;
 }
 
+/** Link builder for the local PDF of a cited paper: localPdfHref (file://,
+ * the default for reports on disk) or webPdfHref (served by the web
+ * interface). Same page/snippet fragment either way. */
+export type PdfHref = (pdfPath: string, page?: number, snippet?: string | null) => string;
+
+/** The same page fragment as localPdfHref, exported so every builder
+ * agrees on what the PDF viewer receives. */
+export function pdfFragment(page?: number, snippet?: string | null): string {
+	if (page === undefined) return "";
+	return `#page=${page}${snippet ? `&search=${encodeURIComponent(snippet)}&phrase=true` : ""}`;
+}
+
+/**
+ * PDF links for the web interface: <base>/<file name> on the local server
+ * instead of the file:// path of the library, so the links work in any
+ * browser the page is opened in (file:// links are blocked from http
+ * pages). The path stays code-constructed (same trust boundary as
+ * localPdfHref); only the basename travels, percent-encoded.
+ */
+export function webPdfHref(base: string): PdfHref {
+	const prefix = base.replace(/\/+$/, "");
+	return (pdfPath, page, snippet) => {
+		const name = pdfPath.split(/[\\/]/).pop() || pdfPath;
+		return `${prefix}/${encodeURIComponent(name)}${pdfFragment(page, snippet)}`;
+	};
+}
+
 /**
  * Deterministic rendering of an ChatReport (paper chat). Same trust
  * boundary as the review page -- verified record data, escaped prose,
@@ -1524,7 +1551,8 @@ export function localPdfHref(pdfPath: string, page?: number, snippet?: string | 
  * refer to excerpts of THAT round, so linking them to this page's
  * reference anchors would wire them to the wrong targets.
  */
-export function renderPaperChatReportHtml(report: ChatReport): string {
+export function renderPaperChatReportHtml(report: ChatReport, options: { pdfHref?: PdfHref } = {}): string {
+	const pdfLink = options.pdfHref ?? localPdfHref;
 	const paper = report.paper;
 	const banner = report.grounded
 		? ""
@@ -1535,7 +1563,7 @@ Do not use this text as a summary of the paper.</div>`;
 		? paper.doi || (paper.arxiv_id ? `arXiv:${paper.arxiv_id}` : paper.key)
 		: "(unverified -- no bibliographic record, identified by filename)";
 	const pageLinks = (pages: number[]): string =>
-		pages.map((page) => pdfAnchor(localPdfHref(paper.pdf_path, page), String(page))).join(", ");
+		pages.map((page) => pdfAnchor(pdfLink(paper.pdf_path, page), String(page))).join(", ");
 
 	const referenceRows = report.references.map((reference) => {
 		const unverified = reference.key.startsWith("file:");
@@ -1564,7 +1592,7 @@ ${referenceRows}
 		: "<h2>References</h2>\n<p>None -- no valid citations survived the gate.</p>";
 
 	const excerptItems = report.chunks.map((chunk) => {
-		const href = localPdfHref(paper.pdf_path, chunk.page, highlightPhrase(chunk));
+		const href = pdfLink(paper.pdf_path, chunk.page, highlightPhrase(chunk));
 		return `<details><summary>[${chunk.id}] page ${chunk.page}, similarity ${chunk.score.toFixed(3)}${chunk.lexical ? ", exact term match" : ""}</summary>
 <p class="excerpt">${esc(chunk.text)}</p>
 <p class="meta">${pdfAnchor(href, `Open the PDF at page ${chunk.page}`)} (Firefox also highlights the passage)</p>
@@ -1585,7 +1613,7 @@ ${referenceRows}
 		const roundCite = round.sites && round.sites.length === markerCount && markerCount > 0
 			? {
 				sites: round.sites,
-				hrefFor: (site: CitationSite): string | null => localPdfHref(paper.pdf_path, site.page, site.snippet),
+				hrefFor: (site: CitationSite): string | null => pdfLink(paper.pdf_path, site.page, site.snippet),
 			}
 			: undefined;
 		const answer = roundCite
@@ -1615,7 +1643,7 @@ ${roundBlocks}`
 	const cite = (report.sites ?? []).length
 		? {
 			sites: report.sites,
-			hrefFor: (site: CitationSite): string | null => localPdfHref(paper.pdf_path, site.page, site.snippet),
+			hrefFor: (site: CitationSite): string | null => pdfLink(paper.pdf_path, site.page, site.snippet),
 		}
 		: undefined;
 
@@ -1645,7 +1673,7 @@ ${roundBlocks}`
 <dt>Authors</dt><dd>${esc(paper.authors.join("; "))}</dd>
 <dt>Year</dt><dd>${esc(paper.year ?? "n.d.")}</dd>
 <dt>Identifier</dt><dd>${link(referenceHref(paper), identifier)}</dd>
-<dt>Local PDF</dt><dd>${pdfAnchor(localPdfHref(paper.pdf_path), `${paper.base}.pdf`)}</dd>
+<dt>Local PDF</dt><dd>${pdfAnchor(pdfLink(paper.pdf_path), `${paper.base}.pdf`)}</dd>
 <dt>Generated</dt><dd>${esc(report.generated)} (UTC)</dd>${focusRow}
 </dl>${banner}
 ${report.session_questions.length ? `<h2>Questions of the session</h2>\n<ol>\n${questionItems}\n</ol>` : ""}
@@ -1868,7 +1896,8 @@ const REPORT_STYLE = `
  * no information) -- multi-paper reports keep scholarly paper-level
  * numbering.
  */
-export function renderSynthReportHtml(report: SynthReport): string {
+export function renderSynthReportHtml(report: SynthReport, options: { pdfHref?: PdfHref } = {}): string {
+	const pdfLink = options.pdfHref ?? localPdfHref;
 	const labels = REPORT_LABELS[report.ui_language === "en" ? "en" : "de"];
 	const pdfPathByKey = new Map(report.papers.map((paper) => [paper.key, paper.pdf_path]));
 	const paperByKey = new Map(report.papers.map((paper) => [paper.key, paper]));
@@ -1948,7 +1977,7 @@ export function renderSynthReportHtml(report: SynthReport): string {
 			sites: unit.sites,
 			hrefFor: (site) => {
 				const path = pdfPathByKey.get(site.paper_key);
-				return path ? localPdfHref(path, site.page, site.snippet) : null;
+				return path ? pdfLink(path, site.page, site.snippet) : null;
 			},
 			labelFor: (site: CitationSite, digits: string) => String(passageOfSite.get(site) ?? digits),
 			anchorPrefix: "site",
@@ -2038,7 +2067,7 @@ ${technicalBlock}
 			const unverified = reference.key.startsWith("file:");
 			const id = reference.doi || (reference.arxiv_id ? `arXiv:${reference.arxiv_id}`
 				: unverified ? `${reference.key.slice(5)}.pdf (${labels.unverified.split(" -- ")[0]})` : reference.key);
-			const pdfCell = reference.pdf_path ? pdfAnchor(localPdfHref(reference.pdf_path), "PDF") : "&mdash;";
+			const pdfCell = reference.pdf_path ? pdfAnchor(pdfLink(reference.pdf_path), "PDF") : "&mdash;";
 			const anchor = usedRefIds.has(reference.n) ? "" : ` id="ref-${reference.n}"`;
 			usedRefIds.add(reference.n);
 			return `<tr${anchor}><td>[${reference.n}]</td>
@@ -2077,7 +2106,7 @@ ${rows}
 		const inner = perUnit.map(({ unit, chunks }) => {
 			const items = chunks.map((chunk) => {
 				const path = pdfPathByKey.get(chunk.paper_key);
-				const anchor = path ? `\n<p class="meta">${pdfAnchor(localPdfHref(path, chunk.page, highlightPhrase(chunk)), `${labels.page} ${chunk.page}`)}</p>` : "";
+				const anchor = path ? `\n<p class="meta">${pdfAnchor(pdfLink(path, chunk.page, highlightPhrase(chunk)), `${labels.page} ${chunk.page}`)}</p>` : "";
 				return `<details><summary>[${chunk.id}] ${labels.page} ${chunk.page}, similarity ${chunk.score.toFixed(3)}${chunk.lexical ? ", exact term match" : ""}</summary>
 <p class="excerpt">${esc(chunk.text)}</p>${anchor}</details>`;
 			}).join("\n");
@@ -2121,7 +2150,7 @@ ${inner}
 		const items = subset.map((passage) => {
 			const paper = paperByKey.get(passage.paper_key);
 			const pageLabel = `${labels.page} ${passage.page}`;
-			const pageLink = paper ? pdfAnchor(localPdfHref(paper.pdf_path, passage.page, passage.snippet), pageLabel) : esc(pageLabel);
+			const pageLink = paper ? pdfAnchor(pdfLink(paper.pdf_path, passage.page, passage.snippet), pageLabel) : esc(pageLabel);
 			const source = withPaper && paper ? `<a href="#paper-${esc(paper.base)}">${esc(paperLabel(paper))}</a>, ` : "";
 			const excerpt = passage.text.length > 160 ? `${passage.text.slice(0, 160)}...` : passage.text;
 			const originLines = passage.origins
@@ -2177,7 +2206,7 @@ ${items}
 <h2>${esc(paperTitle)}</h2>
 <dl class="meta">${authorsRow}
 <dt>${labels.year}</dt><dd>${esc(paper.year ?? "n.d.")}</dd>${identifierRow}
-<dt>${labels.localPdf}</dt><dd>${pdfAnchor(localPdfHref(paper.pdf_path), `${paper.base}.pdf`)}</dd>
+<dt>${labels.localPdf}</dt><dd>${pdfAnchor(pdfLink(paper.pdf_path), `${paper.base}.pdf`)}</dd>
 </dl>
 ${content}
 </section>`);
