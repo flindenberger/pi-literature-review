@@ -9,8 +9,10 @@
  * request needs the random token -- as the first visit's ?token= query
  * (answered with an HttpOnly, SameSite=Strict cookie and a redirect) or
  * as a bearer header; the Host header must name the loopback address
- * (DNS rebinding); API answers carry Cache-Control: no-store. One job at a
- * time, each with its own abort switch (jobs.ts).
+ * (DNS rebinding); API answers carry Cache-Control: no-store. Several
+ * jobs run side by side, each with its own abort switch (jobs.ts); every
+ * job the dialog starts belongs to its conversation, and a conversation
+ * left while busy is parked until its outcome has arrived.
  *
  * The one inviolable rule holds here as everywhere: the server passes
  * citation data from the engines through unchanged and never rewrites it.
@@ -18,31 +20,49 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { join } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { CODE_SEARCHERS } from "../codesearch.ts";
 import {
+	addPdfFolder,
 	configPath,
 	configuredGenerateModel,
 	isPlausibleMailto,
+	lastDownloadDir,
 	llmConfig,
+	pdfFolders,
+	rememberDownloadDir,
+	removePdfFolder,
 	s2ApiKey,
 	storedConfigView,
+	THINKING_SETTINGS,
+	thinkingSetting,
+	type ThinkingSetting,
 	updateStoredConfig,
 } from "../config.ts";
+import { canPickFolder, pickFolder } from "../folderpick.ts";
 import { chatPool, ensureLibrary, runChatReport, runReport, runRound, type ChatAnswer, type ChatDeps, type ChatReport, type ChatReportOptions, type ChatOptions, type ReportOptions, type SynthReport } from "../synthesis.ts";
-import { ensureIndexed, type LibraryMatch, type LibraryPaper, matchLibrary, realCorpusDeps } from "../corpus.ts";
+import { ensureIndexed, libraryFiles, type LibraryMatch, type LibraryPaper, matchLibrary, realCorpusDeps } from "../corpus.ts";
+import { inboxDir, pdfBase } from "../library.ts";
 import { checkEmbedModel, type DoctorState, pullEmbedModel } from "../doctor.ts";
 import { renderDigest, renderReportDigest } from "../digest.ts";
 import { fetchAuthorMetrics, fetchJournalScores } from "../enrich.ts";
 import {
 	arxivVariantPrompt,
+	blocksForEditing,
+	deriveGroupsFromQuery,
+	formatGroupExpression,
+	isBlockExpression,
 	isProseQuery,
+	parseGroupSpec,
+	needsTranslation,
+	ownBlocksPrompt,
 	parseArxivSuggestion,
+	parseOwnBlocks,
 	parseTopicLines,
 	parseVariantSuggestions,
 	queryBlocks,
@@ -53,12 +73,13 @@ import {
 	type VariantSuggestion,
 } from "../intake.ts";
 import { writeNetworkPage } from "../network.ts";
-import { outputRoot, synthReportName, writeRunOutputs } from "../output.ts";
+import { htmlPathFor, jsonPathFor, outputRoot, synthReportName, writeRunOutputs } from "../output.ts";
 import { sanitizeTermGroups } from "../pipeline.ts";
 import type { ModelProvider, ProviderStatus } from "../provider.ts";
-import { clearConversations, deleteConversation, historyDir, listConversations, loadConversation, newConversationId, saveConversation } from "./history.ts";
-import { STEP_ACCEPTS } from "./help.ts";
-import { renderHtml, renderPaperChatReportHtml, renderSynthReportHtml, webPdfHref } from "../render.ts";
+import { type BlockMode, blockCachePath, blockCacheSize, cachedBlocks, clearBlockCache, saveBlocks } from "./blockcache.ts";
+import { clearConversations, conversationFiles, deleteConversation, historyDir, listConversations, loadConversation, newConversationId, saveConversation } from "./history.ts";
+import { parseSocialReply, SOCIAL_SYSTEM, socialCandidate, STEP_ACCEPTS } from "./help.ts";
+import { prismaSvgFor, renderHtml, renderPaperChatReportHtml, renderSynthReportHtml, webPdfHref } from "../render.ts";
 import { keyRequirement, runSearch, SEARCHERS, type SearchOptions, type SearchPayload } from "../search.ts";
 import { parseIdentifier, renderFetchReport, runSelection, type SelectionRunOptions } from "../selection.ts";
 import { listsForTopic } from "../sources/ecosystems.ts";
@@ -72,14 +93,21 @@ import {
 	type DialogState,
 	type DownloadOutcome,
 	type Effect,
+	type FileCard,
+	parseSearchOptions,
+	type PeriodPreset,
+	type SearchAgainFilters,
 	FACET_LIMIT,
 	initialDialog,
+	isHandBuilt,
 	reduce,
 	type ReportOutcome,
 	type SearchOutcome,
 	stageOfStep,
+	type StartStage,
 } from "./dialog.ts";
-import { FILE_TYPES, listLibrary, listReports, listSearchRuns, listSessions, pdfFile, safeName, searchCandidates, stageFile, stageOf } from "./files.ts";
+import { FILE_TYPES, listLibrary, listReports, listSearchRuns, listSessions, pdfFile, readRunPayload, safeName, searchCandidates, stageFile, stageOf } from "./files.ts";
+import { applyCardFilters, cardRows, describeCardFilters, hasCardFilters, parseCardFilters } from "./results.ts";
 import { revealFolder } from "./open.ts";
 import { intakeFromForm, QUERY_BLOCK_MAX, QUERY_BLOCK_MIN, type SearchForm } from "./intake.ts";
 import { JobBusyError, type JobInfo, JobRunner } from "./jobs.ts";
@@ -109,6 +137,12 @@ export interface WebDeps {
 	/** True when an HTTP server answers at the address (any status), false
 	 * on a network error (nothing listening, timeout). */
 	probe: (baseUrl: string, signal: AbortSignal) => Promise<boolean>;
+	/** The system's folder window: the chosen folder, null on cancel;
+	 * throws when no window exists here (canPick false). */
+	pickFolder: (title: string, start: string) => Promise<string | null>;
+	canPickFolder: () => boolean;
+	/** Keep the download folder for next time and read it as a PDF folder. */
+	rememberDownloadDir: (folder: string) => void;
 }
 
 export interface WebServerOptions {
@@ -118,6 +152,8 @@ export interface WebServerOptions {
 	cwd?: string;
 	/** Folder of the conversation history; default historyDir() (next to the configuration file). */
 	historyDir?: string;
+	/** File of the saved keyword blocks; default blockCachePath() (next to the configuration file). */
+	blockCacheFile?: string;
 	/** 0 (default) = any free port. */
 	port?: number;
 	token?: string;
@@ -139,6 +175,9 @@ export interface WebServer {
 const SOURCE_LABELS: Record<string, string> = { arxiv: "arXiv", crossref: "CrossRef", openalex: "OpenAlex", semanticscholar: "Semantic Scholar" };
 
 const JOURNAL_LIMIT = 12;
+/** Sampling temperature of "Propose again": the first proposal for a
+ * request runs at 0 (repeatable), a new one must be able to differ. */
+const FRESH_TEMPERATURE = 0.8;
 const AUTHOR_LIMIT = 12;
 const AUTHOR_MATCH_LIMIT = 6;
 const CODE_TOPIC_LIMIT = 5;
@@ -150,10 +189,17 @@ const PDF_ROUTE = "/pdf";
 export function realWebDeps(): WebDeps {
 	return {
 		runSearch,
+		// The browser shows the run as cards from the JSON; the HTML report
+		// is written on the user's click (POST /api/runs/report), so only the
+		// sidecar and the network page land here. htmlPath names the file a
+		// click would write.
 		writeSearch: (payload) => {
-			const written = writeRunOutputs(renderHtml(payload, { network: true }), payload);
-			writeNetworkPage(written.htmlPath);
-			return written;
+			const htmlPath = htmlPathFor(outputRoot(), payload.generated, payload.query, (path) => existsSync(path) || existsSync(jsonPathFor(path)));
+			const jsonPath = jsonPathFor(htmlPath);
+			mkdirSync(dirname(htmlPath), { recursive: true });
+			writeFileSync(jsonPath, JSON.stringify(payload, null, 2) + "\n", "utf8");
+			writeNetworkPage(htmlPath);
+			return { htmlPath, jsonPath };
 		},
 		runSelection,
 		ensureLibrary: async (root, onWarn, signal) => (await ensureLibrary(root, onWarn, { signal })).match,
@@ -179,6 +225,9 @@ export function realWebDeps(): WebDeps {
 		checkEmbedModel: (signal) => checkEmbedModel(llmConfig(), fetch, signal),
 		pullEmbedModel: (onProgress, signal) => pullEmbedModel(llmConfig(), onProgress, fetch, signal),
 		probe: probeServer,
+		pickFolder,
+		canPickFolder,
+		rememberDownloadDir,
 	};
 }
 
@@ -209,6 +258,54 @@ class HttpError extends Error {
 function json(res: ServerResponse, status: number, body: unknown): void {
 	res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
 	res.end(JSON.stringify(body));
+}
+
+/** The raw request body (an uploaded PDF), up to `limit` bytes. */
+function readRawBody(req: IncomingMessage, limit: number): Promise<Buffer> {
+	return new Promise((resolve, reject) => {
+		const chunks: Buffer[] = [];
+		let size = 0;
+		req.on("data", (chunk: Buffer) => {
+			size += chunk.length;
+			if (size > limit) {
+				reject(new HttpError(413, `file larger than ${Math.round(limit / 1_000_000)} MB`));
+				req.destroy();
+				return;
+			}
+			chunks.push(chunk);
+		});
+		req.on("end", () => resolve(Buffer.concat(chunks)));
+		req.on("error", reject);
+	});
+}
+
+/** A library paper in words: "“Title” (Smith et al., 2021)" from its
+ * metadata; "this PDF" when it has none (a file name reads badly). Pure. */
+/** The short form for History: "Lee and Kim 2021 · Title"; null without
+ * metadata (the first question names the chat then). Pure. */
+export function paperShortLabel(paper: { title: string; authors: string[]; year: string | null }): string | null {
+	if (!paper.title) return null;
+	const last = (name: string) => name.trim().split(/\s+/).pop() ?? name;
+	const who = paper.authors.length ? `${last(paper.authors[0])}${paper.authors.length > 2 ? " et al." : paper.authors.length === 2 ? ` and ${last(paper.authors[1])}` : ""}` : "";
+	return `${[who, paper.year].filter(Boolean).join(" ")}${who || paper.year ? " · " : ""}${paper.title}`;
+}
+
+export function paperLabel(paper: { base: string; title: string; authors: string[]; year: string | null }): string {
+	if (!paper.title) return "this PDF";
+	const last = (name: string) => name.trim().split(/\s+/).pop() ?? name;
+	const who = paper.authors.length ? `${last(paper.authors[0])}${paper.authors.length > 2 ? " et al." : paper.authors.length === 2 ? ` and ${last(paper.authors[1])}` : ""}` : "";
+	const meta = [who, paper.year].filter(Boolean).join(", ");
+	return `“${paper.title}”${meta ? ` (${meta})` : ""}`;
+}
+
+/** Largest PDF accepted by drag and drop. */
+const UPLOAD_LIMIT = 200_000_000;
+
+/** A dropped file's name made safe for the inbox: letters, digits and a
+ * few marks kept, everything else "_", ".pdf" at the end. Pure. */
+export function uploadName(name: string): string {
+	const stem = name.replace(/\.pdf$/i, "").replace(/[^\p{L}\p{N} ._()-]+/gu, "_").replace(/\s+/g, " ").replace(/^[ ._]+|[ ._]+$/g, "").slice(0, 120);
+	return `${stem || "dropped"}.pdf`;
 }
 
 function readBody(req: IncomingMessage, limit = 2_000_000): Promise<unknown> {
@@ -284,20 +381,21 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 		return `/files/${stage}/${encodeURIComponent(name)}`;
 	};
 
+	/** Conversation id per job the dialog started: the outcome goes to that
+	 * conversation, open or parked (see applyTo below). */
+	const jobOwner = new Map<string, string>();
 	jobs.subscribe((event) => {
 		for (const connection of connections) connection.send(event.type, event);
-		// The dialog waits for the job it started; its outcome moves the
-		// conversation on (see jobOutcome below).
-		if (event.type === "job" && event.job.state !== "running" && event.job.id === dialog.activeJob) applyDialog(jobOutcome(event.job));
+		if (event.type === "job" && event.job.state !== "running") {
+			const owner = jobOwner.get(event.job.id);
+			jobOwner.delete(event.job.id);
+			if (owner !== undefined) applyTo(owner, jobOutcome(event.job));
+			broadcastHistory();
+		}
 	});
 
-	const requireNoJob = (): void => {
-		const { current } = jobs.snapshot();
-		if (current) throw new HttpError(409, new JobBusyError(current).message);
-	};
-
-	/** Starting a job answers 409 while another runs (the page shows
-	 * the running one and offers Cancel). */
+	/** Starting a job answers 409 when the runner refuses it (a single
+	 * kind already running, or the cap of parallel jobs reached). */
 	const startJob: JobRunner["start"] = (kind, label, work) => {
 		try {
 			return jobs.start(kind, label, work);
@@ -334,14 +432,14 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 	 * `prose` switches the prompt's distillation rule on (the dialog does
 	 * so for every request that is not a block expression: the plus1 row
 	 * must cover the request's own concepts, not vary them). */
-	const proposeVariants = async (query: string, hint: string, prose = isProseQuery(query)): Promise<{ variants: VariantSuggestion[]; note: string | null }> => {
+	const proposeVariants = async (query: string, hint: string, prose = isProseQuery(query), temperature = 0): Promise<{ variants: VariantSuggestion[]; note: string | null }> => {
 		const signal = AbortSignal.timeout(60_000);
-		const raw = await provider.generate({ system: VARIANT_SYSTEM_PROMPT, user: variantPrompt(query, hint, prose), maxTokens: 500, signal });
+		const raw = await provider.generate({ system: VARIANT_SYSTEM_PROMPT, user: variantPrompt(query, hint, prose), maxTokens: 500, temperature, signal });
 		const suggestions: VariantSuggestion[] = parseVariantSuggestions(raw, query);
 		let note: string | null = null;
 		if (!suggestions.some((entry) => entry.role === "arxiv")) {
 			try {
-				const retry = await provider.generate({ system: VARIANT_SYSTEM_PROMPT, user: arxivVariantPrompt(query, hint), maxTokens: 200, signal });
+				const retry = await provider.generate({ system: VARIANT_SYSTEM_PROMPT, user: arxivVariantPrompt(query, hint), maxTokens: 200, temperature, signal });
 				const arxiv = parseArxivSuggestion(retry, query, suggestions.map((entry) => entry.text));
 				if (arxiv) suggestions.push({ text: arxiv, role: "arxiv" });
 				else note = "the model gave no arXiv variant";
@@ -350,6 +448,41 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 			}
 		}
 		return { variants: suggestions, note };
+	};
+
+	/** The browser's default blocks: the request's own words grouped by
+	 * the model (temperature 0), every term checked against the request in
+	 * code (parseOwnBlocks). One row "plus1", or none when nothing usable
+	 * came back. */
+	const proposeOwnBlocks = async (query: string, temperature = 0): Promise<{ variants: VariantSuggestion[]; note: string | null }> => {
+		const translate = needsTranslation(query);
+		const raw = await provider.generate({ system: VARIANT_SYSTEM_PROMPT, user: ownBlocksPrompt(query, translate), maxTokens: 200, temperature, signal: AbortSignal.timeout(60_000) });
+		const lines = parseOwnBlocks(raw, query, translate);
+		if (!lines) return { variants: [], note: "no usable blocks from the request's own words" };
+		return { variants: [{ role: "plus1", text: formatGroupExpression(lines.map((line) => queryBlocks(`(${line})`).flat())) }], note: null };
+	};
+
+	/** Keyword blocks for a request: the saved proposal when there is one
+	 * (same text, same blocks), else a model call whose usable answer is
+	 * saved. `fresh` ("Propose again") skips the saved one and lets the
+	 * model vary (temperature FRESH_TEMPERATURE; at 0 it would repeat
+	 * itself word for word); the new proposal replaces the saved one. */
+	const proposeBlocksFor = async (query: string, mode: BlockMode, fresh: boolean): Promise<{ variants: VariantSuggestion[]; note: string | null; cached: boolean }> => {
+		const saved = fresh ? null : cachedBlocks(blockCacheFile, mode, query);
+		if (saved) return { variants: saved, note: null, cached: true };
+		const temperature = fresh ? FRESH_TEMPERATURE : 0;
+		const ask = () => (mode === "own" ? proposeOwnBlocks(query, temperature) : proposeVariants(query, "", true, temperature));
+		let { variants, note } = await ask();
+		// A varied answer can miss the format; one more try before falling back.
+		if (fresh && !variants.some((variant) => variant.role === "plus1")) ({ variants, note } = await ask());
+		if (variants.some((variant) => variant.role === "plus1")) {
+			try {
+				saveBlocks(blockCacheFile, mode, query, variants);
+			} catch {
+				// Not saved: the next identical request asks the model again.
+			}
+		}
+		return { variants, note, cached: false };
 	};
 
 	/** GitHub list topics for the awesome-lists code source: the stored
@@ -417,15 +550,26 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 		return out;
 	};
 
+	/** "Search again with these filters" from the result list: the period and
+	 * citation parts, read defensively. */
+	const searchAgainFilters = (value: unknown): SearchAgainFilters | undefined => {
+		if (!value || typeof value !== "object") return undefined;
+		const body = value as Record<string, unknown>;
+		const out: SearchAgainFilters = {};
+		if (Number.isInteger(body.yearFrom) && (body.yearFrom as number) > 0) out.yearFrom = body.yearFrom as number;
+		if (body.allYears === true) out.allYears = true;
+		if (Number.isInteger(body.minCites) && (body.minCites as number) >= 0) out.minCites = body.minCites as number;
+		return Object.keys(out).length ? out : undefined;
+	};
+
 	const startSearchJob = (form: SearchForm): { job: JobInfo; warnings: string[]; query: string } => {
 		const intake = intakeFromForm(form);
 		if (!intake.options.query) throw new HttpError(400, "no query -- fill at least one concept block or the free text");
-		requireNoJob();
 		const job = startJob("search", `search: ${intake.options.query}`, async ({ signal, log }) => {
 			for (const warning of intake.warnings) log(`note: ${warning}`);
 			const payload = await deps.runSearch({ ...intake.options, onWarn: log, signal });
 			const written = deps.writeSearch(payload);
-			log(`written ${written.htmlPath}`);
+			log(`written ${written.jsonPath}`);
 			const name = (written.htmlPath.split(/[\\/]/).pop() ?? "").replace(/\.html$/i, "");
 			const outcome: SearchOutcome = { name, htmlUrl: fileUrl(written.htmlPath), included: payload.results.length, dropped: payload.dropped.length, candidates: candidatesOf(payload) };
 			return {
@@ -460,11 +604,18 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 				throw new HttpError(400, "give a contact email for Unpaywall or choose to continue without it");
 			}
 		}
-		requireNoJob();
+		// Target folder: the user's choice (absolute path; created when
+		// missing), else the last download folder (runSelection's default).
+		const folder = typeof body.folder === "string" && body.folder.trim() ? resolve(body.folder.trim()) : "";
+		if (folder) {
+			if (!isAbsolute(String(body.folder).trim())) throw new HttpError(400, "give the full path of the download folder");
+			try { mkdirSync(folder, { recursive: true }); } catch (error) { throw new HttpError(400, `cannot use ${folder}: ${error instanceof Error ? error.message : error}`); }
+		}
 		const invalid = identifiers.filter((id) => parseIdentifier(id).kind === "unknown");
 		return startJob("selection", `download ${identifiers.length} paper${identifiers.length === 1 ? "" : "s"}`, async ({ signal, log }) => {
 			for (const id of invalid) log(`note: "${id}" is not a DOI or arXiv id`);
-			const { results, papersDir } = await deps.runSelection({ identifiers, root, mailto, onWarn: log, signal });
+			const { results, papersDir } = await deps.runSelection({ identifiers, root, mailto, onWarn: log, signal, ...(folder ? { dir: folder } : {}) });
+			if (folder) deps.rememberDownloadDir(folder);
 			const count = (status: string) => results.filter((result) => result.status === status).length;
 			const summary: DownloadOutcome = {
 				downloaded: count("downloaded"),
@@ -473,6 +624,7 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 				notFree: count("abstract_only") + results.filter((result) => (result.status === "not_free" || result.status === "dead_link") && !result.browserUrl).length,
 				failed: count("invalid"),
 				libraryCount: listLibrary(root, cwd, deps.matchLibrary(root)).papers.length,
+				folder: papersDir,
 			};
 			return { results, papersDir, report: renderFetchReport(results, papersDir), summary };
 		});
@@ -496,13 +648,13 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 		if (summary === "none" && !questions.length && !includeReview) throw new HttpError(400, "nothing to generate -- choose a summary, add a question or include the review");
 		const language = typeof body.language === "string" && body.language.trim() ? body.language.trim() : WEB_REPORT_LANGUAGE;
 		const uiLanguage = body.uiLanguage === "de" ? "de" : "en";
-		requireNoJob();
+		const session = typeof body.session === "string" && body.session ? body.session : chatSession;
 		return startJob("report", "synthesis report", async ({ signal, log }) => {
 			await requireEmbedding(signal);
 			const wiring = provider.wiring();
 			const report = await deps.runReport({
 				papers, questions, summary, detailMode, includeReview, language, uiLanguage,
-				session: chatSession, root,
+				session, root,
 				explainModel: wiring.explainModel, reviewModel: wiring.reviewModel,
 				onWarn: log, onProgress: log, signal,
 			}, { backend: wiring.backend });
@@ -528,9 +680,21 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 			: Array.isArray(body.papers) ? body.papers.filter((name): name is string => typeof name === "string" && name.trim() !== "") : [];
 		if (papers !== "library" && !papers.length) throw new HttpError(400, "choose a document scope");
 		const language = typeof body.language === "string" && body.language.trim() ? body.language.trim() : undefined;
-		requireNoJob();
-		const session = chatSession;
+		const session = typeof body.session === "string" && body.session ? body.session : chatSession;
 		return startJob("chat", `question: ${question.slice(0, 60)}`, async ({ signal, log }) => {
+			// A short message without a question mark may be small talk: one
+			// short model check first. Any doubt, failure or timeout looks the
+			// message up in the papers as usual.
+			if (body.social !== false && socialCandidate(question) && provider.hasModel()) {
+				try {
+					const raw = await provider.generate({ system: SOCIAL_SYSTEM, user: question, maxTokens: 120, temperature: 0.3, signal: AbortSignal.any([signal, AbortSignal.timeout(20_000)]) });
+					const reply = parseSocialReply(raw);
+					if (reply) return { session, reply };
+				} catch (error) {
+					if (signal.aborted) throw error;
+					log(`small-talk check skipped: ${errorMessage(error)}`);
+				}
+			}
 			await requireEmbedding(signal);
 			const wiring = provider.wiring();
 			const answer = await deps.runRound({ question, papers, session, language, root, model: wiring.explainModel, onWarn: log, signal }, { backend: wiring.backend });
@@ -586,16 +750,25 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 	 * request or question (only chip clicks) has no title and is never
 	 * saved. */
 	const historyRoot = options.historyDir ?? historyDir();
+	const blockCacheFile = options.blockCacheFile ?? blockCachePath();
 	let currentId = newConversationId();
 	let dialogStarted = new Date().toISOString();
+	/** When the conversation last started a search or a report (its date in the rail). */
+	let dialogComputed: string | null = null;
 	/** "Search: <request>", "Report: <first question>" or "Chat: <question>";
 	 * null while the conversation has none of these. */
 	const conversationTitle = (state: DialogState): string | null => {
 		const a = state.answers;
-		const clip = (text: string) => text.trim().replace(/\s+/g, " ").slice(0, 90);
+		const clip = (text: string) => text.trim().replace(/\s+/g, " ").slice(0, 300);
 		if (a.topic?.trim()) return `Search: ${clip(a.topic)}`;
-		if (a.questions?.length) return `Report: ${clip(a.questions[0])}`;
+		// A chat on one PDF is named after the paper once it has a question.
+		if (a.paperLabel && a.lastQuestion?.trim()) return clip(a.paperLabel);
+		// A chat collects its questions too (as seed for a later report):
+		// "Report" only once a report was asked for.
+		const reported = state.trail.includes("reportKind") || state.trail.includes("questions") || state.trail.includes("reporting");
+		if (reported && a.questions?.length) return `Report: ${clip(a.questions[0])}`;
 		if (a.lastQuestion?.trim()) return `Chat: ${clip(a.lastQuestion)}`;
+		if (a.questions?.length) return `Report: ${clip(a.questions[0])}`;
 		return null;
 	};
 	/** Save the current conversation when it has a title. A failed write
@@ -606,7 +779,7 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 		const title = conversationTitle(dialog);
 		if (title === null) return;
 		try {
-			saveConversation(historyRoot, { version: 1, id: currentId, started: dialogStarted, updated: new Date().toISOString(), root, chatSession, title, dialog });
+			saveConversation(historyRoot, { version: 1, id: currentId, started: dialogStarted, updated: new Date().toISOString(), ...(dialogComputed ? { computed: dialogComputed } : {}), root, chatSession, title, dialog });
 		} catch (error) {
 			if (saveFailureReported) return;
 			saveFailureReported = true;
@@ -619,25 +792,93 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 		const { conversations, skipped } = listConversations(historyRoot);
 		const title = conversationTitle(dialog);
 		const live = title !== null && !conversations.some((entry) => entry.id === currentId)
-			? [{ id: currentId, title, started: dialogStarted, updated: new Date().toISOString(), root, steps: dialog.trail.length }]
+			? [{ id: currentId, title, started: dialogStarted, updated: new Date().toISOString(), ...(dialogComputed ? { computed: dialogComputed } : {}), root, steps: dialog.trail.length }]
 			: [];
+		// The current conversation's files come from its live state (the
+		// saved copy may lag behind by one change).
+		const files = (entry: { id: string; run?: string; report?: { name: string; url: string }; paper?: string }) => (entry.id === currentId ? conversationFiles(dialog) : { run: entry.run, report: entry.report, paper: entry.paper });
+		// Per search: whether its HTML report and PRISMA diagram exist yet
+		// (a click writes a missing one); only for this data folder.
+		const written = (run: string | undefined, home: string) => {
+			if (!run) return undefined;
+			const has = (file: string) => existsSync(join(root, "lit-search", file)) || existsSync(join(home, "lit-search", file));
+			return { html: has(`${run}.html`), prisma: has(`${run}.prisma.svg`) };
+		};
 		return {
-			history: [...live, ...conversations].map((entry) => ({ ...entry, current: entry.id === currentId, here: entry.root === root, kind: entry.title.startsWith("Search:") ? "search" : "synthesis" })),
+			history: [...live, ...conversations].map((entry) => {
+				const here = entry.root === root;
+				const { run, report, paper } = files(entry);
+				return { ...entry, run, report, paper, written: written(run, entry.root), current: entry.id === currentId, here, kind: entry.title.startsWith("Search:") ? "search" : "synthesis", running: entry.id === currentId ? busy(dialog) : Boolean(parked.get(entry.id) && busy((parked.get(entry.id) as Parked).dialog)) };
+			}),
 			skipped,
 			dir: historyRoot,
 		};
 	};
-	const startFresh = (): void => {
+	/** Where files are looked for: the store first, then the data folders
+	 * of older conversations (from before the store, when everything lived
+	 * in the working folder) -- so they still open with their lists and
+	 * reports. Only folders that exist. */
+	const dataRoots = (): string[] => {
+		const roots = [root];
+		for (const entry of listConversations(historyRoot).conversations) {
+			if (entry.root && !roots.includes(entry.root) && existsSync(join(entry.root, "lit-search"))) roots.push(entry.root);
+		}
+		return roots;
+	};
+	const runPayload = (name: string) => {
+		for (const dir of dataRoots()) {
+			const payload = readRunPayload(dir, name);
+			if (payload) return payload;
+		}
+		return null;
+	};
+	const startFresh = (start?: StartStage, scope?: string[], about?: string, label?: string): void => {
 		currentId = newConversationId();
 		dialogStarted = new Date().toISOString();
+		dialogComputed = null;
 		chatSession = webSessionId();
-		applyDialog({ kind: "restart" });
+		applyDialog({ kind: "restart", start, ...(scope && scope.length ? { scope } : {}), ...(about ? { about } : {}), ...(label ? { label } : {}) });
 	};
-	/** Swapping conversations while a job or a model call is in flight
-	 * would deliver its outcome to the wrong conversation. */
-	const requireIdle = (): void => {
-		if (jobs.snapshot().current) throw new HttpError(409, "a job is running -- wait for it or stop it in its box");
-		if (dialog.pending) throw new HttpError(409, "the model is still answering -- wait a moment");
+	/** A conversation left while its job or model call runs is parked: kept
+	 * in memory (and saved), so the outcome lands in it and is saved; it
+	 * leaves the park once idle, or when it is opened again. */
+	interface Parked { dialog: DialogState; chatSession: string; started: string; computed: string | null }
+	const parked = new Map<string, Parked>();
+	const busy = (state: DialogState): boolean => Boolean(state.activeJob || state.pending);
+	const parkCurrent = (): void => {
+		persistCurrent();
+		if (busy(dialog)) parked.set(currentId, { dialog, chatSession, started: dialogStarted, computed: dialogComputed });
+	};
+	const saveParked = (id: string, entry: Parked): void => {
+		const title = conversationTitle(entry.dialog);
+		if (title === null) return;
+		try {
+			saveConversation(historyRoot, { version: 1, id, started: entry.started, updated: new Date().toISOString(), ...(entry.computed ? { computed: entry.computed } : {}), root, chatSession: entry.chatSession, title, dialog: entry.dialog });
+		} catch {
+			// the open conversation reports save failures; a parked one stays in memory
+		}
+	};
+	/** Stop the job of a conversation that is closed for good (deleted). */
+	const stopJobOf = (state: DialogState): void => {
+		if (state.activeJob) jobs.cancel(state.activeJob);
+	};
+	const broadcastHistory = (): void => {
+		for (const connection of connections) connection.send("history", {});
+	};
+
+	/** Apply an event to the conversation it belongs to: the open one, or a
+	 * parked one (reduced, saved, its effects run on its behalf). An event
+	 * for a conversation that is neither (deleted meanwhile) is dropped. */
+	const applyTo = (owner: string, event: DialogEvent): void => {
+		if (owner === currentId) return applyDialog(event);
+		const entry = parked.get(owner);
+		if (!entry) return;
+		const { state: next, effects } = reduce(entry.dialog, event, dialogContext());
+		entry.dialog = next;
+		saveParked(owner, entry);
+		if (!busy(next) && !effects.length) parked.delete(owner);
+		broadcastHistory();
+		for (const effect of effects) void runEffect(effect, owner);
 	};
 
 	/** Apply one event, tell every tab, run the effects it asked for. */
@@ -656,18 +897,31 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 		switch (job.kind) {
 			case "search": return { kind: "job", job, search: r.outcome as SearchOutcome | undefined };
 			case "selection": return { kind: "job", job, download: r.summary as DownloadOutcome | undefined };
-			case "chat": return { kind: "job", job, answer: r.answer ? { answer: r.answer, hrefs: r.hrefs, pdfUrls: r.pdfUrls } as AnswerView : undefined };
+			case "chat": return { kind: "job", job, answer: r.answer ? { answer: r.answer, hrefs: r.hrefs, pdfUrls: r.pdfUrls } as AnswerView : undefined, ...(typeof r.reply === "string" ? { reply: r.reply } : {}) };
 			case "report": return { kind: "job", job, report: typeof r.name === "string" ? { name: r.name, htmlUrl: String(r.htmlUrl), grounded: Boolean(r.grounded), units: Number(r.units ?? 0) } as ReportOutcome : undefined };
 			default: return { kind: "job", job };
 		}
 	};
 
-	const runEffect = async (effect: Effect): Promise<void> => {
+	/** Run an effect for the conversation that asked for it (`owner`); its
+	 * events go back to that conversation even after the user switched. */
+	const runEffect = async (effect: Effect, owner: string = currentId): Promise<void> => {
+		const sessionOf = (): string => (owner === currentId ? chatSession : parked.get(owner)?.chatSession ?? chatSession);
+		const markComputed = (): void => {
+			const now = new Date().toISOString();
+			if (owner === currentId) dialogComputed = now;
+			else { const entry = parked.get(owner); if (entry) entry.computed = now; }
+		};
+		const started = (job: JobInfo): void => {
+			jobOwner.set(job.id, owner);
+			applyTo(owner, { kind: "jobStarted", job });
+			broadcastHistory();
+		};
 		try {
 			switch (effect.kind) {
 				case "proposeBlocks": {
-					const { variants, note } = await proposeVariants(effect.query, "", true);
-					applyDialog({ kind: "blocks", variants, ...(note ? { error: note } : {}) });
+					const { variants, note } = await proposeBlocksFor(effect.query, effect.mode, effect.fresh === true);
+					applyTo(owner, { kind: "blocks", variants, ...(note ? { error: note } : {}) });
 					return;
 				}
 				// The helper: one short model call over the step's help text; any
@@ -675,15 +929,15 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 				case "helpAnswer": {
 					try {
 						const text = await provider.generate({ system: effect.system, user: effect.user, maxTokens: 300, temperature: 0.2, signal: AbortSignal.timeout(30_000) });
-						applyDialog({ kind: "helpAnswered", text });
+						applyTo(owner, { kind: "helpAnswered", text });
 					} catch (error) {
-						applyDialog({ kind: "helpAnswered", text: null, error: errorMessage(error) });
+						applyTo(owner, { kind: "helpAnswered", text: null, error: errorMessage(error) });
 					}
 					return;
 				}
 				case "loadTopics": {
 					const { topics, note } = await codeTopics(effect.query);
-					applyDialog({ kind: "topics", topics: topics.map((row) => ({ topic: row.topic, lists: row.lists })), ...(note ? { error: note } : {}) });
+					applyTo(owner, { kind: "topics", topics: topics.map((row) => ({ topic: row.topic, lists: row.lists })), ...(note ? { error: note } : {}) });
 					return;
 				}
 				case "loadJournals": {
@@ -692,7 +946,7 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 					if (effect.yearTo !== undefined) scope.yearTo = effect.yearTo;
 					const page = await deps.journalFacets(effect.query, FACET_LIMIT, scope);
 					const scores = await deps.journalScores(page.listed.map((facet) => facet.id));
-					applyDialog({ kind: "journals", journals: page.listed.map((facet) => ({ id: facet.id, name: facet.name, works: facet.count, score: scores.get(facet.id) ?? null })) });
+					applyTo(owner, { kind: "journals", journals: page.listed.map((facet) => ({ id: facet.id, name: facet.name, works: facet.count, score: scores.get(facet.id) ?? null })) });
 					return;
 				}
 				case "loadAuthors": {
@@ -702,37 +956,40 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 					if (effect.sourceIds.length) scope.sourceIds = effect.sourceIds;
 					const page = await deps.authorFacets(effect.query, FACET_LIMIT, scope);
 					const metrics = await deps.authorMetrics(page.listed.map((facet) => facet.id));
-					applyDialog({ kind: "authors", authors: page.listed.map((facet) => ({ id: facet.id, name: facet.name, works: facet.count, ...(metrics.get(facet.id) ?? {}) })) });
+					applyTo(owner, { kind: "authors", authors: page.listed.map((facet) => ({ id: facet.id, name: facet.name, works: facet.count, ...(metrics.get(facet.id) ?? {}) })) });
 					return;
 				}
 				case "lookupAuthor": {
 					const matches = (await deps.autocompleteAuthors(effect.prefix, AbortSignal.timeout(LOOKUP_TIMEOUT_MS))).slice(0, AUTHOR_MATCH_LIMIT);
-					applyDialog({ kind: "authorLookup", matches });
+					applyTo(owner, { kind: "authorLookup", matches });
 					return;
 				}
 				case "startSearch":
-					applyDialog({ kind: "jobStarted", job: startSearchJob(effect.form).job });
+					markComputed();
+					started(startSearchJob(effect.form).job);
 					return;
 				case "startSelection":
-					applyDialog({ kind: "jobStarted", job: startSelectionJob({ identifiers: effect.identifiers, confirmed: true, mailto: effect.mailto, saveMailto: effect.saveMailto, withoutUnpaywall: effect.withoutUnpaywall }) });
+					started(startSelectionJob({ identifiers: effect.identifiers, confirmed: true, mailto: effect.mailto, saveMailto: effect.saveMailto, withoutUnpaywall: effect.withoutUnpaywall, folder: effect.folder }));
 					return;
 				case "startChat":
-					applyDialog({ kind: "jobStarted", job: startChatJob({ question: effect.question, papers: effect.papers }) });
+					started(startChatJob({ question: effect.question, papers: effect.papers, session: sessionOf() }));
 					return;
 				case "startReport":
-					applyDialog({ kind: "jobStarted", job: startReportJob({
+					markComputed();
+					started(startReportJob({
 						papers: effect.papers, questions: effect.questions, summary: effect.summary, detailMode: effect.detailMode, includeReview: effect.includeReview,
-						language: effect.language === "de" ? "German" : "English", uiLanguage: effect.language,
-					}) });
+						language: effect.language === "de" ? "German" : "English", uiLanguage: effect.language, session: sessionOf(),
+					}));
 					return;
 				case "newChatSession":
-					chatSession = webSessionId();
+					if (owner === currentId) chatSession = webSessionId();
+					else { const entry = parked.get(owner); if (entry) entry.chatSession = webSessionId(); }
 					return;
 				default:
 					return;
 			}
 		} catch (error) {
-			applyDialog({ kind: "effectFailed", effect: effect.kind, error: errorMessage(error) });
+			applyTo(owner, { kind: "effectFailed", effect: effect.kind, error: errorMessage(error) });
 		}
 	};
 
@@ -763,11 +1020,12 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 			root,
 			cwd,
 			url: `http://127.0.0.1:${port}/`,
-			provider: { ...status, ...reachable },
+			provider: { ...status, ...reachable, thinking: thinkingSetting() },
 			job: jobs.snapshot().current,
 			chatSession,
 			counts: {
-				runs: runs.length,
+				// Written reports only: a run whose report was not asked for is a card list, not a file.
+				runs: runs.filter((run) => run.html).length,
 				pdfs: library.papers.length,
 				reports: reports.filter((report) => report.kind === "synthesis").length,
 				sessions: sessions.length,
@@ -832,10 +1090,11 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 			const [stageName, ...rest] = path.slice("/files/".length).split("/");
 			const stage = stageOf(stageName);
 			const name = rest.length === 1 ? decodeURIComponent(rest[0]) : "";
-			const file = stage && name ? stageFile(root, stage, name) : null;
-			if (!file) throw new HttpError(404, "no such file");
+			const home = stage && name ? dataRoots().find((dir) => stageFile(dir, stage, name)) : undefined;
+			const file = stage && home ? stageFile(home, stage, name) : null;
+			if (!file || !stage || !home) throw new HttpError(404, "no such file");
 			if (stage === "lit-synthesis" && name.toLowerCase().endsWith(".html")) {
-				const sidecar = stageFile(root, stage, name.replace(/\.html?$/i, ".json"));
+				const sidecar = stageFile(home, stage, name.replace(/\.html?$/i, ".json"));
 				const rendered = sidecar ? renderSynthesisPage(sidecar) : null;
 				if (rendered !== null) {
 					res.writeHead(200, { "content-type": FILE_TYPES.html, "cache-control": "no-store" });
@@ -901,6 +1160,8 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 			return json(res, 200, {
 				papers: library.papers.map((paper) => ({ ...paper, pdfUrl: pdfHref(paper.file) })),
 				dirs: library.dirs,
+				folders: pdfFolders(),
+				store: root,
 				embeddingModel: llmConfig().embedModel,
 			});
 		}
@@ -914,6 +1175,30 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 			const hint = typeof body.hint === "string" ? body.hint.trim() : "";
 			const { variants, note } = await proposeVariants(query, hint);
 			return json(res, 200, { model: provider.status().model, variants, note });
+		}
+		// The keyword blocks of a request before the search (the "+" menu
+		// shows the synonym blocks and counts its journal and author lists
+		// over the own-words blocks): a typed block
+		// expression as typed, else the model's own-words blocks (saved, so
+		// the search that follows uses the same ones), else word by word.
+		if (route === "POST /api/search/blocks") {
+			const body = (await readBody(req)) as Record<string, unknown>;
+			const request = typeof body.request === "string" ? body.request.trim() : "";
+			if (!request) throw new HttpError(400, "request is empty");
+			// `mode` "synonyms": the model's blocks with one synonym each (the
+			// menu shows them for editing); `fresh` asks the model again.
+			const mode: BlockMode = body.mode === "synonyms" ? "synonyms" : "own";
+			let lines = mode === "own" && isHandBuilt(request) && isBlockExpression(request) ? blocksForEditing(request) : null;
+			let note: string | null = null;
+			if (!lines && provider.hasModel()) {
+				const proposal = await proposeBlocksFor(request, mode, body.fresh === true);
+				const plus1 = proposal.variants.find((variant) => variant.role === "plus1");
+				lines = plus1 ? blocksForEditing(plus1.text) : null;
+				note = proposal.note;
+			}
+			if (!lines) lines = deriveGroupsFromQuery(request).map((group) => group.join(" OR "));
+			const query = formatGroupExpression(lines.map((line) => parseGroupSpec(line).flat()));
+			return json(res, 200, { blocks: lines, query, note });
 		}
 		if (route === "POST /api/search/journals") {
 			const body = (await readBody(req)) as Record<string, unknown>;
@@ -958,6 +1243,72 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 			return json(res, 202, started);
 		}
 
+		/* ---- result cards and reports from the list ---- */
+		if (route === "GET /api/runs/cards") {
+			const name = url.searchParams.get("name") ?? "";
+			const payload = runPayload(name);
+			if (!payload) throw new HttpError(404, "no such search run");
+			const library = listLibrary(root, cwd, deps.matchLibrary(root));
+			return json(res, 200, {
+				name,
+				query: payload.query,
+				generated: payload.generated,
+				flow: payload.flow ?? null,
+				access_counts: payload.access_counts ?? null,
+				sources_used: payload.sources_used ?? [],
+				code_sources_used: payload.code_sources_used ?? null,
+				per_source: payload.per_source ?? null,
+				yearFrom: typeof payload.filters?.yearFrom === "number" ? payload.filters.yearFrom : null,
+				thisYear: new Date().getFullYear(),
+				rows: cardRows(payload as never, library.keys),
+			});
+		}
+		// A report from the (filtered) list: the run's payload with the list
+		// filters applied as a screening step, rendered by the unchanged
+		// renderer; written next to the run, shown as a card in the chat.
+		if (route === "POST /api/runs/report") {
+			const body = (await readBody(req)) as Record<string, unknown>;
+			const name = typeof body.name === "string" ? body.name : "";
+			const kind = body.kind === "prisma" ? "prisma" : "html";
+			const payload = runPayload(name);
+			if (!payload) throw new HttpError(404, "no such search run");
+			const filters = parseCardFilters(body.filters);
+			const thisYear = new Date().getFullYear();
+			const active = hasCardFilters(filters);
+			const filtered = applyCardFilters(payload as never, filters, thisYear) as unknown as SearchPayload & { list_filters: string[] | null };
+			const dir = join(root, "lit-search");
+			// A filtered report gets its own name next to the run; a second one
+			// with other filters counts up. The HTML pair and the SVG count
+			// separately, so the diagram of a list shares its report's name.
+			let base = name;
+			if (active) {
+				const taken = (candidate: string) => kind === "prisma" ? existsSync(join(dir, `${candidate}.prisma.svg`)) : existsSync(join(dir, `${candidate}.html`)) || existsSync(join(dir, `${candidate}.json`));
+				base = `${name}_filtered`;
+				for (let suffix = 2; taken(base); suffix++) base = `${name}_filtered_${suffix}`;
+			}
+			const filterLabel = active ? ` · list filters: ${describeCardFilters(filters, thisYear).join("; ")}` : "";
+			let card: FileCard;
+			if (kind === "prisma") {
+				const svg = prismaSvgFor(filtered);
+				if (!svg) throw new HttpError(400, "this run has no screening-flow counts");
+				const file = `${base}.prisma.svg`;
+				mkdirSync(dir, { recursive: true });
+				writeFileSync(join(dir, file), svg, "utf8");
+				card = { kind: "file", name: file, label: `PRISMA-style flow diagram, SVG · lit-search/${filterLabel}`, stage: "lit-search", url: `/files/lit-search/${encodeURIComponent(file)}` };
+			} else {
+				const htmlPath = join(dir, `${base}.html`);
+				const html = renderHtml(filtered, { network: true });
+				if (active) writeRunOutputs(html, filtered, htmlPath, "lit-search");
+				else { mkdirSync(dir, { recursive: true }); writeFileSync(htmlPath, html, "utf8"); }
+				writeNetworkPage(htmlPath);
+				card = { kind: "file", name: `${base}.html`, label: `Search report, HTML · lit-search/${filterLabel}`, stage: "lit-search", url: `/files/lit-search/${encodeURIComponent(base)}.html` };
+			}
+			// From the rail (History) the report belongs to that conversation's
+			// run, not to the open one: no card in the open conversation.
+			if (body.rail !== true) applyDialog({ kind: "fileWritten", card, quiet: true });
+			return json(res, 200, { card });
+		}
+
 		/* ---- selection ---- */
 		if (route === "GET /api/selection/candidates") {
 			const run = url.searchParams.get("run") ?? "";
@@ -974,7 +1325,6 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 		/* ---- synthesis ---- */
 		if (route === "POST /api/index") {
 			const body = (await readBody(req)) as Record<string, unknown>;
-			requireNoJob();
 			const force = body.reindex === true;
 			const job = startJob("index", force ? "re-index the library" : "index the library", async ({ signal, log }) => {
 				await requireEmbedding(signal);
@@ -1028,7 +1378,6 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 			if (!paper) throw new HttpError(400, "the session report covers ONE paper -- choose it");
 			const focus = typeof body.question === "string" && body.question.trim() ? body.question.trim() : undefined;
 			const session = typeof body.session === "string" && body.session.trim() ? body.session.trim() : chatSession;
-			requireNoJob();
 			const job = startJob("chat-report", `session report: ${paper}`, async ({ signal, log }) => {
 				await requireEmbedding(signal);
 				const wiring = provider.wiring();
@@ -1044,8 +1393,9 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 		if (route === "GET /api/dialog") return json(res, 200, dialogView());
 		if (route === "POST /api/dialog/answer") {
 			const body = (await readBody(req)) as Record<string, unknown>;
-			requireNoJob();
+			if (dialog.activeJob) throw new HttpError(409, "this conversation's job is still running -- wait for it or stop it");
 			const strings = (value: unknown): string[] | undefined => (Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : undefined);
+			const options = parseSearchOptions(body.options);
 			applyDialog({
 				kind: "answer",
 				text: typeof body.text === "string" ? body.text : undefined,
@@ -1054,11 +1404,17 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 				blocks: strings(body.blocks),
 				toggles: strings(body.toggles),
 				ask: body.ask === true,
+				...(typeof body.code === "boolean" ? { code: body.code } : {}),
+				...(typeof body.synonyms === "boolean" ? { synonyms: body.synonyms } : {}),
+				...(typeof body.period === "string" && ["5y", "10y", "20y", "all"].includes(body.period) ? { period: body.period as PeriodPreset } : {}),
+				...(options ? { options } : {}),
+				...(typeof body.folder === "string" && body.folder.trim() ? { folder: body.folder.trim() } : {}),
+				filters: searchAgainFilters(body.filters),
 			});
 			return json(res, 200, dialogView());
 		}
 		if (route === "POST /api/dialog/restart") {
-			jobs.cancel();
+			stopJobOf(dialog);
 			applyDialog({ kind: "restart" });
 			return json(res, 200, dialogView());
 		}
@@ -1066,10 +1422,21 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 		// saved, an empty one starts, optionally straight at that stage.
 		if (route === "POST /api/dialog/new") {
 			const body = (await readBody(req)) as Record<string, unknown>;
-			requireIdle();
-			startFresh();
-			if (body.start === "search") applyDialog({ kind: "answer", chip: "goSearch" });
-			else if (body.start === "synthesis") applyDialog({ kind: "answer", chip: "goSynthesis" });
+			// A running job or model call keeps going in the parked conversation.
+			parkCurrent();
+			const scope = Array.isArray(body.scope) ? body.scope.filter((base): base is string => typeof base === "string" && base.length > 0 && base.length < 300).slice(0, 50) : undefined;
+			// One PDF: the question names it from its metadata (title, first
+			// author, year), never from a model.
+			let about: string | undefined;
+			let label: string | undefined;
+			if (body.start === "synthesis" && scope && scope.length === 1) {
+				const paper = listLibrary(root, cwd, deps.matchLibrary(root)).papers.find((entry) => entry.base === scope[0]);
+				if (paper) {
+					about = paperLabel(paper);
+					label = paperShortLabel(paper) ?? undefined;
+				}
+			}
+			startFresh(body.start === "search" || body.start === "synthesis" ? body.start : undefined, body.start === "synthesis" ? scope : undefined, about, label);
 			return json(res, 200, dialogView());
 		}
 		if (route === "GET /api/history") return json(res, 200, historyView());
@@ -1078,28 +1445,48 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 			const body = (await readBody(req)) as Record<string, unknown>;
 			const id = typeof body.id === "string" ? body.id : "";
 			if (id === currentId) return json(res, 200, { ...dialogView(), otherRoot: null });
-			requireIdle();
-			const entry = loadConversation(historyRoot, id);
-			if (!entry) throw new HttpError(404, "no such conversation");
-			persistCurrent();
-			dialog = entry.dialog;
-			currentId = entry.id;
-			chatSession = entry.chatSession;
-			dialogStarted = entry.started;
+			// A parked conversation comes back from memory (its newest state,
+			// job still running); any other one from its file.
+			const live = parked.get(id);
+			const entry = live ? null : loadConversation(historyRoot, id);
+			if (!live && !entry) throw new HttpError(404, "no such conversation");
+			parkCurrent();
+			if (live) {
+				parked.delete(id);
+				dialog = live.dialog;
+				chatSession = live.chatSession;
+				dialogStarted = live.started;
+				dialogComputed = live.computed;
+			} else if (entry) {
+				dialog = entry.dialog;
+				chatSession = entry.chatSession;
+				dialogStarted = entry.started;
+				dialogComputed = entry.computed ?? null;
+			}
+			currentId = id;
 			broadcastDialog();
-			return json(res, 200, { ...dialogView(), otherRoot: entry.root === root ? null : entry.root });
+			broadcastHistory();
+			return json(res, 200, { ...dialogView(), otherRoot: entry && entry.root !== root ? entry.root : null });
 		}
 		// Delete one conversation file; deleting the current one starts an empty conversation.
 		if (route === "POST /api/history/delete") {
 			const body = (await readBody(req)) as Record<string, unknown>;
 			const id = typeof body.id === "string" ? body.id : "";
-			if (id === currentId) requireIdle();
+			if (id === currentId) stopJobOf(dialog);
+			const gone = parked.get(id);
+			if (gone) { stopJobOf(gone.dialog); parked.delete(id); }
 			const deleted = deleteConversation(historyRoot, id);
 			if (id === currentId) startFresh();
 			return json(res, 200, { deleted, dialog: dialogView() });
 		}
+		if (route === "POST /api/blocks/clear") {
+			return json(res, 200, { deleted: clearBlockCache(blockCacheFile) });
+		}
 		if (route === "POST /api/history/clear") {
-			requireIdle();
+			// Every conversation goes, so every job of a conversation stops.
+			stopJobOf(dialog);
+			for (const entry of parked.values()) stopJobOf(entry.dialog);
+			parked.clear();
 			const deleted = clearConversations(historyRoot);
 			startFresh();
 			return json(res, 200, { deleted, dialog: dialogView() });
@@ -1109,6 +1496,16 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 		// (the folder icon in the rail). Nothing else.
 		if (route === "POST /api/reveal") {
 			const body = (await readBody(req)) as Record<string, unknown>;
+			// A known folder by path: one of the PDF folders (or a folder in
+			// one of them, from the library tree) or the last download folder.
+			if (typeof body.path === "string" && body.path.trim()) {
+				const wantedPath = resolve(body.path.trim());
+				const known = [...pdfFolders(), lastDownloadDir(), root].filter(Boolean);
+				if (!isAbsolute(body.path.trim()) || !known.some((folder) => wantedPath === folder || wantedPath.startsWith(`${folder}/`) || wantedPath.startsWith(`${folder}\\`))) throw new HttpError(400, "not one of your folders");
+				if (!existsSync(wantedPath)) throw new HttpError(404, `${wantedPath} does not exist`);
+				revealFolder(wantedPath);
+				return json(res, 200, { opened: wantedPath });
+			}
 			const wanted = typeof body.stage === "string" ? body.stage.replace(/\/$/, "") : "";
 			const stage = wanted === "root" ? "" : stageOf(wanted);
 			if (stage === null) throw new HttpError(400, "unknown folder");
@@ -1118,9 +1515,61 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 			return json(res, 200, { opened: folder });
 		}
 
+		/* ---- drag and drop: a PDF from the user's desktop into the inbox ---- */
+		if (route === "POST /api/library/upload") {
+			const bytes = await readRawBody(req, UPLOAD_LIMIT);
+			if (bytes.subarray(0, 5).toString("latin1") !== "%PDF-") throw new HttpError(400, "not a PDF file");
+			const inbox = inboxDir(root);
+			mkdirSync(inbox, { recursive: true });
+			// The name must not clash with a PDF already in the library (the
+			// earlier folder would win and hide the dropped one); the same
+			// file dropped twice is kept once.
+			const taken = new Set(libraryFiles(root, { cwd }).files.map((file) => pdfBase(file).toLowerCase()));
+			let name = uploadName(url.searchParams.get("name") ?? "");
+			const stem = name.slice(0, -4);
+			for (let n = 2; ; n++) {
+				const path = join(inbox, name);
+				if (existsSync(path) && statSync(path).size === bytes.length && readFileSync(path).equals(bytes)) break;
+				if (!taken.has(name.slice(0, -4).toLowerCase()) && !existsSync(path)) {
+					writeFileSync(path, bytes);
+					break;
+				}
+				name = `${stem}_${n}.pdf`;
+			}
+			return json(res, 200, { base: name.slice(0, -4), file: join(inbox, name) });
+		}
+
+		/* ---- folders: the user's PDF folders and the folder window ---- */
+		if (route === "GET /api/folders") {
+			return json(res, 200, { pdfFolders: pdfFolders(), lastDownloadDir: lastDownloadDir(), store: root, canPick: deps.canPickFolder() });
+		}
+		if (route === "POST /api/folders/pick") {
+			// The window opens on this machine and waits for the user.
+			const body = (await readBody(req)) as Record<string, unknown>;
+			const title = body.purpose === "download" ? "Where should the PDFs go?" : "Choose a folder with PDFs";
+			const start = typeof body.start === "string" && body.start.trim() ? body.start.trim() : lastDownloadDir() || pdfFolders()[0] || "";
+			try {
+				return json(res, 200, { path: await deps.pickFolder(title, start) });
+			} catch (error) {
+				throw new HttpError(501, error instanceof Error ? error.message : String(error));
+			}
+		}
+		if (route === "POST /api/folders/add" || route === "POST /api/folders/remove") {
+			const body = (await readBody(req)) as Record<string, unknown>;
+			const path = typeof body.path === "string" ? body.path.trim() : "";
+			if (!path || !isAbsolute(path)) throw new HttpError(400, "give the full path of a folder");
+			if (route === "POST /api/folders/add") {
+				let isDir = false;
+				try { isDir = statSync(path).isDirectory(); } catch { /* missing */ }
+				if (!isDir) throw new HttpError(400, `${path} is not a folder`);
+				return json(res, 200, { pdfFolders: addPdfFolder(path) });
+			}
+			return json(res, 200, { pdfFolders: removePdfFolder(path) });
+		}
+
 		/* ---- settings ---- */
 		if (route === "GET /api/settings") {
-			return json(res, 200, { ...storedConfigView(), path: configPath(), resolved: llmConfig(), mailtoResolved: contactMailto(), embedState, historyDir: historyRoot, conversations: listConversations(historyRoot).conversations.length });
+			return json(res, 200, { ...storedConfigView(), path: configPath(), resolved: llmConfig(), mailtoResolved: contactMailto(), embedState, historyDir: historyRoot, conversations: listConversations(historyRoot).conversations.length, savedBlocks: blockCacheSize(blockCacheFile) });
 		}
 		if (route === "POST /api/settings") {
 			const body = (await readBody(req)) as Record<string, unknown>;
@@ -1129,6 +1578,10 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 				const mailto = body.mailto.trim();
 				if (mailto && !isPlausibleMailto(mailto)) throw new HttpError(400, `"${mailto}" does not look like an email address`);
 				patch.mailto = mailto || undefined;
+			}
+			if (typeof body.thinking === "string") {
+				if (!(THINKING_SETTINGS as readonly string[]).includes(body.thinking)) throw new HttpError(400, `thinking must be one of ${THINKING_SETTINGS.join(", ")}`);
+				patch.thinking = body.thinking === "off" ? undefined : body.thinking as ThinkingSetting;
 			}
 			if (Array.isArray(body.codeListTopics)) {
 				const topics = body.codeListTopics.filter((t): t is string => typeof t === "string").map((t) => t.trim()).filter(Boolean);
@@ -1154,7 +1607,6 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 			return json(res, 200, { written, ...storedConfigView(), resolved: llmConfig(), mailtoResolved: contactMailto() });
 		}
 		if (route === "POST /api/settings/check") {
-			requireNoJob();
 			const job = startJob("check", "test the setup", async ({ signal, log }) => {
 				const cfg = llmConfig();
 				log(`config   ${configPath()}`);
@@ -1176,7 +1628,6 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 			return json(res, 202, { job });
 		}
 		if (route === "POST /api/settings/pull-embed") {
-			requireNoJob();
 			const job = startJob("pull", `fetch the embedding model ${llmConfig().embedModel}`, async ({ signal, log }) => {
 				await deps.pullEmbedModel(log, signal);
 				embedState = await deps.checkEmbedModel(signal);

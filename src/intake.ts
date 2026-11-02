@@ -571,6 +571,91 @@ export function arxivVariantPrompt(query: string, hint: string): string {
 	].filter(Boolean).join("\n");
 }
 
+/* ------------------------------------------------------------------ *
+ * Own-words blocks (the browser's default, no synonyms)                *
+ * ------------------------------------------------------------------ */
+
+/** Prompt that only GROUPS the request's own words into concept blocks.
+ * No term may be added; code checks that afterwards (parseOwnBlocks).
+ * `translate` (a non-English request): each concept rendered once in
+ * English instead, since the sources index English metadata. */
+export function ownBlocksPrompt(query: string, translate: boolean): string {
+	return [
+		`Search request: ${query}`,
+		"",
+		"Turn this request into ONE concept-block boolean query: concept blocks joined with AND, each "
+		+ "block's terms joined with OR, in parentheses.",
+		translate
+			? "The request is not in English. Translate each of its concepts into English ONCE, the plain "
+			+ "technical term a paper title would use. Add no synonyms, no extra concepts."
+			: "Use ONLY words that appear in the request itself. Add NO synonyms, NO related terms, NO new "
+			+ "words of any kind.",
+		"Drop filler words (I want, papers about, using, with, from ...) and generic words (study, approach, "
+		+ "method, articles, papers, imagery, data) unless they are part of a technical term.",
+		"Keep multi-word technical terms together as one term (water level, sand bar, deep learning).",
+		"Put alternatives the request names itself into one block (Sentinel-1 and Sentinel-2 -> "
+		+ "(Sentinel-1 OR Sentinel-2)). Use 2-4 blocks; each concept appears in exactly ONE block, never "
+		+ "repeated inside another block's term.",
+		"Example: 'I want papers about flood mapping in rivers with Sentinel-1 and Sentinel-2 imagery' ->",
+		"(flood mapping) AND (rivers) AND (Sentinel-1 OR Sentinel-2)",
+		"Multi-word terms as plain words, NO quotation marks, no field prefixes.",
+		"Output exactly one line. No explanations.",
+	].join("\n");
+}
+
+/** Function words of the languages a request most likely arrives in
+ * besides English (German, Spanish, Catalan, French, Italian,
+ * Portuguese). Any of them, or a letter outside ASCII, marks the request
+ * as non-English (single letters like Catalan "i" are left out: English
+ * "I want ..." carries them too); the sources index English metadata, so such a request
+ * is translated instead of word-checked. Deterministic. */
+const NON_ENGLISH_WORDS = new Set([
+	"der", "die", "das", "und", "oder", "mit", "von", "für", "über", "aus", "zur", "zum", "ich", "möchte",
+	"de", "del", "la", "el", "los", "las", "y", "con", "para", "sobre", "en", "una", "un", "mediante",
+	"amb", "els", "les", "dels", "des", "du", "et", "pour", "avec", "sur", "le", "di", "della",
+	"pelo", "pela", "em",
+]);
+export function needsTranslation(query: string): boolean {
+	if (/[^\x00-\x7f]/.test(query.replace(/[–—‘’“”]/g, ""))) return true;
+	return query.toLowerCase().split(/[^a-z]+/).some((word) => NON_ENGLISH_WORDS.has(word));
+}
+
+/** Lowercased words of a text, hyphens and punctuation as separators. */
+function textWords(text: string): string[] {
+	return text.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+}
+
+/**
+ * Parse the answer to ownBlocksPrompt into editable block lines
+ * ("a OR b"). The code gate: without `translate`, every word of every
+ * term must occur in the request (plural tolerance as wordMatches); terms
+ * failing that drop, empty blocks drop, duplicates drop. With `translate`
+ * the words cannot be checked, so the breadth is capped instead: at most
+ * as many terms in total as the request has content words. null when no
+ * usable line came back. Pure.
+ */
+export function parseOwnBlocks(raw: string, query: string, translate: boolean): string[] | null {
+	const requestWords = textWords(query);
+	const budget = Math.max(1, deriveGroupsFromQuery(query).length);
+	for (const line of raw.split("\n")) {
+		const { text } = cleanVariantLine(line);
+		if (!text || !isBlockExpression(text)) continue;
+		const seen = new Set<string>();
+		let used = 0;
+		const blocks = queryBlocks(text).map((block) => block.filter((term) => {
+			const key = term.toLowerCase();
+			if (seen.has(key)) return false;
+			if (!translate && !textWords(term).every((word) => requestWords.some((own) => wordMatches(word, own)))) return false;
+			if (translate && used >= budget) return false;
+			seen.add(key);
+			used++;
+			return true;
+		})).filter((block) => block.length);
+		if (blocks.length) return blocks.map((block) => block.join(" OR "));
+	}
+	return null;
+}
+
 /**
  * Parse a free-text results-per-source count from the intake dialog.
  * Returns the number clamped to [1, max] (max = politeness cap towards the

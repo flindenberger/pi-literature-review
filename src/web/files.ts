@@ -12,7 +12,8 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 import { chatPool } from "../synthesis.ts";
-import { type LibraryMatch, matchLibrary, papersDirs } from "../corpus.ts";
+import { libraryFiles, type LibraryMatch, matchLibrary } from "../corpus.ts";
+import { readTwin } from "../library.ts";
 import { NETWORK_PAGE_NAME } from "../network.ts";
 import type { Round } from "../protocol.ts";
 
@@ -26,6 +27,7 @@ export const FILE_TYPES: Record<string, string> = {
 	pdf: "application/pdf",
 	css: "text/css; charset=utf-8",
 	js: "text/javascript; charset=utf-8",
+	svg: "image/svg+xml",
 };
 
 /** A single path segment without traversal or separators; the extension
@@ -56,19 +58,14 @@ export function stageFile(root: string, stage: Stage, name: string): string | nu
 	}
 }
 
-/** The PDF of that basename in any library folder (papersDirs chain). */
+/** The PDF of that file name anywhere in the library (every source,
+ * library.ts; the first one wins like in the corpus). The name only
+ * selects among scanned files, it never becomes a path itself. */
 export function pdfFile(root: string, cwd: string, name: string): string | null {
 	const safe = safeName(name);
 	if (!safe || !safe.toLowerCase().endsWith(".pdf")) return null;
-	for (const dir of papersDirs(root, cwd)) {
-		const path = join(dir, safe);
-		try {
-			if (statSync(path).isFile()) return path;
-		} catch {
-			// next folder
-		}
-	}
-	return null;
+	const wanted = safe.toLowerCase();
+	return libraryFiles(root, { cwd }).files.find((file) => file.split(/[\\/]/).pop()!.toLowerCase() === wanted) ?? null;
 }
 
 function readJson(path: string): unknown {
@@ -133,6 +130,14 @@ export interface CandidateEntry {
 	inLibrary: boolean;
 }
 
+/** The JSON sidecar of one saved search run, or null. */
+export function readRunPayload(root: string, name: string): Record<string, any> | null {
+	const path = stageFile(root, "lit-search", `${name}.json`);
+	if (!path) return null;
+	const payload = readJson(path) as Record<string, any> | null;
+	return payload && Array.isArray(payload.results) ? payload : null;
+}
+
 /** The records of one saved search (results, then dropped table) as
  * tickable download candidates; identifiers exactly as the report's copy
  * sentence carries them. */
@@ -187,11 +192,11 @@ export interface LibraryEntry {
  * filename-only entries), with the index state per paper. Offline: no
  * adoption here (that runs inside the index/report jobs). */
 export function listLibrary(root: string, cwd: string, match?: LibraryMatch): { papers: LibraryEntry[]; dirs: string[]; keys: Set<string> } {
-	const found = match ?? matchLibrary(root, () => {});
+	const found = match ?? matchLibrary(root, () => {}, { cwd });
 	const indexDir = join(root, "lit-synthesis", "index");
 	const papers = chatPool(found).map((paper) => {
 		const dir = paper.file.slice(0, paper.file.length - `${paper.base}.pdf`.length).replace(/[\\/]$/, "");
-		const twin = readJson(join(dir, `${paper.base}.json`)) as Record<string, unknown> | null;
+		const twin = readTwin(root, paper.file);
 		const index = readJson(join(indexDir, `${paper.base}.json`)) as Record<string, any> | null;
 		return {
 			base: paper.base,
@@ -210,7 +215,7 @@ export function listLibrary(root: string, cwd: string, match?: LibraryMatch): { 
 		};
 	});
 	papers.sort((a, b) => (a.year ?? "").localeCompare(b.year ?? "") || a.base.localeCompare(b.base));
-	const dirs = found.dirs ?? papersDirs(root, cwd);
+	const dirs = found.dirs ?? [found.papersDir];
 	return { papers, dirs, keys: new Set(found.matched.map((paper) => paper.key)) };
 }
 

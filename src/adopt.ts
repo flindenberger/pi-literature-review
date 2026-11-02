@@ -10,21 +10,23 @@
  *   2. look the identifier up at the open APIs (OpenAlex for DOIs, the
  *      arXiv API for arXiv IDs) -- a successful by-identifier lookup is the
  *      verification: the API resolved exactly this identity,
- *   3. write the metadata twin next to the PDF (same format the selection stage writes),
- *      so the library matcher picks the paper up like any fetched one.
+ *   3. write the metadata twin (same format the selection stage writes) into
+ *      the store (library.ts: never into the user's folder), so the library
+ *      matcher picks the paper up like any fetched one.
  * A PDF whose text names no identifier, or whose identifier the APIs do
  * not know, stays excluded -- honestly, with the reason. THE ONE INVIOLABLE
  * RULE holds: every metadata field in the twin is copied verbatim from an
  * API response.
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { buildPaperMeta, parseIdentifier, type PaperMeta, type SidecarEntry } from "./selection.ts";
 import { extractPdfPages } from "./extract.ts";
 import { lookupArxivIds } from "./sources/arxiv.ts";
 import { contactMailto, userAgent } from "./types.ts";
+import { twinSaver } from "./library.ts";
 
 /** Pages scanned for the paper's own identifier. Front matter only: deeper
  * pages are dominated by OTHER papers' identifiers (the reference list). */
@@ -186,14 +188,14 @@ export async function lookupArxivById(id: string, _signal?: AbortSignal): Promis
 	};
 }
 
-/** The real IO wiring, used by the engine and the CLI. */
-export function realAdoptDeps(): AdoptDeps {
+/** The real IO wiring, used by the engine and the CLI; twins go to the
+ * store of that data root. */
+export function realAdoptDeps(root: string): AdoptDeps {
 	return {
 		readPdf: (path) => readFileSync(path),
 		extract: extractPdfPages,
 		lookupDoi: lookupDoiOpenAlex,
 		lookupArxiv: lookupArxivById,
-		// Same serialization as the fetch twin writer.
-		saveMeta: (path, meta) => writeFileSync(path, JSON.stringify(meta, null, 2) + "\n", "utf8"),
+		saveMeta: twinSaver(root),
 	};
 }

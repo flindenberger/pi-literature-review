@@ -241,10 +241,13 @@ const parseJournalFacetPage = parseFacetPage;
 		level: "free",
 		oa_status: "hybrid",
 		pdf_urls: ["https://upcommons.upc.edu/bitstreams/x/download"],
+		work_type: "article",
 	});
 	// Conference abstract: abstract_only even though OpenAlex calls it gold.
 	assert.equal(accessFromWork({ type: "conference-abstract", open_access: { is_oa: true, oa_status: "gold" } }).level, "abstract_only");
-	assert.deepEqual(accessFromWork({ type: "article", open_access: { is_oa: false, oa_status: "closed" } }), { level: "restricted", oa_status: "closed" });
+	assert.deepEqual(accessFromWork({ type: "article", open_access: { is_oa: false, oa_status: "closed" } }), { level: "restricted", oa_status: "closed", work_type: "article" });
+	// Work type and the primary source's type are copied verbatim (paper-type filter).
+	assert.deepEqual(accessFromWork({ type: "conference-paper", primary_location: { source: { type: "conference" } }, open_access: { is_oa: false } }), { level: "restricted", work_type: "conference-paper", source_type: "conference" });
 	assert.deepEqual(accessFromWork({}), { level: "unknown" });
 }
 

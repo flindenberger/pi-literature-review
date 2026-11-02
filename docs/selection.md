@@ -66,12 +66,24 @@ Honest per paper:
 
 Below the per-paper lines, one list collects every paper to open in the
 browser (free ones first, then restricted, then the rest). Save such a PDF
-into `lit-selection/`: `/lit-synthesis` adopts it by the DOI or arXiv ID
-printed in the PDF (see [synthesis.md](synthesis.md)).
+into one of your PDF folders (or drop it onto the browser page):
+`/lit-synthesis` adopts it by the DOI or arXiv ID printed in the PDF (see
+[synthesis.md](synthesis.md)).
+
+## Download folder
+
+Every interactive run asks where the PDFs go: the last download folder
+first (one Enter keeps it), your other PDF folders, the system's folder
+window (zenity or kdialog on Linux, the macOS and Windows folder dialogs;
+only with a desktop), or a typed path (`~` = home folder; created when
+missing). A folder the agent passes is only offered. The chosen folder is
+remembered (`lastDownloadDir`) and becomes a PDF folder. Only the PDF lands
+there; its metadata twin goes to the store (`meta/`). A paper that is
+already anywhere in the library is not downloaded again.
 
 ## Library naming
 
-`lit-selection/<year>_<FirstAuthor>[_et_al]_<Title_words>.pdf`, capped at
+`<folder>/<year>_<FirstAuthor>[_et_al]_<Title_words>.pdf`, capped at
 80 characters, umlauts transliterated, built only from the saved API
 records. When year, author or title is unknown, the identifier slug
 (`10.3390_rs13081505`) is used instead.

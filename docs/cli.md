@@ -1,9 +1,12 @@
 # Command line (no Pi)
 
 The same engines run standalone with plain Node from the package folder. This is
-useful for scripting, testing and for machines without Pi. The output
-folders (`lit-search/`, `lit-selection/`, `lit-synthesis/`) land in the
-working directory; `PI_LITERATURE_REVIEW_HOME` overrides that.
+useful for scripting, testing and for machines without Pi. Search runs,
+reports and the index land in the store next to the configuration file
+(`~/.config/pi-literature-review/`, see [configuration.md](configuration.md#where-files-live));
+`PI_LITERATURE_REVIEW_HOME` moves the store (`PI_LITERATURE_REVIEW_HOME=.`
+gives the per-project layout in the working directory). PDFs are read from
+your PDF folders and downloaded into the last download folder.
 
 ## Search
 Navigate to your extension folder and type:

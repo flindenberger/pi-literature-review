@@ -1141,7 +1141,7 @@ export default async function literatureSynthesis(pi: ExtensionAPI) {
 		name: TOOL_NAME,
 		label: "Literature Synthesis",
 		description:
-			"Chat about the LOCAL PDF papers (the lit-selection/ library AND loose PDFs in the current folder): grounded answers with page-exact, " +
+			"Chat about the LOCAL PDF papers (the user's PDF folders, dropped PDFs, a lit-selection/ library AND loose PDFs in the current folder): grounded answers with page-exact, " +
 			"code-validated citations over ONE paper, a selection, or the whole library. Use this tool WHENEVER " +
 			"the user asks something about local papers/PDFs -- including German requests like 'zu einem Paper " +
 			"chatten', 'erklaere mir das Paper', 'Frage zum Paper'. NOT this tool: searching ONLINE for new " +

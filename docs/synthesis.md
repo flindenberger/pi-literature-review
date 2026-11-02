@@ -13,13 +13,15 @@ configure.
 
 ## Corpus and index
 
-The corpus is the `lit-selection/` library plus loose PDFs in the working
-directory. On duplicate filenames the library wins and the shadowed file
-is reported. A loose PDF is adopted when its own DOI or arXiv ID can be
+The corpus is every PDF in your PDF folders (recursively), the PDFs
+dropped onto the browser page (`inbox/` in the store), an older
+`lit-selection/` library and loose PDFs in the working directory (see
+[configuration.md](configuration.md#where-files-live)). On duplicate file
+names the earlier source wins and the shadowed files are reported. A loose PDF is adopted when its own DOI or arXiv ID can be
 extracted from the text and verified; otherwise it is cited by filename
 and page.
 
-Each PDF is indexed once under `lit-synthesis/index/`: text extraction
+Each PDF is indexed once under the store's `lit-synthesis/index/`: text extraction
 (scanned PDFs are excluded and named), reference list cut off, roughly
 1000-character chunks, embeddings. The index is invalidated by a change of
 content hash, embedding model or chunking.
@@ -117,33 +119,34 @@ model, for example [OpenScholar-8B](https://github.com/akariasai/openscholar) (A
 into Ollama; the report names the model that ran. Embeddings always run on the embedding backend
 -- see [Configuration](configuration.md).
 
-### Thinking is off
+### Thinking
 
-Every model call of this stage -- answers, summaries, report units, the
-review synthesis, the English retrieval variant -- and the query-variant
-suggestions of the search wizard run with hidden reasoning disabled and a
-fixed output cap. This is not configurable. Your own chat turns in Pi are
-unaffected and follow the thinking level selected there.
+Every model call of this package -- answers, summaries, report units, the
+review synthesis, the English retrieval variant, the query-variant
+suggestions, the browser's keyword blocks, help answers and small-talk
+check -- follows the package's own `thinking` setting (config.json or
+Settings in the browser): **off** by default, or low / medium / high.
+It is independent of pi's thinking level, read anew for each call, and
+works the same inside pi and standalone. When on, every call gets extra
+output room for the hidden reasoning (2k / 4k / 8k tokens).
 
 <details>
-<summary>Why, and what llama.cpp needs</summary>
+<summary>What to expect, and what llama.cpp needs</summary>
 
-Two reasons. The calls are excerpt-bound (answer only from the numbered
-excerpts, cite by number), so reasoning adds nothing. And a thinking model
-can spend a capped call's entire budget on hidden reasoning and return no
-answer text at all.
-
-This holds for every provider reachable through Pi, cloud APIs included:
-Pi's model layer translates "no reasoning level" into the provider's own
-off-switch, and the Ollama dialect of the configured backend receives
-`think: false`.
+Thinking makes every call slower; on a small local model it rarely helps,
+because the calls are excerpt-bound (answer only from the numbered
+excerpts, cite by number). Citations stay code-checked either way. A
+thinking model may still spend a call's whole budget on reasoning and
+return no answer text; the error then says so ("it produced only hidden
+reasoning") -- turn Thinking off or lower, or ask again. Short checks
+with a time limit (small talk, help) fall back as without a model:
+the message is looked up in the papers, the fixed help text is shown.
 
 One prerequisite for llama.cpp served through Pi: the model must be
 registered in Pi WITH metadata -- a `models.json` provider carrying
 `compat.thinkingFormat`, e.g. `qwen-chat-template`. The quick form
 `provider=URL` registers it without, and thinking then cannot be switched
-off by any client. The symptom is "the model returned no answer text (stop
-reason: length; it produced only hidden reasoning)".
+by any client.
 
 </details>
 

@@ -1,10 +1,12 @@
 /**
- * Job runner of the web interface: ONE job at a time (the stages are long
- * and share the model), each with its own abort switch, progress lines
- * in a ring buffer so a browser that connects later still sees them, and
- * subscribers (the SSE connections) that receive every line and every
- * state change. Pure in-memory state; the server routes are the only
- * callers.
+ * Job runner of the web interface: several jobs at once (searches,
+ * reports and chat rounds of different conversations run side by side,
+ * at most MAX_RUNNING), while kinds that write the same files or change
+ * the setup (download, index, setup check, embedding pull) run alone of
+ * their kind. Each job has its own abort switch; progress lines sit in a
+ * ring buffer so a browser that connects later still sees them, and
+ * subscribers (the SSE connections) receive every line and every state
+ * change. Pure in-memory state; the server routes are the only callers.
  */
 
 export type JobKind = "search" | "selection" | "index" | "report" | "chat" | "chat-report" | "pull" | "check";
@@ -46,18 +48,22 @@ export interface JobContext {
 export const LINE_BUFFER = 500;
 /** Finished jobs kept in the history list. */
 const HISTORY_LIMIT = 20;
+/** Jobs running at the same time. */
+export const MAX_RUNNING = 3;
+/** Kinds that never run twice at once (same output files or the setup). */
+const SINGLE_KINDS: ReadonlySet<JobKind> = new Set(["selection", "index", "pull", "check"]);
 
 export class JobBusyError extends Error {
 	readonly running: JobInfo;
 	constructor(running: JobInfo) {
-		super(`a job is already running: ${running.label}`);
+		super(SINGLE_KINDS.has(running.kind) ? `a job of this kind is already running: ${running.label}` : `${MAX_RUNNING} jobs are already running -- wait for one or stop it`);
 		this.name = "JobBusyError";
 		this.running = running;
 	}
 }
 
 export class JobRunner {
-	private current: { info: JobInfo; controller: AbortController } | null = null;
+	private readonly running = new Map<string, { info: JobInfo; controller: AbortController }>();
 	private readonly history: JobInfo[] = [];
 	private readonly lines: LineEvent[] = [];
 	private readonly listeners = new Set<(event: RunnerEvent) => void>();
@@ -68,10 +74,14 @@ export class JobRunner {
 		this.now = now;
 	}
 
-	/** Start the work; throws JobBusyError while another job runs. The
-	 * returned info is a snapshot; subscribe for the outcome. */
+	/** Start the work; throws JobBusyError when a job of a single kind is
+	 * already running or MAX_RUNNING jobs run. The returned info is a
+	 * snapshot; subscribe for the outcome. */
 	start(kind: JobKind, label: string, work: (ctx: JobContext) => Promise<unknown>): JobInfo {
-		if (this.current) throw new JobBusyError({ ...this.current.info });
+		const all = [...this.running.values()].map((entry) => entry.info);
+		const same = SINGLE_KINDS.has(kind) ? all.find((info) => info.kind === kind) : undefined;
+		if (same) throw new JobBusyError({ ...same });
+		if (all.length >= MAX_RUNNING) throw new JobBusyError({ ...all[all.length - 1] });
 		const controller = new AbortController();
 		const info: JobInfo = {
 			id: `${kind}-${++this.counter}`,
@@ -80,7 +90,7 @@ export class JobRunner {
 			state: "running",
 			started: this.now().toISOString(),
 		};
-		this.current = { info, controller };
+		this.running.set(info.id, { info, controller });
 		this.emit({ type: "job", job: { ...info } });
 		const log = (text: string) => this.pushLine(info.id, text);
 		work({ signal: controller.signal, log }).then(
@@ -93,13 +103,18 @@ export class JobRunner {
 		return { ...info };
 	}
 
-	/** Abort the running job (by id, or whatever runs). */
+	/** Abort one running job by id, or every running job without an id. */
 	cancel(id?: string): boolean {
-		if (!this.current) return false;
-		if (id && this.current.info.id !== id) return false;
-		this.pushLine(this.current.info.id, "cancel requested");
-		this.current.controller.abort();
-		return true;
+		const targets = id ? [this.running.get(id)].filter((entry) => entry !== undefined) : [...this.running.values()];
+		for (const entry of targets) {
+			this.pushLine(entry.info.id, "cancel requested");
+			entry.controller.abort();
+		}
+		return targets.length > 0;
+	}
+
+	isRunning(id: string): boolean {
+		return this.running.has(id);
 	}
 
 	subscribe(listener: (event: RunnerEvent) => void): () => void {
@@ -107,9 +122,12 @@ export class JobRunner {
 		return () => this.listeners.delete(listener);
 	}
 
-	snapshot(): { current: JobInfo | null; history: JobInfo[]; lines: LineEvent[] } {
+	/** `current` is the newest running job (null when none runs); `running` lists them all. */
+	snapshot(): { current: JobInfo | null; running: JobInfo[]; history: JobInfo[]; lines: LineEvent[] } {
+		const running = [...this.running.values()].map((entry) => ({ ...entry.info }));
 		return {
-			current: this.current ? { ...this.current.info } : null,
+			current: running.length ? running[running.length - 1] : null,
+			running,
 			history: this.history.map((job) => ({ ...job })),
 			lines: [...this.lines],
 		};
@@ -128,7 +146,7 @@ export class JobRunner {
 		info.finished = this.now().toISOString();
 		if (error !== undefined) info.error = error;
 		if (result !== undefined) info.result = result;
-		this.current = null;
+		this.running.delete(info.id);
 		this.history.push(info);
 		if (this.history.length > HISTORY_LIMIT) this.history.splice(0, this.history.length - HISTORY_LIMIT);
 		this.pushLine(info.id, state === "done" ? `${info.label}: done` : `${info.label}: ${state}${error ? ` -- ${error}` : ""}`);

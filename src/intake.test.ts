@@ -14,6 +14,9 @@ import {
 	formatGroupExpression,
 	isBlockExpression,
 	isProseQuery,
+	needsTranslation,
+	ownBlocksPrompt,
+	parseOwnBlocks,
 	parseGroupSpec,
 	parseGroupTerms,
 	parseArxivSuggestion,
@@ -468,6 +471,31 @@ const parseVariantLines = (raw: string, base: string): string[] =>
 	assert.deepEqual(parseTopicLines("awesome\npython\n\n"), []);
 	assert.deepEqual(parseTopicLines("Here are some topics you could use for this search, hopefully they help\nremote-sensing"), ["remote-sensing"]);
 	assert.deepEqual(parseTopicLines("a\nbioinformatics", 1), ["bioinformatics"]);
+}
+
+// Own-words blocks: the prompt forbids new words; the code gate drops
+// every term whose words are not in the request, keeps plurals, and caps
+// a translated (non-English) answer at the request's content-word count.
+{
+	const request = "I want papers about flood mapping in rivers with Sentinel-1 and Sentinel-2 imagery";
+	assert.ok(ownBlocksPrompt(request, false).includes("Use ONLY words that appear in the request itself"));
+	assert.ok(ownBlocksPrompt("Hochwasser Kartierung", true).includes("Translate each of its concepts into English ONCE"));
+	assert.deepEqual(
+		parseOwnBlocks("(flood mapping OR inundation) AND (river) AND (Sentinel-1 OR Sentinel-2 OR SAR)", request, false),
+		["flood mapping", "river", "Sentinel-1 OR Sentinel-2"],
+	);
+	assert.deepEqual(parseOwnBlocks("Here you go:\n1. (flood mapping) AND (rivers)", request, false), ["flood mapping", "rivers"]);
+	assert.equal(parseOwnBlocks("(inundation) AND (SAR)", request, false), null);
+	assert.equal(parseOwnBlocks("no blocks here", request, false), null);
+	assert.equal(needsTranslation(request), false);
+	assert.equal(needsTranslation("flood mapping sentinel-1"), false);
+	assert.equal(needsTranslation("Hochwasser Kartierung mit Sentinel-1"), true);
+	assert.equal(needsTranslation("detección de inundaciones"), true);
+	assert.equal(needsTranslation("mapeo de inundaciones con radar"), true);
+	assert.deepEqual(
+		parseOwnBlocks("(flood mapping OR inundation mapping) AND (river) AND (satellite)", "Hochwasser Kartierung Flüsse", true),
+		["flood mapping OR inundation mapping", "river"],
+	);
 }
 
 console.log("intake.test.ts: all assertions passed");

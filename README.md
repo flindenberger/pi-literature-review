@@ -25,9 +25,11 @@ The workflow has three stages:
 
 | Stage | Command | What it does | Creates |
 |---|---|---|---|
-| Literature search | `/lit-search` | Searches arXiv, CrossRef, OpenAlex (and Semantic Scholar with an API key); filters, deduplicates, verifies, enriches and labels the records | One HTML page + JSON file per run in `lit-search/` |
-| Literature selection | `/lit-selection` | Downloads the papers you ticked on the results page (legal open access only) | A PDF library in `lit-selection/` |
-| Literature synthesis | `/lit-synthesis` | Chats about one paper or builds a report across one or several papers (PDFs), with page-exact citations | HTML reports and chat protocols in `lit-synthesis/` |
+| Literature search | `/lit-search` | Searches arXiv, CrossRef, OpenAlex (and Semantic Scholar with an API key); filters, deduplicates, verifies, enriches and labels the records | One HTML page + JSON file per run in the store's `lit-search/` |
+| Literature selection | `/lit-selection` | Downloads the papers you ticked on the results page (legal open access only) | PDFs in a folder you choose on every download |
+| Literature synthesis | `/lit-synthesis` | Chats about one paper or builds a report across one or several papers (PDFs), with page-exact citations | HTML reports and chat protocols in the store's `lit-synthesis/` |
+
+The store is a folder next to the configuration (`~/.config/pi-literature-review/`); your PDFs stay in your own folders, which are read with all their subfolders and never written to ([details](docs/configuration.md#where-files-live)).
 
 Each command opens its wizard-dialog directly in Pi. Dialogs can be cancelled with `Esc` before anything is sent.
 

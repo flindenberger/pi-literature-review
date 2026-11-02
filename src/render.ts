@@ -131,6 +131,8 @@ export interface RenderPayload {
 	 * when it fully matches ANY of these sets. */
 	grouping_by_query?: Array<{ query: string; groups: string[][] | null }> | null;
 	filters: ResultFilters | null;
+	/** The reader's list filters of a report written from the browser list (results.ts), already applied. */
+	list_filters?: string[] | null;
 	sort: string | null;
 	results: RenderRecord[];
 	dropped: Array<{ reason: string; record: RenderRecord }>;
@@ -955,6 +957,20 @@ ${arrows}
 </svg>`;
 }
 
+/** The screening-flow diagram of a payload as a standalone SVG string,
+ * from the same counts and drop reasons the report page uses. */
+export function prismaSvgFor(payload: RenderPayload): string | null {
+	if (!payload.flow) return null;
+	const dropReasons = payload.dropped.map((entry) => entry.reason);
+	const abstractReasons = dropReasons.filter((r) => r.startsWith("no abstract"));
+	const abstractFailed = abstractReasons.filter((r) => r.includes("lookup failed")).length;
+	return flowDiagramSvg(payload.flow, {
+		abstractNone: abstractReasons.length - abstractFailed,
+		abstractFailed,
+		filterBreakdown: filterExclusionBreakdown(dropReasons.filter((r) => r.startsWith("filtered: "))),
+	});
+}
+
 export function renderHtml(payload: RenderPayload, options?: { network?: boolean }): string {
 	const results = payload.results;
 	const onTarget = results.filter((r) => r.group === "on_target").length;
@@ -1202,7 +1218,7 @@ export function renderHtml(payload: RenderPayload, options?: { network?: boolean
 	// is sticky, so it stays in view over the dropped table too.
 	const fetchable = allRecords.some((record) => fetchIdOf(record));
 	const selectSteps = fetchable
-		? `<div class="selectsteps" title="The selection tool downloads the open-access PDFs into the lit-selection/ library after you confirm the terminal dialog.">
+		? `<div class="selectsteps" title="The selection tool downloads the open-access PDFs into the folder you choose in the terminal dialog.">
 <span class="step step1"><b>1</b>Tick papers to download <span class="selectcount"></span></span><span class="sep">&rarr;</span>
 <span class="step step2"><b>2</b>Copy the request</span><span class="sep">&rarr;</span>
 <span class="step step3"><b>3</b>Paste it into the Pi chat</span>
@@ -1267,7 +1283,7 @@ a.flow-download:hover { background: #e6e6df; }
 <dt>Generated</dt><dd>${esc(payload.generated)} (UTC)</dd>
 <dt>Sources</dt><dd>${esc(payload.sources_used.join(", ")) || "none reachable"}${skippedNote}</dd>${codeSourcesRow}${sourceFailureRows}${lookupFailureRows}${
 	payload.per_source ? `\n<dt>Records per source</dt><dd>${esc(payload.per_source)}</dd>` : ""}
-${authorScopeRow}<dt>User filters</dt><dd>${esc(describeFilters(payload.filters))}</dd>
+${authorScopeRow}<dt>User filters</dt><dd>${esc(describeFilters(payload.filters))}</dd>${payload.list_filters?.length ? `\n<dt>List filters</dt><dd>${esc(payload.list_filters.join("; "))} -- applied by the reader to the result list in the browser; the records it removed stand in the dropped table with the reason</dd>` : ""}
 <dt>Sort</dt><dd>${esc(payload.sort ?? "source order")}</dd>${accessRow}${flowRow || `
 <dt>Results</dt><dd>${results.length}${groupSummary}; ${verifiedCount}/${results.length} identifiers verified; ${payload.dropped.length} dropped</dd>`}
 </dl>
@@ -1281,7 +1297,7 @@ ${authorScopeRow}<dt>User filters</dt><dd>${esc(describeFilters(payload.filters)
 		? `\n<dt>Other methods</dt><dd>code repositories: ${esc(payload.code_sources_used.join(", "))} (repository search first, papers resolved from the identifiers the repositories cite)</dd>`
 		: ""}${
 	payload.per_source ? `\n<dt>Requested depth</dt><dd>${esc(payload.per_source)} record(s) per source and query</dd>` : ""}
-${authorScopeRow}<dt>User filters</dt><dd>${esc(describeFilters(payload.filters))}</dd>
+${authorScopeRow}<dt>User filters</dt><dd>${esc(describeFilters(payload.filters))}</dd>${payload.list_filters?.length ? `\n<dt>List filters</dt><dd>${esc(payload.list_filters.join("; "))} -- applied by the reader to the result list in the browser; the records it removed stand in the dropped table with the reason</dd>` : ""}
 </dl>${
 	arxivQueryRows || openalexQueryRows || crossrefQueryRows || semanticscholarQueryRows || codeQueryRows
 		? `\n<h3>Database-specific search translation</h3>\n<dl class="meta">${arxivQueryRows}${openalexQueryRows}${crossrefQueryRows}${semanticscholarQueryRows}${codeQueryRows}\n</dl>`

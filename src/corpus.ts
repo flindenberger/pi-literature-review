@@ -31,6 +31,8 @@ import {
 	verifiedPhraseWords,
 } from "./extract.ts";
 import { identifierSlug, loadSidecarIndex, paperFilename, parseIdentifier, type SidecarEntry } from "./selection.ts";
+import { ignoredFolders, pdfFolders } from "./config.ts";
+import { flatPdfs, inboxDir, pdfBase, readTwin, walkPdfs } from "./library.ts";
 import { viewerPageTexts } from "./pdfjs-find.ts";
 import { identityKey } from "./pipeline.ts";
 
@@ -169,54 +171,81 @@ export function matchLibraryCore(
 	};
 }
 
+export interface LibrarySourceOptions {
+	/** Working directory of the legacy chain; default process.cwd(). */
+	cwd?: string;
+	/** The user's PDF folders; default the configured ones (pdfFolders()). */
+	folders?: string[];
+	/** Legacy places the user took out of the library; default the configured ones. */
+	ignored?: string[];
+}
+
+/** Every PDF of the library in source order (library.ts): legacy places
+ * flat, the inbox flat, then the user's folders recursively. With the
+ * folders that contributed (for display) and whether a cap cut a walk. */
+export function libraryFiles(root: string, options: LibrarySourceOptions = {}): { files: string[]; dirs: string[]; truncated: string[] } {
+	const cwd = options.cwd ?? process.cwd();
+	const files: string[] = [];
+	const dirs: string[] = [];
+	const truncated: string[] = [];
+	const add = (dir: string, found: string[]) => {
+		if (!found.length) return;
+		dirs.push(dir);
+		files.push(...found);
+	};
+	const ignored = new Set(options.ignored ?? ignoredFolders());
+	for (const dir of papersDirs(root, cwd)) if (!ignored.has(dir)) add(dir, flatPdfs(dir));
+	add(inboxDir(root), flatPdfs(inboxDir(root)));
+	for (const folder of options.folders ?? pdfFolders()) {
+		if (dirs.includes(folder)) continue;
+		const walk = walkPdfs(folder);
+		if (walk.truncated) truncated.push(folder);
+		add(folder, walk.files);
+	}
+	return { files, dirs, truncated };
+}
+
 /**
- * Thin IO wrapper: locate the PDFs, read twins, delegate to the pure core.
- * The corpus is the UNION of every candidate folder holding PDFs
- * (canonical library, cwd library, cwd itself). Basenames stay unique
- * corpus-wide (they key the sticky scope, protocols and the index cache):
- * on a collision the earlier folder in the chain wins and the shadowed file
- * is skipped with a warning.
+ * Thin IO wrapper: collect the PDFs of every source (libraryFiles), read
+ * their twins (next to the PDF or in the store), delegate to the pure core
+ * per folder. Basenames stay unique corpus-wide (they key the sticky
+ * scope, protocols and the index cache): on a collision the earlier
+ * source wins and the shadowed files are named in one warning.
  */
-export function matchLibrary(root: string, onWarn: (message: string) => void): LibraryMatch {
-	const dirs = papersDirs(root);
+export function matchLibrary(root: string, onWarn: (message: string) => void, options: LibrarySourceOptions = {}): LibraryMatch {
+	const { files, dirs, truncated } = libraryFiles(root, options);
+	for (const folder of truncated) onWarn(`${folder}: very large folder, read only partly (depth or file limit)`);
 	const index = loadSidecarIndex(root, onWarn);
+	const seen = new Set<string>();
+	const shadowed: string[] = [];
+	const byDir = new Map<string, string[]>();
+	for (const file of files) {
+		const base = pdfBase(file);
+		if (seen.has(base)) { shadowed.push(file); continue; }
+		seen.add(base);
+		const dir = file.slice(0, file.length - base.length - 4).replace(/[\\/]$/, "");
+		if (!byDir.has(dir)) byDir.set(dir, []);
+		byDir.get(dir)!.push(base);
+	}
+	if (shadowed.length) {
+		onWarn(`skipped ${shadowed.length} PDF(s) whose file name is already in the library (the earlier folder wins): ${shadowed.slice(0, 3).join(", ")}${shadowed.length > 3 ? ", ..." : ""}`);
+	}
 	const matched: LibraryPaper[] = [];
 	const unmatched: string[] = [];
 	const unmatchedByDir: Array<{ dir: string; files: string[] }> = [];
-	const seen = new Set<string>();
-	for (const dir of dirs) {
-		let names: string[] = [];
-		try {
-			names = readdirSync(dir);
-		} catch {
-			continue; // no folder yet -- the others may still hold PDFs
-		}
-		const bases: string[] = [];
-		for (const base of names
-			.filter((name) => name.toLowerCase().endsWith(".pdf"))
-			.map((name) => name.slice(0, -4))
-			.sort()) {
-			if (seen.has(base)) {
-				onWarn(`skipped ${join(dir, `${base}.pdf`)}: a paper with this filename is already in the corpus (earlier folder wins)`);
-				continue;
-			}
-			seen.add(base);
-			bases.push(base);
-		}
+	for (const [dir, bases] of byDir) {
 		const twins = new Map<string, unknown>();
 		for (const base of bases) {
-			try {
-				twins.set(base, JSON.parse(readFileSync(join(dir, `${base}.json`), "utf8")));
-			} catch {
-				// no twin (pre-twin download) or unreadable -- recomputation decides
-			}
+			const twin = readTwin(root, join(dir, `${base}.pdf`));
+			if (twin) twins.set(base, twin);
 		}
 		const result = matchLibraryCore(bases, twins, index, dir);
 		matched.push(...result.matched);
 		unmatched.push(...result.unmatched);
 		if (result.unmatched.length) unmatchedByDir.push({ dir, files: result.unmatched });
 	}
-	return { matched, unmatched, unmatchedByDir, papersDir: dirs[0], dirs };
+	const fallback = papersDirs(root, options.cwd ?? process.cwd())[0];
+	return { matched, unmatched, unmatchedByDir, papersDir: dirs[0] ?? fallback, dirs: dirs.length ? dirs : [fallback] };
 }
 
 /* ------------------------------------------------------------------ *

@@ -153,7 +153,9 @@ Where each stage lives; the adapter/engine pair shares its basename.
 | `src/retrieve.ts` | shared retrieval: query variants, lexical layer, embedding ranking, union |
 | `src/extract.ts` | PDF text extraction, cleanup, bibliography cut, chunking, highlight-phrase measurement |
 | `src/pdfjs-find.ts` | faithful port of the PDF viewer's find normalization (guarantees highlights) |
-| `src/corpus.ts` | which PDFs form the corpus, library matching against saved searches, the embedding-index cache |
+| `src/corpus.ts` | which PDFs form the corpus (`libraryFiles`: legacy places, the inbox, the PDF folders), library matching against saved searches, the embedding-index cache |
+| `src/library.ts` | library sources and the twin store: recursive capped walk of a PDF folder, `inbox/`, `meta/` twins named by a hash of the PDF path (never written next to the user's PDFs), twin read order |
+| `src/folderpick.ts` | the system's folder window (zenity/kdialog, osascript, PowerShell), no shell; null on cancel, none without a desktop |
 | `src/adopt.ts` | adoption of loose PDFs: identifier from the PDF text, verified by lookup |
 | `src/protocol.ts` | protocol files of validated rounds, sticky scope per session |
 | `src/doctor.ts` | embedding-model probe and Ollama fetch (zero-config path) |
@@ -168,14 +170,15 @@ Where each stage lives; the adapter/engine pair shares its basename.
 | File | Holds |
 |---|---|
 | `extensions/web.ts` | the `/pi-literature-review` command: start/stop, browser launch, `session_shutdown` close |
-| `src/web/server.ts` | the node:http server: token + cookie + Host checks, static page, `/files` and `/pdf` routes (synthesis pages re-rendered with `/pdf/` links), the stage routes (`/api/search/*`, `/api/selection/*`, `/api/index`, `/api/report`, `/api/chat*`, `/api/settings*`), the dialog routes (`/api/dialog`, `/api/dialog/answer`, `/api/dialog/restart`, `/api/dialog/new`) that run the state machine's effects, the history routes (`/api/history`, `/api/history/open|delete|clear`), `/api/reveal` (show a data folder in the file manager), SSE at `/api/events` (`line`, `job`, `dialog`); every engine call injectable (`WebDeps`) |
+| `src/web/server.ts` | the node:http server: token + cookie + Host checks, static page, `/files` and `/pdf` routes (synthesis pages re-rendered with `/pdf/` links), the stage routes (`/api/search/*`, `/api/selection/*`, `/api/index`, `/api/report`, `/api/chat*`, `/api/settings*`), the dialog routes (`/api/dialog`, `/api/dialog/answer`, `/api/dialog/restart`, `/api/dialog/new`) that run the state machine's effects, the history routes (`/api/history`, `/api/history/open|delete|clear`), `/api/blocks/clear`, `/api/search/blocks` (a request's keyword blocks for the "+" menu: own words for its journal and author lists, `mode: "synonyms"` for the editable synonym blocks, `fresh` for a new proposal), `/api/reveal` (show a data folder, or one of the user's folders by path, in the file manager), `/api/folders` + `/api/folders/pick|add|remove` (PDF folders, the folder window), `/api/library/upload` (drag and drop into `inbox/`), SSE at `/api/events` (`line`, `job`, `dialog`); every engine call injectable (`WebDeps`) |
 | `src/web/dialog.ts` | the chat dialog as a pure state machine: fixed question order and wording, answer chips, free-text parsers (years, numbers, identifiers, tweaks), `reduce(state, event, ctx)` returning the next state and the effects the server runs (model proposal, OpenAlex lookups, job starts) |
-| `src/web/jobs.ts` | one job at a time with its own `AbortController`, progress ring buffer, subscribers |
+| `src/web/jobs.ts` | several jobs at once (cap `MAX_RUNNING`, single kinds: selection, index, pull, check), each with its own `AbortController`, progress ring buffer, subscribers |
 | `src/web/sse.ts` | Server-Sent Events framing and keepalive |
 | `src/web/files.ts` | listings of search runs, library + index state, reports, chat sessions; safe file names |
 | `src/web/intake.ts` | the posted search form as `SearchOptions` + filters (same rules as the wizard) |
 | `src/web/open.ts` | open the browser or a folder without a shell |
 | `src/web/history.ts` | the conversation history: one JSON snapshot per conversation in the history folder (next to the configuration file, `PI_LITERATURE_REVIEW_HISTORY` overrides), atomic save, listing, load, delete, clear; ids are file names, never paths |
+| `src/web/blockcache.ts` | the saved keyword blocks: the model's proposal per request text and mode (`own` = the request's own words, `synonyms`), one JSON file next to the configuration (`PI_LITERATURE_REVIEW_BLOCK_CACHE` overrides), atomic save, clear; same request, same blocks |
 | `src/web/static/` | the page: `index.html`, `app.js` (plain JavaScript: renders the dialog state, sends answers, SSE client, report panel, rail lists, Settings dialog), `style.css` (the report look) |
 | `src/provider.ts` | the model provider interface (`status`, `generate`, `wiring`) and the endpoint provider for standalone use |
 
@@ -187,7 +190,7 @@ Where each stage lives; the adapter/engine pair shares its basename.
 | File | Holds |
 |---|---|
 | `src/dialog-state.ts` + `extensions/dialogs.ts` | the tabbed wizard: pure reducer (steps, checkbox lists, forms, review page) and its Pi adapter (overlay drawing, keys, paste, RPC fallback) |
-| `src/config.ts` | the config file and environment overrides |
+| `src/config.ts` | the config file and environment overrides; PDF folders and the last download folder |
 | `src/cli.ts` | the standalone command line over all three engines |
 | `src/types.ts` | shared record shapes and small helpers (user agent, contact email, warnings) |
 | `src/cardtext.ts` | transcript cards: bold/bullet formatting, file:// URLs as short clickable terminal links where the terminal supports them |

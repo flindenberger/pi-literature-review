@@ -5,6 +5,7 @@
  */
 
 import assert from "node:assert/strict";
+process.env.PI_LITERATURE_REVIEW_THINKING = "off"; // the user config must not decide
 import {
 	createBackend,
 	ollamaChatRequest,
@@ -44,6 +45,28 @@ import {
 	// think rides top-level in the Ollama dialect (reasoning off for capped
 	// helper calls like the query translation).
 	assert.equal(ollamaChatRequest("http://h", "m", "s", "u", { think: false }).body.think, false);
+	// Thinking setting: off -> think false, cap unchanged; on -> effort and
+	// the output cap raised by the reasoning room.
+	{
+		const { withThinking, THINKING_TOKENS, openaiChatRequest: chat } = await import("./llm.ts");
+		assert.deepEqual(withThinking({ maxTokens: 100 }, "off"), { maxTokens: 100, think: false, reasoning: undefined });
+		assert.deepEqual(withThinking({ maxTokens: 100 }, "medium"), { maxTokens: 100 + THINKING_TOKENS.medium, think: true, reasoning: "medium" });
+		assert.equal(withThinking({}, "high").maxTokens, undefined);
+		// A local llama.cpp gets the template switch; a remote API only an effort when on.
+		assert.deepEqual(chat("http://127.0.0.1:8080", "m", "s", "u", { think: false }).body.chat_template_kwargs, { enable_thinking: false });
+		assert.deepEqual(chat("http://localhost:8080", "m", "s", "u", { think: true, reasoning: "low" }).body.chat_template_kwargs, { enable_thinking: true });
+		const remoteOff = chat("https://api.example.com", "m", "s", "u", { think: false }).body;
+		assert.ok(!("chat_template_kwargs" in remoteOff) && !("reasoning_effort" in remoteOff));
+		assert.equal(chat("https://api.example.com", "m", "s", "u", { think: true, reasoning: "high" }).body.reasoning_effort, "high");
+		assert.ok(!("chat_template_kwargs" in chat("http://h", "m", "s", "u").body));
+	}
+	{
+		const { thinkingSetting } = await import("./config.ts");
+		assert.equal(thinkingSetting({}, {}), "off");
+		assert.equal(thinkingSetting({}, { thinking: "high" }), "high");
+		assert.equal(thinkingSetting({ PI_LITERATURE_REVIEW_THINKING: "Low" }, { thinking: "high" }), "low");
+		assert.equal(thinkingSetting({ PI_LITERATURE_REVIEW_THINKING: "max" }, {}), "off");
+	}
 
 	const oaiEmbed = openaiEmbedRequest("http://host:8080", "e", ["x"]);
 	assert.equal(oaiEmbed.url, "http://host:8080/v1/embeddings");

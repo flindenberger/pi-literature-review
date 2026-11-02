@@ -35,15 +35,24 @@ try {
 	saveConversation(dir, entry({ updated: "2026-10-28T13:00:00.000Z", title: "Search: rivers and depth" }));
 	assert.equal(readdirSync(dir).length, 2);
 
-	// Listing: newest change first, summaries only; unreadable files are counted, not deleted.
+	// Listing: newest computation first (a conversation without one sorts by
+	// its start; a later change alone moves nothing), summaries only;
+	// unreadable files are counted, not deleted.
 	writeFileSync(join(dir, "broken.json"), "{not json");
 	writeFileSync(join(dir, "old.json"), JSON.stringify({ version: 0 }));
 	writeFileSync(join(dir, "notes.txt"), "ignored");
-	const listed = listConversations(dir);
+	let listed = listConversations(dir);
 	assert.equal(listed.skipped, 2);
 	assert.deepEqual(listed.conversations.map((c) => [c.id, c.title, c.root, c.steps]), [
-		["2026-10-28T11-32-05_aaaa", "Search: rivers and depth", "/data/one", 1],
 		["2026-10-28T12-00-00_bbbb", "Chat: depth", "/data/two", 1],
+		["2026-10-28T11-32-05_aaaa", "Search: rivers and depth", "/data/one", 1],
+	]);
+	// A new computation stamps the older conversation and lifts it to the top.
+	saveConversation(dir, entry({ updated: "2026-10-28T14:00:30.000Z", computed: "2026-10-28T14:00:00.000Z", title: "Search: rivers and depth" }));
+	listed = listConversations(dir);
+	assert.deepEqual(listed.conversations.map((c) => [c.id, c.computed ?? null]), [
+		["2026-10-28T11-32-05_aaaa", "2026-10-28T14:00:00.000Z"],
+		["2026-10-28T12-00-00_bbbb", null],
 	]);
 	assert.ok(existsSync(join(dir, "broken.json")));
 

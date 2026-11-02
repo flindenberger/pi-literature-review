@@ -25,6 +25,8 @@
  * ever accepts bracketed chunk numbers from it, never bibliographic text.
  */
 
+import { thinkingSetting, type ThinkingSetting } from "./config.ts";
+
 export interface LlmConfig {
 	/** Server base URL without trailing slash, e.g. http://127.0.0.1:11434 */
 	baseUrl: string;
@@ -69,15 +71,34 @@ export interface GenerateOptions {
 	/** Cap on generated tokens (Ollama num_predict / OpenAI max_tokens). */
 	maxTokens?: number;
 	/**
-	 * Ollama dialect only: turn hidden reasoning on/off (top-level "think"
-	 * field; models without a thinking mode accept and ignore it). Needed
-	 * because a thinking model otherwise spends a capped call's entire
-	 * budget on reasoning and returns empty content. The OpenAI dialect
-	 * ignores it: thinking control lives in the server/provider config
-	 * there (pi's models.json thinkingFormat).
+	 * Hidden reasoning on/off. Ollama dialect: top-level "think" field
+	 * (models without a thinking mode ignore it). OpenAI dialect: a local
+	 * server (llama.cpp) gets chat_template_kwargs.enable_thinking; a remote
+	 * API gets reasoning_effort only when thinking is on. createBackend sets
+	 * it from the package's thinking setting on every call.
 	 */
 	think?: boolean;
+	/** OpenAI dialect, remote API: the reasoning effort when think is on. */
+	reasoning?: Exclude<ThinkingSetting, "off">;
 }
+
+/** Extra output tokens when thinking is on: the hidden reasoning counts
+ * against the output cap, the answer needs its own room after it. */
+export const THINKING_TOKENS: Record<Exclude<ThinkingSetting, "off">, number> = { low: 2048, medium: 4096, high: 8192 };
+
+/** Generate options with the thinking setting applied: think flag,
+ * effort, and the output cap raised by the reasoning room. Pure. */
+export function withThinking(opts: GenerateOptions, level: ThinkingSetting): GenerateOptions {
+	if (level === "off") return { ...opts, think: false, reasoning: undefined };
+	return {
+		...opts,
+		think: true,
+		reasoning: level,
+		...(opts.maxTokens !== undefined ? { maxTokens: opts.maxTokens + THINKING_TOKENS[level] } : {}),
+	};
+}
+
+const LOCAL_URL = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\]|0\.0\.0\.0)(:|\/|$)/i;
 
 export interface LlmBackend {
 	/** Human-readable origin for reports (e.g. "ollama at http://..." or
@@ -185,6 +206,12 @@ export function openaiChatRequest(
 	if (opts.temperature !== undefined) body.temperature = opts.temperature;
 	if (opts.maxTokens !== undefined) body.max_tokens = opts.maxTokens;
 	// numCtx intentionally ignored: no field for it in this dialect.
+	if (opts.think !== undefined) {
+		// llama.cpp reads the template switch; a remote API would reject
+		// unknown fields, so it only gets an effort when thinking is on.
+		if (LOCAL_URL.test(baseUrl)) body.chat_template_kwargs = { enable_thinking: opts.think };
+		else if (opts.think && opts.reasoning) body.reasoning_effort = opts.reasoning;
+	}
 	return { url: `${base(baseUrl)}/v1/chat/completions`, body };
 }
 
@@ -240,7 +267,7 @@ function combinedSignal(timeoutMs: number, signal?: AbortSignal): AbortSignal {
 	return signal ? AbortSignal.any([signal, timeout]) : timeout;
 }
 
-export function createBackend(cfg: LlmConfig, fetchJson: FetchJson = fetchJsonHttp): LlmBackend {
+export function createBackend(cfg: LlmConfig, fetchJson: FetchJson = fetchJsonHttp, thinking: () => ThinkingSetting = thinkingSetting): LlmBackend {
 	// Per-role backend resolution: split fields win, else the shared pair.
 	const embedOpenai = (cfg.embedApi ?? cfg.api) === "openai";
 	const embedBase = cfg.embedBaseUrl || cfg.baseUrl;
@@ -281,7 +308,8 @@ export function createBackend(cfg: LlmConfig, fetchJson: FetchJson = fetchJsonHt
 				? parseOpenaiEmbedResponse(json, texts.length)
 				: parseOllamaEmbedResponse(json, texts.length);
 		},
-		async generate(system, user, opts = {}, signal) {
+		async generate(system, user, given = {}, signal) {
+			const opts = withThinking(given, thinking());
 			const model = opts.model || cfg.generateModel;
 			const request = generateOpenai
 				? openaiChatRequest(generateBase, model, system, user, opts)

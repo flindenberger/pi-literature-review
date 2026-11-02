@@ -224,7 +224,9 @@ to ies -- and no stemming or synonyms beyond that.
     - the access status from OpenAlex by DOI (about one request per 50
       records): open-access level and every open PDF location, stored as
       `access` in the JSON (`level`, OpenAlex `oa_status` verbatim,
-      `pdf_urls`) and counted in `access_counts`.
+      `pdf_urls`, and the OpenAlex `work_type` and `source_type` verbatim,
+      which the browser's publication-type filter reads) and counted in
+      `access_counts`.
 
 Nothing disappears silently: every removed record sits in the dropped
 table with its reason, and a failed source is shown while the run

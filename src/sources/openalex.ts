@@ -284,6 +284,10 @@ export interface AccessInfo {
 	oa_status?: string;
 	/** Every open-access PDF location OpenAlex lists, best location first. */
 	pdf_urls?: string[];
+	/** OpenAlex work type verbatim (article, conference-paper, preprint, ...). */
+	work_type?: string;
+	/** Type of the primary location's source verbatim (journal, conference, repository, ...). */
+	source_type?: string;
 }
 
 /** Image files that OpenAlex sometimes lists as a pdf_url (graphical
@@ -312,10 +316,14 @@ export function accessFromWork(work: Record<string, any>): AccessInfo {
 			: openAccess.is_oa === false
 				? "restricted"
 				: "unknown";
+	const workType = typeof work?.type === "string" && work.type ? work.type : undefined;
+	const sourceType = typeof work?.primary_location?.source?.type === "string" && work.primary_location.source.type ? work.primary_location.source.type : undefined;
 	return {
 		level,
 		...(oaStatus ? { oa_status: oaStatus } : {}),
 		...(urls.length ? { pdf_urls: urls } : {}),
+		...(workType ? { work_type: workType } : {}),
+		...(sourceType ? { source_type: sourceType } : {}),
 	};
 }
 
@@ -331,7 +339,7 @@ export async function lookupAccessByDoi(dois: string[]): Promise<Map<string, Acc
 		const batch = unique.slice(i, i + DOI_BATCH_SIZE);
 		const params = withContact(new URLSearchParams({
 			filter: `doi:${batch.join("|")}`,
-			select: "doi,type,open_access,best_oa_location,locations",
+			select: "doi,type,open_access,best_oa_location,locations,primary_location",
 			"per-page": String(DOI_BATCH_SIZE),
 		}));
 		const response = await fetchLookup(`${BASE_URL}?${params}`, { headers: HEADERS() });

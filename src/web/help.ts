@@ -59,7 +59,7 @@ interface StepHelp {
 	limits: string;
 }
 
-const COMMON_GO = "Typing `back` returns to the previous question with the earlier answers kept; `start over` clears the conversation (files on disk stay). The two stages in the left rail switch within the same conversation; their + buttons start a new one.";
+const COMMON_GO = "The keyword blocks and the request can be changed at any later step: type `back` until that question, or click Edit keyword blocks under a help answer; the search then runs again with the new blocks. Typing `back` returns to the previous question with the earlier answers kept; `start over` clears the conversation (files on disk stay). The two stages in the left rail switch within the same conversation; their + buttons start a new one.";
 
 const HELP: Record<StepId, StepHelp> = {
 	start: {
@@ -67,12 +67,12 @@ const HELP: Record<StepId, StepHelp> = {
 		means: "This is a literature tool, not a general chat: stage 1 searches and selects papers (open sources, verified records, open-access PDFs into the library), stage 2 summarizes and synthesizes PDFs with page-exact citations. Questions about your PDFs are answered in stage 2 from their text.",
 		inputs: "Pick a chip, or type what you are looking for to start a search right away.",
 		examples: ["satellite-derived bathymetry of rivers"],
-		chips: "Search and select papers starts the search questions; Chat about one PDF and Report over several PDFs need PDFs in the library (lit-selection/ or the working folder).",
+		chips: "Search and select papers starts the search questions; Chat about one PDF and Report over several PDFs need PDFs in the library (your PDF folders, PDFs dropped onto the page, or downloads).",
 		limits: "Nothing is searched until the search summary is confirmed.",
 	},
 	topic: {
 		mode: "Answering: what you are looking for",
-		means: "The research request. The model (or a word-by-word rule without a model) splits it into keyword blocks in the next step.",
+		means: "The research request. The model splits it into keyword blocks and the search starts at once (last 10 years, 30 records per source, no code sources); the blocks can be edited under the results. Without a model, word-by-word blocks are shown for confirmation first.",
 		inputs: "A sentence or a few keywords, in any language.",
 		examples: ["water level of rivers from satellite images", "sandbar detection Sentinel-1 Sentinel-2"],
 		chips: "None here.",
@@ -83,7 +83,7 @@ const HELP: Record<StepId, StepHelp> = {
 		means: "Block search: a paper must match every block; the words inside a block are alternatives. The model proposed the blocks; the variant row adds one synonym per block.",
 		inputs: "Edit the lines above (one block per line, alternatives separated by OR or commas), or type new lines, then confirm.",
 		examples: ["river OR stream\nwater level OR stage\nsatellite OR Sentinel"],
-		chips: "Use these blocks confirms them; Use the variant adds the model's synonyms; Ask again requests a new proposal.",
+		chips: "Yes, search with these starts the search; the variant chip adds the model's synonyms; Propose again requests a new proposal; More options opens the questions on code sources, period, journals and authors before the search.",
 		limits: "Blocks cannot be widened by a sentence; edit the lines. At least one block needs a term.",
 	},
 	code: {
@@ -160,10 +160,10 @@ const HELP: Record<StepId, StepHelp> = {
 	},
 	pick: {
 		mode: "Answering: which papers to download",
-		means: "The search report is on the right; the papers ticked there, or typed here, are downloaded as PDFs into lit-selection/.",
-		inputs: "Tick papers in the report, or type row numbers, DOIs or arXiv ids; `all` takes every on-target paper, `code` every paper with a code or data link.",
+		means: "The results stand as cards above (filter them with the funnel icon); the papers ticked there, or typed here, are downloaded as PDFs into a folder you choose in the download window. Reports from the filtered list (HTML report, PRISMA diagram) are written on click.",
+		inputs: "Tick papers in the list above, or type row numbers, DOIs or arXiv ids; `all` takes every on-target paper, `code` every paper with a code or data link.",
 		examples: ["1, 4, 7", "all", "code", "10.3390/rs13081505"],
-		chips: "Use the ticked papers reads the ticks in the report; All papers with a code link and All on-target papers take those groups; Skip goes on without downloading.",
+		chips: "Use the ticked papers reads the ticks in the list; All papers with a code link and All on-target papers take those groups; Skip goes on without downloading; Edit blocks reopens the keyword blocks and the search runs again; Add papers with code searches again with the code sources on.",
 		limits: "Papers outside this report cannot be added here; a new search finds them. Restricted papers are reported, not downloaded.",
 	},
 	mailto: {
@@ -204,7 +204,7 @@ const HELP: Record<StepId, StepHelp> = {
 		inputs: "Tick one paper, type its number, or choose the whole library.",
 		examples: ["1", "all"],
 		chips: "Whole library sets the scope to every PDF.",
-		limits: "Papers must be in the library (lit-selection/ or the working folder); the search report alone is not enough.",
+		limits: "Papers must be in the library (your PDF folders, PDFs dropped onto the page, or downloads); the search report alone is not enough.",
 	},
 	pickPapers: {
 		mode: "Answering: which papers the report covers",
@@ -320,6 +320,7 @@ export const HELP_SYSTEM = [
 	"Answer ONLY from the HELP and STATE below, in at most three short sentences, in the language of the user's question.",
 	"Say plainly what the user can do next (which input to type or which chip to click). Do not invent features, do not name papers, do not write citations.",
 	"If the help does not cover the question, say so in one sentence and point to the accepted input.",
+	"Earlier answers can always be changed: `back`, the Back chip, or Edit keyword blocks reopen them. Never say that something cannot be changed unless the HELP's limits say so.",
 ].join(" ");
 
 /** The user turn of the helper's model call. */
@@ -363,6 +364,76 @@ export function looksLikeSmallTalk(text: string): boolean {
 	if (!t) return false;
 	if (/^(hello|hi|hey|good (morning|afternoon|evening)|thanks|thank you|help|hallo|moin|servus|danke)\b/.test(t)) return true;
 	return /^(what can you do|what (do|can) you|who are you|what is this|what are you|how does this work|how do you work|can you chat|are you an? )/.test(t);
+}
+
+/** Openings of a request about the paper ("summarize", "erklär", "which
+ * ..."): such a message goes to the passages without the social check. */
+// Follow-ups to the last answer ("more details", "weiter", "ja", "in
+// einfachen Worten") count as requests too.
+const PAPER_REQUEST = /^(what|which|who|whom|whose|when|where|why|how|is|are|does|do|did|can|could|should|would|will|list|name|give|show|tell|explain|summari[sz]e|describe|compare|define|translate|was|welche[rnms]?|wer|wen|wem|wann|wo|wor|wie|warum|wieso|weshalb|ist|sind|gibt|hat|haben|kann|nenne|nenn|zeig|zeige|erkl[äa]e?r|fass|beschreib|vergleich|liste|übersetz|uebersetz|more|again|continue|go|simpler|shorter|longer|yes|and|also|in|mehr|noch|nochmal|weiter|genauer|einfacher|kürzer|kuerzer|länger|laenger|ja|und|auch|bitte|please)(?![\p{L}])/iu;
+
+/** A chat message that may be small talk rather than a request about the
+ * paper: short (at most 8 words), no question mark, no question or
+ * request opening. Only such a message costs the extra model check;
+ * everything else goes straight to the passages. Pure. */
+export function socialCandidate(text: string): boolean {
+	const t = text.trim();
+	if (!t || t.includes("?")) return false;
+	const words = t.split(/\s+/).filter(Boolean);
+	if (words.length > 8) return false;
+	// "danke, und die Genauigkeit": thanks plus a topic is a request.
+	if (/(?:^|[^\p{L}])(und|and|aber|but|oder|or|sowie|plus)(?![\p{L}])/iu.test(t)) return false;
+	return !PAPER_REQUEST.test(t);
+}
+
+/** The model's check for a short chat message: the marker word for a
+ * request about the paper, else a short natural reply. The reply cites
+ * nothing and states nothing about the paper. */
+export const SOCIAL_SYSTEM = [
+	"You sit in front of a chat about a scientific paper. You see one short message from the user.",
+	"If the message asks for, or could possibly refer to, anything in the paper (a topic, a term, a method, a number, a request, a keyword, even without a question mark), answer with exactly one word: QUESTION.",
+	"A follow-up to the previous answer is a request too: more details, again, simpler, shorter, continue, yes, go on, 'mehr Details', 'weiter', 'ja', 'in einfachen Worten' -> QUESTION.",
+	"Thanks together with a topic ('danke, und die Genauigkeit') is a request -> QUESTION.",
+	"Only when the message is purely social -- thanks, praise, greeting, goodbye, a reaction such as 'nice' or 'find ich gut' -- reply with one or two short friendly sentences and invite the next question.",
+	"Reply in the language of the message: German words (danke, schön, gut, super) get a German reply, English words an English reply, other languages a reply in that language.",
+	"Never state facts about the paper, never invent content. When unsure, answer QUESTION.",
+].join(" ");
+
+/** The model's output for the social check: a reply text for a purely
+ * social message, null for a request about the paper. Anything unclear is
+ * null, so the message is looked up in the paper (better once too often
+ * than once too few). Pure. */
+export function parseSocialReply(raw: string): string | null {
+	const text = raw.replace(/<think>[\s\S]*?<\/think>/gi, "").trim().replace(/^["'\u201c\u201e]+|["'\u201d\u201c]+$/g, "").trim();
+	if (!text) return null;
+	// The marker word, alone or inside the output ("Ask another question"
+	// in a reply is lower case and stays a reply).
+	if (/\bQUESTION\b/.test(text) || /^question\W*$/i.test(text)) return null;
+	if (text.length > 280) return null;
+	// A reply never cites or points into the paper.
+	if (/\[\d|\bpage\b|\bseite\b|\bp\.\s?\d/i.test(text)) return null;
+	return text;
+}
+
+const NAV_CHANGE = "(change|edit|modify|adjust|alter|revise|redo|rewrite|fix|correct|update|refine|tweak|improve|go back to|back to|return to|revisit|[äa]e?ndern|anpassen|bearbeiten|korrigieren|[üu]e?berarbeiten|verbessern|zur[üu]e?ck zu)";
+const NAV_BLOCKS = "(keyword|key word|key-word|block|search term|term|quer(y|ies)|synonym|schlagw[oö]e?rt|stichw[oö]e?rt|suchbegriff|suchw[oö]e?rt|begriff|bl[oö]e?ck)";
+const NAV_TOPIC = "(request|topic|research question|search sentence|anfrage|thema|fragestellung|forschungsfrage)";
+// Word edges written out: `\b` is ASCII-only in JavaScript and misses
+// umlauts ("ändern"), so letters are tested with \p{L} under the u flag.
+const EDGE = "(?:^|[^\\p{L}])";
+const END = "(?![\\p{L}])";
+const NAV_BLOCKS_RE = new RegExp(`${EDGE}${NAV_CHANGE}${END}[^.?!]{0,40}${EDGE}${NAV_BLOCKS}|${EDGE}${NAV_BLOCKS}\\p{L}*${END}[^.?!]{0,40}${EDGE}${NAV_CHANGE}${END}`, "iu");
+const NAV_TOPIC_RE = new RegExp(`${EDGE}${NAV_CHANGE}${END}[^.?!]{0,40}${EDGE}${NAV_TOPIC}|${EDGE}${NAV_TOPIC}\\p{L}*${END}[^.?!]{0,40}${EDGE}${NAV_CHANGE}${END}`, "iu");
+
+/** A typed wish to change the keyword blocks or the request ("I want to
+ * change the keywords", "die Schlagwoerter aendern"): navigation decided
+ * in code, never left to the helper model. Pure. */
+export function navigationIntent(text: string): "blocks" | "topic" | null {
+	const t = text.trim();
+	if (!t) return null;
+	if (NAV_BLOCKS_RE.test(t)) return "blocks";
+	if (NAV_TOPIC_RE.test(t)) return "topic";
+	return null;
 }
 
 /** A typed text that is a question or a wish rather than an answer:

@@ -92,7 +92,7 @@ export function requireOutput(rawOutput: string): void {
 	throw new Error(
 		"the generator returned no answer text -- a thinking model may have spent its entire "
 		+ "token budget on hidden reasoning. Ask again (thinking length varies), rephrase the "
-		+ "question, or switch to a non-thinking model",
+		+ "question, or turn Thinking off in the Settings (config \"thinking\": \"off\")",
 	);
 }
 
@@ -226,10 +226,8 @@ async function generateGrounded(args: {
 	if (trimmed) args.onWarn(`context budget: dropped the ${trimmed} lowest-ranked chunk(s) to fit ${NUM_CTX} tokens`);
 	if (args.signal?.aborted) throw new Error(args.abortMessage);
 	if (args.progress) args.onWarn(args.progress(retrieved.length));
-	// think:false -- excerpt-grounded answers need no hidden reasoning; a
-	// thinking model would burn the output budget on it (Ollama dialect
-	// only; the OpenAI dialect and the pi backend ignore the field).
-	const generateOptions: GenerateOptions = { model: args.model, numCtx: NUM_CTX, temperature: TEMPERATURE, think: false };
+	// Thinking on/off comes from the package setting (the backend applies it).
+	const generateOptions: GenerateOptions = { model: args.model, numCtx: NUM_CTX, temperature: TEMPERATURE };
 	const rawOutput = await args.backend.generate(prompt.system, prompt.user, generateOptions, args.signal);
 	requireOutput(rawOutput);
 	const scan = enforceCitations(rawOutput, retrieved.length);
@@ -599,6 +597,17 @@ export interface ChatLibraryOptions {
 	library?: (root: string, onWarn: (message: string) => void) => LibraryMatch;
 	adopt?: (unmatched: string[], papersDir: string) => Promise<AdoptionResult[]>;
 	signal?: AbortSignal;
+	/** Adopt only these PDFs (base names, with or without ".pdf"): a chat or
+	 * report over some papers must not look up the whole library first.
+	 * Absent = every unmatched PDF. */
+	only?: string[];
+}
+
+/** The scope's base names for ensureLibrary's `only` (null = the library). */
+function adoptionScope(papers: string[] | "library" | undefined, paper?: string): string[] | undefined {
+	if (papers === "library") return undefined;
+	const names = Array.isArray(papers) && papers.length ? papers : paper?.trim() ? [paper] : [];
+	return names.length ? names : undefined;
 }
 
 /**
@@ -616,13 +625,16 @@ export async function ensureLibrary(
 	let match = libraryFn(root, onWarn);
 	const adopted: string[] = [];
 	const adoptionFailures: Array<{ file: string; reason: string }> = [];
-	if (match.unmatched.length) {
-		onWarn(`${match.unmatched.length} PDF(s) without verified metadata -- attempting adoption (identifier lookup)`);
+	const wanted = options.only ? new Set(options.only.map((name) => name.replace(/\.pdf$/i, "").toLowerCase())) : null;
+	const inScope = (file: string) => !wanted || wanted.has(file.replace(/\.pdf$/i, "").toLowerCase());
+	const toAdopt = unmatchedGroups(match).map((group) => ({ dir: group.dir, files: group.files.filter(inScope) })).filter((group) => group.files.length);
+	if (toAdopt.length) {
+		onWarn(`${toAdopt.reduce((sum, group) => sum + group.files.length, 0)} PDF(s) without verified metadata -- attempting adoption (identifier lookup)`);
 		const adoptFn = options.adopt
-			?? ((files: string[], dir: string) => adoptUnmatched(files, dir, realAdoptDeps(), onWarn, options.signal));
+			?? ((files: string[], dir: string) => adoptUnmatched(files, dir, realAdoptDeps(root), onWarn, options.signal));
 		// One adoption pass per folder (the corpus may span several).
 		const adoptions: AdoptionResult[] = [];
-		for (const group of unmatchedGroups(match)) {
+		for (const group of toAdopt) {
 			adoptions.push(...await adoptFn(group.files, group.dir));
 		}
 		for (const adoption of adoptions) {
@@ -771,6 +783,7 @@ export async function runRound(options: ChatOptions, deps?: ChatDeps): Promise<C
 		library: deps?.library,
 		adopt: deps?.adopt,
 		signal: options.signal,
+		only: adoptionScope(options.papers, options.paper),
 	});
 	const pool = chatPool(match);
 	if (!pool.length) {
@@ -1034,6 +1047,7 @@ export async function runChatReport(options: ChatReportOptions, deps?: ChatDeps)
 		library: deps?.library,
 		adopt: deps?.adopt,
 		signal: options.signal,
+		only: adoptionScope(undefined, options.paper),
 	});
 	const pool = chatPool(match);
 	if (!pool.length) {
@@ -1345,6 +1359,7 @@ export async function runReport(options: ReportOptions, deps?: ChatDeps): Promis
 		library: deps?.library,
 		adopt: deps?.adopt,
 		signal: options.signal,
+		only: adoptionScope(options.papers),
 	});
 	const pool = chatPool(match);
 	if (!pool.length) {

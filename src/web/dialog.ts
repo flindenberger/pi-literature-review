@@ -33,8 +33,9 @@ import type { AuthorMatch } from "../sources/openalex.ts";
 import type { ChatAnswer } from "../synthesis.ts";
 import type { Stage } from "./files.ts";
 import type { SearchForm } from "./intake.ts";
+import type { BlockMode } from "./blockcache.ts";
 import type { JobInfo } from "./jobs.ts";
-import { fallbackText, helpPrompt, HELP_SYSTEM, looksLikeQuestion, looksLikeSmallTalk, navigationChips, STEP_ACCEPTS } from "./help.ts";
+import { fallbackText, helpPrompt, HELP_SYSTEM, looksLikeQuestion, looksLikeSmallTalk, navigationChips, navigationIntent, STEP_ACCEPTS } from "./help.ts";
 
 /* ------------------------------------------------------------------ *
  * Types                                                               *
@@ -67,6 +68,8 @@ export interface FileCard {
 	stage: Stage;
 	/** Server address of the page (file cards only). */
 	url?: string;
+	/** Folder cards of a user folder: its full path (shown in the file manager by path). */
+	path?: string;
 }
 
 export interface AnswerView {
@@ -88,7 +91,7 @@ export interface ListBlock {
 
 export interface Message {
 	id: number;
-	role: "assistant" | "user" | "working" | "answer" | "card";
+	role: "assistant" | "user" | "working" | "answer" | "card" | "results";
 	/** Plain text; the browser renders **bold** and `code` only. */
 	text?: string;
 	/** Smaller second paragraph. */
@@ -106,11 +109,20 @@ export interface Message {
 	jobLabel?: string;
 	jobState?: JobInfo["state"];
 	card?: FileCard;
+	/** Results messages: the search run whose cards the browser loads (GET /api/runs/cards). */
+	run?: string;
 	answer?: AnswerView;
 	spent?: boolean;
 	/** A help answer (question channel): written by the model over the
 	 * step's help text, or the fixed help text itself. */
 	help?: "model" | "fixed";
+	/** Request question reopened after a stopped search: the request text the
+	 * browser puts back into the box (its "+" options come from the answers). */
+	prefill?: string;
+	/** Stage-1 steps after a search (pick, contact, download, its progress
+	 * and result): the browser handles them in a dialog window over the
+	 * result list and keeps them out of the chat thread. */
+	quiet?: boolean;
 }
 
 export interface JournalRow {
@@ -167,6 +179,8 @@ export interface DownloadOutcome {
 	notFree: number;
 	failed: number;
 	libraryCount: number;
+	/** The folder the PDFs went to. */
+	folder?: string;
 }
 
 export interface ReportOutcome {
@@ -176,8 +190,12 @@ export interface ReportOutcome {
 	units: number;
 }
 
+/** The period button next to the request box. */
+export type PeriodPreset = "5y" | "10y" | "20y" | "all";
+const PERIOD_PRESETS: readonly string[] = ["5y", "10y", "20y", "all"];
+
 export interface PeriodChoice {
-	preset: "5y" | "10y" | "20y" | "all" | "custom";
+	preset: PeriodPreset | "custom";
 	yearFrom?: number;
 	yearTo?: number;
 }
@@ -190,13 +208,22 @@ export interface DialogAnswers {
 	codeSources: string[];
 	topics: TopicRow[];
 	topicsOn: string[];
+	/** "Add papers with code": the suggested list topics are taken without asking. */
+	autoTopics: boolean;
+	/** The code icon next to the request box: the first search runs with the code sources. */
+	codeAtStart: boolean;
+	/** The synonym button next to the request box: the model adds synonyms
+	 * and the blocks are shown for editing before the search. Off, the
+	 * blocks hold only the request's own words and the search starts at once. */
+	synonyms: boolean;
 	period: PeriodChoice;
 	journals: JournalRow[];
 	journalsOn: string[] | "all";
 	authors: AuthorRow[];
 	authorsOn: string[] | "all";
 	authorMatches: AuthorMatch[];
-	pickedAuthor: AuthorMatch | null;
+	/** Authors picked by name or from the menu list: exact OpenAlex ids. */
+	pickedAuthors: AuthorMatch[];
 	authorScope: "query" | "all";
 	perSource: number;
 	minCites: number | null;
@@ -209,6 +236,9 @@ export interface DialogAnswers {
 	scope: string[] | "library";
 	questions: string[];
 	lastQuestion: string;
+	/** A chat on one PDF: the paper in short ("Lee and Kim 2021 · Title"),
+	 * from its metadata; names the conversation in History. */
+	paperLabel?: string;
 }
 
 export interface DialogState {
@@ -229,7 +259,9 @@ export interface DialogState {
 export type DialogEvent =
 	/** `ask`: the text is a question for the helper, not an answer (question
 	 * mode on the page, or a leading "?"). */
-	| { kind: "answer"; text?: string; chip?: string; ids?: string[]; blocks?: string[]; toggles?: string[]; ask?: boolean }
+	| { kind: "answer"; text?: string; chip?: string; ids?: string[]; blocks?: string[]; toggles?: string[]; ask?: boolean; filters?: SearchAgainFilters; code?: boolean; synonyms?: boolean; period?: PeriodPreset; options?: SearchOptionsAnswer; folder?: string }
+	/** A file the server wrote on the user's click (report from the list): shown as a card. */
+	| { kind: "fileWritten"; card: FileCard; quiet?: boolean }
 	| { kind: "helpAnswered"; text: string | null; error?: string }
 	| { kind: "blocks"; variants: VariantSuggestion[] | null; error?: string }
 	| { kind: "topics"; topics: TopicRow[]; error?: string }
@@ -237,18 +269,33 @@ export type DialogEvent =
 	| { kind: "authors"; authors: AuthorRow[]; error?: string }
 	| { kind: "authorLookup"; matches: AuthorMatch[]; error?: string }
 	| { kind: "jobStarted"; job: JobInfo }
-	| { kind: "job"; job: JobInfo; search?: SearchOutcome; download?: DownloadOutcome; answer?: AnswerView; report?: ReportOutcome }
+	| { kind: "job"; job: JobInfo; search?: SearchOutcome; download?: DownloadOutcome; answer?: AnswerView; report?: ReportOutcome; reply?: string }
 	| { kind: "effectFailed"; effect: Effect["kind"]; error: string }
-	| { kind: "restart" };
+	/** `start`: open the new conversation at that stage's first question
+	 * (the rail's "+ New search" / "+ New paper chat") instead of the start screen. */
+	| { kind: "restart"; start?: StartStage; scope?: string[]; about?: string; label?: string };
+
+export type StartStage = "search" | "synthesis";
+
+/** "Search again with these filters" from the result list: the parts of
+ * the list filters that change what the sources return. */
+export interface SearchAgainFilters {
+	/** Publication window start; `allYears` lifts the window. */
+	yearFrom?: number;
+	allYears?: boolean;
+	minCites?: number;
+}
 
 export type Effect =
-	| { kind: "proposeBlocks"; query: string }
+	/** `mode` "own": the request's own words only; "synonyms": with the
+	 * model's synonyms. `fresh`: ask the model even when blocks are saved. */
+	| { kind: "proposeBlocks"; query: string; mode: BlockMode; fresh?: boolean }
 	| { kind: "loadTopics"; query: string }
 	| { kind: "loadJournals"; query: string; yearFrom?: number; yearTo?: number }
 	| { kind: "loadAuthors"; query: string; yearFrom?: number; yearTo?: number; sourceIds: string[] }
 	| { kind: "lookupAuthor"; prefix: string }
 	| { kind: "startSearch"; form: SearchForm }
-	| { kind: "startSelection"; identifiers: string[]; mailto?: string; saveMailto?: boolean; withoutUnpaywall: boolean }
+	| { kind: "startSelection"; identifiers: string[]; mailto?: string; saveMailto?: boolean; withoutUnpaywall: boolean; folder?: string }
 	| { kind: "startChat"; question: string; papers: string[] | "library" }
 	/** `language`: the report's prose and page headings follow the language
 	 * of the user's own questions (German or English, like the terminal
@@ -285,7 +332,7 @@ export interface ReduceResult {
  * Fixed texts and defaults                                            *
  * ------------------------------------------------------------------ */
 
-export const DEFAULT_PER_SOURCE_WEB = 15;
+export const DEFAULT_PER_SOURCE_WEB = 30;
 /** How many journals / authors the facet lookups should load. */
 export const FACET_LIMIT = 30;
 
@@ -299,46 +346,38 @@ export const CODE_SOURCE_LABELS: Record<string, string> = {
 const TEXT = {
 	start: "What would you like to do today?",
 	topic: "What are you looking for? A sentence or keywords are both fine.",
-	topicNote: "Example: satellite-derived bathymetry of rivers",
 	blocks: "Is it ok if I split your request into these keyword blocks? A paper must match **every** block; the words inside a block are alternatives.",
-	blocksEdit: "Edit any line (one block per line, alternatives separated by OR or commas), then confirm.",
+	blocksSynonyms: "The model added synonyms to your keyword blocks. Change, add or remove terms, then search. A paper must match **every** block; the words inside a block are alternatives.",
 	blocksDerived: "No model is selected, so the blocks were derived word by word from your text.",
 	blocksModelFailed: "The model gave no usable proposal, so the blocks were derived word by word from your text.",
 	code: "Do you also want **papers with code**? I can additionally search code repositories and add the papers they cite: Hugging Face Papers, GitHub README search, awesome lists, Google Earth Engine repositories. Adds up to about 40 s.",
-	codeNote: "Code and data links named in abstracts or publisher records are shown in the report anyway.",
 	codeSources: "Which code sources?",
 	topics: "For the awesome lists I would look at these GitHub topics. Keep them, add one (type a word), or skip the lists?",
-	topicsNote: "Numbers in brackets: lists found for that topic on awesome.ecosyste.ms.",
 	period: "Which publication period?",
-	periodNote: "Or type a range such as 2015-2024.",
 	periodUnclear: "I did not understand the years. Type a range such as 2015-2024, 2015- or 2020, or pick a button.",
 	journals: "These journals publish most on your topic (OpenAlex). Search all of them or only some?",
-	journalsNote: "Tick journals, or type numbers (1, 3) or a name. \"all\" keeps every journal.",
 	journalsNone: "OpenAlex listed no journals for these blocks, so every journal stays in.",
 	authors: "Authors with the most works on this topic (OpenAlex). Search all authors or focus on some?",
-	authorsNote: "Tick authors, type numbers or a name (3 letters or more look up anyone else). \"all\" keeps every author.",
 	authorsNone: "OpenAlex listed no authors for these blocks, so every author stays in.",
 	authorScope: "Also include this author's works outside your topic?",
 	confirmSearch: "Search",
 	searching: "Searching ...",
-	pick: "Which papers do you want as PDFs? Tick them in the report on the right, or type row numbers (1, 4, 7), DOIs or arXiv ids. `all` takes every on-target paper, `code` every paper with a code or data link.",
-	pickNoTicks: "Nothing is ticked in the report yet. Tick papers on the right, or type row numbers or identifiers.",
+	pick: "Which papers do you want as PDFs? Tick them in the list above, or type row numbers (1, 4, 7), DOIs or arXiv ids. `all` takes every on-target paper, `code` every paper with a code or data link.",
+	pickNoTicks: "Nothing is ticked yet. Tick papers in the list above, or type row numbers or identifiers.",
 	pickUnclear: "I did not recognise that as row numbers, DOIs or arXiv ids. Example: 1, 4, 7 or 10.3390/rs13081505.",
 	mailto: "Unpaywall needs a contact email (its policy). Type it, or continue without Unpaywall.",
-	mailtoNote: "Unpaywall finds legal free copies of papers behind a paywall. Without it, only OpenAlex, publisher pages and arXiv are tried.",
 	mailtoBad: "That does not look like an email address. Type one, or continue without Unpaywall.",
 	mailtoSave: "Save this address in the configuration for next time, or use it for this run only?",
 	ask: "Ask your question about the PDFs. I answer only from retrieved passages, with page citations.",
 	askNoModel: "No model is selected, so I cannot answer questions right now.",
 	pickPaper: "Which PDF do you want to talk about?",
-	pickPaperNote: "One paper at a time keeps the answers precise; the whole library is the other scope.",
 	pickPapers: "Which papers should the report cover? Tick them, or take the whole library.",
 	questions: "Which questions should the report answer for every paper? One per line, or choose summaries only.",
 	reportKind: "Which report?",
 	finished: "Ask another question, or start a new search.",
 	wait: "Please wait for the running job, or press Stop.",
 	confirmRestart: "Start over? The conversation is cleared; files on disk stay.",
-	noLibrary: "no PDFs yet: search first, or put PDFs into the working folder",
+	noLibrary: "no PDFs yet: search first, add a PDF folder, or drop PDFs onto the page",
 	emptyLibraryDownload: "Nothing could be downloaded, and the library is empty.",
 };
 
@@ -479,8 +518,9 @@ export function formFromAnswers(answers: DialogAnswers, thisYear: number): Searc
 		form.journalsListed = answers.journals.map((row) => row.name);
 		form.journalsOther = false;
 	}
-	if (answers.pickedAuthor) {
-		form.pickedAuthors = [{ id: answers.pickedAuthor.id, name: answers.pickedAuthor.name }];
+	const pickedAuthors = answers.pickedAuthors ?? [];
+	if (pickedAuthors.length) {
+		form.pickedAuthors = pickedAuthors.map((author) => ({ id: author.id, name: author.name }));
 		form.authorScope = answers.authorScope;
 	} else if (answers.authorsOn !== "all" && answers.authorsOn.length) {
 		form.authors = answers.authors.filter((row) => (answers.authorsOn as string[]).includes(row.id)).map((row) => row.name);
@@ -508,13 +548,16 @@ function emptyAnswers(): DialogAnswers {
 		codeSources: [],
 		topics: [],
 		topicsOn: [],
+		autoTopics: false,
+		codeAtStart: false,
+		synonyms: false,
 		period: { preset: "10y" },
 		journals: [],
 		journalsOn: "all",
 		authors: [],
 		authorsOn: "all",
 		authorMatches: [],
-		pickedAuthor: null,
+		pickedAuthors: [],
 		authorScope: "query",
 		perSource: DEFAULT_PER_SOURCE_WEB,
 		minCites: null,
@@ -529,9 +572,20 @@ function emptyAnswers(): DialogAnswers {
 	};
 }
 
-export function initialDialog(ctx: DialogContext): DialogState {
+export function initialDialog(ctx: DialogContext, start?: StartStage, scope?: string[], about?: string, label?: string): DialogState {
 	const state: DialogState = { step: "start", answers: emptyAnswers(), messages: [], activeJob: null, pending: null, trail: [], counter: 0 };
+	// "+ New search" / "+ New paper chat": the conversation holds only that
+	// stage's first question, no start screen and no echoed stage name.
+	if (start === "search") return askTopic(state);
+	// PDFs dropped onto the page: a chat over exactly these.
+	if (start === "synthesis" && scope && scope.length) return askAsk(withAnswers(state, { scope, ...(label ? { paperLabel: label } : {}) }), ctx, undefined, about);
+	if (start === "synthesis") return ctx.library.length ? askAsk(withAnswers(state, { scope: "library" }), ctx) : askNoLibrary(state);
 	return ask(state, "start", startMessage(ctx));
+}
+
+/** The synthesis stage without PDFs: one line and the way to the search. */
+function askNoLibrary(state: DialogState): DialogState {
+	return ask(state, "start", { text: "The library holds no PDFs yet. Search first, add a PDF folder (PDF library, + Add folder), or drop PDFs onto the page.", chips: [{ id: "goSearch", label: "Search literature", primary: true }] });
 }
 
 function startMessage(ctx: DialogContext): Omit<Message, "id" | "role" | "step"> {
@@ -572,12 +626,16 @@ function say(state: DialogState, text: string, note?: string): DialogState {
 	return push(state, { role: "assistant", text, ...(note ? { note } : {}) });
 }
 
+const QUIET_STEPS = new Set<StepId>(["pick", "mailto", "mailtoSave", "download", "downloading"]);
+
 function userSaid(state: DialogState, text: string): DialogState {
-	return push(spend(state), { role: "user", text });
+	return push(spend(state), { role: "user", text, ...(QUIET_STEPS.has(state.step) ? { quiet: true } : {}) });
 }
 
-function card(state: DialogState, card: FileCard): DialogState {
-	return push(state, { role: "card", card });
+/** A quiet card (a report from the result list, shown in a window over the
+ * list) is kept in the conversation but never enters the thread. */
+function card(state: DialogState, card: FileCard, quiet = false): DialogState {
+	return push(state, { role: "card", card, ...(quiet ? { quiet: true } : {}) });
 }
 
 function pending(state: DialogState, label: string): DialogState {
@@ -596,23 +654,23 @@ function result(state: DialogState, ...effects: Effect[]): ReduceResult {
  * Questions                                                           *
  * ------------------------------------------------------------------ */
 
-function askTopic(state: DialogState): DialogState {
-	return ask(state, "topic", { text: TEXT.topic, note: TEXT.topicNote });
+function askTopic(state: DialogState, prefill?: string): DialogState {
+	return ask(state, "topic", { text: TEXT.topic, ...(prefill ? { prefill } : {}) });
 }
 
-function askBlocks(state: DialogState, ctx: DialogContext, note?: string): DialogState {
+function askBlocks(state: DialogState, ctx: DialogContext, note?: string, text: string = TEXT.blocks): DialogState {
 	const { answers } = state;
 	const broader = answers.variants.some((variant) => variant.role !== "plus1");
-	const chips: Chip[] = [{ id: "use", label: "Yes, search with these", primary: true }];
+	const chips: Chip[] = [{ id: "use", label: answers.synonyms ? "Search with these blocks" : "Yes, search with these", primary: true }];
 	if (broader) chips.push({ id: "useVariants", label: "Yes, plus two broader variants", title: answers.variants.filter((variant) => variant.role !== "plus1").map((variant) => variant.text).join("\n") });
 	if (ctx.hasModel) chips.push({ id: "again", label: "Propose again" });
-	return ask(state, "blocks", { text: TEXT.blocks, editor: answers.blocks, note: note ? `${note} ${TEXT.blocksEdit}` : TEXT.blocksEdit, chips });
+	chips.push({ id: "more", label: "More options", title: "Code sources, period, journals and authors before the search" });
+	return ask(state, "blocks", { text, editor: answers.blocks, ...(note ? { note } : {}), chips });
 }
 
 function askCode(state: DialogState): DialogState {
 	return ask(state, "code", {
 		text: TEXT.code,
-		note: TEXT.codeNote,
 		chips: [
 			{ id: "yes", label: "Yes, papers with code too", primary: true },
 			{ id: "no", label: "No, publications only" },
@@ -636,7 +694,7 @@ function askTopics(state: DialogState, note?: string): DialogState {
 	const { answers } = state;
 	return ask(state, "topics", {
 		text: TEXT.topics,
-		note: note ?? TEXT.topicsNote,
+		...(note ? { note } : {}),
 		chips: [
 			{ id: "use", label: "Use these", primary: true },
 			{ id: "skip", label: "Skip the lists" },
@@ -652,7 +710,7 @@ function askTopics(state: DialogState, note?: string): DialogState {
 function askPeriod(state: DialogState, note?: string): DialogState {
 	return ask(state, "period", {
 		text: TEXT.period,
-		note: note ?? TEXT.periodNote,
+		...(note ? { note } : {}),
 		chips: [
 			{ id: "5y", label: "Last 5 years" },
 			{ id: "10y", label: "Last 10 years", primary: true },
@@ -682,7 +740,7 @@ function listBlock(rows: Array<{ id: string; label: string }>, on: string[] | "a
 function askJournals(state: DialogState, note?: string): DialogState {
 	const { answers } = state;
 	const rows = answers.journals.map((row) => ({ id: row.id, label: `${row.name} (${row.works})` }));
-	return ask(state, "journals", { text: TEXT.journals, note: note ?? TEXT.journalsNote, chips: listActions(answers.journalsOn, "All journals"), list: listBlock(rows, answers.journalsOn, "journals", false) });
+	return ask(state, "journals", { text: TEXT.journals, ...(note ? { note } : {}), chips: listActions(answers.journalsOn, "All journals"), list: listBlock(rows, answers.journalsOn, "journals", false) });
 }
 
 function askAuthors(state: DialogState, note?: string): DialogState {
@@ -692,7 +750,7 @@ function askAuthors(state: DialogState, note?: string): DialogState {
 	for (const match of answers.authorMatches) {
 		chips.push({ id: `pick:${match.id}`, label: `Pick ${match.name}${match.hint ? ` (${match.hint})` : ""}` });
 	}
-	return ask(state, "authors", { text: TEXT.authors, note: note ?? TEXT.authorsNote, chips, list: listBlock(rows, answers.authorsOn, "authors", false) });
+	return ask(state, "authors", { text: TEXT.authors, ...(note ? { note } : {}), chips, list: listBlock(rows, answers.authorsOn, "authors", false) });
 }
 
 function askAuthorScope(state: DialogState): DialogState {
@@ -713,8 +771,8 @@ function summaryText(state: DialogState, ctx: DialogContext): { text: string; no
 		? answers.codeSources.map((id) => CODE_SOURCE_LABELS[id] ?? id).join(", ") + (answers.codeSources.includes("awesome-lists") && answers.topicsOn.length ? ` (topics ${answers.topicsOn.join(", ")})` : "")
 		: "off";
 	const journals = answers.journalsOn === "all" || !answers.journalsOn.length ? "all" : answers.journals.filter((row) => (answers.journalsOn as string[]).includes(row.id)).map((row) => row.name).join(", ");
-	const authors = answers.pickedAuthor
-		? `${answers.pickedAuthor.name}${answers.authorScope === "all" ? " (all their works)" : " (on the topic)"}`
+	const authors = answers.pickedAuthors?.length
+		? `${answers.pickedAuthors.map((author) => author.name).join(", ")}${answers.authorScope === "all" ? " (all their works)" : " (on the topic)"}`
 		: answers.authorsOn === "all" || !answers.authorsOn.length ? "all" : answers.authors.filter((row) => (answers.authorsOn as string[]).includes(row.id)).map((row) => row.name).join(", ");
 	const variants = answers.useVariants ? ` plus ${answers.variants.filter((variant) => variant.role !== "plus1").length} broader variant(s)` : "";
 	const text = `**Ready.** Query: \`${composedQuery(answers)}\`${variants}\nPapers with code: ${code}\nPeriod: ${period} · Journals: ${journals} · Authors: ${authors}`;
@@ -748,15 +806,18 @@ function askPick(state: DialogState, ctx: DialogContext, note?: string): DialogS
 	if (code) chips.push({ id: "code", label: `All papers with a code link (${code})` });
 	if (onTarget) chips.push({ id: "all", label: `All on-target papers (${onTarget})` });
 	if (ctx.library.length) chips.push({ id: "skip", label: "Skip to the library chat" });
-	return ask(state, "pick", { text: TEXT.pick, ...(note ? { note } : {}), chips });
+	if (!state.answers.codeSources.length) chips.push({ id: "addCode", label: "Add papers with code", title: "Search again with the code sources on (about 20 s more); their list topics are chosen automatically" });
+	chips.push({ id: "goBlocks", label: "Edit keywords", title: "Change the keywords; the search runs again" });
+	const searched = `Searched: ${composedQuery(state.answers)}`;
+	return ask(state, "pick", { text: TEXT.pick, note: note ? `${note} ${searched}` : searched, chips, quiet: true });
 }
 
 function askMailto(state: DialogState, note?: string): DialogState {
-	return ask(state, "mailto", { text: note ?? TEXT.mailto, note: TEXT.mailtoNote, chips: [{ id: "without", label: "Continue without Unpaywall" }] });
+	return ask(state, "mailto", { text: note ?? TEXT.mailto, chips: [{ id: "without", label: "Continue without Unpaywall" }], quiet: true });
 }
 
 function askMailtoSave(state: DialogState): DialogState {
-	return ask(state, "mailtoSave", { text: TEXT.mailtoSave, chips: [{ id: "save", label: "Save it", primary: true }, { id: "once", label: "This run only" }] });
+	return ask(state, "mailtoSave", { text: TEXT.mailtoSave, chips: [{ id: "save", label: "Save it", primary: true }, { id: "once", label: "This run only" }], quiet: true });
 }
 
 function askDownload(state: DialogState): DialogState {
@@ -771,15 +832,14 @@ function askDownload(state: DialogState): DialogState {
 	if (restricted) parts.push(`${restricted} restricted (listed with a browser link, not tried)`);
 	if (abstractOnly) parts.push(`${abstractOnly} abstract only (not tried)`);
 	if (inLibrary) parts.push(`${inLibrary} already in the library`);
-	const text = `Download **${n} paper${n === 1 ? "" : "s"}** into \`lit-selection/\`?${parts.length ? ` ${parts.join(", ")}.` : ""}`;
+	const text = `Download **${n} paper${n === 1 ? "" : "s"}**?${parts.length ? ` ${parts.join(", ")}.` : ""}`;
 	const note = answers.withoutUnpaywall ? "Without Unpaywall for this run." : answers.mailto ? `Unpaywall contact: ${answers.mailto}.` : undefined;
-	return ask(state, "download", { text, ...(note ? { note } : {}), chips: [{ id: "download", label: "Download", primary: true }, { id: "change", label: "Change the list" }] });
+	return ask(state, "download", { text, ...(note ? { note } : {}), chips: [{ id: "download", label: "Download", primary: true }, { id: "change", label: "Change the list" }], quiet: true });
 }
 
 function askPickPaper(state: DialogState, ctx: DialogContext): DialogState {
 	return ask(state, "pickPaper", {
 		text: TEXT.pickPaper,
-		note: TEXT.pickPaperNote,
 		chips: [
 			{ id: "use", label: "Use the ticked paper", primary: true },
 			{ id: "library", label: "Whole library instead" },
@@ -805,6 +865,12 @@ function askQuestions(state: DialogState): DialogState {
 
 /** The actions offered while questions are open (below the instruction
  * and below every answer). */
+/** A chat on ONE PDF (opened from the library or by dropping it): just
+ * questions about it, no report or scope buttons. */
+function onePaper(state: DialogState): boolean {
+	return Array.isArray(state.answers.scope) && state.answers.scope.length === 1;
+}
+
 function askChips(): Chip[] {
 	return [
 		{ id: "report", label: "Build a report" },
@@ -813,7 +879,10 @@ function askChips(): Chip[] {
 	];
 }
 
-function askAsk(state: DialogState, ctx: DialogContext, intro?: string): DialogState {
+/** `about`: the paper's own words (title, first author, year from its
+ * metadata) for a chat opened on one PDF: the question names it. */
+function askAsk(state: DialogState, ctx: DialogContext, intro?: string, about?: string): DialogState {
+	if (about && ctx.hasModel) return ask(state, "ask", { text: `What would you like to know about ${about}?` });
 	const scopeLabel = state.answers.scope === "library" ? `whole library (${ctx.library.length})` : `${state.answers.scope.length} paper${state.answers.scope.length === 1 ? "" : "s"}`;
 	const chips = askChips();
 	const text = intro ? `${intro}\n${ctx.hasModel ? TEXT.ask : TEXT.askNoModel}` : ctx.hasModel ? TEXT.ask : TEXT.askNoModel;
@@ -846,20 +915,28 @@ function libraryLabel(paper: LibraryItem): string {
 export function reduce(state: DialogState, event: DialogEvent, ctx: DialogContext): ReduceResult {
 	switch (event.kind) {
 		case "restart":
-			return result(initialDialog(ctx), { kind: "newChatSession" });
+			return result(initialDialog(ctx, event.start, event.scope, event.about, event.label), { kind: "newChatSession" });
 		case "answer":
 			return onAnswer(state, event, ctx);
 		case "blocks":
 			return onBlocksProposed(state, event, ctx);
+		case "fileWritten":
+			return result(card(state, event.card, event.quiet === true));
 		case "topics": {
 			// Topics without a single list are useless to the source: not shown.
 			const topics = event.topics.filter((row) => row.lists !== 0);
 			const next = withAnswers(state, { topics, topicsOn: topics.map((row) => row.topic) });
+			// "Add papers with code": the best three topics are taken without asking.
+			if (state.answers.autoTopics) {
+				const picked = [...topics].sort((a, b) => (b.lists ?? 0) - (a.lists ?? 0)).slice(0, 3).map((row) => row.topic);
+				const sources = picked.length ? next.answers.codeSources : next.answers.codeSources.filter((id) => id !== "awesome-lists");
+				return startSearch(withAnswers(next, { topicsOn: picked, codeSources: sources, autoTopics: false }), ctx);
+			}
 			if (!topics.length) {
 				const without = withAnswers(next, { codeSources: next.answers.codeSources.filter((id) => id !== "awesome-lists"), topicsOn: [] });
 				return result(askPeriod(say(without, event.error ? `List topics could not be loaded (${event.error}); the awesome lists are left out of this search.` : "No awesome lists exist for the suggested topics, so the awesome lists are left out of this search.")));
 			}
-			return result(askTopics(next, event.error ? `${event.error}. ${TEXT.topicsNote}` : undefined));
+			return result(askTopics(next, event.error ? event.error : undefined));
 		}
 		case "journals": {
 			const next = withAnswers(state, { journals: event.journals, journalsOn: "all" });
@@ -878,12 +955,12 @@ export function reduce(state: DialogState, event: DialogEvent, ctx: DialogContex
 		}
 		case "authorLookup": {
 			const next = withAnswers(state, { authorMatches: event.matches });
-			if (!event.matches.length) return result(askAuthors(next, event.error ? `Lookup failed (${event.error}). ${TEXT.authorsNote}` : `No author of that name in OpenAlex. ${TEXT.authorsNote}`));
+			if (!event.matches.length) return result(askAuthors(next, event.error ? `Lookup failed (${event.error}).` : "No author of that name in OpenAlex."));
 			return result(askAuthors(next, "Pick one of the matches, or tick listed authors."));
 		}
 		case "jobStarted": {
 			const step: StepId = event.job.kind === "search" ? "searching" : event.job.kind === "selection" ? "downloading" : event.job.kind === "report" ? "reporting" : event.job.kind === "chat" ? "answering" : state.step;
-			return result(push({ ...spend(state), step, activeJob: event.job.id, pending: null }, { role: "working", job: event.job.id, jobLabel: event.job.label, jobState: "running" }));
+			return result(push({ ...spend(state), step, activeJob: event.job.id, pending: null }, { role: "working", job: event.job.id, jobLabel: event.job.label, jobState: "running", ...(event.job.kind === "selection" ? { quiet: true } : {}) }));
 		}
 		case "job":
 			return onJob(state, event, ctx);
@@ -936,6 +1013,15 @@ function onAnswer(state: DialogState, event: Extract<DialogEvent, { kind: "answe
 		return result(ask(userSaid(state, text || "Start over"), "confirmRestart", { text: TEXT.confirmRestart, chips: [{ id: "yes", label: "Yes, start over", primary: true }, { id: "no", label: "No, continue" }] }));
 	}
 	if (command === "back") return goBack(userSaid(state, text), ctx);
+	// A typed wish to change the keywords or the request reopens that
+	// question (answers kept), decided here and not by the helper model.
+	// Only once blocks exist, not on the request and blocks questions
+	// themselves (there the text IS the answer), and not on the explicit
+	// question channel (`ask`, leading "?"), which never moves the step.
+	const navigable = text && !chip && !event.ask && !text.startsWith("?") && state.answers.blocks.length > 0 && state.step !== "topic" && state.step !== "blocks";
+	const navigate = navigable ? navigationIntent(text) : null;
+	if (navigate === "blocks") return result(askBlocks(userSaid(state, text), ctx));
+	if (navigate === "topic") return result(askTopic(userSaid(state, text)));
 
 	const shown = chip ? chipLabel(state, chip) ?? chip : text;
 	const echoed = shown ? userSaid(state, shown) : spend(state);
@@ -950,6 +1036,25 @@ function onAnswer(state: DialogState, event: Extract<DialogEvent, { kind: "answe
 	if (chip === "goBlocks") return result(echoed.answers.blocks.length ? askBlocks(echoed, ctx) : askTopic(echoed));
 	if (chip === "back") return goBack(echoed, ctx);
 
+	// From the result list: the code sources as an add-on (a new run with
+	// the same blocks, list topics taken automatically), and the list
+	// filters sent to the sources as a new query.
+	if (chip === "addCode" && state.answers.blocks.length) return addCodeSources(echoed, ctx);
+	// The browser's "Edit keywords" window: new lines, searched at once.
+	if (chip === "reblocks" && state.answers.blocks.length) {
+		const blocks = (event.blocks ?? []).map((line) => line.trim()).filter(Boolean);
+		if (!blocks.length || !composedQuery({ ...state.answers, blocks })) return result(askPick(say(echoed, "At least one block needs a term."), ctx));
+		return startSearch(withAnswers(echoed, { blocks, useVariants: false }), ctx);
+	}
+	if (chip === "searchAgain" && state.answers.blocks.length) {
+		const filters = event.filters ?? {};
+		let next = echoed;
+		if (filters.allYears) next = withAnswers(next, { period: { preset: "all" } });
+		else if (filters.yearFrom !== undefined) next = withAnswers(next, { period: { preset: "custom", yearFrom: filters.yearFrom } });
+		if (filters.minCites !== undefined) next = withAnswers(next, { minCites: filters.minCites > 0 ? filters.minCites : null });
+		return startSearch(next, ctx);
+	}
+
 	// The rail's stages switch within the same conversation.
 	if (chip === "goSearch") return result(askTopic(echoed));
 	if (chip === "goSelection") {
@@ -958,7 +1063,7 @@ function onAnswer(state: DialogState, event: Extract<DialogEvent, { kind: "answe
 	}
 	if (chip === "goSynthesis") {
 		if (ctx.library.length) return result(askAsk(withAnswers(echoed, { scope: "library" }), ctx));
-		return result(ask(echoed, "start", { text: `The library holds no PDFs yet (${TEXT.noLibrary}).`, chips: [{ id: "goSearch", label: "Search literature", primary: true }] }));
+		return result(askNoLibrary(echoed));
 	}
 
 	switch (state.step) {
@@ -973,10 +1078,10 @@ function onAnswer(state: DialogState, event: Extract<DialogEvent, { kind: "answe
 			// does not chat. A question CAN be a research request, so only small
 			// talk is caught here.
 			if (looksLikeSmallTalk(text)) return onHelp(echoed, text, ctx, undefined, true);
-			return onTopic(echoed, text, ctx);
+			return onTopic(echoed, text, ctx, requestOptions(event));
 		case "topic":
 			if (!text) return result(say(echoed, TEXT.topic));
-			return onTopic(echoed, text, ctx);
+			return onTopic(echoed, text, ctx, requestOptions(event));
 		case "blocks":
 			return onBlocks(echoed, event, text, chip, ctx);
 		case "code": {
@@ -1008,7 +1113,7 @@ function onAnswer(state: DialogState, event: Extract<DialogEvent, { kind: "answe
 			if (!slug) return unclear(echoed, text, "A topic is one GitHub slug such as remote-sensing.", ctx, () => askTopics(echoed));
 			const on = [...new Set([...(event.toggles ?? echoed.answers.topicsOn), slug])];
 			const topics = echoed.answers.topics.some((row) => row.topic === slug) ? echoed.answers.topics : [...echoed.answers.topics, { topic: slug, lists: null }];
-			return result(askTopics(withAnswers(echoed, { topics, topicsOn: on }), `Added "${slug}". ${TEXT.topicsNote}`));
+			return result(askTopics(withAnswers(echoed, { topics, topicsOn: on }), `Added "${slug}".`));
 		}
 		case "period": {
 			const preset = ["5y", "10y", "20y", "all"].includes(chip) ? chip as PeriodChoice["preset"] : null;
@@ -1037,7 +1142,8 @@ function onAnswer(state: DialogState, event: Extract<DialogEvent, { kind: "answe
 			if (chip === "change" || /^(change|change the list|back)$/i.test(text)) return result(askPick(echoed, ctx));
 			if (chip === "download" || /^(download|yes|ok|go)$/i.test(text)) {
 				const { answers } = echoed;
-				return result(pending(echoed, "starting the download"), { kind: "startSelection", identifiers: answers.pickIds, mailto: answers.mailto || undefined, saveMailto: answers.saveMailto || undefined, withoutUnpaywall: answers.withoutUnpaywall });
+				// The folder the user chose in the download window (the server checks it).
+				return result(pending(echoed, "starting the download"), { kind: "startSelection", identifiers: answers.pickIds, mailto: answers.mailto || undefined, saveMailto: answers.saveMailto || undefined, withoutUnpaywall: answers.withoutUnpaywall, ...(event.folder ? { folder: event.folder } : {}) });
 			}
 			return result(askDownload(echoed));
 		}
@@ -1110,16 +1216,129 @@ export function isHandBuilt(text: string): boolean {
 	return /(^|\s)(AND|OR)(\s|$)/.test(text) || /;/.test(text);
 }
 
-function onTopic(state: DialogState, text: string, ctx: DialogContext): ReduceResult {
-	const next = withAnswers(state, { topic: text, variants: [], useVariants: false });
-	if (isHandBuilt(text) && isBlockExpression(text)) {
+/** What the "+" menu of the request box sent along with it. */
+interface RequestOptions {
+	code: boolean;
+	synonyms: boolean;
+	period?: PeriodPreset;
+	options?: SearchOptionsAnswer;
+	/** Synonym blocks already checked and edited in the "+" menu. */
+	blocks?: string[];
+}
+
+function requestOptions(event: Extract<DialogEvent, { kind: "answer" }>): RequestOptions {
+	const blocks = (event.blocks ?? []).map((line) => line.trim()).filter(Boolean);
+	return {
+		code: event.code === true, synonyms: event.synonyms === true, ...periodOf(event),
+		...(event.options ? { options: event.options } : {}),
+		...(event.synonyms === true && blocks.length ? { blocks } : {}),
+	};
+}
+
+/** The "+" menu's settings beyond code, synonyms and period: the same
+ * choices the terminal wizard offers (count, citations, journals,
+ * authors), made before the search. Journal and author rows are the
+ * OpenAlex facet rows the menu showed; `on` holds the ticked ids. */
+export interface SearchOptionsAnswer {
+	perSource?: number;
+	minCites?: number | null;
+	journals?: { rows: JournalRow[]; on: string[] };
+	authors?: { rows: AuthorRow[]; on: string[] };
+	pickedAuthors?: AuthorMatch[];
+	authorScope?: "query" | "all";
+}
+
+/** Validate the menu's settings from the page (untrusted JSON): numbers
+ * clamped, rows with string id + name only, ticks limited to listed ids.
+ * Pure; undefined when nothing usable came. */
+export function parseSearchOptions(value: unknown): SearchOptionsAnswer | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+	const raw = value as Record<string, unknown>;
+	const out: SearchOptionsAnswer = {};
+	const count = (n: unknown): number | undefined => typeof n === "number" && Number.isFinite(n) ? Math.round(n) : undefined;
+	const per = count(raw.perSource);
+	if (per !== undefined) out.perSource = Math.min(MAX_PER_SOURCE, Math.max(1, per));
+	if (raw.minCites === null) out.minCites = null;
+	else {
+		const cites = count(raw.minCites);
+		if (cites !== undefined) out.minCites = cites > 0 ? cites : null;
+	}
+	const rows = (list: unknown): Array<Record<string, unknown>> => Array.isArray(list)
+		? list.filter((row): row is Record<string, unknown> => Boolean(row) && typeof row === "object" && typeof (row as Record<string, unknown>).id === "string" && typeof (row as Record<string, unknown>).name === "string").slice(0, 100)
+		: [];
+	const ticks = (on: unknown, listed: Array<{ id: string }>): string[] => Array.isArray(on)
+		? on.filter((id): id is string => typeof id === "string" && listed.some((row) => row.id === id))
+		: [];
+	const facet = (entry: unknown) => (entry && typeof entry === "object" ? entry as Record<string, unknown> : {});
+	const journals = facet(raw.journals);
+	const journalRows: JournalRow[] = rows(journals.rows).map((row) => ({ id: row.id as string, name: row.name as string, works: count(row.works) ?? 0, score: typeof row.score === "number" ? row.score : null }));
+	const journalsOn = ticks(journals.on, journalRows);
+	if (journalsOn.length) out.journals = { rows: journalRows, on: journalsOn };
+	const authors = facet(raw.authors);
+	const authorRows: AuthorRow[] = rows(authors.rows).map((row) => ({ id: row.id as string, name: row.name as string, works: count(row.works) ?? 0 }));
+	const authorsOn = ticks(authors.on, authorRows);
+	if (authorsOn.length) out.authors = { rows: authorRows, on: authorsOn };
+	// Picked authors (by name or ticked in the list): OpenAlex author ids
+	// only, no duplicates; a single legacy `pickedAuthor` counts as one.
+	const pickedRaw = Array.isArray(raw.pickedAuthors) ? raw.pickedAuthors : raw.pickedAuthor ? [raw.pickedAuthor] : [];
+	const pickedAuthors: AuthorMatch[] = [];
+	for (const entry of pickedRaw.slice(0, 50)) {
+		const picked = facet(entry);
+		if (typeof picked.id !== "string" || !/^A\d+$/.test(picked.id) || typeof picked.name !== "string" || !picked.name.trim()) continue;
+		if (pickedAuthors.some((author) => author.id === picked.id)) continue;
+		pickedAuthors.push({ id: picked.id, name: picked.name.trim(), hint: typeof picked.hint === "string" ? picked.hint : "", works: count(picked.works), cites: count(picked.cites), orcid: typeof picked.orcid === "string" ? picked.orcid : "" });
+	}
+	if (pickedAuthors.length) out.pickedAuthors = pickedAuthors;
+	if (raw.authorScope === "query" || raw.authorScope === "all") out.authorScope = raw.authorScope;
+	return Object.keys(out).length ? out : undefined;
+}
+
+/** The menu settings as dialog answers (formFromAnswers reads these). */
+function optionAnswers(options: SearchOptionsAnswer | undefined): Partial<DialogAnswers> {
+	if (!options) return {};
+	return {
+		...(options.perSource !== undefined ? { perSource: options.perSource } : {}),
+		...(options.minCites !== undefined ? { minCites: options.minCites } : {}),
+		...(options.journals ? { journals: options.journals.rows, journalsOn: options.journals.on } : { journalsOn: "all" as const }),
+		...(options.authors ? { authors: options.authors.rows, authorsOn: options.authors.on } : { authorsOn: "all" as const }),
+		pickedAuthors: options.pickedAuthors ?? [],
+		...(options.authorScope ? { authorScope: options.authorScope } : {}),
+	};
+}
+
+function periodOf(event: Extract<DialogEvent, { kind: "answer" }>): { period?: PeriodPreset } {
+	return event.period && PERIOD_PRESETS.includes(event.period) ? { period: event.period } : {};
+}
+
+function onTopic(state: DialogState, text: string, ctx: DialogContext, options: RequestOptions = { code: false, synonyms: false }): ReduceResult {
+	const next = withAnswers(state, {
+		topic: text, variants: [], useVariants: false, codeAtStart: options.code, synonyms: options.synonyms,
+		...(options.period ? { period: { preset: options.period } } : {}),
+		...optionAnswers(options.options),
+	});
+	// The browser searches first and lets the blocks be edited afterwards
+	// ("Edit keywords" under the results): a hand-built block expression and
+	// the model's own-words blocks start the search at once. With the
+	// synonym button the model's synonyms are shown for editing first; so
+	// are word-by-word blocks (no model, model failed).
+	// Synonym blocks the user already saw and edited in the "+" menu: search with them.
+	if (options.blocks && composedQuery({ ...next.answers, blocks: options.blocks })) {
+		return startSearch(withAnswers(next, { blocks: options.blocks }), ctx);
+	}
+	if (!options.synonyms && isHandBuilt(text) && isBlockExpression(text)) {
 		const lines = blocksForEditing(text);
-		if (lines) return result(askBlocks(withAnswers(next, { blocks: lines }), ctx));
+		if (lines) return startSearch(withAnswers(next, { blocks: lines }), ctx);
 	}
 	if (!ctx.hasModel) {
 		return result(askBlocks(withAnswers(next, { blocks: derivedBlocks(text) }), ctx, TEXT.blocksDerived));
 	}
-	return result(pending(next, "asking the model for keyword blocks"), { kind: "proposeBlocks", query: text });
+	return result(pending(next, PENDING_BLOCKS), proposeEffect(next.answers));
+}
+
+const PENDING_BLOCKS = "asking the model for keyword blocks";
+
+function proposeEffect(answers: DialogAnswers, fresh = false): Effect {
+	return { kind: "proposeBlocks", query: answers.topic, mode: answers.synonyms ? "synonyms" : "own", ...(fresh ? { fresh: true } : {}) };
 }
 
 function derivedBlocks(text: string): string[] {
@@ -1131,17 +1350,34 @@ function onBlocksProposed(state: DialogState, event: Extract<DialogEvent, { kind
 	const variants = event.variants ?? [];
 	const plus1 = variants.find((variant) => variant.role === "plus1");
 	const lines = plus1 ? blocksForEditing(plus1.text) : null;
+	// A late proposal after a fallback or a started search is ignored.
+	if (state.pending !== PENDING_BLOCKS) return result(state);
 	if (!lines) {
 		const note = event.error ? `${TEXT.blocksModelFailed} (${event.error})` : TEXT.blocksModelFailed;
 		return result(askBlocks(withAnswers(state, { blocks: derivedBlocks(state.answers.topic), variants }), ctx, note));
 	}
-	return result(askBlocks(withAnswers(state, { blocks: lines, variants }), ctx));
+	const next = withAnswers(state, { blocks: lines, variants });
+	if (state.answers.synonyms) return result(askBlocks(next, ctx, undefined, TEXT.blocksSynonyms));
+	return startSearch(next, ctx);
 }
 
 function onBlocks(state: DialogState, event: Extract<DialogEvent, { kind: "answer" }>, text: string, chip: string, ctx: DialogContext): ReduceResult {
-	if (chip === "again") {
-		return result(pending(state, "asking the model for keyword blocks"), { kind: "proposeBlocks", query: state.answers.topic });
+	if (chip === "again") return result(pending(state, PENDING_BLOCKS), proposeEffect(state.answers, true));
+	// The request box above the synonym blocks was changed and sent again:
+	// a new request, new blocks.
+	if (chip === "retopic" && text) {
+		return onTopic(state, text, ctx, {
+			code: event.code ?? state.answers.codeAtStart,
+			synonyms: event.synonyms ?? state.answers.synonyms,
+			...periodOf(event),
+			...(event.options ? { options: event.options } : {}),
+		});
 	}
+	// Under the synonym drop-down the "+" menu still counts: its settings
+	// arrive with the confirming answer.
+	if (event.period && PERIOD_PRESETS.includes(event.period)) state = withAnswers(state, { period: { preset: event.period } });
+	if (event.options) state = withAnswers(state, optionAnswers(event.options));
+	if (typeof event.code === "boolean") state = withAnswers(state, { codeAtStart: event.code });
 	const edited = (event.blocks ?? []).map((line) => line.trim()).filter(Boolean);
 	if (!chip && !edited.length && text && looksLikeQuestion(text)) return onHelp(state, text, ctx);
 	const typed = !chip && text ? parseBlockLines(text) : [];
@@ -1149,7 +1385,18 @@ function onBlocks(state: DialogState, event: Extract<DialogEvent, { kind: "answe
 	if (!blocks.length || !composedQuery({ ...state.answers, blocks })) {
 		return result(askBlocks(say(state, "At least one block needs a term."), ctx));
 	}
-	return result(askCode(withAnswers(state, { blocks, useVariants: chip === "useVariants" })));
+	// "More options" opens the question chain (code sources, period,
+	// journals, authors, summary); everything else searches at once.
+	if (chip === "more") return result(askCode(withAnswers(state, { blocks, useVariants: false, codeAtStart: false })));
+	return startSearch(withAnswers(state, { blocks, useVariants: chip === "useVariants" }), ctx);
+}
+
+/** "Add papers with code": all four code sources on, list topics without
+ * a question (model suggestion, stored topics, or the source defaults). */
+function addCodeSources(state: DialogState, ctx: DialogContext): ReduceResult {
+	const next = withAnswers(state, { codeSources: Object.keys(CODE_SEARCHERS), autoTopics: true });
+	if (!ctx.hasModel) return startSearch(withAnswers(next, { autoTopics: false, topicsOn: ctx.storedTopics }), ctx);
+	return result(pending(next, "suggesting list topics"), { kind: "loadTopics", query: composedQuery(next.answers) });
 }
 
 function afterCodeSources(state: DialogState, ctx: DialogContext): ReduceResult {
@@ -1177,19 +1424,19 @@ function onListStep(state: DialogState, event: Extract<DialogEvent, { kind: "ans
 	const reask = which === "journals" ? askJournals : askAuthors;
 	const proceed = (next: DialogState): ReduceResult => (which === "journals" ? loadAuthors(next, ctx) : result(askConfirm(next, ctx)));
 
-	if (chip === "all") return proceed(withAnswers(state, { [onKey]: "all", pickedAuthor: null }));
+	if (chip === "all") return proceed(withAnswers(state, { [onKey]: "all", pickedAuthors: [] }));
 	if (chip === "use") {
 		const on = (event.toggles ?? []).filter((id) => rows.some((row) => row.id === id));
 		if (!on.length) return result(reask(say(state, `Nothing is ticked. Tick ${which}, type numbers, or choose all.`)));
-		return proceed(withAnswers(state, { [onKey]: on, pickedAuthor: null }));
+		return proceed(withAnswers(state, { [onKey]: on, pickedAuthors: [] }));
 	}
 	if (which === "authors" && chip.startsWith("pick:")) {
 		const match = state.answers.authorMatches.find((entry) => `pick:${entry.id}` === chip);
-		if (match) return result(askAuthorScope(withAnswers(state, { pickedAuthor: match, authorsOn: "all", authorMatches: [] })));
+		if (match) return result(askAuthorScope(withAnswers(state, { pickedAuthors: [match], authorsOn: "all", authorMatches: [] })));
 	}
 	const typed = parseListAnswer(text, rows.map((row) => row.name));
-	if (typed.kind === "all") return proceed(withAnswers(state, { [onKey]: "all", pickedAuthor: null }));
-	if (typed.kind === "picked") return proceed(withAnswers(state, { [onKey]: typed.indexes.map((index) => rows[index].id), pickedAuthor: null }));
+	if (typed.kind === "all") return proceed(withAnswers(state, { [onKey]: "all", pickedAuthors: [] }));
+	if (typed.kind === "picked") return proceed(withAnswers(state, { [onKey]: typed.indexes.map((index) => rows[index].id), pickedAuthors: [] }));
 	if (which === "authors" && text.length >= 3 && /\p{L}/u.test(text)) {
 		return result(pending(state, `looking up "${text}" on OpenAlex`), { kind: "lookupAuthor", prefix: text });
 	}
@@ -1210,6 +1457,10 @@ function onConfirm(state: DialogState, text: string, chip: string, ctx: DialogCo
 			return state.answers.authors.length ? result(askAuthors(state)) : loadAuthors(state, ctx);
 		case "changeBlocks":
 			return result(askBlocks(state, ctx));
+		case "editSearch":
+			// Back to the request box alone, the request and its options kept
+			// (the stopped attempt stays in the job log, not in the thread).
+			return result(askTopic({ ...state, messages: [], trail: [] }, state.answers.topic));
 		default:
 			break;
 	}
@@ -1223,6 +1474,9 @@ function onConfirm(state: DialogState, text: string, chip: string, ctx: DialogCo
 }
 
 function startSearch(state: DialogState, ctx: DialogContext): ReduceResult {
+	// The code icon at the request: the first search takes the code sources
+	// the way "Add papers with code" does (list topics without a question).
+	if (state.answers.codeAtStart) return addCodeSources(withAnswers(state, { codeAtStart: false }), ctx);
 	return result(pending(state, "starting the search"), { kind: "startSearch", form: formFromAnswers(state.answers, ctx.thisYear) });
 }
 
@@ -1304,10 +1558,15 @@ function onJob(state: DialogState, event: Extract<DialogEvent, { kind: "job" }>,
 		const why = job.state === "cancelled" ? "Stopped." : `Failed: ${job.error ?? "unknown error"}`;
 		switch (job.kind) {
 			case "search":
-				return result(ask(marked, "confirm", { text: `${why} The search did not finish.`, chips: [{ id: "search", label: "Try again", primary: true }, { id: "changeBlocks", label: "Change blocks" }, { id: "restart", label: "Start over" }] }));
+				// A list is already there (add-on, search again, edited blocks):
+				// back to it with its actions; the working line says "Stopped".
+				if (state.answers.search) return result(askPick(marked, ctx, `${why} The new search did not finish; the list is the previous one.`));
+				return result(ask(marked, "confirm", { text: `${why} The search did not finish.`, chips: [{ id: "search", label: "Search again", primary: true }, { id: "editSearch", label: "Edit search" }] }));
 			case "selection":
 				return result(ask(marked, "download", { text: `${why} The download did not finish.`, chips: [{ id: "download", label: "Try again", primary: true }, { id: "change", label: "Change the list" }] }));
 			case "chat":
+				// A chat on one PDF stays a plain chat: no scope or report chips.
+				if (onePaper(marked)) return result(ask({ ...marked, pending: null }, "ask", { text: why }));
 				return result(askAsk(say(marked, `${why}`), ctx));
 			case "report":
 				return result(askReportKind(say(marked, `${why} The report was not written.`)));
@@ -1320,9 +1579,11 @@ function onJob(state: DialogState, event: Extract<DialogEvent, { kind: "job" }>,
 			const outcome = event.search;
 			if (!outcome) return result(say(marked, "The search finished, but its result is missing."));
 			const code = outcome.candidates.filter((candidate) => candidate.code).length;
-			const told = say(withAnswers(marked, { search: outcome, pickIds: [] }), `**Search finished:** ${outcome.included} included, ${outcome.dropped} dropped.${code ? ` ${code} paper${code === 1 ? " carries" : "s carry"} a code or data link.` : ""}`, "Click the card to enlarge the report (Esc closes).");
-			const withCard = card(told, { kind: "file", name: `${outcome.name}.html`, label: "Search report, HTML · lit-search/", stage: "lit-search", url: outcome.htmlUrl });
-			return result(askPick(withCard, ctx));
+			const told = say(withAnswers(marked, { search: outcome, pickIds: [] }), `**Search finished:** ${outcome.included} included, ${outcome.dropped} dropped.${code ? ` ${code} paper${code === 1 ? " carries" : "s carry"} a code or data link.` : ""}`, "Tick papers in the list below; the filter icon narrows it; reports are written on click.");
+			// The result cards stand in the chat (loaded by the browser from the
+			// run's JSON); reports are written on click from the filtered list.
+			const withResults = push(told, { role: "results", run: outcome.name });
+			return result(askPick(withResults, ctx));
 		}
 		case "selection": {
 			const outcome = event.download;
@@ -1333,20 +1594,31 @@ function onJob(state: DialogState, event: Extract<DialogEvent, { kind: "job" }>,
 			if (outcome.notFree) parts.push(`${outcome.notFree} not free`);
 			if (outcome.failed) parts.push(`${outcome.failed} failed`);
 			const links = outcome.browser.map((entry) => `${entry.id}: ${entry.url}`).join("\n");
-			let told = say(marked, `**Download finished:** ${parts.join(", ")}.`, links ? `Only in the browser (open the link, save the PDF into lit-selection/):\n${links}` : undefined);
-			told = card(told, { kind: "folder", name: "lit-selection/", label: `${outcome.downloaded} PDF${outcome.downloaded === 1 ? "" : "s"} added, ${outcome.libraryCount} in the library`, stage: "lit-selection" });
+			// Both messages are quiet: the browser shows them in the download
+			// window over the list; the list stays the result of stage 1. The
+			// library chat is one chip away (skip) or the rail's stage 2.
+			let told = push(marked, { role: "assistant", text: `**Download finished:** ${parts.join(", ")}.`, ...(links ? { note: `Only in the browser (open the link, save the PDF into your folder):\n${links}` } : {}), quiet: true });
+			const folderName = outcome.folder ? `${outcome.folder.split(/[\\/]/).filter(Boolean).pop() ?? outcome.folder}/` : "lit-selection/";
+			told = push(told, { role: "card", card: { kind: "folder", name: folderName, label: `${outcome.downloaded} PDF${outcome.downloaded === 1 ? "" : "s"} added, ${outcome.libraryCount} in the library`, stage: "lit-selection", ...(outcome.folder ? { path: outcome.folder } : {}) }, quiet: true });
 			if (!outcome.libraryCount) {
 				return result(askPick(say(told, TEXT.emptyLibraryDownload), ctx, "Pick other papers, or start over."));
 			}
-			return result(askAsk(withAnswers(told, { scope: "library" }), ctx));
+			return result(askPick(withAnswers(told, { scope: "library" }), { ...ctx, library: ctx.library.length ? ctx.library : [{ base: "", title: "", year: null, authors: [] }] }, `${outcome.libraryCount} PDF${outcome.libraryCount === 1 ? "" : "s"} in the library.`));
 		}
 		case "chat": {
+			// A purely social message ("danke", "find ich gut"): the model's
+			// short reply, no passages; it is no question for a later report.
+			if (event.reply) {
+				const asked = marked.answers.lastQuestion;
+				const kept = withAnswers(marked, { questions: marked.answers.questions.filter((question) => question !== asked) });
+				return result(say({ ...kept, step: "ask", pending: null }, event.reply));
+			}
 			const view = event.answer;
 			if (!view) return result(askAsk(say(marked, "The answer is missing."), ctx));
 			// No repeated instruction after an answer: the answer itself carries
 			// the action chips, the input box invites the next question.
 			const trail = marked.trail[marked.trail.length - 1] === "ask" ? marked.trail : [...marked.trail, "ask" as StepId];
-			return result(push({ ...spend(marked), step: "ask", trail, pending: null }, { role: "answer", step: "ask", answer: view, chips: askChips() }));
+			return result(push({ ...spend(marked), step: "ask", trail, pending: null }, { role: "answer", step: "ask", answer: view, ...(onePaper(marked) ? {} : { chips: askChips() }) }));
 		}
 		case "report": {
 			const outcome = event.report;
@@ -1366,13 +1638,14 @@ function onEffectFailed(state: DialogState, event: Extract<DialogEvent, { kind: 
 		case "proposeBlocks":
 			return result(askBlocks(withAnswers(cleared, { blocks: derivedBlocks(state.answers.topic) }), ctx, `${TEXT.blocksModelFailed} (${event.error})`));
 		case "loadTopics":
+			if (state.answers.autoTopics) return startSearch(say(withAnswers(cleared, { autoTopics: false, topicsOn: ctx.storedTopics }), `List topics could not be loaded (${event.error}); the awesome lists run with the stored topics only.`), ctx);
 			return result(askPeriod(say(cleared, `List topics could not be loaded (${event.error}); the awesome lists run with the stored topics only.`)));
 		case "loadJournals":
 			return loadAuthors(say(cleared, `Journals could not be loaded (${event.error}); every journal stays in.`), ctx);
 		case "loadAuthors":
 			return result(askConfirm(say(cleared, `Authors could not be loaded (${event.error}); every author stays in.`), ctx));
 		case "lookupAuthor":
-			return result(askAuthors(cleared, `Lookup failed (${event.error}). ${TEXT.authorsNote}`));
+			return result(askAuthors(cleared, `Lookup failed (${event.error}).`));
 		case "startSearch":
 			return result(askConfirm(say(cleared, `The search could not start: ${event.error}`), ctx));
 		case "startSelection":

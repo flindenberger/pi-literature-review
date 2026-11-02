@@ -449,7 +449,7 @@ if (process.argv[2] === "index") {
 	if (match.unmatched.length) {
 		const adoptions: Awaited<ReturnType<typeof adoptUnmatched>> = [];
 		for (const group of unmatchedGroups(match)) {
-			adoptions.push(...await adoptUnmatched(group.files, group.dir, realAdoptDeps(), warn));
+			adoptions.push(...await adoptUnmatched(group.files, group.dir, realAdoptDeps(root), warn));
 		}
 		for (const adoption of adoptions) {
 			warn(`${adoption.status === "adopted" ? "adopted" : "not adopted"}: ${adoption.file} -- ${adoption.detail}`);

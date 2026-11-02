@@ -45,8 +45,36 @@ copies a provider key from Pi's own configuration.
 | `llm.embedBaseUrl`, `llm.embedApi` | `PI_LITERATURE_REVIEW_EMBED_URL`, `_EMBED_API` | Per-role split: a separate backend for embeddings. |
 | `llm.generateBaseUrl`, `llm.generateApi` | `PI_LITERATURE_REVIEW_GENERATE_URL`, `_GENERATE_API` | Per-role split: a separate backend for generation. Unset roles use the shared `baseUrl`/`api`. |
 | `llm.apiKey` | `PI_LITERATURE_REVIEW_LLM_API_KEY` | Bearer token sent on every LLM-backend request; opens the `openai` dialect to REMOTE providers. |
-| -- | `PI_LITERATURE_REVIEW_HOME` | Root folder for the `lit-*` output folders (default: the working directory). |
+| `thinking` | `PI_LITERATURE_REVIEW_THINKING` | Hidden reasoning for every model call of this package: `off` (default), `low`, `medium`, `high`. Independent of pi's own thinking level; see [Thinking](#thinking). |
+| `pdfFolders` | `PI_LITERATURE_REVIEW_PDF_FOLDERS` | Your PDF folders, read with all their subfolders, never written to (see below). The variable (separated by `:`, on Windows `;`) replaces the stored list. |
+| `lastDownloadDir` | -- | The folder of the last download, preselected next time. |
+| `ignoredFolders` | -- | Folders the library would read on its own (an older `lit-selection/`, loose PDFs where pi was started) that you took out of the library. |
+| -- | `PI_LITERATURE_REVIEW_HOME` | The store for search runs, reports, index and dropped PDFs (default: the folder of the configuration file; `.` = the working directory). |
 | -- | `PI_LITERATURE_REVIEW_HISTORY` | Folder of the web interface's conversation history (default: `history/` next to the configuration file). |
+| -- | `PI_LITERATURE_REVIEW_BLOCK_CACHE` | File of the saved keyword blocks (default: `keyword-blocks.json` next to the configuration file). |
+
+## Where files live
+
+Two kinds of folders, the same for the terminal and the browser:
+
+- **The store** (default `~/.config/pi-literature-review/`, Windows
+  `%APPDATA%\pi-literature-review\`; `PI_LITERATURE_REVIEW_HOME` moves it):
+  `lit-search/` (search runs: JSON, HTML, `network.html`, list reports,
+  PRISMA diagrams), `lit-synthesis/` (reports, `index/`, `protocols/`),
+  `meta/` (the metadata twin of every PDF, named by a hash of its path),
+  `inbox/` (PDFs dropped onto the browser page), `history/`,
+  `keyword-blocks.json`, `config.json`.
+- **Your PDF folders** (`pdfFolders`): any folders, read recursively with
+  their structure (own folders, Zotero `storage/`, Citavi attachments).
+  Hidden folders are skipped, links are not followed, depth (8 levels) and
+  size (50,000 entries per folder) are capped. Nothing is written into
+  them: titles, authors and DOIs of a PDF live in the store's `meta/`.
+- **Downloads** go into the folder you choose on every run (browser: the
+  download window; terminal: the `/lit-selection` folder question); that
+  folder becomes a PDF folder.
+- Older layouts keep working: a `lit-selection/` in the store or in the
+  working directory, and loose PDFs in the working directory, are still
+  read (flat), and a twin `.json` next to a PDF is still used.
 
 ## Examples
 
@@ -82,12 +110,19 @@ this package, keeping your documents on your machine.
 
 ## Thinking
 
-All model calls in the lit-synthesis and lit-search stages run with
-hidden reasoning/thinking disabled and with an output limit. There is no
-setting to enable it. The Ollama dialect sets think: false; a llama.cpp
-model served through Pi requires a models.json provider with
-compat.thinkingFormat so that Pi can disable thinking. See
-[Synthesis -- Thinking is off](synthesis.md#thinking-is-off).
+The package has its own thinking setting, `thinking` in config.json
+(Settings in the browser: Off / Low / Medium / High), default **off**.
+It applies to every model call of this package, inside pi and
+standalone alike, and is independent of pi's own thinking level (your
+other pi work keeps its setting). When on, each call gets extra output
+room for the hidden reasoning (2k / 4k / 8k tokens). On the wire: the
+Ollama dialect sends `think`; a local OpenAI-compatible server
+(llama.cpp) gets `chat_template_kwargs.enable_thinking`; a remote
+OpenAI-compatible API gets `reasoning_effort` only when thinking is on;
+through pi the level goes to pi's model layer. A llama.cpp model served
+through Pi requires a models.json provider with compat.thinkingFormat so
+that thinking can be switched. See
+[Synthesis -- Thinking](synthesis.md#thinking).
 
 ## Error messages
 

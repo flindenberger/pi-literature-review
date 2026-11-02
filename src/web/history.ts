@@ -30,6 +30,10 @@ export interface StoredConversation {
 	/** ISO timestamps: when the conversation began, when it last changed. */
 	started: string;
 	updated: string;
+	/** When its last search or report was computed; the rail sorts by this
+	 * (falling back to `started`), so opening or answering never moves an
+	 * entry, a new computation does. */
+	computed?: string;
 	/** Data folder the conversation's reports and PDFs belong to. */
 	root: string;
 	chatSession: string;
@@ -43,9 +47,31 @@ export interface ConversationSummary {
 	title: string;
 	started: string;
 	updated: string;
+	computed?: string;
 	root: string;
 	/** Questions answered so far. */
 	steps: number;
+	/** The newest search run of the conversation (its result list), if any. */
+	run?: string;
+	/** The newest synthesis or chat report written in it, if any. */
+	report?: { name: string; url: string };
+	/** A chat on one PDF: that PDF's base name. */
+	paper?: string;
+}
+
+/** What a conversation produced: its newest result list and its newest
+ * synthesis/chat report (file cards of the lit-synthesis stage). Pure. */
+export function conversationFiles(dialog: DialogState): { run?: string; report?: { name: string; url: string }; paper?: string } {
+	const out: { run?: string; report?: { name: string; url: string }; paper?: string } = {};
+	const scope = dialog.answers?.scope;
+	if (Array.isArray(scope) && scope.length === 1) out.paper = scope[0];
+	for (const message of dialog.messages) {
+		if (message.role === "results" && message.run) out.run = message.run;
+		if (message.role === "card" && message.card && message.card.kind === "file" && message.card.stage === "lit-synthesis" && message.card.url) {
+			out.report = { name: message.card.name, url: message.card.url };
+		}
+	}
+	return out;
 }
 
 /** Pure and injectable for tests; defaults describe the running machine. */
@@ -98,7 +124,7 @@ function parse(text: string): StoredConversation | null {
 	return entry as StoredConversation;
 }
 
-/** Every readable conversation, newest change first; `skipped` counts
+/** Every readable conversation, newest computation first; `skipped` counts
  * files that are not conversations (left in place, never deleted). */
 export function listConversations(dir: string): { conversations: ConversationSummary[]; skipped: number } {
 	if (!existsSync(dir)) return { conversations: [], skipped: 0 };
@@ -111,9 +137,11 @@ export function listConversations(dir: string): { conversations: ConversationSum
 			skipped++;
 			continue;
 		}
-		conversations.push({ id: entry.id, title: entry.title, started: entry.started, updated: entry.updated, root: entry.root, steps: entry.dialog.trail.length });
+		conversations.push({ id: entry.id, title: entry.title, started: entry.started, updated: entry.updated, ...(typeof entry.computed === "string" ? { computed: entry.computed } : {}), root: entry.root, steps: entry.dialog.trail.length, ...conversationFiles(entry.dialog) });
 	}
-	conversations.sort((a, b) => b.updated.localeCompare(a.updated));
+	// Newest computation first; a conversation without one sorts by its start.
+	const key = (entry: ConversationSummary) => entry.computed ?? entry.started;
+	conversations.sort((a, b) => key(b).localeCompare(key(a)) || b.started.localeCompare(a.started));
 	return { conversations, skipped };
 }
 

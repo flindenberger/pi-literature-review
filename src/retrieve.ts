@@ -138,11 +138,9 @@ export const TRANSLATE_MAX_TOKENS = 256;
  * The engines pass their resolved generator model so the translation runs
  * on the same model that will answer. */
 export function translateViaBackend(backend: LlmBackend, model?: string): TranslateFn {
-	// think:false -- a thinking model would spend the capped budget on
-	// hidden reasoning and return empty content.
 	return (question, signal) =>
 		backend.generate(TRANSLATE_SYSTEM_PROMPT, question,
-			{ model, temperature: 0, maxTokens: TRANSLATE_MAX_TOKENS, think: false }, signal);
+			{ model, temperature: 0, maxTokens: TRANSLATE_MAX_TOKENS }, signal);
 }
 
 /** First non-empty line of the translator output, surrounding quotes

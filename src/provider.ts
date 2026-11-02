@@ -88,7 +88,6 @@ export function endpointProvider(cfg = llmConfig()): ModelProvider {
 		generate: async (call) => backend.generate(call.system, call.user, {
 			temperature: call.temperature,
 			maxTokens: call.maxTokens,
-			think: false,
 		}, call.signal),
 		wiring: () => ({
 			backend,

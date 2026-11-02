@@ -3,9 +3,11 @@
  *
  * Results are research data and never live inside the extension package
  * (that folder is code and gets replaced on update). Default root: the
- * working directory itself -- the lit-search/, lit-selection/ and
- * lit-synthesis/ folders land directly in the cwd; overridable via the
- * PI_LITERATURE_REVIEW_HOME environment variable. HTML renderings go to
+ * store next to the user config (~/.config/pi-literature-review/, Windows
+ * %APPDATA%), shared by the terminal tools and the browser; the
+ * PI_LITERATURE_REVIEW_HOME environment variable moves it (e.g. "." for a
+ * per-project layout in the working directory). The user's PDFs live in
+ * their own folders (config pdfFolders), never here. HTML renderings go to
  * <stage>/<YYYY-MM-DD>_<query-slug>.html; a same-day rerun of the same
  * query gets _2, _3, ... appended instead of overwriting. The full JSON
  * payload lands next to the HTML as a .json sidecar with the same basename
@@ -16,12 +18,17 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 
+import { configPath } from "./config.ts";
 import { asciiPart, firstAuthorLastName } from "./types.ts";
 
-/** Data root: PI_LITERATURE_REVIEW_HOME when set, else the working directory. */
-export function outputRoot(): string {
-	const home = (process.env.PI_LITERATURE_REVIEW_HOME || "").trim();
-	return resolve(home || process.cwd());
+/** Data root (the store): PI_LITERATURE_REVIEW_HOME when set, else the
+ * folder of the user config. Pure via injection for tests. */
+export function outputRoot(
+	env: Record<string, string | undefined> = process.env,
+	platform: string = process.platform,
+): string {
+	const home = (env.PI_LITERATURE_REVIEW_HOME || "").trim();
+	return resolve(home || dirname(configPath(platform, env)));
 }
 
 /** "sandbar detection Sentinel-1" -> "sandbar_detection_Sentinel-1". */

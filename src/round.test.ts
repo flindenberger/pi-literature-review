@@ -219,8 +219,8 @@ function makeRound(question: string, session: string | null = null): Round {
 	assert.equal(result.grounded, true);
 	assert.equal(result.model, "fake-gen");
 	assert.equal(generateCalls.length, 1);
-	// Excerpt-grounded answers run with hidden reasoning off (Ollama dialect).
-	assert.equal(generateCalls[0].opts?.think, false);
+	// Thinking is the backend's business (package setting), not the engine's.
+	assert.equal(generateCalls[0].opts?.think, undefined);
 	// Confinement: paper B's chunk is the best GLOBAL match for the question
 	// vector, but retrieval ran only over paper A.
 	assert.equal(result.chunks.length, 2);

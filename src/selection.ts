@@ -22,6 +22,8 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { join } from "node:path";
 import { identityKey } from "./pipeline.ts";
 import { outputRoot } from "./output.ts";
+import { twinSaver } from "./library.ts";
+import { lastDownloadDir } from "./config.ts";
 import { type AccessInfo, lookupAccessByDoi } from "./sources/openalex.ts";
 import { asciiPart, contactMailto, errorName, firstAuthorLastName, userAgent } from "./types.ts";
 
@@ -208,7 +210,7 @@ export function loadSidecarIndex(root: string, onWarn: (message: string) => void
  * ------------------------------------------------------------------ */
 
 /**
- * Written as lit-selection/<basename>.json next to every downloaded PDF. All
+ * Written into the store (library.ts, meta/) for every downloaded PDF. All
  * bibliographic fields are copied VERBATIM from the saved search records
  * (API-sourced); fetched/via describe the download event. The synthesis
  * stage reads this twin first and only falls back to recomputing filenames
@@ -288,8 +290,12 @@ export interface FetchResult {
 export interface FetchDeps {
 	fileExists(path: string): boolean;
 	saveFile(path: string, bytes: Uint8Array): void;
-	/** Write the metadata twin next to a freshly downloaded PDF. */
+	/** Write the metadata twin of a freshly downloaded PDF; the path names
+	 * the PDF's ".json" sibling (runSelection stores it in the store). */
 	saveMeta(path: string, meta: PaperMeta): void;
+	/** The file of this paper anywhere in the library (any PDF folder), or
+	 * null; optional, the target folder is checked either way. */
+	libraryFile?(key: string): string | null;
 	/** GET the url; ok=false carries a plain-language reason and, for HTTP
 	 * failures, the status code (403 marks publisher bot-blocking). */
 	downloadPdf(url: string): Promise<{ ok: true; bytes: Uint8Array } | { ok: false; reason: string; status?: number }>;
@@ -329,7 +335,8 @@ export async function fetchOne(
 	// Legacy check: papers fetched before the human-readable naming keep
 	// their identifier-slug filename; the library stays duplicate-free.
 	const legacyPath = join(papersDir, `${identifierSlug(target)}.pdf`);
-	const existing = deps.fileExists(path) ? path : deps.fileExists(legacyPath) ? legacyPath : null;
+	const existing = deps.fileExists(path) ? path : deps.fileExists(legacyPath) ? legacyPath
+		: target.key !== null && deps.libraryFile ? deps.libraryFile(target.key) : null;
 	if (existing) {
 		result.status = "already";
 		result.detail = "already in the library, not downloaded again";
@@ -708,8 +715,11 @@ async function unpaywallPdfUrlReal(
 
 export interface SelectionRunOptions {
 	identifiers: string[];
-	/** Data root; defaults to outputRoot() (lit-selection/ lands next to lit-search/). */
+	/** Data root (store: saved searches, twins); defaults to outputRoot(). */
 	root?: string;
+	/** Folder the PDFs are saved in (the user's choice). Default: the last
+	 * download folder, else <root>/lit-selection. */
+	dir?: string;
 	/** Contact email for Unpaywall, valid for THIS run only (the dialog's
 	 * "this run only" answer). Default: the configured email (env var,
 	 * else the stored config value). */
@@ -725,14 +735,19 @@ export async function runSelection(
 ): Promise<{ results: FetchResult[]; papersDir: string }> {
 	const warnTo = options.onWarn ?? (() => {});
 	const root = options.root ?? outputRoot();
-	const papersDir = join(root, "lit-selection");
+	const papersDir = options.dir?.trim() || lastDownloadDir() || join(root, "lit-selection");
 	mkdirSync(papersDir, { recursive: true });
 	const index = loadSidecarIndex(root, warnTo);
+	// Papers already somewhere in the library (any PDF folder) are not
+	// downloaded again. Loaded lazily: corpus.ts imports this module.
+	const { matchLibrary } = await import("./corpus.ts");
+	const inLibrary = new Map(matchLibrary(root, () => {}).matched.map((paper) => [paper.key, paper.file]));
 	const mailto = options.mailto?.trim() || contactMailto();
 	const deps: FetchDeps = {
 		fileExists: existsSync,
 		saveFile: (path, bytes) => writeFileSync(path, bytes),
-		saveMeta: (path, meta) => writeFileSync(path, JSON.stringify(meta, null, 2) + "\n", "utf8"),
+		saveMeta: twinSaver(root),
+		libraryFile: (key) => inLibrary.get(key) ?? null,
 		downloadPdf: (url) => downloadPdfReal(url, options.signal),
 		unpaywallPdfUrl: (doi) => unpaywallPdfUrlReal(doi, mailto, options.signal),
 		openAlexAccess: (doi) => openAlexAccessReal(doi),

@@ -20,7 +20,7 @@
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 
 import type { LlmConfig } from "./llm.ts";
 
@@ -56,6 +56,30 @@ export interface StoredConfig {
 	/** LLM backend for the synthesis stage; unset fields use defaults.
 	 * chatModel is the paper-chat generator (see chatModel()). */
 	llm?: Partial<LlmConfig> & { chatModel?: string };
+	/** The user's PDF folders: read (recursively), never written to. */
+	pdfFolders?: string[];
+	/** The folder of the last download (preselected next time). */
+	lastDownloadDir?: string;
+	/** Folders the library read on its own (a lit-selection/ or loose PDFs
+	 * where pi was started) that the user took out of the library. */
+	ignoredFolders?: string[];
+	/** Hidden reasoning ("thinking") for every model call of this package,
+	 * inside pi and standalone alike; default off. */
+	thinking?: ThinkingSetting;
+}
+
+/** The package's own thinking setting, independent of pi's. */
+export type ThinkingSetting = "off" | "low" | "medium" | "high";
+export const THINKING_SETTINGS: readonly ThinkingSetting[] = ["off", "low", "medium", "high"];
+
+/** The thinking setting in effect: PI_LITERATURE_REVIEW_THINKING > config
+ * > "off". Read on every model call, so a change applies at once. */
+export function thinkingSetting(
+	env: Record<string, string | undefined> = process.env,
+	stored: StoredConfig = loadStoredConfig(),
+): ThinkingSetting {
+	const value = (env.PI_LITERATURE_REVIEW_THINKING ?? stored.thinking ?? "off").trim().toLowerCase();
+	return (THINKING_SETTINGS as readonly string[]).includes(value) ? value as ThinkingSetting : "off";
 }
 
 let cache: StoredConfig | null = null;
@@ -104,6 +128,7 @@ export function updateStoredConfig(patch: Partial<StoredConfig>): string {
 export function storedConfigView(): {
 	mailto: string;
 	codeListTopics: string[] | undefined;
+	thinking: ThinkingSetting;
 	llm: Partial<LlmConfig> & { chatModel?: string };
 	keys: { s2ApiKey: boolean; githubToken: boolean; llmApiKey: boolean };
 } {
@@ -112,6 +137,7 @@ export function storedConfigView(): {
 	return {
 		mailto: (stored.mailto ?? "").trim(),
 		codeListTopics: stored.codeListTopics,
+		thinking: thinkingSetting({}, stored),
 		llm,
 		keys: { s2ApiKey: Boolean(stored.s2ApiKey), githubToken: Boolean(stored.githubToken), llmApiKey: Boolean(apiKey) },
 	};
@@ -256,4 +282,61 @@ export function chatModel(
 	stored: Partial<LlmConfig> & { chatModel?: string } = loadStoredConfig().llm ?? {},
 ): string {
 	return pick(env.PI_LITERATURE_REVIEW_CHAT_MODEL, stored.chatModel, llmConfig(env, stored).generateModel);
+}
+
+/* ---------------- folders ---------------- */
+
+/** The user's PDF folders as absolute paths, without duplicates.
+ * PI_LITERATURE_REVIEW_PDF_FOLDERS (path-delimiter separated, ":" or ";")
+ * replaces the stored list when set. */
+export function pdfFolders(
+	env: Record<string, string | undefined> = process.env,
+	stored: StoredConfig = loadStoredConfig(),
+): string[] {
+	const fromEnv = env.PI_LITERATURE_REVIEW_PDF_FOLDERS;
+	const list = fromEnv !== undefined
+		? fromEnv.split(delimiter)
+		: Array.isArray(stored.pdfFolders) ? stored.pdfFolders : [];
+	return [...new Set(list.filter((entry) => typeof entry === "string" && entry.trim()).map((entry) => resolve(entry.trim())))];
+}
+
+/** Add a folder to the stored PDF folders (no-op when it is there). */
+export function addPdfFolder(folder: string): string[] {
+	const path = resolve(folder);
+	const list = pdfFolders({}, loadStoredConfig());
+	if (!list.includes(path)) updateStoredConfig({ pdfFolders: [...list, path] });
+	// Added again by hand: no longer ignored.
+	if (ignoredFolders().includes(path)) updateStoredConfig({ ignoredFolders: ignoredFolders().filter((entry) => entry !== path) });
+	return pdfFolders({}, loadStoredConfig());
+}
+
+/** Take a folder out of the library; its files stay untouched. A PDF
+ * folder leaves the list; a folder the library read on its own (legacy
+ * places) is remembered as ignored. */
+export function removePdfFolder(folder: string): string[] {
+	const path = resolve(folder);
+	const list = pdfFolders({}, loadStoredConfig());
+	if (list.includes(path)) updateStoredConfig({ pdfFolders: list.filter((entry) => entry !== path) });
+	else updateStoredConfig({ ignoredFolders: [...new Set([...ignoredFolders(), path])] });
+	return pdfFolders({}, loadStoredConfig());
+}
+
+/** Folders taken out of the library that it would otherwise read on its own. */
+export function ignoredFolders(stored: StoredConfig = loadStoredConfig()): string[] {
+	return Array.isArray(stored.ignoredFolders) ? stored.ignoredFolders.filter((entry) => typeof entry === "string").map((entry) => resolve(entry)) : [];
+}
+
+/** Folder of the last download, "" when none was chosen yet. */
+export function lastDownloadDir(stored: StoredConfig = loadStoredConfig()): string {
+	return typeof stored.lastDownloadDir === "string" ? stored.lastDownloadDir.trim() : "";
+}
+
+/** Remember the download folder and make it a PDF folder (so chat and
+ * reports see the downloads). Skipped while PDF folders come from the
+ * environment (tests, scripted runs). */
+export function rememberDownloadDir(folder: string, env: Record<string, string | undefined> = process.env): void {
+	if (env.PI_LITERATURE_REVIEW_PDF_FOLDERS !== undefined) return;
+	const path = resolve(folder);
+	updateStoredConfig({ lastDownloadDir: path });
+	addPdfFolder(path);
 }

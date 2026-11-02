@@ -8,30 +8,34 @@
  * The call goes through pi's model registry (ctx.modelRegistry.streamSimple,
  * the documented extension path), which resolves credentials, base URL and
  * provider environment at request time -- so a /model switch in pi is
- * picked up by the next call. Thinking is off with a hard output cap
- * (hidden reasoning would eat the whole budget invisibly). Throws on a
+ * picked up by the next call. Thinking follows the package's own setting
+ * (config `thinking`, default off; Settings in the browser), not pi's
+ * thinking level; when on, the call gets extra output room for the hidden
+ * reasoning. Throws on a
  * missing model, error/aborted stops and empty answer text -- the caller
  * decides how to degrade.
  */
 
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { configuredGenerateModel, llmConfig } from "../src/config.ts";
-import { createBackend, type LlmBackend } from "../src/llm.ts";
+import { configuredGenerateModel, llmConfig, thinkingSetting } from "../src/config.ts";
+import { createBackend, THINKING_TOKENS, type LlmBackend } from "../src/llm.ts";
 import { OUTPUT_RESERVE_TOKENS } from "../src/synthesis.ts";
 import type { GenerateCall, ModelProvider } from "../src/provider.ts";
 
 export async function completeWithPiModel(ctx: ExtensionContext, options: GenerateCall): Promise<string> {
 	const model = ctx.model;
 	if (!model) throw new Error("no model selected in pi");
+	// No `reasoning` level = pi-ai sends no effort and switches template
+	// thinking off; a level is clamped by pi-ai to what the model offers.
+	const level = thinkingSetting();
+	const thinking = level !== "off";
 	const response = await ctx.modelRegistry.streamSimple(model, {
 		systemPrompt: options.system,
 		messages: [{ role: "user", content: options.user, timestamp: Date.now() }],
 	}, {
 		temperature: options.temperature,
-		// No `reasoning` level: pi-ai then sends no reasoning effort, which
-		// disables template thinking (enable_thinking: false) -- a capped
-		// call must not spend its budget on hidden reasoning.
-		maxTokens: options.maxTokens ?? 512,
+		...(thinking ? { reasoning: level } : {}),
+		maxTokens: (options.maxTokens ?? 512) + (level !== "off" ? THINKING_TOKENS[level] : 0),
 		signal: options.signal,
 	}).result();
 	if (response.stopReason === "error" || response.stopReason === "aborted") {
@@ -46,7 +50,7 @@ export async function completeWithPiModel(ctx: ExtensionContext, options: Genera
 		throw new Error(
 			`the model returned no answer text (stop reason: ${response.stopReason}`
 			+ `${thought ? "; it produced only hidden reasoning" : ""}) -- ask again, `
-			+ "rephrase, or select a non-thinking model in pi",
+			+ "rephrase, or turn Thinking off in the Settings",
 		);
 	}
 	return text;

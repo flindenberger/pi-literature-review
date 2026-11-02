@@ -4,19 +4,22 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>pi-literature-review</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Ctext x=%2716%27 y=%2725%27 text-anchor=%27middle%27 font-family=%27Georgia,serif%27 font-weight=%27700%27 font-style=%27italic%27 font-size=%2730%27 fill=%27%231c1c1c%27%3E%CF%80%3C/text%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 32 32%27%3E%3Ccircle cx=%2716%27 cy=%2716%27 r=%2716%27 fill=%27%231c1c1c%27/%3E%3Ctext x=%2715.72%27 y=%2722%27 text-anchor=%27middle%27 font-family=%27Georgia,serif%27 font-weight=%27700%27 font-style=%27italic%27 font-size=%2722%27 fill=%27%23fff%27%3E%CF%80%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
 
 <div class="shell no-report" id="shell">
+  <div class="rail-resize" id="rail-resize" title="Drag to change the width" aria-hidden="true"></div>
   <aside class="rail">
     <!-- Two marks: inside pi the three-colour logo from pi.dev/press-kit
-         (logo.svg, inlined, links to pi.dev); everywhere (for now) the same bold italic serif pi as the favicon.
+         (logo.svg, inlined, links to pi.dev); everywhere (for now) the same mark as the favicon: a white bold
+         italic serif pi on a dark disc, the glyph placed by its measured ink
+         bounds, slightly below centre (optical balance).
          app.js shows one of them from the provider kind. -->
     <div class="brand">
       <a class="mark mark-pi" href="https://pi.dev" target="_blank" rel="noopener" title="pi.dev -- the coding agent this package extends" hidden><svg viewBox="140 140 520 520" aria-hidden="true"><path fill="#F09082" d="M165.29 165.29H517.36V400H400V282.65H165.29Z"/><path fill="#4D9ABF" d="M165.29 282.65H282.65V400H400V517.36H282.65V634.72H165.29Z"/><path fill="#F1BE58" d="M517.36 400H634.72V634.72H517.36Z"/></svg></a>
-      <span class="mark mark-glyph" aria-hidden="true"><svg viewBox="0 0 32 32"><text x="16" y="26" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-weight="700" font-style="italic" font-size="30" fill="currentColor">&pi;</text></svg></span>
+      <span class="mark mark-glyph" aria-hidden="true"><svg viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="currentColor"/><text x="15.72" y="22" text-anchor="middle" font-family="Georgia,serif" font-weight="700" font-style="italic" font-size="22" fill="#fff">&pi;</text></svg></span>
       <button type="button" id="brand-home" title="Back to the start screen (the current conversation stays in History)">pi-literature-review</button>
     </div>
     <details class="block" id="block-1">
@@ -27,32 +30,24 @@
           <summary>History <span class="cnt" id="cnt-hist-1"></span></summary>
           <div id="hist-1-list" class="rail-list"><div class="rail-note">loading ...</div></div>
         </details>
-        <details id="reports-1" class="sub">
-          <summary>HTML reports <span class="cnt" id="cnt-reports-1"></span></summary>
-          <div id="reports-1-list" class="rail-list"><div class="rail-note">loading ...</div></div>
-        </details>
       </div>
     </details>
     <details class="block" id="block-2">
       <summary class="stage" id="stage-2"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3h8l4 4v6"/><path d="M15 3v4h4M7 3v18h6"/><path d="M20.5 12.5l-6 6-2.5.6.6-2.5 6-6a1.3 1.3 0 0 1 1.9 1.9z"/></svg><div><span class="name">Summarize &amp; synthesize</span></div></summary>
       <div class="block-body">
         <button id="btn-new-chat" type="button" class="rail-icon new" title="Start a new chat or report over your PDFs (the current conversation stays in History)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg><span>New paper chat</span></button>
+        <details id="rail-library" class="sub">
+          <summary>Library <span class="cnt" id="cnt-pdfs"></span></summary>
+          <button id="btn-add-folder" type="button" class="rail-icon new" title="Add a folder with PDFs: it is read with all its subfolders, nothing is written into it"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg><span>Add folder</span></button>
+          <div id="rail-library-list" class="rail-list"></div>
+        </details>
         <details id="hist-2" class="sub">
           <summary>History <span class="cnt" id="cnt-hist-2"></span></summary>
           <div id="hist-2-list" class="rail-list"><div class="rail-note">loading ...</div></div>
         </details>
-        <details id="reports-2" class="sub">
-          <summary>HTML reports <span class="cnt" id="cnt-reports-2"></span></summary>
-          <div id="reports-2-list" class="rail-list"><div class="rail-note">loading ...</div></div>
-        </details>
       </div>
     </details>
 
-    <details id="rail-library">
-      <summary>PDF library <span class="cnt" id="cnt-pdfs"></span></summary>
-      <div class="rail-note" id="rail-library-dirs"></div>
-      <div id="rail-library-list" class="rail-list"></div>
-    </details>
 
     <div class="spacer"></div>
     <div class="status" id="status"><span class="dot idle"></span>connecting ...</div>
@@ -61,6 +56,10 @@
       <div class="info-pop" id="info-pop" hidden></div>
       <button id="btn-info" type="button" class="rail-icon" title="About this tool and where your data goes" aria-label="About"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 16v-5M12 8h.01"/></svg></button>
       <button id="btn-settings" type="button" class="rail-icon" title="Settings" aria-label="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
+      <!-- Project pages: the GitHub mark (octicon mark-github) and the npm
+           mark (simple-icons), each used only to link to this package's page. -->
+      <a class="rail-icon ext" href="https://github.com/flindenberger/pi-literature-review" target="_blank" rel="noopener" title="Source code and issues on GitHub" aria-label="GitHub repository"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg></a>
+      <a class="rail-icon ext" href="https://www.npmjs.com/package/pi-literature-review" target="_blank" rel="noopener" title="Package page on npm" aria-label="npm package"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M1.763 0C.786 0 0 .786 0 1.763v20.474C0 23.214.786 24 1.763 24h20.474c.977 0 1.763-.786 1.763-1.763V1.763C24 .786 23.214 0 22.237 0zM5.13 5.323l13.837.019-.009 13.836h-3.464l.01-10.382h-3.456L12.04 19.17H5.113z"/></svg></a>
     </div>
   </aside>
 
@@ -69,14 +68,20 @@
     <div class="composer-wrap">
       <form class="composer" id="composer" autocomplete="off">
         <input id="input" type="text" placeholder="Type your answer or question ..." autocomplete="off">
+        <span class="plusanchor" id="plus-anchor" hidden>
+          <button type="button" id="btn-plus" class="plusbtn" aria-haspopup="menu" aria-expanded="false" title="Search options" aria-label="Search options"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg><span class="badge" id="plus-badge"></span></button>
+          <div class="plusmenu" id="plus-menu" role="menu" hidden></div>
+        </span>
         <button class="primary" type="submit" id="btn-send">Send</button>
       </form>
+      <div class="pills" id="pills" hidden></div>
+      <div class="drop" id="drop" hidden></div>
     </div>
   </section>
 
   <section class="report" id="report">
     <div class="head">
-      <span>Report</span><b id="report-name"></b><span class="ticked" id="ticked"></span>
+      <span id="report-kind">Report</span><b id="report-name"></b><span class="ticked" id="ticked"></span>
       <button id="btn-enlarge" type="button" class="icon" title="Enlarge over the page (Esc shrinks it again)" aria-label="Enlarge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7"/></svg></button>
       <button id="btn-newtab" type="button" class="icon" title="Open the file in a new browser tab" aria-label="New tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M20 4L11 13M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"/></svg></button>
       <button id="btn-close-panel" type="button" class="icon" title="Hide the panel; a card in the chat brings it back" aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
@@ -89,11 +94,18 @@
 <div class="backdrop" id="backdrop" hidden></div>
 <div class="toast" id="toast" hidden></div>
 
+<!-- Stage-1 steps after a search (download, contact email, edit blocks) run in this window over the result list, not in the chat thread. -->
+<dialog id="modal" class="modal"><div id="modal-body"></div></dialog>
+<div id="dropzone" hidden><div class="dz"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3h8l4 4v14H7z"/><path d="M15 3v4h4M13 11v6M10 14l3 3 3-3"/></svg><span>Drop PDFs to chat about them</span></div></div>
+
 <dialog id="settings">
   <h3>Settings</h3>
   <p class="hint" id="set-path"></p>
   <p class="hint" id="set-model"></p>
   <p class="hint" id="set-model-hint"></p>
+
+  <label title="Hidden reasoning before every answer, report and suggestion of this tool, inside pi and standalone. Slower; on small local models it rarely helps. Independent of pi's own thinking level.">Thinking<select id="set-thinking"><option value="off">Off</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label>
+  <p class="hint error" id="set-thinking-note" hidden>Thinking slows answers and consumes extra tokens. On smaller models, hidden reasoning may exhaust the budget before generating text. If this happens, set Thinking to Off.</p>
 
   <h4>Writing model (standalone)</h4>
   <div class="grid2">
@@ -117,9 +129,23 @@
   <table class="keys"><tbody id="set-keys"></tbody></table>
   <p class="hint">Keys are edited in the configuration file by hand; this page shows only whether they are set.</p>
 
+  <h4>PDF folders</h4>
+  <div id="set-folders" class="folders"></div>
+  <div class="row folder-add">
+    <button id="btn-folder-pick" type="button">Add folder ...</button>
+    <input id="set-folder-path" type="text" placeholder="or type a full path" aria-label="Folder path">
+    <button id="btn-folder-add" type="button">Add</button>
+  </div>
+  <h4>Store (search runs, reports, index, dropped PDFs)</h4>
+  <div class="folders" id="set-store"></div>
+
   <h4>Conversation history</h4>
   <p class="hint" id="set-history"></p>
   <button id="btn-history-clear" type="button">Delete all conversations</button>
+
+  <h4>Saved keyword blocks</h4>
+  <p class="hint" id="set-blocks"></p>
+  <button id="btn-blocks-clear" type="button">Forget saved keyword blocks</button>
 
   <pre class="progress" id="progress-settings"></pre>
   <p class="hint error" id="set-error"></p>

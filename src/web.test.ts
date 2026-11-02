@@ -6,7 +6,7 @@
  */
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, readdirSync } from "node:fs";
 import { request } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,13 +15,26 @@ import type { ModelProvider } from "./provider.ts";
 import { intakeFromForm, periodRange } from "./web/intake.ts";
 import { JobBusyError, JobRunner } from "./web/jobs.ts";
 import { safeName, listSearchRuns, listSessions, searchCandidates } from "./web/files.ts";
-import { hostAllowed, startWebServer, webSessionId } from "./web/server.ts";
+import { hostAllowed, paperLabel, paperShortLabel, startWebServer, webSessionId } from "./web/server.ts";
 import { sseFrame } from "./web/sse.ts";
 import { parseWebArgs } from "../extensions/web.ts";
 import { webPdfHref } from "./render.ts";
 
+// A library paper in words, from its metadata only.
+assert.equal(paperLabel({ base: "x", title: "Google Earth Engine", authors: ["Noel Gorelick", "Matt Hancher", "Mike Dixon"], year: "2017" }), "“Google Earth Engine” (Gorelick et al., 2017)");
+assert.equal(paperLabel({ base: "x", title: "Two", authors: ["Ann Lee", "Bo Kim"], year: null }), "“Two” (Lee and Kim)");
+assert.equal(paperLabel({ base: "2026_IAHR_Full_Issue", title: "", authors: [], year: null }), "this PDF");
+assert.equal(paperShortLabel({ title: "Google Earth Engine", authors: ["Noel Gorelick", "Matt Hancher", "Mike Dixon"], year: "2017" }), "Gorelick et al. 2017 · Google Earth Engine");
+assert.equal(paperShortLabel({ title: "", authors: [], year: null }), null);
+
 const root = mkdtempSync(join(tmpdir(), "plr-web-"));
+// Never the user's own config (contact email, PDF folders): a private one.
+process.env.XDG_CONFIG_HOME = join(root, "config-home");
+process.env.APPDATA = join(root, "config-home");
+process.env.PI_LITERATURE_REVIEW_PDF_FOLDERS = "";
+delete process.env.PI_LITERATURE_REVIEW_MAILTO;
 const HIST = join(root, "history-store");
+const BLOCKS = join(root, "keyword-blocks.json");
 mkdirSync(join(root, "lit-search"), { recursive: true });
 mkdirSync(join(root, "lit-selection"), { recursive: true });
 mkdirSync(join(root, "lit-synthesis", "protocols"), { recursive: true });
@@ -147,11 +160,23 @@ writeFileSync(join(root, "lit-synthesis", "protocols", "2026-10-15_paper.json"),
 		return { ok: true };
 	});
 	assert.equal(job.state, "running");
-	assert.throws(() => runner.start("search", "second", async () => null), JobBusyError);
+	// Searches run side by side up to the cap; a single kind (download) never twice.
+	const hold = (signal: AbortSignal) => new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve()));
+	const second = runner.start("search", "second", async ({ signal }) => hold(signal));
+	const download = runner.start("selection", "download", async ({ signal }) => hold(signal));
+	assert.equal(runner.snapshot().running.length, 3);
+	assert.throws(() => runner.start("search", "fourth", async () => null), JobBusyError);
+	assert.ok(runner.cancel(download.id));
+	await new Promise((resolve) => setTimeout(resolve, 10));
+	const again = runner.start("selection", "download again", async ({ signal }) => hold(signal));
+	assert.throws(() => runner.start("selection", "parallel download", async () => null), JobBusyError);
 	assert.ok(runner.cancel(job.id));
 	await new Promise((resolve) => setTimeout(resolve, 10));
+	assert.equal(runner.snapshot().history.find((info) => info.id === job.id)?.state, "cancelled");
+	assert.ok(runner.cancel()); // no id: every running job
+	await new Promise((resolve) => setTimeout(resolve, 10));
 	assert.equal(runner.snapshot().current, null);
-	assert.equal(runner.snapshot().history[0].state, "cancelled");
+	assert.equal(runner.isRunning(second.id) || runner.isRunning(again.id), false);
 	assert.ok(events.includes("line:one"));
 	assert.ok(events.includes("job:cancelled"));
 	release();
@@ -165,7 +190,7 @@ const provider: ModelProvider = {
 	wiring: () => ({ backend: { embed: async (texts) => texts.map(() => [0.1, 0.2]), generate: async () => "ok" }, explainModel: "stub-model", reviewModel: "stub-model" }),
 };
 const seen: string[] = [];
-const server = await startWebServer({ historyDir: HIST,
+const server = await startWebServer({ historyDir: HIST, blockCacheFile: BLOCKS,
 	root,
 	cwd: root,
 	provider,
@@ -180,15 +205,18 @@ const server = await startWebServer({ historyDir: HIST,
 				source_failures: null, sources_skipped: null, abstract_lookup_failures: null, arxiv_queries: null, openalex_queries: null, crossref_queries: null, semanticscholar_queries: null,
 				code_sources_used: null, code_queries: null, author_scope: null, grouping: null, grouping_by_query: null, source_counts: null,
 				flow: { identified: 1, junk_removed: 0, duplicates_removed: 0, screened: 1, no_abstract_removed: 0, excluded_by_filters: 0, included: 1 },
-				access_counts: null, filters: null, sort: null, results: [], dropped: [],
+				access_counts: { free: 1, abstract_only: 0, restricted: 0, unknown: 0 }, filters: { yearFrom: 2017 }, sort: null,
+				results: [{ title: "River depth from space", authors: ["Carl J. Legleiter"], year: "2021", venue: "Remote Sensing", doi: "10.1000/abc", arxiv_id: "", pdf_url: "", url: "https://doi.org/10.1000/abc", cites: 9, source: "arxiv", sources: ["arxiv"], abstract: "Depth.", access: { level: "free", oa_status: "gold", pdf_urls: ["https://x/abc.pdf"] }, verified: true, group: "on_target" }],
+				dropped: [],
 			} as never;
 		},
-		writeSearch: () => {
-			writeFileSync(join(root, "lit-search", "2026-10-15_stub.html"), "<html>stub</html>");
+		// Like the real writer: the JSON sidecar only; the HTML report is written on click.
+		writeSearch: (payload) => {
+			writeFileSync(join(root, "lit-search", "2026-10-15_stub.json"), JSON.stringify(payload));
 			return { htmlPath: join(root, "lit-search", "2026-10-15_stub.html"), jsonPath: join(root, "lit-search", "2026-10-15_stub.json") };
 		},
 		runSelection: async (options) => {
-			seen.push(`selection:${options.identifiers.join(",")}:${options.mailto ?? "-"}`);
+			seen.push(`selection:${options.identifiers.join(",")}:${options.mailto ?? "-"}${options.dir ? `:${options.dir}` : ""}`);
 			options.onWarn?.("fetching 10.1000/abc (1/1)");
 			return { results: [{ raw: "10.1000/abc", id: "10.1000/abc", kind: "doi", title: "River depth from space", known: true, status: "downloaded", detail: "ok", notes: [] }], papersDir: join(root, "lit-selection") };
 		},
@@ -200,6 +228,9 @@ const server = await startWebServer({ historyDir: HIST,
 		journalScores: async () => new Map([["S1", 4.2]]),
 		authorFacets: async (_query, _limit, scope) => { seen.push(`authors:${(scope.sourceIds ?? []).join(",")}`); return { listed: [{ id: "A1", name: "Carl J. Legleiter", count: 9 }], otherCount: 50 }; },
 		authorMetrics: async () => new Map(),
+		pickFolder: async (title) => { seen.push(`pick:${title}`); return join(root, "Picked"); },
+		canPickFolder: () => true,
+		rememberDownloadDir: (folder) => { seen.push(`remember:${folder}`); },
 	},
 });
 const base = `http://127.0.0.1:${server.port}`;
@@ -279,12 +310,53 @@ try {
 	assert.equal(selectionStarted.status, 202);
 	await readUntil(/selection-2.*"state":"done"/);
 	assert.ok(seen.includes("selection:10.1000/abc:-"));
+	// A chosen download folder reaches the engine and is remembered.
+	const downloadsDir = join(root, "My Papers");
+	const intoFolder = await fetch(`${base}/api/selection/run`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ identifiers: ["10.1000/abc"], confirmed: true, withoutUnpaywall: true, folder: downloadsDir }) });
+	assert.equal(intoFolder.status, 202);
+	await readUntil(/selection-3.*"state":"done"/);
+	assert.ok(seen.includes(`selection:10.1000/abc:-:${downloadsDir}`));
+	assert.ok(seen.includes(`remember:${downloadsDir}`));
+	assert.ok(existsSync(downloadsDir)); // created when missing
+	assert.equal((await fetch(`${base}/api/selection/run`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ identifiers: ["10.1000/abc"], confirmed: true, withoutUnpaywall: true, folder: "relative/path" }) })).status, 400);
+	// PDF folders: list, folder window (stub), add (folders only), remove.
+	const folders = await (await fetch(`${base}/api/folders`, { headers: auth })).json();
+	assert.deepEqual(folders.pdfFolders, []);
+	assert.equal(folders.store, root);
+	assert.equal(folders.canPick, true);
+	const picked = await (await fetch(`${base}/api/folders/pick`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ purpose: "download" }) })).json();
+	assert.equal(picked.path, join(root, "Picked"));
+	assert.ok(seen.includes("pick:Where should the PDFs go?"));
+	const folderOps = (op: string, path: string) => fetch(`${base}/api/folders/${op}`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ path }) });
+	assert.equal((await folderOps("add", join(root, "missing-folder"))).status, 400);
+	assert.equal((await folderOps("add", "relative")).status, 400);
+	delete process.env.PI_LITERATURE_REVIEW_PDF_FOLDERS; // the stored list (private test config)
+	assert.deepEqual((await (await folderOps("add", downloadsDir)).json()).pdfFolders, [downloadsDir]);
+	assert.deepEqual((await (await folderOps("remove", downloadsDir)).json()).pdfFolders, []);
+	process.env.PI_LITERATURE_REVIEW_PDF_FOLDERS = "";
+	// Reveal by path: only the user's own folders (and inside them).
+	assert.equal((await fetch(`${base}/api/reveal`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ path: "/etc" }) })).status, 400);
+	assert.equal((await fetch(`${base}/api/reveal`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ path: `${root}/../../etc` }) })).status, 400);
+	// Drag and drop: a PDF goes to the inbox (safe name, kept once), a non-PDF
+	// is refused; a new conversation can open a chat over exactly that PDF.
+	const upload = (name: string, body: string) => fetch(`${base}/api/library/upload?name=${encodeURIComponent(name)}`, { method: "POST", headers: { ...auth, "content-type": "application/pdf" }, body });
+	const dropped = await (await upload("../My paper?.pdf", "%PDF-1.4 dropped")).json();
+	assert.equal(dropped.base, "My paper");
+	assert.equal(dropped.file, join(root, "inbox", "My paper.pdf"));
+	assert.equal((await (await upload("../My paper?.pdf", "%PDF-1.4 dropped")).json()).base, "My paper"); // same file: once
+	assert.equal((await (await upload("../My paper?.pdf", "%PDF-1.4 other")).json()).base, "My paper_2"); // same name, other file
+	assert.equal((await upload("notes.pdf", "hello")).status, 400);
+	const chat = await (await fetch(`${base}/api/dialog/new`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ start: "synthesis", scope: ["My paper"] }) })).json();
+	assert.equal(chat.step, "ask");
+	assert.deepEqual(chat.answers.scope, ["My paper"]);
+	await fetch(`${base}/api/dialog/new`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: "{}" }); // back to the start screen
+	rmSync(join(root, "inbox"), { recursive: true, force: true });
 	// Missing confirmation / email are refused before any job starts.
 	assert.equal((await fetch(`${base}/api/selection/run`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ identifiers: ["10.1000/abc"] }) })).status, 400);
 	assert.equal((await fetch(`${base}/api/selection/run`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ identifiers: ["10.1000/abc"], confirmed: true }) })).status, 400);
 	assert.equal((await fetch(`${base}/api/report`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ papers: [] }) })).status, 400);
 	// Cancel: a report job whose stub waits on the signal.
-	const cancelServer = await startWebServer({ historyDir: HIST,
+	const cancelServer = await startWebServer({ historyDir: HIST, blockCacheFile: BLOCKS,
 		root, cwd: root, provider, token: "t2",
 		deps: {
 			matchLibrary: () => ({ matched: [], unmatched: [], papersDir: join(root, "lit-selection") }),
@@ -302,7 +374,8 @@ try {
 		const h2 = { cookie: "plr_token=t2", "content-type": "application/json" };
 		const rep = await fetch(`${b2}/api/report`, { method: "POST", headers: h2, body: JSON.stringify({ papers: ["x"], summary: "bullets" }) });
 		assert.equal(rep.status, 202);
-		assert.equal((await fetch(`${b2}/api/report`, { method: "POST", headers: h2, body: JSON.stringify({ papers: ["x"], summary: "bullets" }) })).status, 409);
+		// A second report runs beside the first (several jobs at once).
+		assert.equal((await fetch(`${b2}/api/report`, { method: "POST", headers: h2, body: JSON.stringify({ papers: ["x"], summary: "bullets" }) })).status, 202);
 		const cancelled = await (await fetch(`${b2}/api/jobs/cancel`, { method: "POST", headers: h2 })).json();
 		assert.equal(cancelled.cancelled, true);
 		await new Promise((resolve) => setTimeout(resolve, 20));
@@ -338,10 +411,27 @@ try {
 	let answered = await dialogAnswer({ text: "river depth from satellites" });
 	assert.equal(answered.status, 200);
 	assert.equal(answered.body.pending, "asking the model for keyword blocks");
+	// The proposal searches at once (stub search); the pick question follows, "Edit blocks" reopens the blocks.
 	view = await settled();
+	await readUntil(/"step":"pick"/);
+	view = await dialogGet();
+	assert.equal(view.step, "pick");
+	await dialogAnswer({ chip: "goBlocks" });
+	view = await dialogGet();
 	assert.equal(view.step, "blocks");
-	assert.deepEqual(view.messages[view.messages.length - 1].editor, ["river OR stream", "depth OR bathymetry"]); // base term first (capVariantBlocks)
-	await dialogAnswer({ chip: "use", blocks: ["river", "bathymetry"] });
+	// Default without the synonym button: only the request's own words survive the code gate.
+	assert.deepEqual(view.messages[view.messages.length - 1].editor, ["river", "depth"]);
+	// Saved: the same request again gets the same blocks without a model call.
+	assert.deepEqual(JSON.parse(readFileSync(BLOCKS, "utf8"))["own:river depth from satellites"], [{ role: "plus1", text: "(river) AND (depth)" }]);
+	// The "+" menu's lists: the request's blocks first (the saved own-words blocks), a typed expression as typed.
+	const blocksRoute = async (request: string) => (await fetch(`${base}/api/search/blocks`, { method: "POST", headers, body: JSON.stringify({ request }) })).json();
+	assert.deepEqual(await blocksRoute("river depth from satellites"), { blocks: ["river", "depth"], query: "(river) AND (depth)", note: null });
+	assert.deepEqual((await blocksRoute("(sandbar OR bar) AND (river)")).blocks, ["sandbar OR bar", "river"]);
+	// Synonym mode for the menu: the model's plus1 row (base terms first, one synonym each).
+	const synRoute = await (await fetch(`${base}/api/search/blocks`, { method: "POST", headers, body: JSON.stringify({ request: "river depth from satellites", mode: "synonyms" }) })).json();
+	assert.deepEqual(synRoute.blocks, ["river OR stream", "depth OR bathymetry"]);
+	// "More options" keeps the question chain for this route test; "use" would search at once.
+	await dialogAnswer({ chip: "more", blocks: ["river", "bathymetry"] });
 	view = await dialogGet();
 	assert.equal(view.step, "code");
 	await dialogAnswer({ chip: "no" });
@@ -369,9 +459,67 @@ try {
 	assert.equal(view.activeJob, null);
 	const working = view.messages.find((message: { role: string }) => message.role === "working");
 	assert.equal(working.jobState, "done");
-	const fileCard = view.messages.find((message: { role: string }) => message.role === "card");
-	assert.equal(fileCard.card.url, "/files/lit-search/2026-10-15_stub.html");
+	// The run stands as a results message; the cards come from the run's JSON.
+	assert.equal(view.messages.some((message: { role: string }) => message.role === "card"), false);
+	const resultsMessage = view.messages.find((message: { role: string }) => message.role === "results");
+	assert.equal(resultsMessage.run, "2026-10-15_stub");
 	assert.ok(seen.includes("search:(river) AND (bathymetry)"));
+	const cards = await (await fetch(`${base}/api/runs/cards?name=2026-10-15_stub`, { headers: auth })).json();
+	assert.equal(cards.rows.length, 1);
+	assert.equal(cards.rows[0].id, "10.1000/abc");
+	assert.equal(cards.rows[0].n, 1);
+	assert.equal(cards.rows[0].access, "free");
+	assert.equal(cards.rows[0].pdf, "https://x/abc.pdf");
+	assert.equal(cards.yearFrom, 2017);
+	assert.equal((await fetch(`${base}/api/runs/cards?name=nope`, { headers: auth })).status, 404);
+	assert.equal(existsSync(join(root, "lit-search", "2026-10-15_stub.html")), false); // no report until asked
+	// Reports from the list: the plain HTML report takes the run's own name; a filtered one gets its own pair and a card in the chat.
+	const plain = await (await fetch(`${base}/api/runs/report`, { method: "POST", headers, body: JSON.stringify({ name: "2026-10-15_stub", kind: "html" }) })).json();
+	assert.equal(plain.card.url, "/files/lit-search/2026-10-15_stub.html");
+	assert.ok(existsSync(join(root, "lit-search", "2026-10-15_stub.html")));
+	assert.ok(existsSync(join(root, "lit-search", "network.html")));
+	const filteredReport = await (await fetch(`${base}/api/runs/report`, { method: "POST", headers, body: JSON.stringify({ name: "2026-10-15_stub", kind: "html", filters: { yearFrom: 2024, access: ["free"] } }) })).json();
+	assert.equal(filteredReport.card.name, "2026-10-15_stub_filtered.html");
+	assert.match(filteredReport.card.label, /list filters: published 2024 or later/);
+	const filteredJson = JSON.parse(readFileSync(join(root, "lit-search", "2026-10-15_stub_filtered.json"), "utf8"));
+	assert.equal(filteredJson.results.length, 0);
+	assert.equal(filteredJson.dropped.length, 1);
+	assert.match(filteredJson.dropped[0].reason, /^filtered: published 2021, before requested 2024/);
+	assert.equal(filteredJson.flow.excluded_by_filters, 1);
+	const filteredHtml = readFileSync(join(root, "lit-search", "2026-10-15_stub_filtered.html"), "utf8");
+	assert.match(filteredHtml, /List filters/);
+	const prisma = await (await fetch(`${base}/api/runs/report`, { method: "POST", headers, body: JSON.stringify({ name: "2026-10-15_stub", kind: "prisma" }) })).json();
+	assert.equal(prisma.card.name, "2026-10-15_stub.prisma.svg");
+	const svgResponse = await fetch(`${base}${prisma.card.url}`, { headers: auth });
+	assert.equal(svgResponse.status, 200);
+	assert.match(svgResponse.headers.get("content-type") ?? "", /image\/svg\+xml/);
+	assert.match(await svgResponse.text(), /<svg/);
+	view = await dialogGet();
+	assert.deepEqual(view.messages.filter((message: { role: string }) => message.role === "card").map((message: { card: { name: string } }) => message.card.name), ["2026-10-15_stub.html", "2026-10-15_stub_filtered.html", "2026-10-15_stub.prisma.svg"]);
+	assert.equal(view.step, "pick");
+	// From the rail (History): the file is written, no card enters the open
+	// conversation; the history entry names its run and which files exist.
+	await fetch(`${base}/api/runs/report`, { method: "POST", headers, body: JSON.stringify({ name: "2026-10-15_stub", kind: "prisma", rail: true }) });
+	assert.equal((await dialogGet()).messages.filter((message: { role: string }) => message.role === "card").length, 3);
+	const railEntry = (await (await fetch(`${base}/api/history`, { headers: auth })).json()).history.find((entry: { current: boolean }) => entry.current);
+	assert.equal(railEntry.run, "2026-10-15_stub");
+	assert.deepEqual(railEntry.written, { html: true, prisma: true });
+	// An older conversation from a working folder (before the store): its run
+	// and report are still found there, in the one History list.
+	{
+		const oldRoot = join(root, "old-project");
+		mkdirSync(join(oldRoot, "lit-search"), { recursive: true });
+		writeFileSync(join(oldRoot, "lit-search", "2026-10-01_old.json"), JSON.stringify({ query: "(old)", generated: "2026-10-01T10:00:00Z", results: [{ title: "Old paper", year: "2020", doi: "10.1000/old", arxiv_id: "" }], dropped: [] }));
+		writeFileSync(join(oldRoot, "lit-search", "2026-10-01_old.html"), "<html>old</html>");
+		const { saveConversation } = await import("./web/history.ts");
+		saveConversation(HIST, { version: 1, id: "2026-10-01T10-00-00_0001", started: "2026-10-01T10:00:00Z", updated: "2026-10-01T10:00:00Z", root: oldRoot, chatSession: "s", title: "Search: old", dialog: { step: "pick", answers: {}, messages: [{ id: 1, role: "results", run: "2026-10-01_old" }], activeJob: null, pending: null, trail: [], counter: 1 } as never });
+		assert.equal((await fetch(`${base}/api/runs/cards?name=2026-10-01_old`, { headers: auth })).status, 200);
+		assert.equal(await (await fetch(`${base}/files/lit-search/2026-10-01_old.html`, { headers: auth })).text(), "<html>old</html>");
+		const old = (await (await fetch(`${base}/api/history`, { headers: auth })).json()).history.find((entry: { title: string }) => entry.title === "Search: old");
+		assert.equal(old.run, "2026-10-01_old");
+		assert.deepEqual(old.written, { html: true, prisma: false });
+		rmSync(join(HIST, "2026-10-01T10-00-00_0001.json"));
+	}
 	// Answers while a job runs are refused with 409 (the slow report stub below shows it on another server).
 	// Reveal: only the three data folders and the root ("bogus" is refused; "root" resolves to the data folder).
 	assert.equal((await fetch(`${base}/api/reveal`, { method: "POST", headers, body: JSON.stringify({ stage: "bogus" }) })).status, 400);
@@ -392,6 +540,8 @@ try {
 	// "+ New search" starts the next conversation straight at the request question.
 	const freshSearch = await (await fetch(`${base}/api/dialog/new`, { method: "POST", headers, body: JSON.stringify({ start: "search" }) })).json();
 	assert.equal(freshSearch.step, "topic");
+	assert.equal(freshSearch.messages.length, 1);
+	assert.equal(freshSearch.messages[0].role, "assistant");
 	const past = (await (await fetch(`${base}/api/history`, { headers: auth })).json()).history;
 	assert.equal(past.length, 1);
 	assert.equal(past[0].title, "Search: river depth from satellites");
@@ -427,6 +577,58 @@ try {
 	const restarted = await (await fetch(`${base}/api/dialog/restart`, { method: "POST", headers })).json();
 	assert.equal(restarted.step, "start");
 	assert.equal(restarted.messages.length, 1);
+	// Background jobs: a search keeps running when the user starts a new
+	// conversation; its outcome lands in its own (parked) conversation,
+	// which History marks as running until then.
+	{
+		const BG = join(root, "history-bg");
+		const releases: Array<() => void> = [];
+		const bgServer = await startWebServer({ historyDir: BG, blockCacheFile: BLOCKS, root, cwd: root, provider, token: "t3",
+			deps: {
+				matchLibrary: () => ({ matched: [], unmatched: [], papersDir: join(root, "lit-selection") }),
+				runSearch: async (options) => {
+					await new Promise<void>((resolve) => { releases.push(resolve); });
+					return { query: options.query, query_variants: null, generated: "2026-11-01T10:00:00Z", sources_used: ["arxiv"], per_source: 5, source_failures: null, sources_skipped: null, abstract_lookup_failures: null, arxiv_queries: null, openalex_queries: null, crossref_queries: null, semanticscholar_queries: null, code_sources_used: null, code_queries: null, author_scope: null, grouping: null, grouping_by_query: null, source_counts: null, flow: null, access_counts: null, filters: {}, sort: null, results: [], dropped: [] } as never;
+				},
+				writeSearch: () => ({ htmlPath: join(root, "lit-search", "2026-11-01_bg.html"), jsonPath: join(root, "lit-search", "2026-11-01_bg.json") }),
+			},
+		});
+		try {
+			const b3 = `http://127.0.0.1:${bgServer.port}`;
+			const h3 = { cookie: "plr_token=t3", "content-type": "application/json" };
+			const post3 = async (path: string, body: unknown = {}) => (await fetch(`${b3}${path}`, { method: "POST", headers: h3, body: JSON.stringify(body) })).json();
+			await post3("/api/dialog/new", { start: "search" });
+			const first = await post3("/api/dialog/answer", { text: "(waterline) AND (river)" });
+			await new Promise((resolve) => setTimeout(resolve, 30));
+			const running = await (await fetch(`${b3}/api/dialog`, { headers: h3 })).json();
+			assert.ok(running.activeJob, "the search runs");
+			void first;
+			// A new search while it runs: no 409, the old conversation is parked and marked running.
+			const second = await fetch(`${b3}/api/dialog/new`, { method: "POST", headers: h3, body: JSON.stringify({ start: "search" }) });
+			assert.equal(second.status, 200);
+			let list = (await (await fetch(`${b3}/api/history`, { headers: h3 })).json()).history;
+			const parkedEntry = list.find((entry: { current: boolean }) => !entry.current);
+			assert.equal(parkedEntry.running, true);
+			// The new conversation can search at the same time.
+			assert.equal((await fetch(`${b3}/api/dialog/answer`, { method: "POST", headers: h3, body: JSON.stringify({ text: "(sandbar) AND (sentinel)" }) })).status, 200);
+			await new Promise((resolve) => setTimeout(resolve, 30));
+			assert.equal((await (await fetch(`${b3}/api/jobs`, { headers: h3 })).json()).running.length, 2);
+			// Both finish.
+			for (const release of releases) release();
+			await new Promise((resolve) => setTimeout(resolve, 50));
+			list = (await (await fetch(`${b3}/api/history`, { headers: h3 })).json()).history;
+			const done = list.find((entry: { id: string }) => entry.id === parkedEntry.id);
+			assert.equal(done.running, false);
+			// Reopened, it holds its own result list.
+			const reopened = await post3("/api/history/open", { id: parkedEntry.id });
+			assert.equal(reopened.step, "pick");
+			assert.equal(reopened.activeJob, null);
+			assert.ok(reopened.messages.some((message: { role: string }) => message.role === "results"));
+			assert.equal(reopened.answers.topic, "(waterline) AND (river)");
+		} finally {
+			await bgServer.close();
+		}
+	}
 	reader.cancel().catch(() => {});
 } finally {
 	await server.close();
