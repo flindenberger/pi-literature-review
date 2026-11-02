@@ -113,8 +113,9 @@ report, one diagram, all in one place. The block of the stage a
 conversation is in opens by itself. Empty lists show nothing (no dash, no 0). Stage 2
 holds the **Library** right under **+ New paper chat**: **+ Add folder**
 opens the system's folder window and adds a PDF folder; below, the library
-as folders -- each PDF folder with its own subfolders, **Dropped** for PDFs
-dropped onto the page, an older `lit-selection/` -- with counts and, on
+as folders -- each PDF folder with its own subfolders, an older `lit-selection/`,
+and last **Uploads** for PDFs dropped onto the page or added with **Upload
+PDF** -- with counts and, on
 hover, a button per folder that shows it in the file manager and a trash
 that takes the folder out of the library (its files stay on the disk; a
 folder the library read on its own, such as a `lit-selection/` where pi was
@@ -313,8 +314,27 @@ under the blocks.
 | Pick (window over the list) | Which papers do you want as PDFs? | tick cards and press **Download n ticked PDFs**; the window asks what is left to ask (contact email, confirmation) and shows the result |
 | Contact | Unpaywall needs a contact email. | asked only while none is configured: type it (save it, or this run only) or continue without Unpaywall |
 | Download | Download N papers? (with the folder) | choose the folder, **Download**; restricted and abstract-only papers are listed with browser links, not tried |
-| Ask | Ask your question about the PDFs. | any question (answered only from retrieved passages, with page citations), **Build a report**, or change the scope (one paper / whole library) |
-| Report | Which papers, which questions, which report? | papers ticked or the whole library; questions one per line or summaries only; bullet summaries, summaries + answers per paper, cross-paper answers, or the review synthesis |
+| Ask | Ask anything. Responses rely solely on passages retrieved from your sources and include exact citations. | any question (answered only from retrieved passages, with page citations); sources and reports are set in the box's **+** menu (below) |
+| Report (typed, or from older conversations) | Which papers, which questions, which report? | papers ticked or the whole library; questions one per line or summaries only; bullet summaries, summaries + answers per paper, cross-paper answers, or the review synthesis |
+
+The paper chat's question box carries its own **+** menu, like the
+request box of a search; the question and the answers carry no buttons.
+**Sources** (one of three): the whole library; **Folders**, a tick tree
+of the library's folders (a ticked folder includes its subfolders); or
+**Papers**, a tick list with a find box. **Upload PDF** adds PDFs from
+the disk to the library's inbox and makes them the sources. **Write a
+report** turns Send into **Build report**, with the kind chosen under the
+switch (Summaries, Per paper, Cross-paper, Review): the typed text gives
+the report's questions (with the chat's earlier ones), a summaries-only
+report needs none, a cross-paper report needs one. The report starts at
+once over the chosen sources and the switch turns off again. A pill under
+the box always names the sources ("87 PDFs", "01_Water_Body_Mapping_HQ ·
+30 PDFs"), a second one the report kind; the × resets either. The page
+sends the sources as basenames (`chat.scope`, `chat.scopeLabel`,
+`chat.report`); the dialog keeps only basenames the library holds and
+falls back to the whole library. A chat opened on one PDF (from the
+library, or dropped) has no **+** and stays a plain box; one paper picked
+in the menu is a library chat narrowed to it.
 
 A **file card** appears in the chat for every file written on request
 (search report or PRISMA diagram from the result list, synthesis
@@ -325,7 +345,8 @@ because it writes PDFs, not a page.
 
 **Drag and drop:** PDFs dragged onto the page (any screen) are copied into
 the store's `inbox/` (`POST /api/library/upload`: `%PDF` check, 200 MB
-cap, safe name, the same file kept once), and a chat over exactly these
+cap, safe name; a PDF the library already holds byte for byte, in any
+folder, is not copied again and the existing paper is used), and a chat over exactly these
 PDFs opens; their identity is read from the PDF like any hand-saved PDF.
 
 On the results page there is one working line above the list: a follow-up

@@ -17,6 +17,7 @@ import {
 	globalCommand,
 	initialDialog,
 	parseSearchOptions,
+	parseChatOptions,
 	isHandBuilt,
 	parseBlockLines,
 	parseListAnswer,
@@ -378,16 +379,16 @@ function job(kind: JobInfo["kind"], id: string, state: JobInfo["state"] = "runni
 	assert.equal(state.step, "reporting");
 	out = step(state, { kind: "job", job: job("report", "report-4", "done"), report: { name: "2026-10-19_synthesis_report_x", htmlUrl: "/files/lit-synthesis/2026-10-19_synthesis_report_x.html", grounded: true, units: 4 } });
 	state = out.state;
-	assert.equal(state.step, "finished");
+	assert.equal(state.step, "ask"); // back to the question box, no chips
 	assert.equal(state.messages.filter((message) => message.card?.kind === "file").length, 1); // only the synthesis report; search runs are cards in the chat, their reports are written on click
-	assert.match(last(state).text ?? "", /Ask another question/);
+	assert.equal(last(state).card?.kind, "file");
 
 	// Restart asks first, then resets and opens a new chat session.
 	out = step(state, { kind: "answer", text: "start over" });
 	state = out.state;
 	assert.equal(state.step, "confirmRestart");
 	out = step(state, { kind: "answer", chip: "no" });
-	assert.equal(out.state.step, "finished");
+	assert.equal(out.state.step, "ask");
 	out = step(state, { kind: "answer", chip: "yes" });
 	assert.equal(out.state.step, "start");
 	assert.equal(out.state.messages.length, 1);
@@ -949,3 +950,42 @@ console.log("dialog add-on tests ok");
 	console.log("dialog paper-chat tests ok");
 }
 
+
+// ---- paper chat "+" menu: scope and report from the request box ----
+{
+	const ctx = context();
+	const state = initialDialog(ctx, "synthesis");
+	assert.equal(state.step, "ask");
+	// The question stands alone: no scope note, no chips.
+	assert.equal(last(state).note, undefined);
+	assert.equal(last(state).chips, undefined);
+
+	// parseChatOptions shapes untrusted JSON.
+	assert.equal(parseChatOptions(null), undefined);
+	assert.equal(parseChatOptions({ scope: 3 }), undefined);
+	assert.deepEqual(parseChatOptions({ scope: "library", report: "nonsense" }), { scope: "library" });
+	assert.deepEqual(parseChatOptions({ scope: ["a", "a", "", 4, "b"], scopeLabel: " 01_Waterline ", report: "crossPaper" }), { scope: ["a", "b"], scopeLabel: "01_Waterline", report: "crossPaper" });
+
+	// A folder scope: the question runs over exactly its papers; unknown
+	// basenames are dropped.
+	let out = step(state, { kind: "answer", text: "Which sensors?", chat: { scope: ["2016_Legleiter", "9999_Unknown"], scopeLabel: "Rivers" } }, ctx);
+	assert.deepEqual(out.effects, [{ kind: "startChat", question: "Which sensors?", papers: ["2016_Legleiter"] }]);
+	assert.equal(out.state.answers.scopeLabel, "Rivers");
+	// Nothing known left: the whole library.
+	out = step(state, { kind: "answer", text: "Which sensors?", chat: { scope: ["9999_Unknown"] } }, ctx);
+	assert.deepEqual(out.effects, [{ kind: "startChat", question: "Which sensors?", papers: "library" }]);
+
+	// "Write a report" on: the typed lines are the questions, the report starts at once.
+	out = step(state, { kind: "answer", text: "Which sensors?\nIs code published?", chat: { scope: "library", report: "perPaper" } }, ctx);
+	assert.deepEqual(out.effects, [{ kind: "startReport", papers: "library", questions: ["Which sensors?", "Is code published?"], summary: "bullets", detailMode: "per-paper", includeReview: false, language: "en" }]);
+	// Summaries need no question.
+	out = step(state, { kind: "answer", text: "", chat: { scope: ["2022_Salavitabar"], report: "bullets" } }, ctx);
+	assert.deepEqual(out.effects, [{ kind: "startReport", papers: ["2022_Salavitabar"], questions: [], summary: "bullets", detailMode: "per-paper", includeReview: false, language: "en" }]);
+	assert.equal(out.state.answers.reported, true); // History names it a report
+	// Cross-paper without a question: asked for one, nothing starts.
+	out = step(state, { kind: "answer", text: "", chat: { scope: "library", report: "crossPaper" } }, ctx);
+	assert.deepEqual(out.effects, []);
+	assert.equal(out.state.step, "ask");
+	assert.ok(out.state.messages.some((message) => /need at least one question/.test(message.text ?? "")));
+	console.log("dialog chat-menu tests ok");
+}

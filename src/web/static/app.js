@@ -211,7 +211,9 @@
 	}
 	/** The open conversation is a chat on ONE PDF (from the library, or dropped). */
 	function onePdfChat(dialog = state.dialog) {
-		return Boolean(dialog && dialog.answers && Array.isArray(dialog.answers.scope) && dialog.answers.scope.length === 1);
+		// A single paper picked in the "+" menu carries a scope label: that is
+		// a library chat narrowed to one paper, not a one-PDF chat.
+		return Boolean(dialog && dialog.answers && Array.isArray(dialog.answers.scope) && dialog.answers.scope.length === 1 && !dialog.answers.scopeLabel);
 	}
 	// A reply without any cited passage (small talk, "thanks", a question
 	// the PDF does not answer): shown as it is, marked quietly as not
@@ -951,13 +953,23 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		// synonym and period buttons.
 		const request = (view.step === "start" && !fresh) || view.step === "topic" || dropMode;
 		$("btn-send").textContent = request ? "Search" : "Send";
-		$("plus-anchor").hidden = !request;
-		$("pills").hidden = !request;
+		// The paper chat's box carries its own "+": sources and reports.
+		// A chat on one PDF stays a plain box.
+		const chatMenu = !request && (view.step === "ask" || view.step === "finished") && !onePdfChat(view);
+		if (chatMenu !== Boolean(state.chatMenu)) { setMenu(false); state.chatMenu = chatMenu; }
+		$("plus-anchor").hidden = !request && !chatMenu;
+		$("pills").hidden = !request && !chatMenu;
 		$("btn-plus").disabled = busy;
-		if (!request && (menuOpen() || setCount(state.options) || state.options.period !== "10y")) {
+		$("btn-plus").title = chatMenu ? "Sources and report" : "Search options";
+		$("btn-plus").setAttribute("aria-label", $("btn-plus").title);
+		if (!request && (setCount(state.options) || state.options.period !== "10y")) {
 			state.options = freshOptions();
-			setMenu(false);
-			renderOptions(false);
+			if (!chatMenu) renderOptions(false);
+		}
+		if (chatMenu && state.chatKey !== view.chatSession) {
+			state.chatKey = view.chatSession;
+			state.chat = chatFromAnswers(view.answers);
+			loadChatLib();
 		}
 		// "Edit search" after a stopped search: the request goes back into
 		// the box and the "+" options are rebuilt from the answers, once.
@@ -971,6 +983,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		// the helper (the server routes it); the placeholder says so.
 		$("input").placeholder = view.activeJob ? "Please wait, or stop the job ..." : view.pending ? "One moment ..." : view.accepts === "choice" ? "Pick an answer above, or ask a question ..." : placeholderFor(view.step);
 		if (entry && !dropMode) entryTyping(view.step, first.id); else stopEntryTyping();
+		if (chatMenu) renderOptions(false);
 		if (!busy && !resultsView) $("input").focus();
 		// A fresh file card opens the panel (unless the user closed it for this card already).
 		const cards = view.messages.filter((message) => message.role === "card" && message.card.url);
@@ -1023,7 +1036,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	 * question is left alone (dialog frames re-render the page). While the
 	 * user types, the placeholder is hidden anyway, so the loop just waits. */
 	function entryTyping(step, messageId) {
-		const single = step === "ask" && state.dialog && Array.isArray(state.dialog.answers.scope) && state.dialog.answers.scope.length === 1;
+		const single = step === "ask" && onePdfChat();
 		const examples = ENTRY_EXAMPLES[single ? "ask1" : step];
 		const key = `${step}:${messageId}`;
 		if (!examples) { stopEntryTyping(); return; }
@@ -1185,11 +1198,27 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	function setMenu(show) {
 		$("plus-menu").hidden = !show;
 		$("btn-plus").setAttribute("aria-expanded", show ? "true" : "false");
-		if (show) $("plus-menu").innerHTML = menuHtml();
+		if (show) $("plus-menu").innerHTML = state.chatMenu ? chatMenuHtml() : menuHtml();
 	}
 	/** Pills and the badge; the menu itself only when asked (a rebuild
 	 * while typing in it would drop the focus). */
 	function renderOptions(withMenu) {
+		if (state.chatMenu) {
+			if (withMenu && menuOpen()) {
+				// Keep the paper list's scroll position across a rebuild.
+				const list = $("plus-menu").querySelector("#chat-papers, .sub.tree");
+				const top = list ? list.scrollTop : 0;
+				const menuTop = $("plus-menu").scrollTop;
+				$("plus-menu").innerHTML = chatMenuHtml();
+				$("plus-menu").scrollTop = menuTop;
+				const again = $("plus-menu").querySelector("#chat-papers, .sub.tree");
+				if (again) again.scrollTop = top;
+			}
+			$("pills").innerHTML = chatPillsHtml();
+			$("plus-badge").textContent = chatBadge() || "";
+			chatSendLabel();
+			return;
+		}
 		const o = state.options;
 		if (withMenu && menuOpen()) $("plus-menu").innerHTML = menuHtml();
 		$("pills").innerHTML = pillsHtml();
@@ -1355,11 +1384,13 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	$("btn-plus").addEventListener("click", (event) => {
 		event.stopPropagation();
 		setMenu(!menuOpen());
+		if (state.chatMenu) return;
 		for (const kind of ["journals", "authors"]) if (menuOpen() && state.options[kind].open) loadFacet(kind);
 		if (menuOpen() && state.options.synonyms) loadSynonyms(false);
 	});
 	$("plus-menu").addEventListener("click", (event) => {
 		event.stopPropagation();
+		if (state.chatMenu) { chatMenuClick(event); return; }
 		const o = state.options;
 		if (editBlocks(event)) { syncSynonyms(); return; }
 		if (event.target.closest('[data-act="regen"]')) { loadSynonyms(true); return; }
@@ -1384,6 +1415,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		renderOptions(true);
 	});
 	$("plus-menu").addEventListener("change", (event) => {
+		if (state.chatMenu) { chatMenuChange(event); return; }
 		const o = state.options;
 		const pick = event.target.closest("[data-pick]");
 		if (pick) {
@@ -1414,6 +1446,13 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	});
 	let lookupTimer = null;
 	$("plus-menu").addEventListener("input", (event) => {
+		if (state.chatMenu) {
+			if (event.target.id !== "chat-find") return;
+			state.chat.find = event.target.value;
+			const box = document.getElementById("chat-papers");
+			if (box) box.innerHTML = chatPapersHtml();
+			return;
+		}
 		if (event.target.closest(".sub.syn")) { syncSynonyms(); return; }
 		if (event.target.id !== "author-lookup") return;
 		clearTimeout(lookupTimer);
@@ -1437,6 +1476,16 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	$("pills").addEventListener("click", (event) => {
 		const o = state.options;
 		const clear = event.target.closest("[data-clear]");
+		if (state.chatMenu) {
+			if (clear) {
+				if (clear.dataset.clear === "scope") Object.assign(state.chat, { mode: "library", open: "", label: "" });
+				if (clear.dataset.clear === "report") state.chat.report = false;
+				renderOptions(true);
+				return;
+			}
+			if (event.target.closest("[data-go]")) { event.stopPropagation(); setMenu(true); }
+			return;
+		}
 		if (clear) {
 			const key = clear.dataset.clear;
 			if (key === "synonyms" || key === "code") o[key] = false;
@@ -1453,6 +1502,202 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	document.addEventListener("click", (event) => { if (menuOpen() && !event.target.closest(".plusanchor")) setMenu(false); });
 	document.addEventListener("keydown", (event) => { if (event.key === "Escape" && menuOpen()) setMenu(false); });
 	renderOptions(false);
+
+	/* ---------------- the "+" menu of the paper chat ---------------- */
+	// Which PDFs the question or report covers (whole library, folders,
+	// papers, an upload) and whether Send writes a report instead of
+	// answering in the chat. One pill under the box names the sources.
+	const freshChat = () => ({ mode: "library", folders: new Set(), papers: new Set(), open: "", find: "", report: false, kind: "perPaper", label: "" });
+	state.chat = freshChat();
+	const CHAT_ICON = {
+		library: '<path d="M4 4.5h3.5v15H4zM9.5 4.5H13v15H9.5zM15 5.2l3.3-.9 3.2 14.5-3.3.9z"/>',
+		folders: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+		papers: '<path d="M6 2.8h8l4 4v14.4H6z"/><path d="M14 2.8v4h4M8.5 12h7M8.5 15.5h7"/>',
+		upload: '<path d="M12 16V4M7 9l5-5 5 5M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/>',
+		report: '<path d="M6 2.8h8l4 4v14.4H6z"/><path d="M14 2.8v4h4M9 17v-3M12 17v-6M15 17v-4"/>',
+	};
+	const chatIcon = (key) => `<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${CHAT_ICON[key]}</svg>`;
+	const REPORT_KIND_TEXT = { bullets: "Summaries", perPaper: "Per paper", crossPaper: "Cross-paper", review: "Review" };
+	const REPORT_KIND_TITLE = {
+		bullets: "Bullet summaries of every paper; no question needed",
+		perPaper: "Summary plus answers to your questions, paper by paper",
+		crossPaper: "Answers to your questions across all papers; needs a question",
+		review: "Per-paper answers plus a review synthesis over all papers",
+	};
+	const isInside = (path, parent) => path.startsWith(parent + "/") || path.startsWith(parent + "\\");
+	function chatLib() {
+		return state.lib && Array.isArray(state.lib.papers) ? state.lib : { papers: [], dirs: [], store: "" };
+	}
+	async function loadChatLib() {
+		try { state.lib = await get("/api/library"); } catch { /* the pill shows what is known */ }
+		if (state.chatMenu) renderOptions(true);
+	}
+	/** Every folder of the library, depth-first, with its depth. */
+	function folderNodes() {
+		const lib = chatLib();
+		const { tree, nameOf, order } = libraryTree(lib.papers, lib.dirs || [], lib.store || "");
+		const out = [];
+		const walk = (node, name, depth) => {
+			out.push({ node, name, depth });
+			for (const [part, child] of [...node.children.entries()].sort((a, b) => a[0].localeCompare(b[0]))) walk(child, part, depth + 1);
+		};
+		for (const dir of order) walk(tree.get(dir), nameOf(dir), 0);
+		return out;
+	}
+	function paperShort(base) {
+		const paper = chatLib().papers.find((entry) => entry.base === base);
+		if (!paper) return base;
+		const lead = [authorsShort(paper.authors), paper.year].filter(Boolean).join(" ");
+		return lead || paper.title || base;
+	}
+	/** The sources as the dialog takes them, with the pill's name. An empty
+	 * folder or paper pick counts as the whole library. */
+	function chatScope() {
+		const c = state.chat;
+		if (c.mode === "folders" && c.folders.size) {
+			const nodes = folderNodes().filter((entry) => c.folders.has(entry.node.path));
+			const bases = [...new Set(nodes.flatMap((entry) => papersUnder(entry.node).map((paper) => paper.base)))];
+			if (bases.length) {
+				const top = nodes.filter((entry) => !nodes.some((other) => other !== entry && isInside(entry.node.path, other.node.path)));
+				return { scope: bases, label: c.label || (top.length === 1 ? top[0].name : `${top.length} folders`), count: bases.length };
+			}
+		}
+		if (c.mode === "papers" && c.papers.size) {
+			const bases = [...c.papers];
+			return { scope: bases, label: c.label || (bases.length === 1 ? paperShort(bases[0]) : `${bases.length} papers`), count: bases.length };
+		}
+		return { scope: "library", label: "", count: chatLib().papers.length };
+	}
+	/** The menu as the conversation last used it (reopened from History). */
+	function chatFromAnswers(answers) {
+		const c = freshChat();
+		if (answers && Array.isArray(answers.scope) && answers.scope.length) {
+			c.mode = "papers";
+			c.papers = new Set(answers.scope);
+			c.label = answers.scopeLabel || "";
+		}
+		return c;
+	}
+	function chatPayload() {
+		const { scope, label } = chatScope();
+		const c = state.chat;
+		return { chat: { scope, ...(label ? { scopeLabel: label } : {}), ...(c.report ? { report: c.kind } : {}) } };
+	}
+	const pdfCount = (n) => `${n} PDF${n === 1 ? "" : "s"}`;
+	function chatPillsHtml() {
+		const c = state.chat;
+		const { label, count } = chatScope();
+		const pills = [label
+			? `<span class="pill" data-go="scope" title="${esc(label)}">${chatIcon(c.mode === "folders" ? "folders" : "papers")}${esc(label)} · ${pdfCount(count)}<button type="button" class="x" data-clear="scope" aria-label="Whole library">×</button></span>`
+			: `<span class="pill fixed" data-go="scope" title="Whole library">${chatIcon("library")}${pdfCount(count)}</span>`];
+		if (c.report) pills.push(`<span class="pill" data-go="report">${chatIcon("report")}Report: ${REPORT_KIND_TEXT[c.kind]}<button type="button" class="x" data-clear="report" aria-label="No report">×</button></span>`);
+		return pills.join("");
+	}
+	function chatMenuHtml() {
+		const c = state.chat;
+		const lib = chatLib();
+		const row = (key, name, control, title, attrs = "") => `<div class="row click" data-row="${key}" title="${esc(title)}" ${attrs}>${chatIcon(key)}<span class="name">${name}</span>${control}</div>`;
+		const radio = (on) => `<span class="radio ${on ? "on" : ""}" aria-hidden="true"></span>`;
+		const fold = (key) => `<span class="more" aria-hidden="true">${c.open === key ? "▾" : "›"}</span>`;
+		const { count } = chatScope();
+		const folderVal = c.mode === "folders" && c.folders.size ? pdfCount(count) : "";
+		const paperVal = c.mode === "papers" && c.papers.size ? `${c.papers.size} chosen` : "";
+		return [
+			row("library", "Whole library", `<span class="val">${pdfCount(lib.papers.length)}</span>${radio(c.mode === "library")}`, "Every PDF in the library", 'data-cmode="library"'),
+			row("folders", "Folders", `<span class="val">${folderVal}</span>${fold("folders")}${radio(c.mode === "folders")}`, "The PDFs in the ticked folders and their subfolders", `data-cmode="folders" role="button" aria-expanded="${c.open === "folders"}"`),
+			c.open === "folders" ? chatFoldersHtml() : "",
+			row("papers", "Papers", `<span class="val">${paperVal}</span>${fold("papers")}${radio(c.mode === "papers")}`, "Only the ticked papers", `data-cmode="papers" role="button" aria-expanded="${c.open === "papers"}"`),
+			c.open === "papers" ? `<div class="sub">${lib.papers.length > 12 ? `<input type="text" class="lookup" id="chat-find" placeholder="Find a paper ..." autocomplete="off" value="${esc(c.find)}">` : ""}<div id="chat-papers">${chatPapersHtml()}</div></div>` : "",
+			row("upload", "Upload PDF", "", "Add PDFs from your disk to the library and ask about them", 'data-cact="upload"'),
+			'<div class="sep"></div>',
+			row("report", "Write a report", `<span class="switch ${c.report ? "on" : ""}" role="switch" aria-checked="${c.report}" aria-label="Write a report"></span>`, "Send builds an HTML report over the sources; your text gives its questions", 'data-cact="report"'),
+			c.report ? `<div class="row kinds"><span class="seg">${Object.keys(REPORT_KIND_TEXT).map((kind) => `<button type="button" data-ckind="${kind}" class="${c.kind === kind ? "on" : ""}" title="${esc(REPORT_KIND_TITLE[kind])}">${REPORT_KIND_TEXT[kind]}</button>`).join("")}</span></div>` : "",
+		].join("");
+	}
+	function chatFoldersHtml() {
+		const c = state.chat;
+		const nodes = folderNodes();
+		if (!nodes.length) return '<div class="sub"><div class="wait">No folders in the library.</div></div>';
+		return `<div class="sub tree">${nodes.map((entry) => {
+			const under = [...c.folders].some((path) => isInside(entry.node.path, path));
+			const n = papersUnder(entry.node).length;
+			return `<label style="padding-left:${entry.depth * 1.1}rem" title="${esc(entry.node.path)}"><input type="checkbox" data-cfolder="${esc(entry.node.path)}" ${c.folders.has(entry.node.path) || under ? "checked" : ""} ${under ? "disabled" : ""}><span>${esc(entry.name)}</span><small>${n}</small></label>`;
+		}).join("")}</div>`;
+	}
+	function chatPapersHtml() {
+		const c = state.chat;
+		const needle = c.find.trim().toLowerCase();
+		const papers = chatLib().papers.filter((paper) => !needle || `${paper.title || ""} ${(paper.authors || []).join(" ")} ${paper.year || ""} ${paper.base}`.toLowerCase().includes(needle));
+		// Ticked papers first, so a pick stays in view.
+		const sorted = [...papers.filter((paper) => c.papers.has(paper.base)), ...papers.filter((paper) => !c.papers.has(paper.base))];
+		return sorted.map((paper) => {
+			const lead = [paper.year, authorsShort(paper.authors)].filter(Boolean).join(" ");
+			return `<label title="${esc(paper.title || paper.base)}"><input type="checkbox" data-cpaper="${esc(paper.base)}" ${c.papers.has(paper.base) ? "checked" : ""}><span>${lead ? `${esc(lead)} · ` : ""}${esc(paper.title || paper.base)}</span></label>`;
+		}).join("");
+	}
+	function chatBadge() {
+		return [chatScope().scope !== "library", state.chat.report].filter(Boolean).length;
+	}
+	/** Send names what it does; the box says what a report reads from it. */
+	function chatSendLabel() {
+		$("btn-send").textContent = state.chat.report ? "Build report" : "Send";
+		const input = $("input");
+		if (state.chat.report && !input.disabled) {
+			stopEntryTyping();
+			input.placeholder = state.chat.kind === "bullets" ? "Build report (no question needed) ..." : "Questions for the report ...";
+			state.chatReportHint = true;
+		} else if (state.chatReportHint) {
+			input.placeholder = "";
+			state.chatReportHint = false;
+		}
+	}
+	function chatMenuClick(event) {
+		const c = state.chat;
+		const target = event.target.closest("[data-cmode],[data-cact],[data-ckind]");
+		if (!target || event.target.closest("input")) return;
+		if (target.dataset.cmode) {
+			const mode = target.dataset.cmode;
+			c.label = "";
+			if (mode === "library") { c.mode = "library"; c.open = ""; }
+			else { c.mode = mode; c.open = c.open === mode ? "" : mode; }
+		}
+		if (target.dataset.cact === "report") c.report = !c.report;
+		if (target.dataset.cact === "upload") { chatFileInput().click(); return; }
+		if (target.dataset.ckind) c.kind = target.dataset.ckind;
+		renderOptions(true);
+	}
+	function chatMenuChange(event) {
+		const c = state.chat;
+		const folder = event.target.closest("[data-cfolder]");
+		const paper = event.target.closest("[data-cpaper]");
+		if (!folder && !paper) return;
+		c.label = "";
+		if (folder) {
+			c.mode = "folders";
+			if (folder.checked) c.folders.add(folder.dataset.cfolder); else c.folders.delete(folder.dataset.cfolder);
+		} else {
+			c.mode = "papers";
+			if (paper.checked) c.papers.add(paper.dataset.cpaper); else c.papers.delete(paper.dataset.cpaper);
+		}
+		renderOptions(true);
+	}
+	let chatFile = null;
+	/** One hidden file chooser for the menu's "Upload PDF". */
+	function chatFileInput() {
+		if (chatFile) return chatFile;
+		chatFile = document.createElement("input");
+		Object.assign(chatFile, { type: "file", accept: "application/pdf,.pdf", multiple: true, hidden: true });
+		chatFile.addEventListener("change", async () => {
+			const bases = await uploadPdfs([...chatFile.files]);
+			chatFile.value = "";
+			if (!bases.length) return;
+			Object.assign(state.chat, { mode: "papers", papers: new Set(bases), open: "", label: "" });
+			await loadChatLib();
+			if ($("rail-library").open) loadLibrary();
+		});
+		document.body.appendChild(chatFile);
+		return chatFile;
+	}
 
 	/** The drop-down under the request box: the proposed blocks (or the
 	 * wait for them). The request text stays in the box above it. */
@@ -1474,6 +1719,16 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	$("composer").addEventListener("submit", (event) => {
 		event.preventDefault();
 		const text = $("input").value.trim();
+		// A report over the chosen sources may start without a question.
+		if (state.chatMenu && state.chat.report && state.dialog && !state.dialog.activeJob && !state.dialog.pending) {
+			$("input").value = "";
+			setMenu(false);
+			const body = { text, ...chatPayload() };
+			state.chat.report = false;
+			renderOptions(false);
+			answer(body);
+			return;
+		}
 		if (!text) return;
 		// Under the synonym drop-down the box still holds the request: the
 		// same text searches with the edited blocks, a changed text asks for
@@ -1493,7 +1748,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		const request = !ask && state.dialog && (state.dialog.step === "start" || state.dialog.step === "topic");
 		// The menu's settings are read while the box still holds the request
 		// (its synonym blocks belong to that text).
-		const extras = request ? optionsPayload() : {};
+		const extras = request ? optionsPayload() : state.chatMenu && !ask ? chatPayload() : {};
 		$("input").value = "";
 		setMenu(false);
 		answer({ text: text.replace(/^\?\s*/, ""), ...(ask ? { ask: true } : collect(currentQuestion())), ...extras });
@@ -1665,9 +1920,13 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	const ICON_REVEAL = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M20 4l-8 8M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>';
 	/** The library as folders: each source folder with its subfolders (the
 	 * user's own structure), papers inside. */
-	function libraryTreeHtml(papers, dirs, store, folders = []) {
+	/** The library's folder tree: each source folder with its subfolders,
+	 * papers in the folder that holds them. Shared by the rail and the chat
+	 * menu. */
+	/** The path separator a folder path uses (Windows paths carry "\\"). */
+	const sep = (path) => (path.includes("\\") && !path.includes("/") ? "\\" : "/");
+	function libraryTree(papers, dirs, store) {
 		const split = (path) => path.split(/[\\/]/).filter(Boolean);
-		const sep = (path) => (path.includes("\\") && !path.includes("/") ? "\\" : "/");
 		const roots = [...dirs].sort((a, b) => b.length - a.length);
 		const tree = new Map(dirs.map((dir) => [dir, { path: dir, children: new Map(), papers: [] }]));
 		for (const paper of papers) {
@@ -1680,13 +1939,25 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 			}
 			node.papers.push(paper);
 		}
-		const count = (node) => node.papers.length + [...node.children.values()].reduce((sum, child) => sum + count(child), 0);
+		// PDFs added in the browser live in the store's inbox: "Uploads".
+		const isInbox = (dir) => Boolean(store) && dir === `${store}${sep(store)}inbox`;
 		const nameOf = (dir) => {
-			if (store && dir === `${store}${sep(store)}inbox`) return "Dropped";
+			if (isInbox(dir)) return "Uploads";
 			const parts = split(dir);
 			const last = parts[parts.length - 1] || dir;
 			return last === "lit-selection" && parts.length > 1 ? `${parts[parts.length - 2]} / lit-selection` : last;
 		};
+		// The user's own folders first, the uploads last.
+		const order = [...dirs.filter((dir) => !isInbox(dir)), ...dirs.filter(isInbox)];
+		return { tree, nameOf, isInbox, order };
+	}
+	/** Every paper in a folder and its subfolders. */
+	function papersUnder(node) {
+		return [...node.papers, ...[...node.children.values()].flatMap(papersUnder)];
+	}
+	function libraryTreeHtml(papers, dirs, store, folders = []) {
+		const { tree, nameOf, isInbox, order } = libraryTree(papers, dirs, store);
+		const count = (node) => papersUnder(node).length;
 		// Year and authors only where the metadata has them; else the file name.
 		const item = (paper) => {
 			const lead = [paper.year, authorsShort(paper.authors)].filter(Boolean).join(" ");
@@ -1694,14 +1965,15 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		};
 		const node = (entry, name, depth) => {
 			const children = [...entry.children.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([part, child]) => node(child, part, depth + 1)).join("");
-			return `<details class="lfolder" ${depth === 0 && dirs.length === 1 ? "open" : ""}><summary title="${esc(entry.path)}">${ICON_FOLDER_SMALL}<span class="lname">${esc(name)}</span><span class="cnt">${count(entry)}</span><button type="button" class="reveal" data-reveal="${esc(entry.path)}" title="Show in the file manager" aria-label="Show in the file manager">${ICON_REVEAL}</button>${depth === 0 && !(store && entry.path === `${store}${sep(store)}inbox`) ? `<button type="button" class="reveal" data-unlink="${esc(entry.path)}" title="Remove from the library (the files stay where they are)" aria-label="Remove from the library">${ICON_TRASH}</button>` : ""}</summary>${children}${entry.papers.map(item).join("")}</details>`;
+			return `<details class="lfolder" ${depth === 0 && dirs.length === 1 ? "open" : ""}><summary title="${esc(entry.path)}">${ICON_FOLDER_SMALL}<span class="lname">${esc(name)}</span><span class="cnt">${count(entry)}</span><button type="button" class="reveal" data-reveal="${esc(entry.path)}" title="Show in the file manager" aria-label="Show in the file manager">${ICON_REVEAL}</button>${depth === 0 && !isInbox(entry.path) ? `<button type="button" class="reveal" data-unlink="${esc(entry.path)}" title="Remove from the library (the files stay where they are)" aria-label="Remove from the library">${ICON_TRASH}</button>` : ""}</summary>${children}${entry.papers.map(item).join("")}</details>`;
 		};
-		return dirs.map((dir) => node(tree.get(dir), nameOf(dir), 0)).join("");
+		return order.map((dir) => node(tree.get(dir), nameOf(dir), 0)).join("");
 	}
 	async function loadLibrary() {
 		const box = $("rail-library-list");
 		try {
 			const data = await get("/api/library");
+			state.lib = data;
 			box.innerHTML = data.papers.length ? libraryTreeHtml(data.papers, data.dirs || [], data.store || "", data.folders || []) : "";
 			$("cnt-pdfs").textContent = data.papers.length ? String(data.papers.length) : "";
 		} catch (error) {
@@ -1892,17 +2164,10 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	/* Drag and drop: PDFs from the desktop go to the inbox (next to the
 	   history), then a chat over exactly these opens. */
 	let dragDepth = 0;
-	const hasFiles = (event) => Boolean(event.dataTransfer && [...event.dataTransfer.types].includes("Files"));
-	document.addEventListener("dragenter", (event) => { if (!hasFiles(event)) return; event.preventDefault(); dragDepth++; $("dropzone").hidden = false; });
-	document.addEventListener("dragover", (event) => { if (!hasFiles(event)) return; event.preventDefault(); event.dataTransfer.dropEffect = "copy"; });
-	document.addEventListener("dragleave", (event) => { if (!hasFiles(event)) return; dragDepth = Math.max(0, dragDepth - 1); if (!dragDepth) $("dropzone").hidden = true; });
-	document.addEventListener("drop", async (event) => {
-		if (!hasFiles(event)) return;
-		event.preventDefault();
-		dragDepth = 0;
-		$("dropzone").hidden = true;
-		const files = [...event.dataTransfer.files].filter((file) => /\.pdf$/i.test(file.name) || file.type === "application/pdf");
-		if (!files.length) { toast("Only PDF files can be dropped here."); return; }
+	/** PDFs from the disk into the library's inbox; their basenames. */
+	async function uploadPdfs(list) {
+		const files = list.filter((file) => /\.pdf$/i.test(file.name) || file.type === "application/pdf");
+		if (!files.length) { toast("Only PDF files can be added here."); return []; }
 		const bases = [];
 		for (const file of files) {
 			toast(`Adding ${file.name} ...`);
@@ -1915,6 +2180,18 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 				toast(`${file.name}: ${error.message}`);
 			}
 		}
+		return bases;
+	}
+	const hasFiles = (event) => Boolean(event.dataTransfer && [...event.dataTransfer.types].includes("Files"));
+	document.addEventListener("dragenter", (event) => { if (!hasFiles(event)) return; event.preventDefault(); dragDepth++; $("dropzone").hidden = false; });
+	document.addEventListener("dragover", (event) => { if (!hasFiles(event)) return; event.preventDefault(); event.dataTransfer.dropEffect = "copy"; });
+	document.addEventListener("dragleave", (event) => { if (!hasFiles(event)) return; dragDepth = Math.max(0, dragDepth - 1); if (!dragDepth) $("dropzone").hidden = true; });
+	document.addEventListener("drop", async (event) => {
+		if (!hasFiles(event)) return;
+		event.preventDefault();
+		dragDepth = 0;
+		$("dropzone").hidden = true;
+		const bases = await uploadPdfs([...event.dataTransfer.files]);
 		if (!bases.length) return;
 		entryDismissed = "";
 		try {

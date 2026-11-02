@@ -249,7 +249,7 @@ button.primary:hover { background: #000000; }
 .plusbtn .badge:empty { display: none; }
 .plusmenu { position: absolute; right: 0; bottom: calc(100% + 0.5rem); z-index: 30; width: 30rem; max-width: calc(100vw - 2rem); max-height: min(70vh, 34rem); overflow: auto; background: #fff; border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 8px 28px rgba(0,0,0,0.14); padding: 0.35rem; text-align: left; }
 .plusmenu[hidden] { display: none; }
-.chat.entry .plusmenu { bottom: auto; top: calc(100% + 0.5rem); }
+.chat.entry .plusmenu { bottom: auto; top: calc(100% + 0.5rem); max-height: min(44vh, 34rem); }
 .plusmenu input { flex: none; }
 .plusmenu button { border-radius: 6px; }
 .plusmenu .row { display: flex; align-items: center; gap: 0.65rem; padding: 0.4rem 0.55rem; border-radius: 8px; min-height: 2.35rem; }
@@ -283,6 +283,16 @@ button.primary:hover { background: #000000; }
 .plusmenu .sub .lookup { width: 100%; font: inherit; font-size: 0.82rem; padding: 0.3rem 0.5rem; border: 1px solid #d6d6d0; border-radius: 6px; margin: 0.15rem 0 0.35rem; }
 .plusmenu .sub .scope { margin-top: 0.4rem; }
 .plusmenu .sub.syn { padding-left: 0.9rem; }
+/* The paper chat's menu: one radio per source kind, folder tree and paper
+   list scroll inside the menu, report kinds under their switch. */
+.plusmenu .radio { width: 0.95rem; height: 0.95rem; border-radius: 50%; border: 1.5px solid #9a9a94; flex: none; position: relative; }
+.plusmenu .radio.on { border-color: #2a2a2a; }
+.plusmenu .radio.on::after { content: ""; position: absolute; inset: 0.15rem; border-radius: 50%; background: #2a2a2a; }
+.plusmenu .sub.tree, .plusmenu #chat-papers { max-height: 14rem; overflow: auto; }
+.plusmenu #chat-papers label span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.plusmenu .sub.tree label input:disabled + span { color: var(--muted); }
+.plusmenu .row.kinds { padding-left: 2.35rem; min-height: 0; padding-top: 0; }
+.plusmenu .row.kinds:hover { background: transparent; }
 .plusmenu .sub.syn .blocks { margin-top: 0.1rem; }
 .plusmenu .sub.syn .term { padding-left: 0.45rem; }
 .plusmenu .sub.syn .term input { font-size: 0.82rem; }

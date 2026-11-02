@@ -95,6 +95,7 @@ import {
 	type Effect,
 	type FileCard,
 	parseSearchOptions,
+	parseChatOptions,
 	type PeriodPreset,
 	type SearchAgainFilters,
 	FACET_LIMIT,
@@ -300,6 +301,19 @@ export function paperLabel(paper: { base: string; title: string; authors: string
 
 /** Largest PDF accepted by drag and drop. */
 const UPLOAD_LIMIT = 200_000_000;
+
+/** The library file with exactly these bytes, if any (only files of the
+ * same size are read). */
+export function samePdf(files: string[], bytes: Buffer): string | undefined {
+	for (const file of files) {
+		try {
+			if (statSync(file).size === bytes.length && readFileSync(file).equals(bytes)) return file;
+		} catch {
+			// A file that vanished or cannot be read is no match.
+		}
+	}
+	return undefined;
+}
 
 /** A dropped file's name made safe for the inbox: letters, digits and a
  * few marks kept, everything else "_", ".pdf" at the end. Pure. */
@@ -765,8 +779,9 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 		if (a.paperLabel && a.lastQuestion?.trim()) return clip(a.paperLabel);
 		// A chat collects its questions too (as seed for a later report):
 		// "Report" only once a report was asked for.
-		const reported = state.trail.includes("reportKind") || state.trail.includes("questions") || state.trail.includes("reporting");
+		const reported = a.reported || state.trail.includes("reportKind") || state.trail.includes("questions") || state.trail.includes("reporting");
 		if (reported && a.questions?.length) return `Report: ${clip(a.questions[0])}`;
+		if (reported) return `Report: summaries of ${clip(a.scope === "library" ? "the library" : a.scopeLabel || a.paperLabel || `${a.scope.length} papers`)}`;
 		if (a.lastQuestion?.trim()) return `Chat: ${clip(a.lastQuestion)}`;
 		if (a.questions?.length) return `Report: ${clip(a.questions[0])}`;
 		return null;
@@ -775,7 +790,19 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 	 * (read-only folder, full disk) must not break the chat: it is reported
 	 * once per server run as a dialog note instead. */
 	let saveFailureReported = false;
+	/** A chat on one PDF opened before the library knew the paper (a dropped
+	 * or hand-saved PDF is identified while its first question is answered)
+	 * is named after it as soon as its metadata is there. */
+	const labelOnePaper = (state: DialogState): DialogState => {
+		const a = state.answers;
+		if (a.paperLabel || a.scopeLabel || state.activeJob || !a.lastQuestion?.trim() || !Array.isArray(a.scope) || a.scope.length !== 1) return state;
+		const base = a.scope[0];
+		const paper = listLibrary(root, cwd, deps.matchLibrary(root)).papers.find((entry) => entry.base === base);
+		const label = paper ? paperShortLabel(paper) : null;
+		return label ? { ...state, answers: { ...a, paperLabel: label } } : state;
+	};
 	const persistCurrent = (): void => {
+		dialog = labelOnePaper(dialog);
 		const title = conversationTitle(dialog);
 		if (title === null) return;
 		try {
@@ -1396,6 +1423,7 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 			if (dialog.activeJob) throw new HttpError(409, "this conversation's job is still running -- wait for it or stop it");
 			const strings = (value: unknown): string[] | undefined => (Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : undefined);
 			const options = parseSearchOptions(body.options);
+			const chat = parseChatOptions(body.chat);
 			applyDialog({
 				kind: "answer",
 				text: typeof body.text === "string" ? body.text : undefined,
@@ -1408,6 +1436,7 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 				...(typeof body.synonyms === "boolean" ? { synonyms: body.synonyms } : {}),
 				...(typeof body.period === "string" && ["5y", "10y", "20y", "all"].includes(body.period) ? { period: body.period as PeriodPreset } : {}),
 				...(options ? { options } : {}),
+				...(chat ? { chat } : {}),
 				...(typeof body.folder === "string" && body.folder.trim() ? { folder: body.folder.trim() } : {}),
 				filters: searchAgainFilters(body.filters),
 			});
@@ -1464,6 +1493,8 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 				dialogComputed = entry.computed ?? null;
 			}
 			currentId = id;
+			// An older one-PDF chat whose paper is known by now gets its name.
+			if (labelOnePaper(dialog) !== dialog) persistCurrent();
 			broadcastDialog();
 			broadcastHistory();
 			return json(res, 200, { ...dialogView(), otherRoot: entry && entry.root !== root ? entry.root : null });
@@ -1521,21 +1552,18 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 			if (bytes.subarray(0, 5).toString("latin1") !== "%PDF-") throw new HttpError(400, "not a PDF file");
 			const inbox = inboxDir(root);
 			mkdirSync(inbox, { recursive: true });
+			// A PDF the library already holds (byte for byte, in any folder or
+			// the inbox) is not copied again: the existing paper is used.
+			const files = libraryFiles(root, { cwd }).files;
+			const same = samePdf(files, bytes);
+			if (same) return json(res, 200, { base: pdfBase(same), file: same, existing: true });
 			// The name must not clash with a PDF already in the library (the
-			// earlier folder would win and hide the dropped one); the same
-			// file dropped twice is kept once.
-			const taken = new Set(libraryFiles(root, { cwd }).files.map((file) => pdfBase(file).toLowerCase()));
+			// earlier folder would win and hide the uploaded one).
+			const taken = new Set(files.map((file) => pdfBase(file).toLowerCase()));
 			let name = uploadName(url.searchParams.get("name") ?? "");
 			const stem = name.slice(0, -4);
-			for (let n = 2; ; n++) {
-				const path = join(inbox, name);
-				if (existsSync(path) && statSync(path).size === bytes.length && readFileSync(path).equals(bytes)) break;
-				if (!taken.has(name.slice(0, -4).toLowerCase()) && !existsSync(path)) {
-					writeFileSync(path, bytes);
-					break;
-				}
-				name = `${stem}_${n}.pdf`;
-			}
+			for (let n = 2; taken.has(name.slice(0, -4).toLowerCase()) || existsSync(join(inbox, name)); n++) name = `${stem}_${n}.pdf`;
+			writeFileSync(join(inbox, name), bytes);
 			return json(res, 200, { base: name.slice(0, -4), file: join(inbox, name) });
 		}
 

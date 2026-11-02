@@ -236,6 +236,10 @@ export interface DialogAnswers {
 	scope: string[] | "library";
 	questions: string[];
 	lastQuestion: string;
+	/** A report was started in this conversation (names it in History). */
+	reported?: boolean;
+	/** The "+" menu's name for the scope ("01_Waterline", "3 papers"). */
+	scopeLabel?: string;
 	/** A chat on one PDF: the paper in short ("Lee and Kim 2021 · Title"),
 	 * from its metadata; names the conversation in History. */
 	paperLabel?: string;
@@ -259,7 +263,7 @@ export interface DialogState {
 export type DialogEvent =
 	/** `ask`: the text is a question for the helper, not an answer (question
 	 * mode on the page, or a leading "?"). */
-	| { kind: "answer"; text?: string; chip?: string; ids?: string[]; blocks?: string[]; toggles?: string[]; ask?: boolean; filters?: SearchAgainFilters; code?: boolean; synonyms?: boolean; period?: PeriodPreset; options?: SearchOptionsAnswer; folder?: string }
+	| { kind: "answer"; text?: string; chip?: string; ids?: string[]; blocks?: string[]; toggles?: string[]; ask?: boolean; filters?: SearchAgainFilters; code?: boolean; synonyms?: boolean; period?: PeriodPreset; options?: SearchOptionsAnswer; folder?: string; chat?: ChatOptionsAnswer }
 	/** A file the server wrote on the user's click (report from the list): shown as a card. */
 	| { kind: "fileWritten"; card: FileCard; quiet?: boolean }
 	| { kind: "helpAnswered"; text: string | null; error?: string }
@@ -368,7 +372,7 @@ const TEXT = {
 	mailto: "Unpaywall needs a contact email (its policy). Type it, or continue without Unpaywall.",
 	mailtoBad: "That does not look like an email address. Type one, or continue without Unpaywall.",
 	mailtoSave: "Save this address in the configuration for next time, or use it for this run only?",
-	ask: "Ask your question about the PDFs. I answer only from retrieved passages, with page citations.",
+	ask: "Ask anything. Responses rely solely on passages retrieved from your sources and include exact citations.",
 	askNoModel: "No model is selected, so I cannot answer questions right now.",
 	pickPaper: "Which PDF do you want to talk about?",
 	pickPapers: "Which papers should the report cover? Tick them, or take the whole library.",
@@ -868,26 +872,18 @@ function askQuestions(state: DialogState): DialogState {
 /** A chat on ONE PDF (opened from the library or by dropping it): just
  * questions about it, no report or scope buttons. */
 function onePaper(state: DialogState): boolean {
-	return Array.isArray(state.answers.scope) && state.answers.scope.length === 1;
-}
-
-function askChips(): Chip[] {
-	return [
-		{ id: "report", label: "Build a report" },
-		{ id: "scopeOne", label: "Scope: one paper" },
-		{ id: "scopeLibrary", label: "Scope: whole library" },
-	];
+	// One paper picked in the page's "+" menu carries a scope label: a
+	// library chat narrowed to it, with the usual actions.
+	return Array.isArray(state.answers.scope) && state.answers.scope.length === 1 && !state.answers.scopeLabel;
 }
 
 /** `about`: the paper's own words (title, first author, year from its
  * metadata) for a chat opened on one PDF: the question names it. */
 function askAsk(state: DialogState, ctx: DialogContext, intro?: string, about?: string): DialogState {
 	if (about && ctx.hasModel) return ask(state, "ask", { text: `What would you like to know about ${about}?` });
-	const scopeLabel = state.answers.scope === "library" ? `whole library (${ctx.library.length})` : `${state.answers.scope.length} paper${state.answers.scope.length === 1 ? "" : "s"}`;
-	const chips = askChips();
+	// Scope and reports live in the page's "+" menu: the question stands alone.
 	const text = intro ? `${intro}\n${ctx.hasModel ? TEXT.ask : TEXT.askNoModel}` : ctx.hasModel ? TEXT.ask : TEXT.askNoModel;
-	const note = ctx.hasModel ? `Scope: ${scopeLabel}.` : ctx.noModelHint;
-	return ask(state, "ask", { text, note, chips });
+	return ask(state, "ask", { text, ...(ctx.hasModel ? {} : { note: ctx.noModelHint }) });
 }
 
 function askReportKind(state: DialogState): DialogState {
@@ -1175,7 +1171,7 @@ function onAnswer(state: DialogState, event: Extract<DialogEvent, { kind: "answe
 		}
 		case "ask":
 		case "finished":
-			return onAsk(echoed, text, chip, ctx);
+			return onAsk(echoed, text, chip, ctx, event.chat);
 		case "reportKind":
 			return onReportKind(echoed, chip, text, ctx);
 		case "searching":
@@ -1239,6 +1235,32 @@ function requestOptions(event: Extract<DialogEvent, { kind: "answer" }>): Reques
  * choices the terminal wizard offers (count, citations, journals,
  * authors), made before the search. Journal and author rows are the
  * OpenAlex facet rows the menu showed; `on` holds the ticked ids. */
+/** The paper chat's "+" menu: which PDFs, and whether Send writes a
+ * report (and which kind) instead of answering in the chat. */
+export type ReportKindId = "bullets" | "perPaper" | "crossPaper" | "review";
+export interface ChatOptionsAnswer {
+	scope: string[] | "library";
+	scopeLabel?: string;
+	report?: ReportKindId;
+}
+
+const REPORT_KINDS: ReportKindId[] = ["bullets", "perPaper", "crossPaper", "review"];
+
+/** Validate the chat menu's settings from the page (untrusted JSON).
+ * Pure; the reducer keeps only basenames the library holds. */
+export function parseChatOptions(value: unknown): ChatOptionsAnswer | undefined {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+	const raw = value as Record<string, unknown>;
+	let scope: string[] | "library";
+	if (raw.scope === "library") scope = "library";
+	else if (Array.isArray(raw.scope)) scope = [...new Set(raw.scope.filter((base): base is string => typeof base === "string" && base.trim() !== "").slice(0, 5000))];
+	else return undefined;
+	const out: ChatOptionsAnswer = { scope };
+	if (typeof raw.scopeLabel === "string" && raw.scopeLabel.trim()) out.scopeLabel = raw.scopeLabel.trim().slice(0, 120);
+	if (typeof raw.report === "string" && (REPORT_KINDS as string[]).includes(raw.report)) out.report = raw.report as ReportKindId;
+	return out;
+}
+
 export interface SearchOptionsAnswer {
 	perSource?: number;
 	minCites?: number | null;
@@ -1507,7 +1529,9 @@ function onPick(state: DialogState, event: Extract<DialogEvent, { kind: "answer"
 	return result(askDownload(next));
 }
 
-function onAsk(state: DialogState, text: string, chip: string, ctx: DialogContext): ReduceResult {
+function onAsk(input: DialogState, text: string, chip: string, ctx: DialogContext, chat?: ChatOptionsAnswer): ReduceResult {
+	const state = chat ? withChatScope(input, chat, ctx) : input;
+	if (chat?.report) return onMenuReport(state, chat.report, text, ctx);
 	if (chip === "report") {
 		if (state.answers.scope === "library" && ctx.library.length > 1) return result(askPickPapers(state, ctx));
 		return result(askQuestions(state));
@@ -1525,22 +1549,49 @@ function onReportKind(state: DialogState, chip: string, text: string, ctx: Dialo
 	const choice = chip || (/^(bullets?|summar)/i.test(text) ? "bullets" : /^cross/i.test(text) ? "crossPaper" : /^review/i.test(text) ? "review" : /^(per|summaries \+)/i.test(text) ? "perPaper" : "");
 	if (!choice) return result(askReportKind(say(state, "Pick one of the report kinds.")));
 	if (!ctx.hasModel) return result(askReportKind(say(state, TEXT.askNoModel)));
-	const questions = state.answers.questions;
+	const effect = reportEffect(state, choice as ReportKindId, state.answers.questions);
+	if (effect.kind === "startReport" && effect.summary === "none" && !effect.questions.length) {
+		return result(askQuestions(say(state, "Cross-paper answers need at least one question.")));
+	}
+	return result(pending(withAnswers(state, { reported: true }), "starting the report"), effect);
+}
+
+/** The "+" menu's scope as the dialog's: only basenames the library holds;
+ * an empty pick falls back to the whole library. */
+function withChatScope(state: DialogState, chat: ChatOptionsAnswer, ctx: DialogContext): DialogState {
+	const known = new Set(ctx.library.map((paper) => paper.base));
+	const bases = chat.scope === "library" ? [] : chat.scope.filter((base) => known.has(base));
+	const scope: string[] | "library" = bases.length ? bases : "library";
+	return withAnswers(state, { scope, scopeLabel: scope === "library" ? undefined : chat.scopeLabel });
+}
+
+/** Send with "Write a report" on: the typed lines are the report's
+ * questions (with the chat's earlier ones); the report starts at once. */
+function onMenuReport(state: DialogState, kind: ReportKindId, text: string, ctx: DialogContext): ReduceResult {
+	if (!ctx.hasModel) return result(askAsk(say(state, TEXT.askNoModel), ctx));
+	const typed = text ? parseQuestions(text) : [];
+	const questions = [...new Set([...state.answers.questions, ...typed])];
+	const next = withAnswers(state, { questions, reported: true });
+	const effect = reportEffect(next, kind, questions);
+	if (effect.kind === "startReport" && effect.summary === "none" && !effect.questions.length) {
+		return result(askAsk(say(next, "Cross-paper answers need at least one question: type it, then Build report."), ctx));
+	}
+	return result(pending(next, "starting the report"), effect);
+}
+
+/** One report kind as the report effect. */
+function reportEffect(state: DialogState, choice: ReportKindId, questions: string[]): Effect {
 	// Every question typed so far (report questions and chat questions)
 	// decides the language; a summary-only report without any question
 	// falls back to the search request, then to English.
 	const language = detectDialogLang([...questions, state.answers.lastQuestion, state.answers.topic]);
-	const effect: Effect = choice === "bullets"
+	return choice === "bullets"
 		? { kind: "startReport", papers: state.answers.scope, questions: [], summary: "bullets", detailMode: "per-paper", includeReview: false, language }
 		: choice === "crossPaper"
 			? { kind: "startReport", papers: state.answers.scope, questions, summary: "none", detailMode: "cross-paper", includeReview: false, language }
 			: choice === "review"
 				? { kind: "startReport", papers: state.answers.scope, questions, summary: "bullets", detailMode: "per-paper", includeReview: true, language }
 				: { kind: "startReport", papers: state.answers.scope, questions, summary: "bullets", detailMode: "per-paper", includeReview: false, language };
-	if (effect.kind === "startReport" && effect.summary === "none" && !effect.questions.length) {
-		return result(askQuestions(say(state, "Cross-paper answers need at least one question.")));
-	}
-	return result(pending(state, "starting the report"), effect);
 }
 
 /* ---- jobs ---- */
@@ -1569,7 +1620,7 @@ function onJob(state: DialogState, event: Extract<DialogEvent, { kind: "job" }>,
 				if (onePaper(marked)) return result(ask({ ...marked, pending: null }, "ask", { text: why }));
 				return result(askAsk(say(marked, `${why}`), ctx));
 			case "report":
-				return result(askReportKind(say(marked, `${why} The report was not written.`)));
+				return result(askAsk(say(marked, `${why} The report was not written.`), ctx));
 			default:
 				return result(say(marked, why));
 		}
@@ -1618,14 +1669,16 @@ function onJob(state: DialogState, event: Extract<DialogEvent, { kind: "job" }>,
 			// No repeated instruction after an answer: the answer itself carries
 			// the action chips, the input box invites the next question.
 			const trail = marked.trail[marked.trail.length - 1] === "ask" ? marked.trail : [...marked.trail, "ask" as StepId];
-			return result(push({ ...spend(marked), step: "ask", trail, pending: null }, { role: "answer", step: "ask", answer: view, ...(onePaper(marked) ? {} : { chips: askChips() }) }));
+			return result(push({ ...spend(marked), step: "ask", trail, pending: null }, { role: "answer", step: "ask", answer: view }));
 		}
 		case "report": {
 			const outcome = event.report;
 			if (!outcome) return result(say(marked, "The report finished, but its result is missing."));
 			const told = say(marked, `**Report written** (${outcome.units} unit${outcome.units === 1 ? "" : "s"}${outcome.grounded ? ", every statement carries a page citation" : "; NOT grounded -- check the report"}).`);
 			const withCard = card(told, { kind: "file", name: `${outcome.name}.html`, label: "Synthesis report, HTML · lit-synthesis/", stage: "lit-synthesis", url: outcome.htmlUrl });
-			return result(ask(withCard, "finished", { text: TEXT.finished, chips: [{ id: "report", label: "Another report" }, { id: "scopeOne", label: "Scope: one paper" }, { id: "newSearch", label: "New search" }] }));
+			// Back to the question box: the next question or report comes from there.
+			const trail = withCard.trail[withCard.trail.length - 1] === "ask" ? withCard.trail : [...withCard.trail, "ask" as StepId];
+			return result({ ...spend(withCard), step: "ask", trail, pending: null });
 		}
 		default:
 			return result(marked);
@@ -1695,7 +1748,7 @@ function reask(state: DialogState, step: StepId, ctx: DialogContext): DialogStat
 		case "questions": return askQuestions(state);
 		case "ask": return askAsk(state, ctx);
 		case "reportKind": return askReportKind(state);
-		case "finished": return ask(state, "finished", { text: TEXT.finished, chips: [{ id: "report", label: "Another report" }, { id: "newSearch", label: "New search" }] });
+		case "finished": return askAsk(state, ctx);
 		default: return ask(state, "start", startMessage(ctx));
 	}
 }

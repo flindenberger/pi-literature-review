@@ -345,6 +345,10 @@ try {
 	assert.equal(dropped.file, join(root, "inbox", "My paper.pdf"));
 	assert.equal((await (await upload("../My paper?.pdf", "%PDF-1.4 dropped")).json()).base, "My paper"); // same file: once
 	assert.equal((await (await upload("../My paper?.pdf", "%PDF-1.4 other")).json()).base, "My paper_2"); // same name, other file
+	const sameBytes = await (await upload("Renamed copy.pdf", "%PDF-1.4 dropped")).json(); // same bytes, other name: the existing paper
+	assert.equal(sameBytes.base, "My paper");
+	assert.equal(sameBytes.existing, true);
+	assert.equal(existsSync(join(root, "inbox", "Renamed copy.pdf")), false);
 	assert.equal((await upload("notes.pdf", "hello")).status, 400);
 	const chat = await (await fetch(`${base}/api/dialog/new`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ start: "synthesis", scope: ["My paper"] }) })).json();
 	assert.equal(chat.step, "ask");
