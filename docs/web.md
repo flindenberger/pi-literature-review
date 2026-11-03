@@ -114,20 +114,50 @@ conversation is in opens by itself. Empty lists show nothing (no dash, no 0). St
 holds the **Library** right under **+ New paper chat**: **+ Add folder**
 opens the system's folder window and adds a PDF folder; below, the library
 as folders -- each PDF folder with its own subfolders, an older `lit-selection/`,
-and last **Uploads** for PDFs dropped onto the page or added with **Upload
-PDF** -- with counts and, on
+and last **Added Documents** for PDFs dropped onto the page or added with
+the upload button next to the question box's **+** (a PDF the library
+already holds is not copied again: the library opens at it, its row lights
+up and a note names its folder; when the picked files share a folder the
+library does not read yet, a window offers **Only this file** first and
+**Add entire folder** as the alternative; a drop anywhere on the page,
+the open PDF viewer included, is caught by the page) -- with counts and, on
 hover, a button per folder that shows it in the file manager and a trash
 that takes the folder out of the library (its files stay on the disk; a
 folder the library read on its own, such as a `lit-selection/` where pi was
 started, is remembered as ignored -- adding it again brings it back),
 rescanned when opened. A paper reads "year authors · title" where the metadata has them,
-else its file name. A click on a paper opens the PDF in the panel and
+else its file name. A small box before every folder and paper ticks it as
+a source of the paper chat (a folder includes its subfolders; the papers
+under a ticked folder show ticked and locked; the box has a click area
+a little larger than itself, and a paper row opens only from its title or
+its "+", so a click beside the box never opens a chat); a tick in a search or a
+chat on one PDF opens a new paper chat with that choice. The question over
+the box follows the ticks ("What would you like to know about “Vos
+2019”?", "... about these 18 PDFs?").
+
+**Background indexing.** The server indexes every library PDF without an
+index (text extracted, chunks embedded), one after the other: a moment
+after it starts, after **+ Add folder**, after an upload and after a
+download. While a chat, report or download runs it waits between two
+PDFs. The rail shows "indexing 34/87" with a thin bar under **Library**
+while it works and nothing once it is done; a PDF without an index is
+marked by its tooltip only ("not indexed yet"), listed like any other. PDFs without
+text are remembered and not retried until the file changes. The index
+lives in the store (`lit-synthesis/index/`); nothing is written into the
+PDF folders. About 8 s per PDF (measured 4-23 s with bge-m3), once. A click on a paper opens the PDF in the panel and
 continues the paper's last chat (the newest one in History); a paper
 without a chat, or the **+** that shows on hover, starts a new chat about
 exactly this PDF (the PDF loads anew, without the marks of the last chat), whose question names it from its
 metadata ("What would you like to know about “Title” (Smith et al.,
 2021)?", "... about this PDF?" without metadata; examples for one paper in
-the box). A chat on one PDF reads like a chat: no buttons (no report, no
+the box). The example questions typed into the box of a paper chat name
+the chosen papers and their author keywords, read by fixed rules from the
+"Keywords" / "Index Terms" line of the indexed first pages
+(`src/web/keywords.ts`; lists separated by spaces only, or no line, fall
+back to a short title, then to general examples): "How does Isikdogan et
+al. 2017 approach convolutional neural networks?", "How do A and B differ
+in ...?", "What do these 15 papers say about ...?"; new ticks give new
+examples. No model is asked. A chat on one PDF reads like a chat: no buttons (no report, no
 scope), and an answer is its prose with the [n] links only (no passage
 list, no paper list, no provenance line below); when an answer arrives
 while the PDF is open on the right, the PDF jumps to the first cited
@@ -314,25 +344,64 @@ under the blocks.
 | Pick (window over the list) | Which papers do you want as PDFs? | tick cards and press **Download n ticked PDFs**; the window asks what is left to ask (contact email, confirmation) and shows the result |
 | Contact | Unpaywall needs a contact email. | asked only while none is configured: type it (save it, or this run only) or continue without Unpaywall |
 | Download | Download N papers? (with the folder) | choose the folder, **Download**; restricted and abstract-only papers are listed with browser links, not tried |
-| Ask | Ask anything. Responses rely solely on passages retrieved from your sources and include exact citations. | any question (answered only from retrieved passages, with page citations); sources and reports are set in the box's **+** menu (below) |
-| Report (typed, or from older conversations) | Which papers, which questions, which report? | papers ticked or the whole library; questions one per line or summaries only; bullet summaries, summaries + answers per paper, cross-paper answers, or the review synthesis |
+| Ask | Ask anything. Responses rely solely on passages retrieved from your sources and include exact citations. | any question (answered only from retrieved passages, with page citations); the sources are ticked in the library of the rail, the reports come from the two buttons under the box (below) |
+| Report (typed, or from older conversations) | Which papers, which questions, which report? | papers ticked or the whole library; questions one per line or summaries only; summarize each paper, answer my questions paper by paper, answer my questions across all papers, or write a literature review |
 
-The paper chat's question box carries its own **+** menu, like the
-request box of a search; the question and the answers carry no buttons.
-**Sources** (one of three): the whole library; **Folders**, a tick tree
-of the library's folders (a ticked folder includes its subfolders); or
-**Papers**, a tick list with a find box. **Upload PDF** adds PDFs from
-the disk to the library's inbox and makes them the sources. **Write a
-report** turns Send into **Build report**, with the kind chosen under the
-switch (Summaries, Per paper, Cross-paper, Review): the typed text gives
-the report's questions (with the chat's earlier ones), a summaries-only
-report needs none, a cross-paper report needs one. The report starts at
-once over the chosen sources and the switch turns off again. A pill under
-the box always names the sources ("87 PDFs", "01_Water_Body_Mapping_HQ ·
-30 PDFs"), a second one the report kind; the × resets either. The page
-sends the sources as basenames (`chat.scope`, `chat.scopeLabel`,
-`chat.report`); the dialog keeps only basenames the library holds and
-falls back to the whole library. A chat opened on one PDF (from the
+The paper chat chooses its sources in ONE place, the library of the rail;
+its question box has no **+** menu, only the upload button, and the
+question and the answers carry no buttons. A tick on the **Library** row
+takes the whole library; ticks on folders (a ticked folder includes its
+subfolders) and papers add up. A find box over the tree keeps the papers
+whose title, authors, year, file name or keywords hold every typed word,
+with their folders opened (Esc or an empty box restores the tree). A
+click on the source pill under the box opens the library and lets it
+light up. On hover a paper row shows an **i** (and the PDF panel shows
+one in its header): a window about the paper -- authors, year, journal,
+type, DOI / arXiv link, citations with a small bar per year and the date
+they were counted, access, keywords, index state, file (with "show in the
+file manager") and the abstract. Journal, type, citations, access and
+abstract come from OpenAlex by DOI (an arXiv id as its DataCite DOI;
+`GET /api/paper`, a single-work lookup that costs no OpenAlex credits,
+kept six hours); without a DOI only the local record shows. Nothing is
+chosen in a new chat; Send
+then opens a small window: the sources used last time (kept per browser),
+"Choose folders or papers in the library" (opens the library), or the
+whole library. When the chosen PDFs include many without an index (about
+30 s or more at 8 s each), a window names the time: "Index them and ask"
+or "Ask the n PDFs already indexed". The upload button in the box
+opens the system's "open PDF files" window (`POST /api/library/pick-files`;
+zenity, kdialog, osascript or PowerShell); when the chosen files share a
+folder the library does not read yet, a window asks "Add “x.pdf”?" and
+names how many more PDFs the folder holds (**Only this file** first, which
+copies it into `inbox/` via
+`POST /api/library/import`, which takes only files chosen in that
+window; **Add entire folder** adds the folder as a PDF folder, read in
+place). The chosen PDFs become the sources. Without a desktop window
+(SSH) the browser's own file chooser copies them. A pill under the box
+always names the sources ("No sources chosen", "Whole library · 87 PDFs",
+"01_Water_Body_Mapping_HQ · 30 PDFs", "2 folders, 1 paper · 19 PDFs"; the
+× clears them); right of it sit two report switches, once per chat:
+**Summary report** (every paper summarized, plus the chat's questions
+answered paper by paper when there are any) and **Synthesis report** (the
+chat's questions answered across the papers plus a literature review;
+needs a question). A switch only selects: Send then reads **Build
+report** and builds the switched-on report (both on: one report with all
+parts), the typed text adding questions. It runs over the chosen sources
+and every question of the chat; the written report opens as a tab on the
+right and adds nothing to the thread; a small button beside the switch
+opens it again. The sources may change during a
+chat (ticks, "+"): the next answer and the reports use the new choice,
+and a thin line in the thread ("now 3 PDFs") marks from where. In a chat
+over several papers the citation marks carry the paper's letter, fixed
+for the conversation, plus the passage number within that paper (A1, A2,
+B1); hovering a mark shows the paper, page, passage and DOI ("Show in the
+PDF"); the panel shows one tab per cited paper (same letter) and the
+chat's reports, each tab keeping its own page and marks. Answers show
+the prose with the marks only (no passage list, paper list or provenance
+line; the HTML reports keep them). The page sends the sources as
+basenames (`chat.scope`, `chat.scopeLabel`; a report button adds
+`chat.report` with its parts and `chat.reportName`); the dialog keeps
+only basenames the library holds and falls back to the whole library. A chat opened on one PDF (from the
 library, or dropped) has no **+** and stays a plain box; one paper picked
 in the menu is a library chat narrowed to it.
 

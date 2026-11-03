@@ -82,7 +82,10 @@ unlisted. An EXCLUSION list: every row arrives checked (all included),
 unticking a row excludes it, and all or none checked means no filter.
 Removals survive a reload of the list (after a period change) and new
 rows arrive checked. An agent venues proposal arrives as a checked
-whitelist instead.
+whitelist instead. Picked journals match whole names (case, spacing,
+punctuation and "&"/"and" ignored): a picked "Remote Sensing" does not
+also keep "Turkish Journal of Remote Sensing and GIS". Names given to the
+tool without the picker (`venues`) still match as substrings.
 
 ### Authors
 

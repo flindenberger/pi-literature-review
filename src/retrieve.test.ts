@@ -12,6 +12,7 @@ import {
 	LEXICAL_TERM_MAX_HITS,
 	lexicalMatches,
 	lexicalTermPattern,
+	perPaperShare,
 	retrieve,
 	type RetrievedChunk,
 	salientTerms,
@@ -242,6 +243,32 @@ function makeIndex(paper: PaperIndex["paper"], chunks: Array<{ page: number; tex
 		() => retrieve({ queries: ["  "], indexes: [], perQueryK: 1, cap: 1, embed: async () => [] }),
 		/no retrieval queries/,
 	);
+}
+
+/* ---------------- per-paper guarantee for a chosen set ---------------- */
+{
+	assert.equal(perPaperShare(2, 1, 8), 0, "one paper: no guarantee");
+	assert.equal(perPaperShare(2, 3, 8), 2);
+	assert.equal(perPaperShare(2, 5, 8), 1, "shrunk to fit the cap");
+	assert.equal(perPaperShare(2, 9, 8), 0, "more papers than the cap");
+	assert.equal(perPaperShare(0, 3, 8), 0);
+	// Paper A matches the query far better on every page; B and C still
+	// get their two best passages each when perPaperMin is set.
+	const strong = makeIndex(paperA, Array.from({ length: 10 }, (_, i) => ({ page: i + 1, text: `strong ${i}`, embedding: [1, 0.01 * i] })));
+	const paperC: PaperIndex["paper"] = { key: "doi:10.1/c", title: "C", authors: [], year: "2020", doi: "10.1/c", arxiv_id: "" };
+	const weakB = makeIndex(paperB, Array.from({ length: 4 }, (_, i) => ({ page: i + 1, text: `weak b ${i}`, embedding: [0.3, 1 + i] })));
+	const weakC = makeIndex(paperC, Array.from({ length: 4 }, (_, i) => ({ page: i + 1, text: `weak c ${i}`, embedding: [0.2, 1 + i] })));
+	const base = { queries: ["plain lower case query"], indexes: [strong, weakB, weakC], perQueryK: 8, cap: 8, embed: async (texts: string[]) => texts.map(() => [1, 0]), translate: null, lexical: false };
+	const plain = await retrieve(base);
+	assert.deepEqual([...new Set(plain.chunks.map((chunk) => chunk.paper.key))], [paperA.key], "by score alone: only A");
+	const balanced = await retrieve({ ...base, perPaperMin: 2 });
+	const count = (key: string) => balanced.chunks.filter((chunk) => chunk.paper.key === key).length;
+	assert.equal(balanced.chunks.length, 8);
+	assert.equal(count(paperB.key), 2);
+	assert.equal(count(paperC.key), 2);
+	assert.equal(count(paperA.key), 4);
+	assert.deepEqual(balanced.chunks.map((chunk) => chunk.id), [1, 2, 3, 4, 5, 6, 7, 8]);
+	assert.ok(balanced.chunks.every((chunk, i, all) => i === 0 || all[i - 1].score >= chunk.score), "ranked by score");
 }
 
 console.log("retrieve tests passed");

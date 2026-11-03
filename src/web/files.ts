@@ -8,6 +8,7 @@
  * before they touch the filesystem.
  */
 
+import { paperKeywords } from "./keywords.ts";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
@@ -74,6 +75,42 @@ function readJson(path: string): unknown {
 	} catch {
 		return null;
 	}
+}
+
+/** The few facts of a paper index the library list needs, cached by
+ * file size and modification time: an index file holds every chunk and
+ * its vector, too large to parse on every list request. */
+export interface IndexSummary {
+	chunks: number;
+	model: string;
+	key: string;
+	/** Author keywords from the first two pages (example questions only). */
+	keywords: string[];
+}
+const summaries = new Map<string, { stamp: string; summary: IndexSummary | null }>();
+
+export function indexSummary(file: string): IndexSummary | null {
+	let stamp: string;
+	try {
+		const info = statSync(file);
+		stamp = `${info.size}:${info.mtimeMs}`;
+	} catch {
+		summaries.delete(file);
+		return null;
+	}
+	const cached = summaries.get(file);
+	if (cached && cached.stamp === stamp) return cached.summary;
+	const index = readJson(file) as Record<string, any> | null;
+	const summary = index && Array.isArray(index.chunks)
+		? {
+			chunks: index.chunks.length,
+			model: typeof index.embedding_model === "string" ? index.embedding_model : "",
+			key: index.paper && typeof index.paper.key === "string" ? index.paper.key : "",
+			keywords: paperKeywords(index.chunks.filter((chunk: any) => chunk && Number(chunk.page) <= 2).map((chunk: any) => String(chunk.text ?? "")).join(" ")),
+		}
+		: null;
+	summaries.set(file, { stamp, summary });
+	return summary;
 }
 
 function listDir(dir: string): string[] {
@@ -186,6 +223,8 @@ export interface LibraryEntry {
 	via: string | null;
 	/** Chunk count and embedding model of the cached index, or null. */
 	index: { chunks: number; model: string } | null;
+	/** Author keywords of the indexed PDF (empty when none or not indexed). */
+	keywords: string[];
 }
 
 /** The PDF pool as the synthesis stage sees it (verified papers plus
@@ -197,7 +236,7 @@ export function listLibrary(root: string, cwd: string, match?: LibraryMatch): { 
 	const papers = chatPool(found).map((paper) => {
 		const dir = paper.file.slice(0, paper.file.length - `${paper.base}.pdf`.length).replace(/[\\/]$/, "");
 		const twin = readTwin(root, paper.file);
-		const index = readJson(join(indexDir, `${paper.base}.json`)) as Record<string, any> | null;
+		const index = indexSummary(join(indexDir, `${paper.base}.json`));
 		return {
 			base: paper.base,
 			file: paper.file,
@@ -209,9 +248,8 @@ export function listLibrary(root: string, cwd: string, match?: LibraryMatch): { 
 			arxiv_id: paper.entry.arxiv_id,
 			verified: !paper.key.startsWith("file:"),
 			via: typeof twin?.via === "string" ? twin.via : null,
-			index: index && Array.isArray(index.chunks)
-				? { chunks: index.chunks.length, model: typeof index.embedding_model === "string" ? index.embedding_model : "" }
-				: null,
+			index: index && index.key === paper.key ? { chunks: index.chunks, model: index.model } : null,
+			keywords: index && index.key === paper.key ? index.keywords : [],
 		};
 	});
 	papers.sort((a, b) => (a.year ?? "").localeCompare(b.year ?? "") || a.base.localeCompare(b.base));
@@ -242,7 +280,7 @@ export function listReports(root: string): ReportEntry[] {
 			const parts: string[] = [];
 			if (payload.summary) parts.push(`summary (${payload.summary})`);
 			const questions = Array.isArray(payload.questions) ? payload.questions.length : 0;
-			if (questions) parts.push(`${questions} question${questions === 1 ? "" : "s"}${payload.detail_mode === "cross-paper" ? " (mode B)" : " (mode A)"}`);
+			if (questions) parts.push(`${questions} question${questions === 1 ? "" : "s"}${payload.detail_mode === "cross-paper" ? " (mode B)" : payload.detail_mode === "both" ? " (modes A + B)" : " (mode A)"}`);
 			if (payload.include_review) parts.push("review");
 			entries.push({
 				name, kind: "synthesis", generated: payload.generated,

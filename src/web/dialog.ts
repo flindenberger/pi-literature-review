@@ -91,7 +91,7 @@ export interface ListBlock {
 
 export interface Message {
 	id: number;
-	role: "assistant" | "user" | "working" | "answer" | "card" | "results";
+	role: "assistant" | "user" | "working" | "answer" | "card" | "results" | "divider";
 	/** Plain text; the browser renders **bold** and `code` only. */
 	text?: string;
 	/** Smaller second paragraph. */
@@ -238,6 +238,11 @@ export interface DialogAnswers {
 	lastQuestion: string;
 	/** A report was started in this conversation (names it in History). */
 	reported?: boolean;
+	/** The report button(s) whose report is being written ("both": one
+	 * report holding the parts of both). */
+	reportRequest?: ReportButton | "both";
+	/** The newest report of each button, as its HTML url. */
+	reports?: Partial<Record<ReportButton, string>>;
 	/** The "+" menu's name for the scope ("01_Waterline", "3 papers"). */
 	scopeLabel?: string;
 	/** A chat on one PDF: the paper in short ("Lee and Kim 2021 · Title"),
@@ -304,7 +309,7 @@ export type Effect =
 	/** `language`: the report's prose and page headings follow the language
 	 * of the user's own questions (German or English, like the terminal
 	 * wizard follows the chat); the chat itself stays English. */
-	| { kind: "startReport"; papers: string[] | "library"; questions: string[]; summary: "bullets" | "none"; detailMode: "per-paper" | "cross-paper"; includeReview: boolean; language: DialogLang }
+	| { kind: "startReport"; papers: string[] | "library"; questions: string[]; summary: "bullets" | "none"; detailMode: "per-paper" | "cross-paper" | "both"; includeReview: boolean; language: DialogLang }
 	| { kind: "newChatSession" }
 	/** One model call over the step's help text; the reducer built both
 	 * prompts, the server only runs the model. */
@@ -890,10 +895,10 @@ function askReportKind(state: DialogState): DialogState {
 	return ask(state, "reportKind", {
 		text: TEXT.reportKind,
 		chips: [
-			{ id: "bullets", label: "Bullet summaries of every paper" },
-			{ id: "perPaper", label: "Summaries + answers to my questions per paper", primary: true },
-			{ id: "crossPaper", label: "Cross-paper answers to my questions" },
-			{ id: "review", label: "Review synthesis" },
+			{ id: "bullets", label: "Summarize each paper" },
+			{ id: "perPaper", label: "Answer my questions paper by paper", primary: true },
+			{ id: "crossPaper", label: "Answer my questions across all papers" },
+			{ id: "review", label: "Write a literature review" },
 		],
 	});
 }
@@ -1238,10 +1243,15 @@ function requestOptions(event: Extract<DialogEvent, { kind: "answer" }>): Reques
 /** The paper chat's "+" menu: which PDFs, and whether Send writes a
  * report (and which kind) instead of answering in the chat. */
 export type ReportKindId = "bullets" | "perPaper" | "crossPaper" | "review";
+/** The paper chat's two report buttons under the question box. */
+export type ReportButton = "summary" | "synthesis";
 export interface ChatOptionsAnswer {
 	scope: string[] | "library";
 	scopeLabel?: string;
-	report?: ReportKindId;
+	/** The ticked report parts (any combination, at least one). */
+	report?: ReportKindId[];
+	/** The report button(s) that asked (the newest report is remembered). */
+	reportName?: ReportButton | "both";
 }
 
 const REPORT_KINDS: ReportKindId[] = ["bullets", "perPaper", "crossPaper", "review"];
@@ -1257,7 +1267,11 @@ export function parseChatOptions(value: unknown): ChatOptionsAnswer | undefined 
 	else return undefined;
 	const out: ChatOptionsAnswer = { scope };
 	if (typeof raw.scopeLabel === "string" && raw.scopeLabel.trim()) out.scopeLabel = raw.scopeLabel.trim().slice(0, 120);
-	if (typeof raw.report === "string" && (REPORT_KINDS as string[]).includes(raw.report)) out.report = raw.report as ReportKindId;
+	// One kind (older pages) or a list of ticked kinds, in the fixed order.
+	const wanted = typeof raw.report === "string" ? [raw.report] : Array.isArray(raw.report) ? raw.report : [];
+	const kinds = REPORT_KINDS.filter((kind) => wanted.includes(kind));
+	if (kinds.length) out.report = kinds;
+	if (raw.reportName === "summary" || raw.reportName === "synthesis" || raw.reportName === "both") out.reportName = raw.reportName;
 	return out;
 }
 
@@ -1531,7 +1545,7 @@ function onPick(state: DialogState, event: Extract<DialogEvent, { kind: "answer"
 
 function onAsk(input: DialogState, text: string, chip: string, ctx: DialogContext, chat?: ChatOptionsAnswer): ReduceResult {
 	const state = chat ? withChatScope(input, chat, ctx) : input;
-	if (chat?.report) return onMenuReport(state, chat.report, text, ctx);
+	if (chat?.report) return onMenuReport(chat.reportName ? withAnswers(state, { reportRequest: chat.reportName }) : withAnswers(state, { reportRequest: undefined }), chat.report, text, ctx);
 	if (chip === "report") {
 		if (state.answers.scope === "library" && ctx.library.length > 1) return result(askPickPapers(state, ctx));
 		return result(askQuestions(state));
@@ -1546,10 +1560,13 @@ function onAsk(input: DialogState, text: string, chip: string, ctx: DialogContex
 }
 
 function onReportKind(state: DialogState, chip: string, text: string, ctx: DialogContext): ReduceResult {
-	const choice = chip || (/^(bullets?|summar)/i.test(text) ? "bullets" : /^cross/i.test(text) ? "crossPaper" : /^review/i.test(text) ? "review" : /^(per|summaries \+)/i.test(text) ? "perPaper" : "");
+	const choice = chip || (/^(bullets?|summar)/i.test(text) ? "bullets"
+		: /^cross|across/i.test(text) ? "crossPaper"
+			: /^review|literature review/i.test(text) ? "review"
+				: /^(per|summaries \+)|paper by paper/i.test(text) ? "perPaper" : "");
 	if (!choice) return result(askReportKind(say(state, "Pick one of the report kinds.")));
 	if (!ctx.hasModel) return result(askReportKind(say(state, TEXT.askNoModel)));
-	const effect = reportEffect(state, choice as ReportKindId, state.answers.questions);
+	const effect = reportEffect(state, LEGACY_REPORT_PARTS[choice as ReportKindId], state.answers.questions);
 	if (effect.kind === "startReport" && effect.summary === "none" && !effect.questions.length) {
 		return result(askQuestions(say(state, "Cross-paper answers need at least one question.")));
 	}
@@ -1562,36 +1579,56 @@ function withChatScope(state: DialogState, chat: ChatOptionsAnswer, ctx: DialogC
 	const known = new Set(ctx.library.map((paper) => paper.base));
 	const bases = chat.scope === "library" ? [] : chat.scope.filter((base) => known.has(base));
 	const scope: string[] | "library" = bases.length ? bases : "library";
-	return withAnswers(state, { scope, scopeLabel: scope === "library" ? undefined : chat.scopeLabel });
+	const next = withAnswers(state, { scope, scopeLabel: scope === "library" ? undefined : chat.scopeLabel });
+	// Sources changed after answers: a thin line in the thread marks from
+	// where the new choice counts.
+	const key = (value: string[] | "library"): string => value === "library" ? "library" : [...value].sort().join("\n");
+	const answered = state.messages.some((message) => message.role === "answer");
+	if (!answered || key(state.answers.scope) === key(scope)) return next;
+	return push(next, { role: "divider", text: scope === "library" ? "now the whole library" : `now ${scope.length} PDF${scope.length === 1 ? "" : "s"}` });
 }
 
 /** Send with "Write a report" on: the typed lines are the report's
  * questions (with the chat's earlier ones); the report starts at once. */
-function onMenuReport(state: DialogState, kind: ReportKindId, text: string, ctx: DialogContext): ReduceResult {
+function onMenuReport(state: DialogState, kinds: ReportKindId[], text: string, ctx: DialogContext): ReduceResult {
 	if (!ctx.hasModel) return result(askAsk(say(state, TEXT.askNoModel), ctx));
 	const typed = text ? parseQuestions(text) : [];
 	const questions = [...new Set([...state.answers.questions, ...typed])];
 	const next = withAnswers(state, { questions, reported: true });
-	const effect = reportEffect(next, kind, questions);
-	if (effect.kind === "startReport" && effect.summary === "none" && !effect.questions.length) {
-		return result(askAsk(say(next, "Cross-paper answers need at least one question: type it, then Build report."), ctx));
+	const effect = reportEffect(next, kinds, questions);
+	if ((kinds.includes("perPaper") || kinds.includes("crossPaper")) && !questions.length) {
+		return result(askAsk(say(next, "Answers to your questions need at least one question: type it, then Build report."), ctx));
 	}
 	return result(pending(next, "starting the report"), effect);
 }
 
-/** One report kind as the report effect. */
-function reportEffect(state: DialogState, choice: ReportKindId, questions: string[]): Effect {
+/** The single-choice report question (chips) keeps its bundled kinds:
+ * "paper by paper" includes the summaries, the review the answers too. */
+const LEGACY_REPORT_PARTS: Record<ReportKindId, ReportKindId[]> = {
+	bullets: ["bullets"],
+	perPaper: ["bullets", "perPaper"],
+	crossPaper: ["crossPaper"],
+	review: ["bullets", "perPaper", "review"],
+};
+
+/** The ticked report parts as one report effect: summaries, answers per
+ * paper and / or across papers, a review synthesis. */
+function reportEffect(state: DialogState, kinds: ReportKindId[], questions: string[]): Effect {
 	// Every question typed so far (report questions and chat questions)
 	// decides the language; a summary-only report without any question
 	// falls back to the search request, then to English.
 	const language = detectDialogLang([...questions, state.answers.lastQuestion, state.answers.topic]);
-	return choice === "bullets"
-		? { kind: "startReport", papers: state.answers.scope, questions: [], summary: "bullets", detailMode: "per-paper", includeReview: false, language }
-		: choice === "crossPaper"
-			? { kind: "startReport", papers: state.answers.scope, questions, summary: "none", detailMode: "cross-paper", includeReview: false, language }
-			: choice === "review"
-				? { kind: "startReport", papers: state.answers.scope, questions, summary: "bullets", detailMode: "per-paper", includeReview: true, language }
-				: { kind: "startReport", papers: state.answers.scope, questions, summary: "bullets", detailMode: "per-paper", includeReview: false, language };
+	const per = kinds.includes("perPaper");
+	const cross = kinds.includes("crossPaper");
+	return {
+		kind: "startReport",
+		papers: state.answers.scope,
+		questions: per || cross ? questions : [],
+		summary: kinds.includes("bullets") ? "bullets" : "none",
+		detailMode: per && cross ? "both" : cross ? "cross-paper" : "per-paper",
+		includeReview: kinds.includes("review"),
+		language,
+	};
 }
 
 /* ---- jobs ---- */
@@ -1620,7 +1657,7 @@ function onJob(state: DialogState, event: Extract<DialogEvent, { kind: "job" }>,
 				if (onePaper(marked)) return result(ask({ ...marked, pending: null }, "ask", { text: why }));
 				return result(askAsk(say(marked, `${why}`), ctx));
 			case "report":
-				return result(askAsk(say(marked, `${why} The report was not written.`), ctx));
+				return result(askAsk(say(withAnswers(marked, { reportRequest: undefined }), `${why} The report was not written.`), ctx));
 			default:
 				return result(say(marked, why));
 		}
@@ -1674,6 +1711,15 @@ function onJob(state: DialogState, event: Extract<DialogEvent, { kind: "job" }>,
 		case "report": {
 			const outcome = event.report;
 			if (!outcome) return result(say(marked, "The report finished, but its result is missing."));
+			// A report button's report opens as a tab on the page and the button
+			// remembers it; nothing is added to the thread.
+			const button = marked.answers.reportRequest;
+			if (button) {
+				const written = button === "both" ? { summary: outcome.htmlUrl, synthesis: outcome.htmlUrl } : { [button]: outcome.htmlUrl };
+				const done = withAnswers(marked, { reportRequest: undefined, reports: { ...(marked.answers.reports ?? {}), ...written } });
+				const trail = done.trail[done.trail.length - 1] === "ask" ? done.trail : [...done.trail, "ask" as StepId];
+				return result({ ...spend(done), step: "ask", trail, pending: null });
+			}
 			const told = say(marked, `**Report written** (${outcome.units} unit${outcome.units === 1 ? "" : "s"}${outcome.grounded ? ", every statement carries a page citation" : "; NOT grounded -- check the report"}).`);
 			const withCard = card(told, { kind: "file", name: `${outcome.name}.html`, label: "Synthesis report, HTML · lit-synthesis/", stage: "lit-synthesis", url: outcome.htmlUrl });
 			// Back to the question box: the next question or report comes from there.

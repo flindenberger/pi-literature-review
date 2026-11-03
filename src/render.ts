@@ -16,7 +16,7 @@
 
 import { pathToFileURL } from "node:url";
 
-import type { ResultFilters } from "./pipeline.ts";
+import { type ResultFilters, venueKey } from "./pipeline.ts";
 import type { CitationSite } from "./protocol.ts";
 import { type ChatReport, highlightPhrase, type ReportUnit, type SynthReport } from "./synthesis.ts";
 import type { AccessInfo, AccessLevel } from "./sources/openalex.ts";
@@ -185,7 +185,7 @@ export function describeFilters(filters: ResultFilters | null): string {
 	// selected -- state that, instead of dumping the whole list.
 	const venuesOther = filters.venuesOther === true;
 	const authorsOther = filters.authorsOther === true;
-	const skip = new Set<string>(["venuesListed", "authorsListed", "venuesOther", "authorsOther"]);
+	const skip = new Set<string>(["venuesListed", "authorsListed", "venuesOther", "authorsOther", "venuesExact"]);
 	if (venuesOther) skip.add("venues");
 	if (authorsOther) skip.add("authors");
 	for (const [key, value] of Object.entries(filters)) {
@@ -196,15 +196,16 @@ export function describeFilters(filters: ResultFilters | null): string {
 		parts.push(`${label}: ${Array.isArray(value) ? value.join(", ") : String(value)}`);
 	}
 	const names = (value: unknown): string[] => (Array.isArray(value) ? (value as string[]) : []);
-	const excludedPart = (listed: string[], picked: string[], noun: string): string => {
-		const excluded = listed.filter((name) =>
-			!picked.some((wanted) => name.toLowerCase().includes(wanted.trim().toLowerCase())));
+	const excludedPart = (listed: string[], picked: string[], noun: string, exact = false): string => {
+		const excluded = listed.filter((name) => !picked.some((wanted) => (exact
+			? venueKey(name) === venueKey(wanted)
+			: name.toLowerCase().includes(wanted.trim().toLowerCase()))));
 		return excluded.length
 			? `${noun} excluded: ${excluded.join(", ")} (all other ${noun} kept)`
 			: `${noun}: all kept`;
 	};
 	if (venuesOther && names(filters.venuesListed).length) {
-		parts.push(excludedPart(names(filters.venuesListed), names(filters.venues), "journals"));
+		parts.push(excludedPart(names(filters.venuesListed), names(filters.venues), "journals", filters.venuesExact === true));
 	}
 	if (authorsOther && names(filters.authorsListed).length) {
 		parts.push(excludedPart(names(filters.authorsListed), names(filters.authors), "authors"));
@@ -510,17 +511,17 @@ const STYLE = `
 	.sort-clear { color: #8a8a8a; margin-left: 0.3rem; padding: 0 0.15rem; font-weight: 700; }
 	.sort-clear:hover { color: #8a1f11; }
 	tr.on-target td { background: #f3f8f1; }
-	tbody tr:hover td { background: #eaeff5; }
+	tbody tr:hover td { background: #ecece8; }
 	.title { font-weight: 600; }
 	.authors { color: #3d3d3d; }
 	.note { display: block; color: #6b6b6b; font-size: 0.78rem; }
 	.unverified { color: #8a1f11; font-weight: 600; }
 	details { margin-top: 0.3rem; }
-	details summary { cursor: pointer; color: #44506b; font-size: 0.78rem; }
+	details summary { cursor: pointer; color: #5a5a5a; font-size: 0.78rem; }
 	details.prisma { margin: 0.6rem 0 0; }
 	details.prisma > summary { font-size: 0.88rem; font-weight: 600; }
 	details p { margin: 0.3rem 0 0; color: #2c2c2c; }
-	a { color: #2b4a6f; }
+	a { color: #2a2a2a; }
 	td.paper { min-width: 18rem; }
 	td.authorscol { color: #3d3d3d; max-width: 13rem; }
 	/* Search tables: fixed layout + shared colgroup = identical column
@@ -559,34 +560,34 @@ const STYLE = `
 	th.no-sort { cursor: default; }
 	/* Download steps: a sticky strip above the results table that walks the
 	   user through tick -> copy -> paste; ticked rows keep the hover tint. */
-	tbody tr:has(input.pick:checked) td { background: #eaeff5; }
+	tbody tr:has(input.pick:checked) td { background: #ecece8; }
 	.selectsteps { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1.1rem;
 		position: sticky; top: 0; z-index: 5; margin: 0.6rem 0 0.9rem; padding: 0.6rem 1rem;
-		background: #eef2f7; border: 1px solid #c9d3df; border-left: 5px solid #2b4a6f;
+		background: #f1f1ec; border: 1px solid #d0d0ca; border-left: 5px solid #2a2a2a;
 		border-radius: 4px; box-shadow: 0 3px 10px rgba(0, 0, 0, 0.07); font-size: 0.92rem; }
 	.selectsteps .step { display: flex; align-items: center; gap: 0.5rem; white-space: nowrap;
-		color: #33404f; padding: 0.2rem 0.5rem; border: 2px solid transparent; border-radius: 4px; }
+		color: #3d3d3d; padding: 0.2rem 0.5rem; border: 2px solid transparent; border-radius: 4px; }
 	.selectsteps .step b { display: inline-flex; align-items: center; justify-content: center;
 		width: 1.5rem; height: 1.5rem; border-radius: 50%; font-size: 0.8rem;
-		background: #fff; border: 2px solid #2b4a6f; color: #2b4a6f; }
-	.selectsteps .step.done b { background: #2b4a6f; color: #fff; }
-	.selectsteps .step.now { background: #fff; border-color: #2b4a6f; color: #2b4a6f; font-weight: 600;
+		background: #fff; border: 2px solid #2a2a2a; color: #2a2a2a; }
+	.selectsteps .step.done b { background: #2a2a2a; color: #fff; }
+	.selectsteps .step.now { background: #fff; border-color: #2a2a2a; color: #2a2a2a; font-weight: 600;
 		animation: steppulse 1.6s ease-in-out 3; }
-	.selectsteps .step.now b { background: #2b4a6f; color: #fff; }
-	@keyframes steppulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(43, 74, 111, 0); }
-		50% { box-shadow: 0 0 0 5px rgba(43, 74, 111, 0.25); } }
-	.selectsteps .selectcount { font-weight: 600; color: #2b4a6f; }
-	.selectsteps .sep { color: #8a9aae; }
+	.selectsteps .step.now b { background: #2a2a2a; color: #fff; }
+	@keyframes steppulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(42, 42, 42, 0); }
+		50% { box-shadow: 0 0 0 5px rgba(42, 42, 42, 0.25); } }
+	.selectsteps .selectcount { font-weight: 600; color: #2a2a2a; }
+	.selectsteps .sep { color: #9a9a94; }
 	.selectsteps .actions { margin-left: auto; display: flex; align-items: center; gap: 0.5rem; }
 	.selectsteps button { font: inherit; font-size: 0.84rem; padding: 0.3rem 0.7rem; cursor: pointer;
 		background: #fff; border: 1px solid #c9c9c2; border-radius: 4px; }
 	.selectsteps button:hover:enabled { background: #e6e6df; }
 	.selectsteps button.copy-selection { min-width: 15rem; font-size: 0.92rem; font-weight: 600;
-		padding: 0.5rem 1rem; background: #2b4a6f; border-color: #223c5b; color: #fff; }
-	.selectsteps button.copy-selection:hover:enabled { background: #223c5b; }
+		padding: 0.5rem 1rem; background: #2a2a2a; border-color: #111111; color: #fff; }
+	.selectsteps button.copy-selection:hover:enabled { background: #111111; }
 	.selectsteps button.copy-selection:disabled { background: #f1f1ec; border-color: #c9c9c2;
 		color: #9a9a94; font-weight: 400; cursor: default; }
-	.selectsteps button.copy-selection.copied { background: #fff; color: #2b4a6f; border-color: #2b4a6f; }
+	.selectsteps button.copy-selection.copied { background: #fff; color: #2a2a2a; border-color: #2a2a2a; }
 	.selectsteps svg { vertical-align: -3px; margin-right: 0.35rem; }
 	footer { margin: 2.5rem 0 1rem; font-size: 0.78rem; color: #6b6b6b;
 		border-top: 1px solid #d9d9d4; padding-top: 0.6rem; }
@@ -1502,7 +1503,7 @@ function retrievalMetaRows(
  * ------------------------------------------------------------------ */
 
 const CHAT_STYLE = `
-	.round { border-left: 3px solid #c8d0d8; padding: 0.2rem 0 0.2rem 1rem; margin: 1.1rem 0; }
+	.round { border-left: 3px solid #d0d0ca; padding: 0.2rem 0 0.2rem 1rem; margin: 1.1rem 0; }
 	.round .question { font-weight: 600; margin: 0.2rem 0; }
 	.round .answer { white-space: pre-wrap; font-size: 0.92rem; margin: 0.4rem 0; }
 	.round .roundmeta { color: #555; font-size: 0.8rem; }
@@ -1879,9 +1880,9 @@ function unitLabel(unit: ReportUnit, labels: (typeof REPORT_LABELS)["de" | "en"]
 
 const REPORT_STYLE = `
 	section.paper { margin: 1.4rem 0; }
-	hr.paper { border: none; border-top: 2px solid #c8d0d8; margin: 1.6rem 0; }
-	.reviewnote { background: #eef3f8; border-left: 4px solid #4a6fa5; padding: 0.5rem 0.9rem;
-		font-size: 0.86rem; color: #2c3e50; margin: 0.6rem 0; }
+	hr.paper { border: none; border-top: 2px solid #d0d0ca; margin: 1.6rem 0; }
+	.reviewnote { background: #f1f1ec; border-left: 4px solid #5a5a5a; padding: 0.5rem 0.9rem;
+		font-size: 0.86rem; color: #3d3d3d; margin: 0.6rem 0; }
 	ol.passages li { margin: 0.25rem 0; }
 	/* The truncated passage line IS the expander -- no default disclosure
 	 * triangle, a dim "more"/"less" hint at the line end, and while OPEN the
@@ -1893,14 +1894,14 @@ const REPORT_STYLE = `
 	ol.passages details.passage summary { cursor: pointer; list-style: none; display: inline;
 		color: #2c2c2c; font-size: 0.84rem; }
 	ol.passages details.passage summary::-webkit-details-marker { display: none; }
-	ol.passages details.passage .expandhint { color: #44506b; font-size: 0.78rem; white-space: nowrap; }
+	ol.passages details.passage .expandhint { color: #5a5a5a; font-size: 0.78rem; white-space: nowrap; }
 	ol.passages details.passage[open] summary .short { display: none; }
 	ol.passages details.passage[open] summary .hint-more { display: none; }
 	ol.passages details.passage:not([open]) summary .hint-less { display: none; }
 	details.technical { margin: 0.6rem 0; }
-	details.technical > summary { cursor: pointer; color: #4a6fa5; font-size: 0.9rem; }
+	details.technical > summary { cursor: pointer; color: #5a5a5a; font-size: 0.9rem; }
 	details.block { margin: 0.8rem 0; }
-	details.block > summary { cursor: pointer; font-size: 1.05rem; font-weight: 600; color: #24435f; padding: 0.15rem 0; }
+	details.block > summary { cursor: pointer; font-size: 1.05rem; font-weight: 600; color: #2a2a2a; padding: 0.15rem 0; }
 	details.block[open] > summary { margin-bottom: 0.4rem; }
 `;
 

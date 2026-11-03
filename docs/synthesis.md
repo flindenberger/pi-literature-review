@@ -36,7 +36,12 @@ with a warning.
 
 Retrieval is the question plus a disclosed English translation variant
 plus a deterministic lexical layer (salient words, whole-word matched),
-returning the top 8 excerpts. The generator has no chat memory of its own;
+returning the top 8 excerpts. Over a chosen set of papers (not the whole
+library) every paper is guaranteed its two best excerpts (fewer when the
+set is large, none once it has more papers than excerpts), the rest go by
+score -- otherwise one well-matching paper can fill all eight places and
+the answer hears from it alone. The same holds for the cross-paper
+questions of a report over chosen papers. The generator has no chat memory of its own;
 the Pi conversation carries the thread.
 
 ## Scope

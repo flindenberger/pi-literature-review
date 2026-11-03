@@ -116,6 +116,7 @@ export function intakeFromForm(form: SearchForm, thisYear = new Date().getFullYe
 	const journalsOther = form.journalsOther === true;
 	if (journals.length && !(journalsOther && journals.length >= journalsListed.length)) {
 		filters.venues = journals;
+		filters.venuesExact = true;
 		if (journalsOther && journalsListed.length) {
 			filters.venuesOther = true;
 			filters.venuesListed = journalsListed;

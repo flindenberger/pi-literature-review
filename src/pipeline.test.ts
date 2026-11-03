@@ -7,7 +7,7 @@
  */
 
 import assert from "node:assert/strict";
-import { applyFilters, dedupe, dropLateCodePairs, dropOffTopicCodeRecords, dropWithoutAbstract, filterRecords, groupAcrossQueries, sanitizeTermGroups, requiredBlockHits, sortRecords, termMatches } from "./pipeline.ts";
+import { applyFilters, dedupe, dropLateCodePairs, dropOffTopicCodeRecords, dropWithoutAbstract, filterRecords, groupAcrossQueries, sanitizeTermGroups, requiredBlockHits, sortRecords, termMatches, venueKey } from "./pipeline.ts";
 import type { SourceRecord } from "./types.ts";
 
 function record(overrides: Partial<SourceRecord>): SourceRecord {
@@ -295,6 +295,27 @@ function record(overrides: Partial<SourceRecord>): SourceRecord {
 	assert.equal(strict.dropped.length, 3);
 	// "other" without a list of what IS listed excludes nothing, honestly.
 	assert.equal(applyFilters(records, { venuesOther: true }).dropped.length, 0);
+}
+
+// list-picked venues match whole names: a picked "Remote Sensing" does not
+// pass a longer journal that merely contains the words; case, spacing,
+// punctuation and "&" vs "and" do not matter.
+{
+	const fr = (venue: string) => ({
+		cites: 5, year: "2022", venue, authors: ["A"], pdf_url: "x", verified: true,
+	});
+	const records = [
+		fr("Remote Sensing"),
+		fr("Turkish Journal of Remote Sensing and GIS"),
+		fr("remote  sensing"),
+		fr("Remote Sensing of Environment"),
+		fr("Geoscience & Remote Sensing Letters"),
+	];
+	const exact = applyFilters(records, { venues: ["Remote Sensing", "Geoscience and Remote Sensing Letters"], venuesExact: true });
+	assert.deepEqual(exact.kept.map((r) => r.venue), ["Remote Sensing", "remote  sensing", "Geoscience & Remote Sensing Letters"]);
+	const loose = applyFilters(records, { venues: ["Remote Sensing"] });
+	assert.equal(loose.kept.length, 4);
+	assert.equal(venueKey("Geoscience &amp; Remote-Sensing"), "geoscience and remote sensing");
 }
 
 // author filter (v30.9): any listed name substring may match any author;

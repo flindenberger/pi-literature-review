@@ -76,6 +76,10 @@ export const OUTPUT_RESERVE_TOKENS = 1024;
 /** Deterministic char->token estimate for the budget guard. */
 const CHARS_PER_TOKEN = 4;
 export const DEFAULT_TOP_K = 8;
+/** Excerpts guaranteed to every paper of a chosen set (not the whole
+ * library), so a question over a few PDFs hears from each of them and
+ * not only from the best-matching one. */
+export const CHOSEN_MIN_PER_PAPER = 2;
 export const MAX_TOP_K = 20;
 /** Low sampling temperature for every genre; tone comes from the prompt. */
 const TEMPERATURE = 0.2;
@@ -832,6 +836,7 @@ export async function runRound(options: ChatOptions, deps?: ChatDeps): Promise<C
 		indexes,
 		perQueryK: topK,
 		cap: topK,
+		perPaperMin: libraryScope ? 0 : CHOSEN_MIN_PER_PAPER,
 		embed: (texts, signal) => corpus.embed(texts, signal),
 		translate,
 		onWarn,
@@ -1242,7 +1247,8 @@ export interface ReportOptions {
 	summary?: "bullets" | "prose" | "none";
 	/** How detail questions are answered: one call per paper x question
 	 * (didactic), or one call per question across the whole scope. */
-	detailMode?: "per-paper" | "cross-paper";
+	/** How questions are answered: per paper, across papers, or both. */
+	detailMode?: "per-paper" | "cross-paper" | "both";
 	/** Append a review synthesis over the whole scope. */
 	includeReview?: boolean;
 	/** Focus of the review synthesis; default DEFAULT_REVIEW_QUESTION. */
@@ -1310,7 +1316,7 @@ export interface SynthReport {
 	scope: { papers: string[]; library: boolean };
 	questions: string[];
 	summary: "bullets" | "prose" | null;
-	detail_mode: "per-paper" | "cross-paper" | null;
+	detail_mode: "per-paper" | "cross-paper" | "both" | null;
 	include_review: boolean;
 	/** Resolved scope papers (identity + local path, verified flag). */
 	papers: ChatPaper[];
@@ -1415,13 +1421,14 @@ export async function runReport(options: ReportOptions, deps?: ChatDeps): Promis
 			planned.push({ kind: "summary", paper, label: `Summary ${paper.base}.pdf` });
 		}
 	}
-	if (questions.length && detailMode === "per-paper") {
+	if (questions.length && detailMode !== "cross-paper") {
 		for (const paper of indexedPapers) {
 			for (const question of questions) {
 				planned.push({ kind: "detail-per-paper", paper, question, label: `Question to ${paper.base}.pdf: ${question}` });
 			}
 		}
-	} else if (questions.length) {
+	}
+	if (questions.length && detailMode !== "per-paper") {
 		for (const question of questions) {
 			planned.push({ kind: "detail-cross", question, label: `Question to all documents: ${question}` });
 		}
@@ -1457,6 +1464,7 @@ export async function runReport(options: ReportOptions, deps?: ChatDeps): Promis
 				indexes: unitIndexes,
 				perQueryK: topK,
 				cap: topK,
+				perPaperMin: options.papers === "library" ? 0 : CHOSEN_MIN_PER_PAPER,
 				embed: (texts, signal) => corpus.embed(texts, signal),
 				translate,
 				onWarn,

@@ -541,7 +541,7 @@ const html = renderHtml(payload);
 	assert.ok(droppedFull.includes("the download request\nabove includes them"));
 	// sticky strip styling is present, ticked rows keep the hover tint
 	assert.ok(html.includes("position: sticky; top: 0;"));
-	assert.ok(html.includes("tbody tr:has(input.pick:checked) td { background: #eaeff5; }"));
+	assert.ok(html.includes("tbody tr:has(input.pick:checked) td { background: #ecece8; }"));
 }
 
 // BibTeX column: deterministic entry from the record's API
@@ -582,7 +582,7 @@ const html = renderHtml(payload);
 	// plain "Select all" independent of grouping; the copy button is the blue primary
 	assert.ok(html.includes(">Select all</button>"));
 	assert.ok(!html.includes("Select all on_target"));
-	assert.ok(html.includes("background: #2b4a6f; border-color: #223c5b; color: #fff;"));
+	assert.ok(html.includes("background: #2a2a2a; border-color: #111111; color: #fff;"));
 	// the strip sits between the results heading and the results table
 	assert.ok(html.indexOf('<div class="selectsteps"') > html.indexOf("Query results ("));
 	assert.ok(html.indexOf('<div class="selectsteps"') < html.indexOf('<table class="sortable records">'));

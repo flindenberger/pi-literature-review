@@ -71,6 +71,10 @@ export function conversationFiles(dialog: DialogState): { run?: string; report?:
 			out.report = { name: message.card.name, url: message.card.url };
 		}
 	}
+	// Reports of the paper chat's buttons leave no card: the newest one counts.
+	const buttons = dialog.answers?.reports;
+	const url = buttons?.synthesis ?? buttons?.summary;
+	if (!out.report && url) out.report = { name: decodeURIComponent(url.replace(/[?#].*$/, "").split("/").pop() ?? url), url };
 	return out;
 }
 

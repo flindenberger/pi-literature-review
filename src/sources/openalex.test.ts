@@ -5,7 +5,7 @@
  */
 
 import assert from "node:assert/strict";
-import { accessFromWork, buildAuthorSearchFilter, buildBlockSearch, buildFacetFilter, buildFacetParams, lookupOpenalexDois, parseFacetPage, parseFacets, toSourceRecord,
+import { workFacts, accessFromWork, buildAuthorSearchFilter, buildBlockSearch, buildFacetFilter, buildFacetParams, lookupOpenalexDois, parseFacetPage, parseFacets, toSourceRecord,
 	autocompleteAuthors,
 	buildAuthorIdFilter,
 	buildWorksParams,
@@ -307,6 +307,23 @@ const parseJournalFacetPage = parseFacetPage;
 	// Without blocks (quoted or field-syntax queries) the text goes as is.
 	assert.ok(buildFacetParams("sar, flood | mapping", "primary_location.source.id").get("filter")!
 		.startsWith("title_and_abstract.search:sar flood mapping,type:!"));
+}
+
+// workFacts: the info window's facts straight from the work object.
+{
+	const facts = workFacts({
+		id: "https://openalex.org/W1", cited_by_count: 59, type: "article",
+		counts_by_year: [{ year: 2024, cited_by_count: 21 }, { year: 2026, cited_by_count: 7 }, { year: "x", cited_by_count: 1 }],
+		primary_location: { source: { display_name: "Int. J. Appl. Earth Obs.", type: "journal" } },
+		open_access: { is_oa: true, oa_status: "gold" },
+		abstract_inverted_index: { Water: [0], maps: [1] },
+	});
+	assert.equal(facts.cited_by, 59);
+	assert.deepEqual(facts.cited_by_year, [{ year: 2026, count: 7 }, { year: 2024, count: 21 }]);
+	assert.equal(facts.venue, "Int. J. Appl. Earth Obs.");
+	assert.equal(facts.access.level, "free");
+	assert.equal(facts.abstract, "Water maps");
+	assert.equal(workFacts({}).cited_by, null);
 }
 
 console.log("openalex.test.ts: all assertions passed");

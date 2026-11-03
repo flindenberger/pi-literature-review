@@ -37,9 +37,11 @@
       <div class="block-body">
         <button id="btn-new-chat" type="button" class="rail-icon new" title="Start a new chat or report over your PDFs (the current conversation stays in History)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg><span>New paper chat</span></button>
         <details id="rail-library" class="sub">
-          <summary>Library <span class="cnt" id="cnt-pdfs"></span></summary>
+          <summary><label class="tickhit whole" title="Use the whole library as the sources of the paper chat"><input type="checkbox" class="tick" id="tick-whole" aria-label="Whole library"></label>Library <span class="cnt" id="cnt-pdfs"></span></summary>
+          <div id="rail-indexing" class="indexing" hidden><span></span><b><i></i></b></div>
           <button id="btn-add-folder" type="button" class="rail-icon new" title="Add a folder with PDFs: it is read with all its subfolders, nothing is written into it"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg><span>Add folder</span></button>
           <div id="rail-library-list" class="rail-list"></div>
+          <input type="search" id="lib-find" class="lib-find" placeholder="Find in the library ..." autocomplete="off" aria-label="Find in the library">
         </details>
         <details id="hist-2" class="sub">
           <summary>History <span class="cnt" id="cnt-hist-2"></span></summary>
@@ -68,6 +70,7 @@
     <div class="composer-wrap">
       <form class="composer" id="composer" autocomplete="off">
         <input id="input" type="text" placeholder="Type your answer or question ..." autocomplete="off">
+        <button type="button" id="btn-upload" class="plusbtn" hidden title="Add PDFs from your disk to the library" aria-label="Add PDFs"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 16V4M7 9l5-5 5 5M4 15v4a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-4"/></svg></button>
         <span class="plusanchor" id="plus-anchor" hidden>
           <button type="button" id="btn-plus" class="plusbtn" aria-haspopup="menu" aria-expanded="false" title="Search options" aria-label="Search options"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg><span class="badge" id="plus-badge"></span></button>
           <div class="plusmenu" id="plus-menu" role="menu" hidden></div>
@@ -81,7 +84,8 @@
 
   <section class="report" id="report">
     <div class="head">
-      <span id="report-kind">Report</span><b id="report-name"></b><span class="ticked" id="ticked"></span>
+      <span id="report-kind">Report</span><b id="report-name"></b><div class="tabs" id="tabs" role="tablist" hidden></div><span class="ticked" id="ticked"></span>
+      <button id="btn-paper-info" type="button" class="icon" title="About this paper: citations, journal, abstract" aria-label="About this paper" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.01"/></svg></button>
       <button id="btn-enlarge" type="button" class="icon" title="Enlarge over the page (Esc shrinks it again)" aria-label="Enlarge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7"/></svg></button>
       <button id="btn-newtab" type="button" class="icon" title="Open the file in a new browser tab" aria-label="New tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M20 4L11 13M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"/></svg></button>
       <button id="btn-close-panel" type="button" class="icon" title="Hide the panel; a card in the chat brings it back" aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>

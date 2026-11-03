@@ -964,7 +964,9 @@ console.log("dialog add-on tests ok");
 	assert.equal(parseChatOptions(null), undefined);
 	assert.equal(parseChatOptions({ scope: 3 }), undefined);
 	assert.deepEqual(parseChatOptions({ scope: "library", report: "nonsense" }), { scope: "library" });
-	assert.deepEqual(parseChatOptions({ scope: ["a", "a", "", 4, "b"], scopeLabel: " 01_Waterline ", report: "crossPaper" }), { scope: ["a", "b"], scopeLabel: "01_Waterline", report: "crossPaper" });
+	assert.deepEqual(parseChatOptions({ scope: ["a", "a", "", 4, "b"], scopeLabel: " 01_Waterline ", report: "crossPaper" }), { scope: ["a", "b"], scopeLabel: "01_Waterline", report: ["crossPaper"] });
+	// A list of ticked parts, kept in the fixed order, unknown ones dropped.
+	assert.deepEqual(parseChatOptions({ scope: "library", report: ["review", "x", "bullets"] }), { scope: "library", report: ["bullets", "review"] });
 
 	// A folder scope: the question runs over exactly its papers; unknown
 	// basenames are dropped.
@@ -976,16 +978,36 @@ console.log("dialog add-on tests ok");
 	assert.deepEqual(out.effects, [{ kind: "startChat", question: "Which sensors?", papers: "library" }]);
 
 	// "Write a report" on: the typed lines are the questions, the report starts at once.
-	out = step(state, { kind: "answer", text: "Which sensors?\nIs code published?", chat: { scope: "library", report: "perPaper" } }, ctx);
-	assert.deepEqual(out.effects, [{ kind: "startReport", papers: "library", questions: ["Which sensors?", "Is code published?"], summary: "bullets", detailMode: "per-paper", includeReview: false, language: "en" }]);
+	out = step(state, { kind: "answer", text: "Which sensors?\nIs code published?", chat: { scope: "library", report: ["perPaper"] } }, ctx);
+	assert.deepEqual(out.effects, [{ kind: "startReport", papers: "library", questions: ["Which sensors?", "Is code published?"], summary: "none", detailMode: "per-paper", includeReview: false, language: "en" }]);
+	// Several parts at once: summaries + both answer modes + review.
+	out = step(state, { kind: "answer", text: "Which sensors?", chat: { scope: "library", report: ["bullets", "perPaper", "crossPaper", "review"] } }, ctx);
+	assert.deepEqual(out.effects, [{ kind: "startReport", papers: "library", questions: ["Which sensors?"], summary: "bullets", detailMode: "both", includeReview: true, language: "en" }]);
+	// Summaries + review need no question.
+	out = step(state, { kind: "answer", text: "", chat: { scope: "library", report: ["bullets", "review"] } }, ctx);
+	assert.deepEqual(out.effects, [{ kind: "startReport", papers: "library", questions: [], summary: "bullets", detailMode: "per-paper", includeReview: true, language: "en" }]);
 	// Summaries need no question.
-	out = step(state, { kind: "answer", text: "", chat: { scope: ["2022_Salavitabar"], report: "bullets" } }, ctx);
+	out = step(state, { kind: "answer", text: "", chat: { scope: ["2022_Salavitabar"], report: ["bullets"] } }, ctx);
 	assert.deepEqual(out.effects, [{ kind: "startReport", papers: ["2022_Salavitabar"], questions: [], summary: "bullets", detailMode: "per-paper", includeReview: false, language: "en" }]);
 	assert.equal(out.state.answers.reported, true); // History names it a report
 	// Cross-paper without a question: asked for one, nothing starts.
-	out = step(state, { kind: "answer", text: "", chat: { scope: "library", report: "crossPaper" } }, ctx);
+	out = step(state, { kind: "answer", text: "", chat: { scope: "library", report: ["crossPaper"] } }, ctx);
 	assert.deepEqual(out.effects, []);
 	assert.equal(out.state.step, "ask");
 	assert.ok(out.state.messages.some((message) => /need at least one question/.test(message.text ?? "")));
+	// The report buttons: the button is remembered, its report url kept,
+	// nothing is added to the thread.
+	assert.deepEqual(parseChatOptions({ scope: "library", report: ["bullets"], reportName: "summary" }), { scope: "library", report: ["bullets"], reportName: "summary" });
+	assert.equal(parseChatOptions({ scope: "library", reportName: "other" })?.reportName, undefined);
+	out = step(state, { kind: "answer", text: "", chat: { scope: "library", report: ["crossPaper", "review"], reportName: "synthesis" } }, ctx);
+	assert.equal(out.state.answers.reportRequest, "synthesis");
+	let rs = step(out.state, { kind: "jobStarted", job: job("report", "report-9") }, ctx).state;
+	const before = rs.messages.length;
+	rs = step(rs, { kind: "job", job: job("report", "report-9", "done"), report: { name: "r", htmlUrl: "/files/lit-synthesis/r.html", grounded: true, units: 2 } }, ctx).state;
+	assert.equal(rs.step, "ask");
+	assert.equal(rs.answers.reports?.synthesis, "/files/lit-synthesis/r.html");
+	assert.equal(rs.answers.reportRequest, undefined);
+	assert.equal(rs.messages.length, before, "no card, no message");
+
 	console.log("dialog chat-menu tests ok");
 }

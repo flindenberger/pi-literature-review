@@ -490,3 +490,48 @@ export function journalFacets(query: string, limit: number, scope?: FacetScope):
 export function authorFacets(query: string, limit: number, scope?: FacetScope): Promise<FacetPage> {
 	return facetPage(query, "authorships.author.id", limit, scope);
 }
+
+/** What the paper info window shows from OpenAlex: citations (total and
+ * per year), venue, work type, open access and the abstract. Straight
+ * from the work object, nothing completed or guessed. */
+export interface WorkFacts {
+	openalex: string;
+	cited_by: number | null;
+	/** Citations per year, newest first (OpenAlex keeps about ten years). */
+	cited_by_year: Array<{ year: number; count: number }>;
+	venue: string;
+	work_type: string;
+	access: AccessInfo;
+	abstract: string;
+}
+
+export function workFacts(work: Record<string, any>): WorkFacts {
+	const years = Array.isArray(work?.counts_by_year) ? work.counts_by_year : [];
+	return {
+		openalex: typeof work?.id === "string" ? work.id : "",
+		cited_by: typeof work?.cited_by_count === "number" ? work.cited_by_count : null,
+		cited_by_year: years
+			.filter((entry: any) => Number.isInteger(entry?.year) && typeof entry?.cited_by_count === "number")
+			.map((entry: any) => ({ year: entry.year, count: entry.cited_by_count }))
+			.sort((a: { year: number }, b: { year: number }) => b.year - a.year),
+		venue: typeof work?.primary_location?.source?.display_name === "string" ? work.primary_location.source.display_name : "",
+		work_type: typeof work?.type === "string" ? work.type : "",
+		access: accessFromWork(work),
+		abstract: reconstructAbstract(work?.abstract_inverted_index),
+	};
+}
+
+/** One work by DOI (a single-entity lookup: OpenAlex charges no credits
+ * for it, measured 2026-11-03). Null when OpenAlex does not know the DOI. */
+export async function lookupWorkFacts(doi: string, signal?: AbortSignal): Promise<WorkFacts | null> {
+	const params = withContact(new URLSearchParams({ select: "id,cited_by_count,counts_by_year,primary_location,type,open_access,best_oa_location,locations,abstract_inverted_index" }));
+	let response: Response;
+	try {
+		response = await fetchLookup(`${BASE_URL}/doi:${encodeURIComponent(doi.trim().toLowerCase())}?${params}`, { headers: HEADERS(), signal });
+	} catch (error) {
+		if (/HTTP 404\b/.test(error instanceof Error ? error.message : String(error))) return null;
+		throw error;
+	}
+	const data = (await response.json()) as Record<string, any>;
+	return workFacts(data);
+}

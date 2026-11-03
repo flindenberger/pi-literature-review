@@ -1,6 +1,7 @@
 /**
- * The system's own "choose a folder" window, opened from the local server
- * or the terminal (a web page may not learn a folder path on disk):
+ * The system's own "choose a folder" and "open PDF files" windows, opened
+ * from the local server or the terminal (a web page may not learn a path
+ * on disk):
  *   Linux    zenity (GNOME and most desktops), else kdialog (KDE)
  *   macOS    osascript "choose folder"
  *   Windows  PowerShell with the .NET folder dialog
@@ -58,6 +59,69 @@ function onPath(command: string): boolean {
 		if (dir && existsSync(join(dir, command))) return true;
 	}
 	return false;
+}
+
+/** The launcher of the "open PDF files" window (several files at once),
+ * or null when none is available. Every launcher prints one path per line. */
+export function pickFilesCommand(
+	title: string,
+	start: string,
+	platform: string = process.platform,
+	env: Record<string, string | undefined> = process.env,
+	has: (command: string) => boolean = onPath,
+): PickCommand | null {
+	if (platform === "darwin") {
+		const prompt = title.replace(/["\\]/g, "");
+		const location = start && existsSync(start) ? ` default location POSIX file "${start.replace(/["\\]/g, "")}"` : "";
+		return {
+			command: "osascript",
+			args: [
+				"-e", `set picked to choose file with prompt "${prompt}" of type {"com.adobe.pdf"} with multiple selections allowed${location}`,
+				"-e", "set out to \"\"",
+				"-e", "repeat with f in picked",
+				"-e", "set out to out & POSIX path of f & linefeed",
+				"-e", "end repeat",
+				"-e", "return out",
+			],
+		};
+	}
+	if (platform === "win32") {
+		const script = [
+			"Add-Type -AssemblyName System.Windows.Forms;",
+			"$d = New-Object System.Windows.Forms.OpenFileDialog;",
+			`$d.Title = '${title.replace(/'/g, "''")}';`,
+			"$d.Filter = 'PDF files (*.pdf)|*.pdf'; $d.Multiselect = $true;",
+			start ? `$d.InitialDirectory = '${start.replace(/'/g, "''")}';` : "",
+			"if ($d.ShowDialog() -eq 'OK') { [Console]::Out.Write(($d.FileNames -join \"`n\")) }",
+		].join(" ");
+		return { command: "powershell.exe", args: ["-NoProfile", "-STA", "-Command", script] };
+	}
+	if (!env.DISPLAY && !env.WAYLAND_DISPLAY) return null;
+	if (has("zenity")) {
+		return { command: "zenity", args: ["--file-selection", "--multiple", "--separator=\n", `--title=${title}`, "--file-filter=PDF files | *.pdf *.PDF", ...(start ? [`--filename=${start.replace(/\/?$/, "/")}`] : [])] };
+	}
+	if (has("kdialog")) {
+		return { command: "kdialog", args: ["--getopenfilename", start || process.env.HOME || "/", "PDF files (*.pdf *.PDF)", "--multiple", "--separate-output", "--title", title] };
+	}
+	return null;
+}
+
+/** Open the PDF files window and wait: the chosen paths (empty when the
+ * user cancelled). Throws when no window is available. */
+export function pickFiles(title: string, start = ""): Promise<string[]> {
+	const command = pickFilesCommand(title, start);
+	if (!command) return Promise.reject(new Error("no file window available on this system"));
+	return new Promise((resolve, reject) => {
+		execFile(command.command, command.args, { encoding: "utf8", windowsHide: false, timeout: 10 * 60_000 }, (error, stdout) => {
+			const paths = String(stdout ?? "").split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+			if (error && !paths.length) {
+				if ((error as NodeJS.ErrnoException).code === "ENOENT") reject(new Error(`${command.command} not found`));
+				else resolve([]);
+				return;
+			}
+			resolve(paths);
+		});
+	});
 }
 
 /** True when a folder window can be opened here. */

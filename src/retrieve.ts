@@ -113,6 +113,27 @@ export function unionChunks(perQuery: RetrievedChunk[][], cap: number): Retrieve
 		.map((chunk, i) => ({ ...chunk, id: i + 1 }));
 }
 
+/** Excerpts guaranteed per paper: perPaperMin, shrunk so every paper's
+ * share fits the cap; 0 (no guarantee) for one paper or more papers than
+ * the cap holds. Pure. */
+export function perPaperShare(perPaperMin: number, papers: number, cap: number): number {
+	if (perPaperMin <= 0 || papers < 2) return 0;
+	return Math.max(0, Math.min(perPaperMin, Math.floor(cap / papers)));
+}
+
+/** The embedding union with a per-paper guarantee: each paper's best
+ * `share` excerpts first, the rest of the cap by score; the list is then
+ * ranked by score and renumbered like unionChunks. Without a share it is
+ * unionChunks. Pure. */
+export function balancedUnion(perQuery: RetrievedChunk[][], vectors: number[][], indexes: PaperIndex[], cap: number, perPaperMin: number): RetrievedChunk[] {
+	const share = perPaperShare(perPaperMin, indexes.length, cap);
+	if (!share) return unionChunks(perQuery, cap);
+	const guaranteed = indexes.flatMap((index) => unionChunks(vectors.map((vector) => topKChunks(vector, [index], share)), share));
+	const keys = new Set(guaranteed.map(chunkKey));
+	const rest = unionChunks(perQuery, cap).filter((chunk) => !keys.has(chunkKey(chunk)));
+	return unionChunks([guaranteed, rest.slice(0, Math.max(0, cap - guaranteed.length))], cap);
+}
+
 /* ------------------------------------------------------------------ *
  * Query variants -- the one LLM call in here, shaping queries only     *
  * ------------------------------------------------------------------ */
@@ -366,6 +387,11 @@ export interface RetrieveOptions {
 	 * summary facet rubric) whose capitalized nouns are not user salience
 	 * and would otherwise show up as word-search terms. Default true. */
 	lexical?: boolean;
+	/** Guaranteed excerpts per paper when several papers are searched (a
+	 * chosen handful, not the whole library): each paper's best passages
+	 * up to this many, shrunk so the guarantees fit the cap; the rest of
+	 * the cap goes by score. Omitted or 0: ranking by score alone. */
+	perPaperMin?: number;
 	onWarn?: (message: string) => void;
 	signal?: AbortSignal;
 }
@@ -406,10 +432,6 @@ export async function retrieve(options: RetrieveOptions): Promise<RetrievalResul
 
 	// 2. ONE embed call for all variants, topK per variant, deduped union.
 	const vectors = await options.embed(variants.map((variant) => variant.query), options.signal);
-	const union = unionChunks(
-		vectors.map((vector) => topKChunks(vector, options.indexes, options.perQueryK)),
-		options.cap,
-	);
 
 	// 3. Lexical layer over the ORIGINAL queries only (USER words; callers
 	// pass lexical: false for code-owned queries).
@@ -427,12 +449,15 @@ export async function retrieve(options: RetrieveOptions): Promise<RetrievalResul
 	}
 	const hits = lexicalMatches(terms, options.indexes);
 	const hitByKey = new Map(hits.map((hit) => [chunkKey(hit), hit]));
+	const reserved = hits.slice(0, Math.min(MAX_LEXICAL_CHUNKS, Math.max(0, options.cap - 1)));
+	const unionCap = options.cap - reserved.length;
+	const perQuery = vectors.map((vector) => topKChunks(vector, options.indexes, options.perQueryK));
+	const union = balancedUnion(perQuery, vectors, options.indexes, unionCap, options.perPaperMin ?? 0);
 
 	// 4. Composition: lexical hits get reserved slots (at most
 	// MAX_LEXICAL_CHUNKS, never the whole cap), the embedding union fills
 	// the rest; overlaps stay at their embedding rank, flagged.
-	const reserved = hits.slice(0, Math.min(MAX_LEXICAL_CHUNKS, Math.max(0, options.cap - 1)));
-	const kept = union.slice(0, options.cap - reserved.length).map((chunk) => {
+	const kept = union.map((chunk) => {
 		const hit = hitByKey.get(chunkKey(chunk));
 		return hit ? { ...chunk, lexical: true, terms: hit.terms } : chunk;
 	});

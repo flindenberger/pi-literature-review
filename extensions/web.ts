@@ -77,6 +77,7 @@ export default function literatureWeb(pi: ExtensionAPI) {
 					port: parsed.port,
 					provider: piSessionProvider(ctx),
 					cwd: ctx.cwd,
+					backgroundIndex: true,
 					onStop: () => {
 						server = null;
 					},

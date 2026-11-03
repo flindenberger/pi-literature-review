@@ -20,10 +20,10 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { CODE_SEARCHERS } from "../codesearch.ts";
@@ -44,7 +44,8 @@ import {
 	type ThinkingSetting,
 	updateStoredConfig,
 } from "../config.ts";
-import { canPickFolder, pickFolder } from "../folderpick.ts";
+import { canPickFolder, pickFiles, pickFolder } from "../folderpick.ts";
+import { lookupWorkFacts, type WorkFacts } from "../sources/openalex.ts";
 import { chatPool, ensureLibrary, runChatReport, runReport, runRound, type ChatAnswer, type ChatDeps, type ChatReport, type ChatReportOptions, type ChatOptions, type ReportOptions, type SynthReport } from "../synthesis.ts";
 import { ensureIndexed, libraryFiles, type LibraryMatch, type LibraryPaper, matchLibrary, realCorpusDeps } from "../corpus.ts";
 import { inboxDir, pdfBase } from "../library.ts";
@@ -107,7 +108,8 @@ import {
 	stageOfStep,
 	type StartStage,
 } from "./dialog.ts";
-import { FILE_TYPES, listLibrary, listReports, listSearchRuns, listSessions, pdfFile, readRunPayload, safeName, searchCandidates, stageFile, stageOf } from "./files.ts";
+import { Indexer } from "./indexer.ts";
+import { FILE_TYPES, indexSummary, listLibrary, listReports, listSearchRuns, listSessions, pdfFile, readRunPayload, safeName, searchCandidates, stageFile, stageOf } from "./files.ts";
 import { applyCardFilters, cardRows, describeCardFilters, hasCardFilters, parseCardFilters } from "./results.ts";
 import { revealFolder } from "./open.ts";
 import { intakeFromForm, QUERY_BLOCK_MAX, QUERY_BLOCK_MIN, type SearchForm } from "./intake.ts";
@@ -141,6 +143,10 @@ export interface WebDeps {
 	/** The system's folder window: the chosen folder, null on cancel;
 	 * throws when no window exists here (canPick false). */
 	pickFolder: (title: string, start: string) => Promise<string | null>;
+	/** The system's "open PDF files" window: the chosen paths ([] = cancelled). */
+	pickFiles: (title: string, start: string) => Promise<string[]>;
+	/** OpenAlex facts of one work by DOI (citations, venue, access, abstract). */
+	workFacts: (doi: string, signal?: AbortSignal) => Promise<WorkFacts | null>;
 	canPickFolder: () => boolean;
 	/** Keep the download folder for next time and read it as a PDF folder. */
 	rememberDownloadDir: (folder: string) => void;
@@ -162,6 +168,10 @@ export interface WebServerOptions {
 	deps?: Partial<WebDeps>;
 	/** Called after /api/stop closed the server (the pi command clears its handle). */
 	onStop?: () => void;
+	/** Index the library's PDFs in the background (server start, folder
+	 * added, upload, download). Off by default (tests); the CLI and the pi
+	 * command turn it on. */
+	backgroundIndex?: boolean;
 }
 
 export interface WebServer {
@@ -227,6 +237,8 @@ export function realWebDeps(): WebDeps {
 		pullEmbedModel: (onProgress, signal) => pullEmbedModel(llmConfig(), onProgress, fetch, signal),
 		probe: probeServer,
 		pickFolder,
+		pickFiles,
+		workFacts: lookupWorkFacts,
 		canPickFolder,
 		rememberDownloadDir,
 	};
@@ -317,6 +329,28 @@ export function samePdf(files: string[], bytes: Buffer): string | undefined {
 
 /** A dropped file's name made safe for the inbox: letters, digits and a
  * few marks kept, everything else "_", ".pdf" at the end. Pure. */
+/** PDFs in a folder and its subfolders, as the library would read it
+ * (hidden folders skipped, depth and count capped). */
+export function countPdfs(folder: string, depth = 6, cap = 5000): number {
+	let count = 0;
+	const walk = (dir: string, level: number): void => {
+		if (count >= cap || level > depth) return;
+		let entries;
+		try {
+			entries = readdirSync(dir, { withFileTypes: true });
+		} catch {
+			return;
+		}
+		for (const entry of entries) {
+			if (entry.name.startsWith(".")) continue;
+			if (entry.isDirectory()) walk(join(dir, entry.name), level + 1);
+			else if (/\.pdf$/i.test(entry.name) && ++count >= cap) return;
+		}
+	};
+	walk(folder, 0);
+	return count;
+}
+
 export function uploadName(name: string): string {
 	const stem = name.replace(/\.pdf$/i, "").replace(/[^\p{L}\p{N} ._()-]+/gu, "_").replace(/\s+/g, " ").replace(/^[ ._]+|[ ._]+$/g, "").slice(0, 120);
 	return `${stem || "dropped"}.pdf`;
@@ -405,6 +439,8 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 			jobOwner.delete(event.job.id);
 			if (owner !== undefined) applyTo(owner, jobOutcome(event.job));
 			broadcastHistory();
+			// New PDFs from a download: index them in the background.
+			if (event.job.kind === "selection" && event.job.state === "done") kickIndex();
 		}
 	});
 
@@ -430,6 +466,64 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 		}
 		throw new Error(`embedding server ${state.baseUrl} is unreachable (${state.error}) -- start it or change the address on the Settings page`);
 	};
+
+	/* Background indexing: every PDF of the library without an index gets
+	 * one, while no chat or report runs; progress goes to the page as SSE
+	 * event "index" and into GET /api/library. */
+	const indexDir = join(root, "lit-synthesis", "index");
+	const indexer = new Indexer({
+		ready: requireEmbedding,
+		pool: async (signal) => chatPool(await deps.ensureLibrary(root, () => {}, signal)),
+		isIndexed: (paper) => {
+			const summary = indexSummary(join(indexDir, `${paper.base}.json`));
+			return Boolean(summary && summary.key === paper.key && summary.model === llmConfig().embedModel);
+		},
+		indexOne: async (paper, signal) => {
+			const wiring = provider.wiring();
+			const outcome = await deps.ensureIndexed([paper], indexDir, llmConfig().embedModel, (texts, s) => wiring.backend.embed(texts, s), { onProgress: () => {}, signal });
+			return outcome.failures[0]?.reason ?? null;
+		},
+		busy: () => jobs.snapshot().running.some((job) => job.kind === "chat" || job.kind === "report" || job.kind === "chat-report" || job.kind === "index" || job.kind === "selection"),
+		fileStamp: (file) => {
+			try {
+				const info = statSync(file);
+				return `${info.size}:${info.mtimeMs}`;
+			} catch {
+				return "";
+			}
+		},
+		sleep: (ms) => new Promise((done) => setTimeout(done, ms)),
+	});
+	indexer.subscribe((status) => {
+		for (const connection of connections) connection.send("index", status);
+	});
+	/** Start (or queue) a background pass; a no-op without the option. */
+	const kickIndex = (): void => {
+		if (options.backgroundIndex) indexer.kick();
+	};
+
+	/** Copy one PDF into the inbox ("Added Documents"). A PDF the library already
+	 * holds (byte for byte, in any folder or the inbox) is not copied
+	 * again: the existing paper is used. The name must not clash with a PDF
+	 * already in the library (the earlier folder would win and hide it). */
+	const importPdf = (bytes: Buffer, wantedName: string): { base: string; file: string; existing?: boolean } => {
+		if (bytes.subarray(0, 5).toString("latin1") !== "%PDF-") throw new HttpError(400, "not a PDF file");
+		const inbox = inboxDir(root);
+		mkdirSync(inbox, { recursive: true });
+		const files = libraryFiles(root, { cwd }).files;
+		const same = samePdf(files, bytes);
+		if (same) return { base: pdfBase(same), file: same, existing: true };
+		const taken = new Set(files.map((file) => pdfBase(file).toLowerCase()));
+		let name = uploadName(wantedName);
+		const stem = name.slice(0, -4);
+		for (let n = 2; taken.has(name.slice(0, -4).toLowerCase()) || existsSync(join(inbox, name)); n++) name = `${stem}_${n}.pdf`;
+		writeFileSync(join(inbox, name), bytes);
+		return { base: name.slice(0, -4), file: join(inbox, name) };
+	};
+	/** Files chosen in the system's file window (only these may be imported). */
+	const workFactsCache = new Map<string, { at: number; facts: WorkFacts | null }>();
+	const pickedFiles = new Set<string>();
+	let lastPickDir = "";
 
 	const facetBlocks = (query: string): string[][] => sanitizeTermGroups(queryBlocks(query));
 	const yearScope = (body: Record<string, unknown>): FacetScope => {
@@ -657,7 +751,7 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 		if (papers !== "library" && !papers.length) throw new HttpError(400, "select at least one document");
 		const questions = Array.isArray(body.questions) ? body.questions.filter((q): q is string => typeof q === "string").map((q) => q.trim()).filter(Boolean) : [];
 		const summary = body.summary === "bullets" || body.summary === "prose" ? body.summary : "none";
-		const detailMode = body.detailMode === "cross-paper" ? "cross-paper" : "per-paper";
+		const detailMode = body.detailMode === "cross-paper" || body.detailMode === "both" ? body.detailMode : "per-paper";
 		const includeReview = body.includeReview === true;
 		if (summary === "none" && !questions.length && !includeReview) throw new HttpError(400, "nothing to generate -- choose a summary, add a question or include the review");
 		const language = typeof body.language === "string" && body.language.trim() ? body.language.trim() : WEB_REPORT_LANGUAGE;
@@ -863,7 +957,6 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 		currentId = newConversationId();
 		dialogStarted = new Date().toISOString();
 		dialogComputed = null;
-		chatSession = webSessionId();
 		applyDialog({ kind: "restart", start, ...(scope && scope.length ? { scope } : {}), ...(about ? { about } : {}), ...(label ? { label } : {}) });
 	};
 	/** A conversation left while its job or model call runs is parked: kept
@@ -912,10 +1005,13 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 	const applyDialog = (event: DialogEvent): void => {
 		const { state: next, effects } = reduce(dialog, event, dialogContext());
 		dialog = next;
+		// A new chat session is set before the view goes out, so the page
+		// sees one session per new conversation (not a second one after it).
+		if (effects.some((effect) => effect.kind === "newChatSession")) chatSession = webSessionId();
 		const view = dialogView();
 		for (const connection of connections) connection.send("dialog", view);
 		persistCurrent();
-		for (const effect of effects) void runEffect(effect);
+		for (const effect of effects) if (effect.kind !== "newChatSession") void runEffect(effect);
 	};
 
 	/** Translate a finished job into the dialog's event. */
@@ -1182,6 +1278,32 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 				})),
 			});
 		}
+		// One paper's facts for the info window: the library record, and from
+		// OpenAlex (by DOI, an arXiv id as its DataCite DOI) citations, venue,
+		// access and abstract, kept for six hours.
+		if (route === "GET /api/paper") {
+			const base = url.searchParams.get("base") ?? "";
+			const paper = listLibrary(root, cwd, deps.matchLibrary(root)).papers.find((entry) => entry.base === base);
+			if (!paper) throw new HttpError(404, "this PDF is not in the library");
+			const doi = paper.doi || (paper.arxiv_id ? `10.48550/arxiv.${paper.arxiv_id}` : "");
+			let openalex: WorkFacts | null = null;
+			let checked: string | null = null;
+			let error: string | null = null;
+			if (doi) {
+				const cached = workFactsCache.get(doi.toLowerCase());
+				if (cached && Date.now() - cached.at < 6 * 3600_000) ({ facts: openalex } = cached);
+				else {
+					try {
+						openalex = await deps.workFacts(doi, AbortSignal.timeout(15_000));
+						workFactsCache.set(doi.toLowerCase(), { at: Date.now(), facts: openalex });
+					} catch (failure) {
+						error = errorMessage(failure);
+					}
+				}
+				checked = new Date(workFactsCache.get(doi.toLowerCase())?.at ?? Date.now()).toISOString();
+			}
+			return json(res, 200, { paper: { ...paper, pdfUrl: pdfHref(paper.file) }, openalex, checked, error, embeddingModel: llmConfig().embedModel });
+		}
 		if (route === "GET /api/library") {
 			const library = listLibrary(root, cwd, deps.matchLibrary(root));
 			return json(res, 200, {
@@ -1190,6 +1312,7 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 				folders: pdfFolders(),
 				store: root,
 				embeddingModel: llmConfig().embedModel,
+				indexing: indexer.snapshot(),
 			});
 		}
 
@@ -1549,22 +1672,44 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 		/* ---- drag and drop: a PDF from the user's desktop into the inbox ---- */
 		if (route === "POST /api/library/upload") {
 			const bytes = await readRawBody(req, UPLOAD_LIMIT);
-			if (bytes.subarray(0, 5).toString("latin1") !== "%PDF-") throw new HttpError(400, "not a PDF file");
-			const inbox = inboxDir(root);
-			mkdirSync(inbox, { recursive: true });
-			// A PDF the library already holds (byte for byte, in any folder or
-			// the inbox) is not copied again: the existing paper is used.
-			const files = libraryFiles(root, { cwd }).files;
-			const same = samePdf(files, bytes);
-			if (same) return json(res, 200, { base: pdfBase(same), file: same, existing: true });
-			// The name must not clash with a PDF already in the library (the
-			// earlier folder would win and hide the uploaded one).
-			const taken = new Set(files.map((file) => pdfBase(file).toLowerCase()));
-			let name = uploadName(url.searchParams.get("name") ?? "");
-			const stem = name.slice(0, -4);
-			for (let n = 2; taken.has(name.slice(0, -4).toLowerCase()) || existsSync(join(inbox, name)); n++) name = `${stem}_${n}.pdf`;
-			writeFileSync(join(inbox, name), bytes);
-			return json(res, 200, { base: name.slice(0, -4), file: join(inbox, name) });
+			const added = importPdf(bytes, url.searchParams.get("name") ?? "");
+			kickIndex();
+			return json(res, 200, added);
+		}
+		/* ---- the upload button: the system's file window, then the folder question ---- */
+		if (route === "POST /api/library/pick-files") {
+			const start = lastPickDir || pdfFolders()[0] || lastDownloadDir() || "";
+			let chosen: string[];
+			try {
+				chosen = await deps.pickFiles("Add PDFs to the library", start);
+			} catch (error) {
+				throw new HttpError(501, error instanceof Error ? error.message : String(error));
+			}
+			const files = chosen.map((path) => resolve(path)).filter((path) => /\.pdf$/i.test(path) && existsSync(path));
+			if (!files.length) return json(res, 200, { files: [] });
+			for (const file of files) pickedFiles.add(file);
+			const folder = dirname(files[0]);
+			lastPickDir = folder;
+			const inLibrary = new Set(libraryFiles(root, { cwd }).files.map((file) => resolve(file)));
+			return json(res, 200, {
+				files: files.map((file) => ({ path: file, base: pdfBase(file), inLibrary: inLibrary.has(file) })),
+				// The folder question only when all files share one folder that
+				// the library does not read yet.
+				folder: files.every((file) => dirname(file) === folder) && !files.every((file) => inLibrary.has(file)) ? folder : null,
+				folderPdfs: countPdfs(folder),
+			});
+		}
+		if (route === "POST /api/library/import") {
+			// Only files the user just chose in the file window are copied.
+			const body = (await readBody(req)) as Record<string, unknown>;
+			const wanted = Array.isArray(body.files) ? body.files.filter((path): path is string => typeof path === "string").map((path) => resolve(path)) : [];
+			const added: Array<{ base: string; file: string; existing?: boolean }> = [];
+			for (const file of wanted) {
+				if (!pickedFiles.has(file)) throw new HttpError(400, `${file} was not chosen in the file window`);
+				added.push(importPdf(readFileSync(file), basename(file)));
+			}
+			kickIndex();
+			return json(res, 200, { added });
 		}
 
 		/* ---- folders: the user's PDF folders and the folder window ---- */
@@ -1590,7 +1735,9 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 				let isDir = false;
 				try { isDir = statSync(path).isDirectory(); } catch { /* missing */ }
 				if (!isDir) throw new HttpError(400, `${path} is not a folder`);
-				return json(res, 200, { pdfFolders: addPdfFolder(path) });
+				const folders = addPdfFolder(path);
+				kickIndex();
+				return json(res, 200, { pdfFolders: folders });
 			}
 			return json(res, 200, { pdfFolders: removePdfFolder(path) });
 		}
@@ -1737,11 +1884,14 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 		});
 	});
 	port = (server.address() as AddressInfo).port;
+	// The first background pass a moment after the start (the page loads first).
+	if (options.backgroundIndex) setTimeout(kickIndex, 3_000).unref();
 
 	let closed: Promise<void> | null = null;
 	const close = (): Promise<void> => {
 		if (closed) return closed;
 		closed = new Promise<void>((resolve) => {
+			indexer.stop();
 			jobs.cancel();
 			for (const connection of connections) connection.close();
 			connections.clear();

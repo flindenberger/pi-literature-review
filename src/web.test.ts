@@ -633,6 +633,79 @@ try {
 			await bgServer.close();
 		}
 	}
+	// Background indexing: a server started with backgroundIndex indexes
+	// the library's PDFs without an index and reports the progress.
+	{
+		const ixRoot = join(root, "ix");
+		const libDir = join(ixRoot, "pdfs");
+		mkdirSync(libDir, { recursive: true });
+		writeFileSync(join(libDir, "a.pdf"), "%PDF-1.4 a");
+		writeFileSync(join(libDir, "b.pdf"), "%PDF-1.4 b");
+		const match = { matched: [], unmatched: ["a.pdf", "b.pdf"], unmatchedByDir: [{ dir: libDir, files: ["a.pdf", "b.pdf"] }], papersDir: libDir, dirs: [libDir] };
+		const indexedBases: string[] = [];
+		let workFactCalls = 0;
+		const elsewhere = join(ixRoot, "elsewhere");
+		mkdirSync(join(elsewhere, "sub"), { recursive: true });
+		writeFileSync(join(elsewhere, "x.pdf"), "%PDF-1.4 x");
+		writeFileSync(join(elsewhere, "sub", "y.pdf"), "%PDF-1.4 y");
+		writeFileSync(join(elsewhere, "notes.txt"), "no pdf");
+		const ixServer = await startWebServer({ historyDir: join(ixRoot, "hist"), blockCacheFile: BLOCKS, root: ixRoot, cwd: ixRoot, provider, token: "t4", backgroundIndex: true,
+			deps: {
+				checkEmbedModel: async () => ({ state: "ok" }) as never,
+				pickFiles: async () => [join(elsewhere, "x.pdf"), join(elsewhere, "notes.txt")],
+				workFacts: async () => { workFactCalls++; return null; },
+				matchLibrary: () => match as never,
+				ensureLibrary: async () => match as never,
+				ensureIndexed: async (papers, indexDir, embedModel) => {
+					for (const paper of papers) {
+						indexedBases.push(paper.base);
+						mkdirSync(indexDir, { recursive: true });
+						writeFileSync(join(indexDir, `${paper.base}.json`), JSON.stringify({ chunks: [{}, {}], embedding_model: embedModel, paper: { key: paper.key } }));
+					}
+					return { indexed: papers.length, failures: [] };
+				},
+			},
+		});
+		try {
+			const h4 = { cookie: "plr_token=t4" };
+			let lib: { indexing: { running: boolean; done: number; total: number }; papers: Array<{ base: string; index: unknown }> } | null = null;
+			for (let i = 0; i < 60; i++) {
+				await new Promise((resolve) => setTimeout(resolve, 100));
+				lib = await (await fetch(`http://127.0.0.1:${ixServer.port}/api/library`, { headers: h4 })).json();
+				if (lib && !lib.indexing.running && lib.indexing.done === 2) break;
+			}
+			assert.deepEqual(indexedBases.sort(), ["a", "b"]);
+			assert.equal(lib?.indexing.total, 2);
+			assert.equal(lib?.indexing.done, 2);
+			assert.ok(lib?.papers.every((paper) => paper.index !== null));
+			// The info window: the library record; no DOI, so no OpenAlex lookup.
+			const info = await (await fetch(`http://127.0.0.1:${ixServer.port}/api/paper?base=a`, { headers: h4 })).json();
+			assert.equal(info.paper.base, "a");
+			assert.equal(info.openalex, null);
+			assert.equal(workFactCalls, 0);
+			assert.equal((await fetch(`http://127.0.0.1:${ixServer.port}/api/paper?base=nope`, { headers: h4 })).status, 404);
+			// An upload starts another pass; the indexed PDFs are not indexed again.
+			const before = indexedBases.length;
+			await fetch(`http://127.0.0.1:${ixServer.port}/api/library/upload?name=c.pdf`, { method: "POST", headers: { ...h4, "content-type": "application/pdf" }, body: "%PDF-1.4 c" });
+			await new Promise((resolve) => setTimeout(resolve, 200));
+			assert.equal(indexedBases.length, before);
+			// The upload button: the file window's PDFs, the folder question
+			// (all files in one folder outside the library), then a copy of
+			// exactly the chosen files into the inbox.
+			const ixPost = async (path: string, body: unknown) => fetch(`http://127.0.0.1:${ixServer.port}${path}`, { method: "POST", headers: { ...h4, "content-type": "application/json" }, body: JSON.stringify(body) });
+			const picked = await (await ixPost("/api/library/pick-files", {})).json();
+			assert.deepEqual(picked.files.map((file: { base: string }) => file.base), ["x"]);
+			assert.equal(picked.folder, elsewhere);
+			assert.equal(picked.folderPdfs, 2);
+			const imported = await (await ixPost("/api/library/import", { files: [join(elsewhere, "x.pdf")] })).json();
+			assert.equal(imported.added[0].base, "x");
+			assert.ok(existsSync(join(ixRoot, "inbox", "x.pdf")));
+			// A file that was not chosen in the window is refused.
+			assert.equal((await ixPost("/api/library/import", { files: [join(elsewhere, "sub", "y.pdf")] })).status, 400);
+		} finally {
+			await ixServer.close();
+		}
+	}
 	reader.cancel().catch(() => {});
 } finally {
 	await server.close();

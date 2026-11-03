@@ -324,7 +324,7 @@ export function renderReportDigest(
 	const summaries = report.units.filter((unit) => unit.kind === "summary").length;
 	const details = report.units.filter((unit) => unit.kind.startsWith("detail")).length;
 	if (summaries) counts.push(`${summaries} summar${summaries === 1 ? "y" : "ies"}`);
-	if (details) counts.push(`${details} question answer(s), mode ${report.detail_mode === "cross-paper" ? "B (cross-paper)" : "A (per paper)"}`);
+	if (details) counts.push(`${details} question answer(s), mode ${report.detail_mode === "cross-paper" ? "B (cross-paper)" : report.detail_mode === "both" ? "A + B (per paper and cross-paper)" : "A (per paper)"}`);
 	if (report.include_review) counts.push("1 review synthesis");
 	if (report.grounded) {
 		lines.push(`Report complete over ${report.papers.length} document(s): ${counts.join(", ")}; `

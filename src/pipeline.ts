@@ -150,6 +150,12 @@ export interface ResultFilters {
 	 * read together with venuesOther: a record whose venue matches none of
 	 * these is "other". */
 	venuesListed?: string[];
+	/** Compare venue names as whole names instead of substrings: set when
+	 * the names were picked from a list (wizard, browser), so a picked
+	 * "Remote Sensing" does not also pass "Turkish Journal of Remote
+	 * Sensing and GIS". Case, spacing, punctuation and "&"/"and" are
+	 * ignored. Without it a name matches as a substring (typed names). */
+	venuesExact?: boolean;
 	/** Keep records where at least one AUTHOR NAME contains one of these
 	 * strings (case-insensitive). Author names are API metadata;
 	 * records without any matching author are dropped, with a reason --
@@ -185,6 +191,12 @@ interface FilterableRecord {
 	journal_2yr_citedness?: number;
 }
 
+/** A venue name reduced for whole-name comparison: lower case, "&" read
+ * as "and", punctuation and repeated spaces removed. */
+export function venueKey(name: string): string {
+	return name.toLowerCase().replace(/&amp;|&/g, " and ").replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+}
+
 /** Reason a record fails the filters, or null if it passes. Fixed strings. */
 function filterReason(record: FilterableRecord, filters: ResultFilters): string | null {
 	if (filters.minCites !== undefined && record.cites !== null && record.cites < filters.minCites) {
@@ -214,10 +226,13 @@ function filterReason(record: FilterableRecord, filters: ResultFilters): string 
 	const otherWanted = !!filters.venuesOther && listedVenues.length > 0;
 	if (wantedVenues.length || otherWanted) {
 		const venue = record.venue.trim().toLowerCase();
-		const matchesWanted = !!venue && wantedVenues.some((wanted) => venue.includes(wanted));
+		const exact = filters.venuesExact === true;
+		const key = venueKey(venue);
+		const same = (name: string): boolean => (exact ? key === venueKey(name) : venue.includes(name));
+		const matchesWanted = !!venue && wantedVenues.some(same);
 		// A record whose venue is on the picker's list but was not selected
 		// is not "other"; a venue-less record (preprint) always is.
-		const isListed = !!venue && listedVenues.some((listed) => venue.includes(listed));
+		const isListed = !!venue && listedVenues.some(same);
 		if (!matchesWanted && !(otherWanted && !isListed)) {
 			if (!record.venue) {
 				return "filtered: no venue in the metadata (e.g. preprint), cannot match requested venues";

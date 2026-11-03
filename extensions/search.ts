@@ -196,6 +196,8 @@ interface IntakeValues {
 	/** The journal names the picker listed, so "other" knows what it is
 	 * other THAN. Only meaningful together with venuesOther. */
 	venuesListed?: string[];
+	/** The journal names come from the picker's list: whole-name match. */
+	venuesExact?: boolean;
 	authors: string[] | undefined;
 	/** The author picker's "other authors" row was checked. */
 	authorsOther?: boolean;
@@ -597,6 +599,7 @@ function filtersFor(confirmed: IntakeValues): ResultFilters {
 		venues: confirmed.venues,
 		venuesOther: confirmed.venuesOther,
 		venuesListed: confirmed.venuesListed,
+		venuesExact: confirmed.venuesExact,
 		authors: confirmed.authors,
 		authorsOther: confirmed.authorsOther,
 		authorsListed: confirmed.authorsListed,
@@ -1323,10 +1326,12 @@ async function intakeWizard(
 		values.venuesListed = undefined;
 	} else if (pickedOther) {
 		values.venues = pickedNames.length ? pickedNames : undefined;
+		values.venuesExact = true;
 		values.venuesOther = true;
 		values.venuesListed = listedJournals;
 	} else {
 		values.venues = pickedNames.length ? pickedNames : undefined;
+		values.venuesExact = pickedNames.length ? true : undefined;
 		values.venuesOther = undefined;
 		values.venuesListed = undefined;
 	}

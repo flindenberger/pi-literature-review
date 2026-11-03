@@ -698,6 +698,21 @@ function makeRound(question: string, session: string | null = null): Round {
 }
 
 {
+	// Both modes: per-paper units for every paper, then one cross unit, and
+	// the cross unit hears from both papers (chosen set: per-paper guarantee).
+	const { deps } = makeDeps("Antwort [1][2].");
+	const report = await runReport({
+		papers: ["a", "b"],
+		questions: ["Welche Methoden?"],
+		detailMode: "both",
+		root: "/", model: "fake-gen", embedModel: "fake-embed",
+	}, deps);
+	assert.deepEqual(report.units.map((unit) => unit.kind), ["detail-per-paper", "detail-per-paper", "detail-cross"]);
+	assert.equal(report.detail_mode, "both");
+	assert.equal(new Set(report.units[2].chunks.map((chunk) => chunk.paper_key)).size, 2);
+}
+
+{
 	// Summary-only single paper; and the empty report is a loud error.
 	const { deps, generateCalls } = makeDeps("- Ziel: klar [1].");
 	const report = await runReport({

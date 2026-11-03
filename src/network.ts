@@ -57,16 +57,16 @@ const STYLE = `
 	.meta { font-size: 0.88rem; color: #3d3d3d; margin: 0; }
 	.seed-title { font-size: 0.95rem; color: #1c1c1c; }
 	.seed-authors { font-size: 0.78rem; color: #6b6b6b; }
-	.status { font-size: 0.85rem; color: #44506b; margin: 0.25rem 0; }
+	.status { font-size: 0.85rem; color: #5a5a5a; margin: 0.25rem 0; }
 	.status.error { color: #8a1f11; font-weight: 600; }
 	.toggles { display: none; font-size: 0.85rem; color: #3d3d3d; margin: 0.25rem 0 0; }
 	.toggles-label { margin-right: 0.3rem; }
 	.toggles-hint { color: #6b6b6b; margin-left: 0.5rem; }
 	.toggles button { font: inherit; font-size: 0.82rem; padding: 0.2rem 0.6rem; margin-right: 0.3rem;
-		border: 1px solid #b9b9b2; border-radius: 3px; background: #ffffff; color: #2b4a6f; cursor: pointer; }
+		border: 1px solid #b9b9b2; border-radius: 3px; background: #ffffff; color: #2a2a2a; cursor: pointer; }
 	.toggles button:hover { border-color: #7a5230; }
 	.toggles button[aria-pressed="true"] { background: #7a5230; border-color: #7a5230; color: #ffffff; }
-	a { color: #2b4a6f; }
+	a { color: #2a2a2a; }
 	#canvas { width: 100%; flex: 1 1 auto; min-height: 14rem; border: 1px solid #d9d9d4;
 		background: #fdfdfc; margin-top: 0.3rem; display: block; cursor: grab; touch-action: none;
 		user-select: none; -webkit-user-select: none; }
@@ -84,7 +84,7 @@ const STYLE = `
 	footer { font-size: 0.7rem; color: #6b6b6b; margin: 0.4rem 0 0; border-top: 1px solid #d9d9d4;
 		padding-top: 0.3rem; line-height: 1.3; }
 	footer p { margin: 0.15rem 0; }
-	footer summary { cursor: pointer; color: #2b4a6f; }
+	footer summary { cursor: pointer; color: #2a2a2a; }
 	footer details p { margin-left: 0.9rem; }
 `;
 

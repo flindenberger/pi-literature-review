@@ -222,7 +222,7 @@ if (process.argv[2] === "web") {
 	const { startWebServer } = await import("./web/server.ts");
 	const { endpointProvider } = await import("./provider.ts");
 	const { openBrowser } = await import("./web/open.ts");
-	const server = await startWebServer({ port, provider: endpointProvider(), onStop: () => process.exit(0) });
+	const server = await startWebServer({ port, provider: endpointProvider(), backgroundIndex: true, onStop: () => process.exit(0) });
 	warn(`web interface: ${server.url}`);
 	warn(`data folder:   ${server.root}`);
 	warn("Ctrl+C stops the server");
