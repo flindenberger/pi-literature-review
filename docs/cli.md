@@ -1,7 +1,10 @@
 # Command line (no Pi)
 
 The same engines run standalone with plain Node from the package folder. This is
-useful for scripting, testing and for machines without Pi. Search runs,
+useful for scripting, testing and for machines without Pi. After
+`npm install -g pi-literature-review` (or with `npx pi-literature-review`)
+the command `pi-literature-review <arguments>` is the same as
+`node src/cli.ts <arguments>` below; Node.js 22.19 or newer. Search runs,
 reports and the index land in the store next to the configuration file
 (`~/.config/pi-literature-review/`, see [configuration.md](configuration.md#where-files-live));
 `PI_LITERATURE_REVIEW_HOME` moves the store (`PI_LITERATURE_REVIEW_HOME=.`

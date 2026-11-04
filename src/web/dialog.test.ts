@@ -28,6 +28,8 @@ import {
 	periodYears,
 	reduce,
 	stageOfStep,
+	authorsOnlyLabel,
+	isAuthorsOnly,
 } from "./dialog.ts";
 import type { JobInfo } from "./jobs.ts";
 
@@ -899,6 +901,28 @@ console.log("dialog synonym-button tests ok");
 	assert.ok(out.effects[0]?.kind === "startSearch");
 	assert.deepEqual(out.effects[0].form.pickedAuthors, [{ id: "A5", name: "Carl Example" }, { id: "A7", name: "Ana Listed" }]);
 	assert.equal(out.effects[0].form.authorScope, "all");
+	// An empty request with picked authors searches all their work at once
+	// (no blocks, no model), whatever scope the menu showed.
+	const alone = parseSearchOptions({ pickedAuthors: [{ id: "A5", name: "Carl Example" }, { id: "A7", name: "Ana Listed" }], authorScope: "query" });
+	out = step(initialDialog(ctx, "search"), { kind: "answer", text: "", options: alone, code: true }, ctx);
+	assert.ok(out.effects[0]?.kind === "startSearch");
+	assert.deepEqual(out.effects[0].form.blocks, []);
+	assert.deepEqual(out.effects[0].form.codeSources, []);
+	assert.equal(out.effects[0].form.authorScope, "all");
+	assert.equal(out.effects[0].form.period, "all");
+	assert.equal(out.effects[0].form.perSource, 200);
+	assert.equal(out.effects[0].form.authorPosition, undefined);
+	assert.ok(isAuthorsOnly(out.state.answers));
+	assert.equal(out.state.messages.filter((message) => message.role === "user").pop()?.text, "Works by Carl Example and Ana Listed");
+	assert.equal(authorsOnlyLabel([{ name: "A" }, { name: "B" }, { name: "C" }]), "Works by A, B and C");
+	// "first author" travels as the author position.
+	out = step(initialDialog(ctx, "search"), { kind: "answer", text: "", options: parseSearchOptions({ pickedAuthors: [{ id: "A5", name: "Carl Example" }], firstAuthor: true }) }, ctx);
+	assert.ok(out.effects[0]?.kind === "startSearch");
+	assert.equal(out.effects[0].form.authorPosition, "first");
+	assert.equal(out.state.messages.filter((message) => message.role === "user").pop()?.text, "Works by Carl Example as first author");
+	// Without authors an empty request still just asks again.
+	out = step(initialDialog(ctx, "search"), { kind: "answer", text: "" }, ctx);
+	assert.equal(out.effects.length, 0);
 	// Under the synonym drop-down, settings changed in the menu arrive with "use".
 	out = step(initialDialog(ctx, "search"), { kind: "answer", text: "flood mapping", synonyms: true }, ctx);
 	out = step(out.state, { kind: "blocks", variants: [{ role: "plus1", text: "(flood mapping OR inundation) AND (river)" }] }, ctx);

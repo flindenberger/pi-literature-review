@@ -46,6 +46,7 @@ import {
 } from "../config.ts";
 import { canPickFolder, pickFiles, pickFolder } from "../folderpick.ts";
 import { lookupWorkFacts, type WorkFacts } from "../sources/openalex.ts";
+import { EXAMPLES_SYSTEM, type ExamplePaper, examplePaperName, examplesPrompt, parseExamples } from "./examples.ts";
 import { chatPool, ensureLibrary, runChatReport, runReport, runRound, type ChatAnswer, type ChatDeps, type ChatReport, type ChatReportOptions, type ChatOptions, type ReportOptions, type SynthReport } from "../synthesis.ts";
 import { ensureIndexed, libraryFiles, type LibraryMatch, type LibraryPaper, matchLibrary, realCorpusDeps } from "../corpus.ts";
 import { inboxDir, pdfBase } from "../library.ts";
@@ -80,7 +81,7 @@ import type { ModelProvider, ProviderStatus } from "../provider.ts";
 import { type BlockMode, blockCachePath, blockCacheSize, cachedBlocks, clearBlockCache, saveBlocks } from "./blockcache.ts";
 import { clearConversations, conversationFiles, deleteConversation, historyDir, listConversations, loadConversation, newConversationId, saveConversation } from "./history.ts";
 import { parseSocialReply, SOCIAL_SYSTEM, socialCandidate, STEP_ACCEPTS } from "./help.ts";
-import { prismaSvgFor, renderHtml, renderPaperChatReportHtml, renderSynthReportHtml, webPdfHref } from "../render.ts";
+import { prismaSvgFor, renderHtml, searchLabel, renderPaperChatReportHtml, renderSynthReportHtml, webPdfHref } from "../render.ts";
 import { keyRequirement, runSearch, SEARCHERS, type SearchOptions, type SearchPayload } from "../search.ts";
 import { parseIdentifier, renderFetchReport, runSelection, type SelectionRunOptions } from "../selection.ts";
 import { listsForTopic } from "../sources/ecosystems.ts";
@@ -101,7 +102,9 @@ import {
 	type SearchAgainFilters,
 	FACET_LIMIT,
 	initialDialog,
+	isAuthorsOnly,
 	isHandBuilt,
+	authorsOnlyLabel,
 	reduce,
 	type ReportOutcome,
 	type SearchOutcome,
@@ -205,7 +208,7 @@ export function realWebDeps(): WebDeps {
 		// sidecar and the network page land here. htmlPath names the file a
 		// click would write.
 		writeSearch: (payload) => {
-			const htmlPath = htmlPathFor(outputRoot(), payload.generated, payload.query, (path) => existsSync(path) || existsSync(jsonPathFor(path)));
+			const htmlPath = htmlPathFor(outputRoot(), payload.generated, searchLabel(payload).replace(/ \(no query\)$/, ""), (path) => existsSync(path) || existsSync(jsonPathFor(path)));
 			const jsonPath = jsonPathFor(htmlPath);
 			mkdirSync(dirname(htmlPath), { recursive: true });
 			writeFileSync(jsonPath, JSON.stringify(payload, null, 2) + "\n", "utf8");
@@ -310,6 +313,9 @@ export function paperLabel(paper: { base: string; title: string; authors: string
 	const meta = [who, paper.year].filter(Boolean).join(", ");
 	return `“${paper.title}”${meta ? ` (${meta})` : ""}`;
 }
+
+/** Cap for the model's example questions (a warm model needs 1-2 s). */
+const EXAMPLES_TIMEOUT_MS = 6_000;
 
 /** Largest PDF accepted by drag and drop. */
 const UPLOAD_LIMIT = 200_000_000;
@@ -521,6 +527,7 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 		return { base: name.slice(0, -4), file: join(inbox, name) };
 	};
 	/** Files chosen in the system's file window (only these may be imported). */
+	const exampleCache = new Map<string, string[] | null>();
 	const workFactsCache = new Map<string, { at: number; facts: WorkFacts | null }>();
 	const pickedFiles = new Set<string>();
 	let lastPickDir = "";
@@ -672,8 +679,10 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 
 	const startSearchJob = (form: SearchForm): { job: JobInfo; warnings: string[]; query: string } => {
 		const intake = intakeFromForm(form);
-		if (!intake.options.query) throw new HttpError(400, "no query -- fill at least one concept block or the free text");
-		const job = startJob("search", `search: ${intake.options.query}`, async ({ signal, log }) => {
+		const byAuthors = !intake.options.query && intake.options.authorScope === "all" && Boolean(intake.options.filters?.pickedAuthors?.length);
+		if (!intake.options.query && !byAuthors) throw new HttpError(400, "no query -- fill at least one concept block or the free text");
+		const label = byAuthors ? authorsOnlyLabel((intake.options.filters?.pickedAuthors ?? []).map((name) => ({ name })), intake.options.filters?.authorPosition === "first") : intake.options.query;
+		const job = startJob("search", `search: ${label}`, async ({ signal, log }) => {
 			for (const warning of intake.warnings) log(`note: ${warning}`);
 			const payload = await deps.runSearch({ ...intake.options, onWarn: log, signal });
 			const written = deps.writeSearch(payload);
@@ -869,6 +878,7 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 		const a = state.answers;
 		const clip = (text: string) => text.trim().replace(/\s+/g, " ").slice(0, 300);
 		if (a.topic?.trim()) return `Search: ${clip(a.topic)}`;
+		if (isAuthorsOnly(a)) return `Search: ${clip(authorsOnlyLabel(a.pickedAuthors, a.authorPosition === "first"))}`;
 		// A chat on one PDF is named after the paper once it has a question.
 		if (a.paperLabel && a.lastQuestion?.trim()) return clip(a.paperLabel);
 		// A chat collects its questions too (as seed for a later report):
@@ -1303,6 +1313,38 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 				checked = new Date(workFactsCache.get(doi.toLowerCase())?.at ?? Date.now()).toISOString();
 			}
 			return json(res, 200, { paper: { ...paper, pdfUrl: pdfHref(paper.file) }, openalex, checked, error, embeddingModel: llmConfig().embedModel });
+		}
+		// Example questions for the paper chat's box: the model words them
+		// from the chosen papers' names, titles and keywords (thinking off),
+		// fixed rules check them (examples.ts); null keeps the page's templates.
+		if (route === "POST /api/chat/examples") {
+			const body = (await readBody(req)) as Record<string, unknown>;
+			const wanted = Array.isArray(body.bases) ? body.bases.filter((base): base is string => typeof base === "string").slice(0, 5000) : [];
+			const single = body.single === true;
+			if (!wanted.length || !provider.hasModel()) return json(res, 200, { examples: null });
+			const key = `${single ? 1 : 0}:${[...wanted].sort().join("\n")}`;
+			if (exampleCache.has(key)) return json(res, 200, { examples: exampleCache.get(key) });
+			const set = new Set(wanted);
+			const papers: ExamplePaper[] = listLibrary(root, cwd, deps.matchLibrary(root)).papers.filter((paper) => set.has(paper.base)).map((paper) => ({
+				name: examplePaperName(paper.authors, paper.year, paper.base),
+				title: paper.title,
+				keywords: paper.keywords,
+			}));
+			if (!papers.length) return json(res, 200, { examples: null });
+			// A warm local model answers in 1-2 s; a cold or busy one runs into
+			// the short cap and the templates stay. Only a real answer (lines
+			// that passed or failed the check) is cached, so a timeout is
+			// tried again for the next selection or visit.
+			let examples: string[] | null = null;
+			try {
+				const raw = await provider.generate({ system: EXAMPLES_SYSTEM, user: examplesPrompt(papers, single), maxTokens: 160, temperature: 0.5, noThinking: true, signal: AbortSignal.timeout(EXAMPLES_TIMEOUT_MS) });
+				examples = parseExamples(raw, papers, single);
+				if (exampleCache.size > 200) exampleCache.clear();
+				exampleCache.set(key, examples);
+			} catch {
+				examples = null;
+			}
+			return json(res, 200, { examples });
 		}
 		if (route === "GET /api/library") {
 			const library = listLibrary(root, cwd, deps.matchLibrary(root));

@@ -27,7 +27,7 @@ import {
 	topicSlug,
 	type VariantSuggestion,
 } from "../intake.ts";
-import { MAX_PER_SOURCE } from "../search.ts";
+import { MAX_AUTHOR_WORKS_PER_SOURCE, MAX_PER_SOURCE } from "../search.ts";
 import { parseIdentifier } from "../selection.ts";
 import type { AuthorMatch } from "../sources/openalex.ts";
 import type { ChatAnswer } from "../synthesis.ts";
@@ -225,6 +225,8 @@ export interface DialogAnswers {
 	/** Authors picked by name or from the menu list: exact OpenAlex ids. */
 	pickedAuthors: AuthorMatch[];
 	authorScope: "query" | "all";
+	/** "first": only papers with a picked author as first author. */
+	authorPosition?: "first" | "any";
 	perSource: number;
 	minCites: number | null;
 	search: SearchOutcome | null;
@@ -531,6 +533,7 @@ export function formFromAnswers(answers: DialogAnswers, thisYear: number): Searc
 	if (pickedAuthors.length) {
 		form.pickedAuthors = pickedAuthors.map((author) => ({ id: author.id, name: author.name }));
 		form.authorScope = answers.authorScope;
+		if (answers.authorPosition === "first") form.authorPosition = "first";
 	} else if (answers.authorsOn !== "all" && answers.authorsOn.length) {
 		form.authors = answers.authors.filter((row) => (answers.authorsOn as string[]).includes(row.id)).map((row) => row.name);
 		form.authorsListed = answers.authors.map((row) => row.name);
@@ -1047,7 +1050,7 @@ function onAnswer(state: DialogState, event: Extract<DialogEvent, { kind: "answe
 		if (!blocks.length || !composedQuery({ ...state.answers, blocks })) return result(askPick(say(echoed, "At least one block needs a term."), ctx));
 		return startSearch(withAnswers(echoed, { blocks, useVariants: false }), ctx);
 	}
-	if (chip === "searchAgain" && state.answers.blocks.length) {
+	if (chip === "searchAgain" && (state.answers.blocks.length || isAuthorsOnly(state.answers))) {
 		const filters = event.filters ?? {};
 		let next = echoed;
 		if (filters.allYears) next = withAnswers(next, { period: { preset: "all" } });
@@ -1074,6 +1077,7 @@ function onAnswer(state: DialogState, event: Extract<DialogEvent, { kind: "answe
 		case "start":
 			if (chip === "pdfChat" && ctx.library.length) return result(askPickPaper(echoed, ctx));
 			if (chip === "pdfReport" && ctx.library.length) return result(askPickPapers(echoed, ctx));
+			if (!text && !chip && authorsOnly(requestOptions(event)).length) return onAuthorsOnly(echoed, requestOptions(event), ctx);
 			if (chip === "search" || !text) return result(askTopic(echoed));
 			// "hello", "what can you do?": the tool says what it is (fixed text), it
 			// does not chat. A question CAN be a research request, so only small
@@ -1081,6 +1085,7 @@ function onAnswer(state: DialogState, event: Extract<DialogEvent, { kind: "answe
 			if (looksLikeSmallTalk(text)) return onHelp(echoed, text, ctx, undefined, true);
 			return onTopic(echoed, text, ctx, requestOptions(event));
 		case "topic":
+			if (!text && !chip && authorsOnly(requestOptions(event)).length) return onAuthorsOnly(echoed, requestOptions(event), ctx);
 			if (!text) return result(say(echoed, TEXT.topic));
 			return onTopic(echoed, text, ctx, requestOptions(event));
 		case "blocks":
@@ -1282,6 +1287,8 @@ export interface SearchOptionsAnswer {
 	authors?: { rows: AuthorRow[]; on: string[] };
 	pickedAuthors?: AuthorMatch[];
 	authorScope?: "query" | "all";
+	/** Only papers with a picked author as first author. */
+	firstAuthor?: boolean;
 }
 
 /** Validate the menu's settings from the page (untrusted JSON): numbers
@@ -1326,6 +1333,7 @@ export function parseSearchOptions(value: unknown): SearchOptionsAnswer | undefi
 	}
 	if (pickedAuthors.length) out.pickedAuthors = pickedAuthors;
 	if (raw.authorScope === "query" || raw.authorScope === "all") out.authorScope = raw.authorScope;
+	if (raw.firstAuthor === true && pickedAuthors.length) out.firstAuthor = true;
 	return Object.keys(out).length ? out : undefined;
 }
 
@@ -1339,6 +1347,7 @@ function optionAnswers(options: SearchOptionsAnswer | undefined): Partial<Dialog
 		...(options.authors ? { authors: options.authors.rows, authorsOn: options.authors.on } : { authorsOn: "all" as const }),
 		pickedAuthors: options.pickedAuthors ?? [],
 		...(options.authorScope ? { authorScope: options.authorScope } : {}),
+		authorPosition: options.firstAuthor ? "first" as const : "any" as const,
 	};
 }
 
@@ -1369,6 +1378,38 @@ function onTopic(state: DialogState, text: string, ctx: DialogContext, options: 
 		return result(askBlocks(withAnswers(next, { blocks: derivedBlocks(text) }), ctx, TEXT.blocksDerived));
 	}
 	return result(pending(next, PENDING_BLOCKS), proposeEffect(next.answers));
+}
+
+/** Authors picked in the "+" menu while the request box stayed empty. */
+function authorsOnly(options: RequestOptions): AuthorMatch[] {
+	return options.options?.pickedAuthors ?? [];
+}
+
+/** "Works by A", "Works by A and B", "Works by A, B and C" (plus "as
+ * first author"). Pure. */
+export function authorsOnlyLabel(authors: Array<{ name: string }>, firstAuthor = false): string {
+	const names = authors.map((author) => author.name);
+	return `Works by ${names.length <= 2 ? names.join(" and ") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`}${firstAuthor ? " as first author" : ""}`;
+}
+
+/** True for a search of the picked authors' works without a request. */
+export function isAuthorsOnly(answers: Pick<DialogAnswers, "topic" | "pickedAuthors" | "authorScope">): boolean {
+	return !answers.topic?.trim() && (answers.pickedAuthors?.length ?? 0) > 0 && answers.authorScope === "all";
+}
+
+/** No request, picked authors: all their works, searched at once (every
+ * year, up to MAX_AUTHOR_WORKS_PER_SOURCE per source; no keyword blocks,
+ * no code sources; every source then queries by author alone). */
+function onAuthorsOnly(state: DialogState, options: RequestOptions, ctx: DialogContext): ReduceResult {
+	const authors = authorsOnly(options);
+	const next = withAnswers(userSaid(state, authorsOnlyLabel(authors, options.options?.firstAuthor === true)), {
+		topic: "", blocks: [], variants: [], useVariants: false, codeAtStart: false, synonyms: false, codeSources: [], topicsOn: [],
+		...optionAnswers(options.options),
+		period: { preset: "all" },
+		perSource: MAX_AUTHOR_WORKS_PER_SOURCE,
+		authorScope: "all",
+	});
+	return startSearch(next, ctx);
 }
 
 const PENDING_BLOCKS = "asking the model for keyword blocks";

@@ -59,6 +59,9 @@ export function keyRequirement(source: string): string | null {
 export const DEFAULT_PER_SOURCE = 5;
 /** Politeness cap towards the free APIs. */
 export const MAX_PER_SOURCE = 50;
+/** Cap for a search of picked authors' works without a query ("all their
+ * work"): one OpenAlex page (200), the same for CrossRef and arXiv. */
+export const MAX_AUTHOR_WORKS_PER_SOURCE = 200;
 
 export interface SearchOptions {
 	query: string;
@@ -146,9 +149,13 @@ export async function collectDataLinks(
 
 export async function runSearch(options: SearchOptions) {
 	const warn = options.onWarn ?? (() => {});
+	// Author-only search: the picked authors' works ("all") need no topic;
+	// every source then ignores the text, so one empty query carries them.
+	const authorsOnly = options.authorScope === "all" && (options.filters?.pickedAuthors?.some(Boolean) ?? false)
+		&& ![options.query, ...(options.queryVariants ?? [])].some((query) => typeof query === "string" && query.trim());
 	const perSource = Math.min(
 		Math.max(1, Math.trunc(options.perSource ?? DEFAULT_PER_SOURCE)),
-		MAX_PER_SOURCE,
+		authorsOnly ? MAX_AUTHOR_WORKS_PER_SOURCE : MAX_PER_SOURCE,
 	);
 	const sources = options.sources?.length ? options.sources : Object.keys(SEARCHERS);
 	const termGroups = sanitizeTermGroups(options.groupTerms);
@@ -161,6 +168,8 @@ export async function runSearch(options: SearchOptions) {
 			queries.push(query);
 		}
 	}
+	if (!queries.length && authorsOnly) queries.push("");
+	if (!queries.length) throw new Error("a search needs a query (or picked authors with the scope \"all their work\")");
 	const multiQuery = queries.length > 1;
 
 	// Concept blocks per query: passed group_terms override the BASE

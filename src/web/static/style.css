@@ -480,7 +480,7 @@ dialog.modal .chip { border: 1px solid var(--line); background: #fff; border-rad
 .rail-list details.lfolder > summary .reveal { border: 0; background: transparent; padding: 0.05rem; color: var(--muted); display: none; border-radius: 4px; cursor: pointer; }
 .rail-list details.lfolder > summary:hover .reveal { display: inline-flex; }
 .rail-list details.lfolder details.lfolder, .rail-list details.lfolder > a.item { margin-left: 0.7rem; }
-#rail-library > .rail-icon.new { margin: 0.1rem 0 0.2rem; }
+#rail-library > .rail-icon.new { margin: 0.2rem 0 0; }
 /* Source ticks in the library: small quiet boxes; a ticked name is bold. */
 .rail-list input.tick { appearance: none; -webkit-appearance: none; width: 0.72rem; height: 0.72rem; margin: 0; border: 1px solid #bdbdb6; border-radius: 3px; background: #fff; flex: none; cursor: pointer; }
 .rail-list input.tick:checked { background: #2a2a2a url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.6 6.2 5 8.5l4.4-5' fill='none' stroke='white' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center/100% no-repeat; border-color: #2a2a2a; }

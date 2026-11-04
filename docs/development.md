@@ -194,6 +194,7 @@ Where each stage lives; the adapter/engine pair shares its basename.
 | `src/dialog-state.ts` + `extensions/dialogs.ts` | the tabbed wizard: pure reducer (steps, checkbox lists, forms, review page) and its Pi adapter (overlay drawing, keys, paste, RPC fallback) |
 | `src/config.ts` | the config file and environment overrides; PDF folders and the last download folder |
 | `src/cli.ts` | the standalone command line over all three engines |
+| `bin/pi-literature-review.mjs` | the installed command (`npx pi-literature-review`): strips the TypeScript types of this package's files with a Node load hook, then runs `src/cli.ts` |
 | `src/types.ts` | shared record shapes and small helpers (user agent, contact email, warnings) |
 | `src/cardtext.ts` | transcript cards: bold/bullet formatting, file:// URLs as short clickable terminal links where the terminal supports them |
 | `index.ts` | registers the three tools and the web command |

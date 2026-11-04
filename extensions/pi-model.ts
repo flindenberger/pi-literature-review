@@ -27,7 +27,7 @@ export async function completeWithPiModel(ctx: ExtensionContext, options: Genera
 	if (!model) throw new Error("no model selected in pi");
 	// No `reasoning` level = pi-ai sends no effort and switches template
 	// thinking off; a level is clamped by pi-ai to what the model offers.
-	const level = thinkingSetting();
+	const level = options.noThinking ? "off" : thinkingSetting();
 	const thinking = level !== "off";
 	const response = await ctx.modelRegistry.streamSimple(model, {
 		systemPrompt: options.system,

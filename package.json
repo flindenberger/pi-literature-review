@@ -25,7 +25,14 @@
     "open-access",
     "citations"
   ],
+  "bin": {
+    "pi-literature-review": "bin/pi-literature-review.mjs"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
   "files": [
+    "bin/",
     "index.ts",
     "extensions/",
     "src/",

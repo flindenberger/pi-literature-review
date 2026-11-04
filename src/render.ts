@@ -177,6 +177,14 @@ const FILTER_LABELS: Record<string, string> = {
 
 /** Human-readable filter summary; shared with the digest so both log the
  * dialog inputs in one wording. */
+/** The query as shown and as file name; a search of picked authors' works
+ * without a query reads "works by A and B (no query)". Pure. */
+export function searchLabel(payload: Pick<RenderPayload, "query" | "author_scope">): string {
+	if (payload.query.trim() || !payload.author_scope?.names.length) return payload.query;
+	const names = payload.author_scope.names;
+	return `works by ${names.length <= 2 ? names.join(" and ") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`}${payload.author_scope.position === "first" ? " as first author" : ""} (no query)`;
+}
+
 export function describeFilters(filters: ResultFilters | null): string {
 	if (!filters) return "none";
 	const parts: string[] = [];
@@ -1025,7 +1033,7 @@ export function renderHtml(payload: RenderPayload, options?: { network?: boolean
 	const variantRows = variants.length
 		? `\n<dt>Variants</dt>${variants.map((v, i) => `<dd>Q${i + 2}: ${esc(v)}</dd>`).join("")}`
 		: "";
-	const queryLabel = variants.length ? `Q1: ${payload.query}` : payload.query;
+	const queryLabel = variants.length ? `Q1: ${payload.query}` : searchLabel(payload);
 	// Per-source transparency (PRISMA-S: document the strategy per
 	// database): the expression each source actually received, per query.
 	const sentRows = (label: string, values: string[] | null | undefined, note?: string): string => {
@@ -1260,7 +1268,7 @@ ${payload.dropped.map((entry, index) => droppedRow(entry, index, columns)).join(
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Literature Search: ${esc(payload.query)}</title>
+<title>Literature Search: ${esc(searchLabel(payload))}</title>
 <style>${STYLE}
 /* The search page runs wide (13 columns are too cramped inside the shared
    78rem reading width) -- on a big screen the two record tables get the

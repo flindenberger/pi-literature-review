@@ -21,6 +21,8 @@ export interface GenerateCall {
 	maxTokens?: number;
 	temperature?: number;
 	signal?: AbortSignal;
+	/** Without thinking whatever the setting (short helper calls). */
+	noThinking?: boolean;
 }
 
 /** What the interface shows about the model in use. */
@@ -88,6 +90,7 @@ export function endpointProvider(cfg = llmConfig()): ModelProvider {
 		generate: async (call) => backend.generate(call.system, call.user, {
 			temperature: call.temperature,
 			maxTokens: call.maxTokens,
+			noThinking: call.noThinking,
 		}, call.signal),
 		wiring: () => ({
 			backend,

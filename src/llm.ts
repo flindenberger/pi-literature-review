@@ -80,6 +80,9 @@ export interface GenerateOptions {
 	think?: boolean;
 	/** OpenAI dialect, remote API: the reasoning effort when think is on. */
 	reasoning?: Exclude<ThinkingSetting, "off">;
+	/** This call runs without thinking whatever the setting (short helper
+	 * calls such as the example questions). */
+	noThinking?: boolean;
 }
 
 /** Extra output tokens when thinking is on: the hidden reasoning counts
@@ -309,7 +312,7 @@ export function createBackend(cfg: LlmConfig, fetchJson: FetchJson = fetchJsonHt
 				: parseOllamaEmbedResponse(json, texts.length);
 		},
 		async generate(system, user, given = {}, signal) {
-			const opts = withThinking(given, thinking());
+			const opts = withThinking(given, given.noThinking ? "off" : thinking());
 			const model = opts.model || cfg.generateModel;
 			const request = generateOpenai
 				? openaiChatRequest(generateBase, model, system, user, opts)

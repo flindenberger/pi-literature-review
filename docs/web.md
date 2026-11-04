@@ -32,13 +32,22 @@ front end over the same code.
 ## Start without Pi
 
 ```
-node src/cli.ts web [--port N] [--no-open] [--root DIR]
+npx pi-literature-review web [--port N] [--no-open] [--root DIR]
 ```
+
+Needs Node.js 22.19 or newer (the same as Pi). `npm install -g
+pi-literature-review` installs the command `pi-literature-review` for
+good; from a clone of the repository, `node src/cli.ts web` does the
+same. The installed command is a small JavaScript file
+(`bin/pi-literature-review.mjs`): Node does not strip TypeScript types
+from files under `node_modules`, so it registers a load hook that strips
+them with Node's own `stripTypeScriptTypes` for this package's files and
+then runs `src/cli.ts`.
 
 The writing model is then `llm.generateModel` of the configuration
 (Ollama, llama.cpp or any OpenAI-compatible address); the Settings page
-shows and edits it. `--root` sets the data folder (default: the working
-directory, `PI_LITERATURE_REVIEW_HOME` overrides).
+shows and edits it. `--root` sets the data folder (default: the store
+next to the configuration file, `PI_LITERATURE_REVIEW_HOME` overrides).
 
 ## The page
 
@@ -46,8 +55,8 @@ Every page load, and a click on the package name in the rail, opens a
 new conversation on the start screen (the one before stays in History;
 while a job runs the live conversation shows instead): four lines that
 build up once per browser session -- "Search the literature. Select the
-papers. Summarize and synthesize." slide in, "Streamlined for small
-local AI models" is typed in mint green and settles to black -- then two tiles, **search & select** and **summarize &
+papers. Summarize and synthesize." slide in, "Streamlined for local AI
+models" is typed in mint green and settles to black -- then two tiles, **search & select** and **summarize &
 synthesize**. A tile opens a
 conversation at that stage's first question, like the rail's **+ New**
 rows (without PDFs in the library the second one leads to a note that
@@ -61,13 +70,23 @@ code sources as **Add papers with code**, list topics chosen without a
 question), **Snowball search** (greyed, not built yet), **Published**
 (5, 10 or 20 years or all; 10 by default), **Per source** (30 by
 default, up to 50), **Min. citations**, **Journals** and **Authors**.
-Journals and authors stay grey until the box holds a request: their
+Journals stay grey until the box holds a request; Authors without a
+request offers the name lookup only. Their
 lists are OpenAlex counts over the request's keyword blocks within the
 chosen period (the blocks come from `POST /api/search/blocks`, the same
 saved blocks the search then uses); the author list also finds a person
 by name. Authors ticked in the list and those found by name (tick boxes,
 untick to drop) are searched by their OpenAlex ids, all with one choice
-"on this topic" or "all their work". Pills under the box
+"on this topic" or "all their work". **Search with an empty box and
+ticked authors** lists all their work at once ("Works by A and B": every
+year, up to 200 per source, no keyword blocks, no model call, no code
+sources; OpenAlex by author id sorted by citations, CrossRef and arXiv by
+name, Semantic Scholar skipped). With ticked authors a second choice
+"any position" / "first author" keeps only papers with a ticked author
+first (pill ", first author"). Author names match by surname and first
+initial ("Carl Legleiter" = "Carl J. Legleiter" = "Legleiter, C."), so a
+namesake with another initial is filtered out; the report reads "works by ... (no query)" and the file is
+named after the authors. Pills under the box
 show what is set (the period always); a pill opens the menu, its x
 resets that option; the number on the **+** counts the options that
 differ from the defaults. A click anywhere on a row switches it or opens
@@ -157,7 +176,14 @@ the chosen papers and their author keywords, read by fixed rules from the
 back to a short title, then to general examples): "How does Isikdogan et
 al. 2017 approach convolutional neural networks?", "How do A and B differ
 in ...?", "What do these 15 papers say about ...?"; new ticks give new
-examples. No model is asked. A chat on one PDF reads like a chat: no buttons (no report, no
+examples. The model then rewords them once per chosen set (POST
+`/api/chat/examples`, `src/web/examples.ts`): it sees only the papers'
+short names, titles and keywords, runs without thinking and is capped at
+6 s (a warm local model needs 1-2 s); fixed rules keep a line only when it
+is a question of 4-16 words that names nothing (no capitalized word, no
+number) beyond what it was given and does not ask about "keywords". When
+fewer than two lines pass, or the model is slow or busy, the templates
+stay. Placeholder text only: nothing of it reaches an answer or a report. A chat on one PDF reads like a chat: no buttons (no report, no
 scope), and an answer is its prose with the [n] links only (no passage
 list, no paper list, no provenance line below); when an answer arrives
 while the PDF is open on the right, the PDF jumps to the first cited

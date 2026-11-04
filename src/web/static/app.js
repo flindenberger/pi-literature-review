@@ -494,12 +494,14 @@ ${row.abstract ? `<details class="abs"><summary>Abstract</summary>${esc(row.abst
 		const pool = data.rows.filter((row) => entry.showDropped || !row.dropped);
 		const kinds = nameCounts(pool, (row) => [row.kind || "unknown"]).sort((a, b) => Object.keys(KIND_LABEL).indexOf(a[0]) - Object.keys(KIND_LABEL).indexOf(b[0]));
 		const codeOn = Boolean(data.code_sources_used && data.code_sources_used.length);
+		// A search of picked authors' works has no keywords to edit or pair code with.
+		const byAuthors = Boolean(state.dialog && state.dialog.answers && authorsOnlyAnswers(state.dialog.answers));
 		const blocks = (state.dialog && state.dialog.answers && state.dialog.answers.blocks.length ? state.dialog.answers.blocks : String(data.query || "").split(" AND ").map((block) => block.replace(/^\(|\)$/g, ""))).map((block) => `(${block})`).join(" AND ");
 		return `<div class="rhead"><span class="rcount"><b>${rows.length}</b> paper${rows.length === 1 ? "" : "s"} <span class="rsub">(${free} with free full text${hidden ? `, ${hidden} hidden by filters` : ""})</span></span>
 </div>
 <div class="rtools"><span class="sortwrap"><button type="button" class="ibtn ${entry.sortOpen ? "on" : ""}" data-act="sort" title="Sort the list" aria-haspopup="menu" aria-expanded="${entry.sortOpen ? "true" : "false"}">${ICON_SORT}${SORT_LABELS[entry.sort]}</button>${entry.sortOpen ? `<div class="sortmenu" role="menu">${Object.entries(SORT_LABELS).map(([key, label]) => `<button type="button" role="menuitemradio" aria-checked="${entry.sort === key}" class="${entry.sort === key ? "on" : ""}" data-act="sortby" data-sort="${key}">${label}</button>`).join("")}</div>` : ""}</span>
 <button type="button" class="ibtn ${active.length ? "on" : ""}" data-act="filters" title="Filter the list">${ICON_FILTER}Filter${active.length ? ` (${active.length})` : ""}</button>
-${latest ? `<span class="tsep" aria-hidden="true"></span><button type="button" class="ibtn" data-act="editblocks" title="Searched: ${esc(blocks)}. Change keywords or synonyms; a new search runs">${rerunIcon("synonyms")}Keywords &amp; synonyms</button>` : ""}${pickOpen && !codeOn ? `<button type="button" class="ibtn" data-act="addcode" title="A new search with the code sources on (about 20-60 s more); list topics chosen automatically">${rerunIcon("code")}Add papers with code</button>` : ""}</div>
+${latest && !byAuthors ? `<span class="tsep" aria-hidden="true"></span><button type="button" class="ibtn" data-act="editblocks" title="Searched: ${esc(blocks)}. Change keywords or synonyms; a new search runs">${rerunIcon("synonyms")}Keywords &amp; synonyms</button>` : ""}${pickOpen && !codeOn && !byAuthors ? `<button type="button" class="ibtn" data-act="addcode" title="A new search with the code sources on (about 20-60 s more); list topics chosen automatically">${rerunIcon("code")}Add papers with code</button>` : ""}</div>
 <table class="rfilters" ${entry.open ? "" : "hidden"}><tbody>
 <tr><th>Published</th><td class="chips">${periodChips(entry)}</td></tr>
 <tr><th>Full text</th><td class="chips">${["free", "abstract_only", "restricted"].map((level) => `<button type="button" class="chip ${f.access.has(level) ? "on" : ""}" data-act="access" data-v="${level}">${ACCESS_LABEL[level]}</button>`).join("")}</td></tr>
@@ -846,7 +848,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	 * browser session; reduced-motion users and later visits see the
 	 * settled state at once. The wording never changes with the setup. */
 	const HERO_LINES = ["Search the literature.", "Select the papers.", "Summarize and synthesize."];
-	const HERO_LAST = [["Streamlined for small local AI models", "g1"]];
+	const HERO_LAST = [["Streamlined for local AI models", "g1"]];
 	// The same mark as the favicon and the rail (index.html): a white bold
 	// italic serif pi on a disc, placed by its measured ink bounds. It stands
 	// from the first frame; only the lines and tiles animate.
@@ -952,7 +954,8 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 			const after = view.messages.slice(index + 1);
 			const working = (message) => message.role === "working" && !message.quiet;
 			const log = [...after].reverse().find(working) || [...before].reverse().find(working);
-			const request = view.answers && view.answers.topic ? `<div class="msg user request"><div class="bubble">${esc(view.answers.topic)}</div></div>` : "";
+			const asked = view.answers ? view.answers.topic || authorsOnlyAnswers(view.answers) : "";
+			const request = asked ? `<div class="msg user request"><div class="bubble">${esc(asked)}</div></div>` : "";
 			parts = [request, log ? messageHtml(log) : "", messageHtml(lastList)];
 		} else {
 			// The opening and request questions leave the thread once answered
@@ -1169,11 +1172,33 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 			t2 ? `Which methods are used for ${t2}, and how do they compare?` : "What accuracy do the studies report, and against which reference data?",
 		];
 	}
+	/* The model's wording of the examples (POST /api/chat/examples, checked
+	   by code on the server), per chosen set; the templates show until it
+	   arrives, and stay when it fails. */
+	state.modelExamples = new Map();
+	function exampleSelection(single) {
+		if (single) return { key: `1:${state.dialog.answers.scope[0]}`, bases: [state.dialog.answers.scope[0]], single: true };
+		const pick = chatScope();
+		if (!pick.chosen) return null;
+		return { key: `0:${[...pick.bases].sort().join("\n")}`, bases: pick.bases, single: false };
+	}
+	function modelExamples(single) {
+		const sel = exampleSelection(single);
+		if (!sel || !state.info || !state.info.provider || !state.info.provider.model) return null;
+		if (state.modelExamples.has(sel.key)) return state.modelExamples.get(sel.key);
+		state.modelExamples.set(sel.key, null);
+		post("/api/chat/examples", { bases: sel.bases, single: sel.single }).then((reply) => {
+			state.modelExamples.set(sel.key, reply.examples || null);
+			const now = exampleSelection(single);
+			if (reply.examples && now && now.key === sel.key && entryArgs && entryKey) entryTyping(...entryArgs);
+		}).catch(() => {});
+		return null;
+	}
 	let entryArgs = null;
 	function entryTyping(step, messageId) {
 		entryArgs = [step, messageId];
 		const single = step === "ask" && onePdfChat();
-		const personal = step === "ask" ? personalExamples(single) : null;
+		const personal = step === "ask" ? (modelExamples(single) || personalExamples(single)) : null;
 		const examples = personal || ENTRY_EXAMPLES[single ? "ask1" : step];
 		// New ticks give new examples.
 		const key = `${step}:${messageId}:${personal ? personal.join("|") : ""}`;
@@ -1285,7 +1310,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	const PER_SOURCE_DEFAULT = 30;
 	const PER_SOURCE_MAX = 50;
 	const freshFacet = () => ({ rows: null, on: new Set(), key: null, loading: false, open: false, error: "" });
-	const freshOptions = () => ({ syn: { lines: null, key: null, loading: false, error: "", open: true }, synonyms: false, code: false, period: "10y", perSource: PER_SOURCE_DEFAULT, minCites: null, journals: freshFacet(), authors: { ...freshFacet(), matches: [], picked: new Map(), lookup: "", scope: "query" } });
+	const freshOptions = () => ({ syn: { lines: null, key: null, loading: false, error: "", open: true }, synonyms: false, code: false, period: "10y", perSource: PER_SOURCE_DEFAULT, minCites: null, journals: freshFacet(), authors: { ...freshFacet(), matches: [], picked: new Map(), lookup: "", scope: "query", first: false } });
 	state.options = freshOptions();
 	const OPTION_ICON = {
 		synonyms: '<path d="M4 9.5c2.7-2.6 5.3-2.6 8 0s5.3 2.6 8 0M4 15.5c2.7-2.6 5.3-2.6 8 0s5.3 2.6 8 0"/>',
@@ -1311,6 +1336,13 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	function authorCount(o) {
 		return pickedAuthors(o).length;
 	}
+	/** "Works by A and B" for a search of picked authors without a request
+	 * (dialog.ts authorsOnlyLabel), "" otherwise. */
+	function authorsOnlyAnswers(a) {
+		if ((a.topic || "").trim() || a.authorScope !== "all" || !Array.isArray(a.pickedAuthors) || !a.pickedAuthors.length) return "";
+		const names = a.pickedAuthors.map((author) => author.name);
+		return `Works by ${names.length <= 2 ? names.join(" and ") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`}${a.authorPosition === "first" ? " as first author" : ""}`;
+	}
 	/** The ticked authors as OpenAlex matches (id + name), name finds first. */
 	function pickedAuthors(o) {
 		const rows = (o.authors.rows || []).filter((row) => o.authors.on.has(row.id) && !o.authors.picked.has(row.id));
@@ -1330,6 +1362,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		}
 		for (const author of a.pickedAuthors || []) o.authors.picked.set(author.id, author);
 		if (a.authorScope === "all") o.authors.scope = "all";
+		if (a.authorPosition === "first") o.authors.first = true;
 		return o;
 	}
 	function menuOpen() { return !$("plus-menu").hidden; }
@@ -1384,7 +1417,11 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 			const o = state.options.authors;
 			// One scope for every ticked author (found by name or in the
 			// list); it shows as soon as one is ticked, above the lists.
-			const scope = authorCount(state.options) ? `<div class="seg scope">${[["query", "on this topic"], ["all", "all their work"]].map(([id, label]) => `<button type="button" data-scope="${id}" class="${o.scope === id ? "on" : ""}">${label}</button>`).join("")}</div>` : "";
+			const hasText = $("input").value.trim().length > 0;
+			if (!hasText) body = "";
+			const topic = authorCount(state.options) && hasText ? `<div class="seg scope">${[["query", "on this topic"], ["all", "all their work"]].map(([id, label]) => `<button type="button" data-scope="${id}" class="${o.scope === id ? "on" : ""}">${label}</button>`).join("")}</div>` : "";
+			const position = authorCount(state.options) ? `<div class="seg scope" title="Only papers with a ticked author as first author">${[["0", "any position"], ["1", "first author"]].map(([id, label]) => `<button type="button" data-first="${id}" class="${String(Number(o.first)) === id ? "on" : ""}">${label}</button>`).join("")}</div>` : "";
+			const scope = topic + position;
 			body = `${scope}<input type="text" class="lookup" id="author-lookup" placeholder="Find an author by name ..." autocomplete="off" value="${esc(o.lookup)}"><div id="author-matches">${matchesHtml()}</div>${body}`;
 		}
 		return `<div class="sub">${body}</div>`;
@@ -1410,21 +1447,20 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 				"The model adds one synonym per keyword block; check and edit the blocks here", shown ? "click" : "", shown ? `data-synfold="1" role="button" aria-expanded="${o.syn.open}"` : "");
 		};
 		// A list row opens on a click anywhere in the row.
-		const facetRow = (key, name, title) => text
+		const facetRow = (key, name, title) => text || key === "authors"
 			? `${row(key, name, `<span class="val">${esc(facetValue(key))}</span><span class="more" aria-hidden="true">${o[key].open ? "▾" : "›"}</span>`, title, "click", `data-open="${key}" role="button" aria-expanded="${o[key].open}"`)}${facetHtml(key)}`
 			: row(key, name, '<span class="val">all</span>', "Type your request first: the list comes from its keywords", "off");
 		return [
 			synRow(),
 			o.synonyms && text && o.syn.open ? synonymsHtml() : "",
 			toggleRow("code", "Papers with code", "Also search Hugging Face Papers, GitHub README search, awesome lists, Google Earth Engine repositories (about 20-40 s more)"),
-			row("snowball", "Snowball search", '<span class="soon">soon</span>', "Follow the references and citations of the hits (coming later)", "off"),
 			'<div class="sep"></div>',
 			row("period", "Published", `<span class="seg">${["5y", "10y", "20y", "all"].map((p) => `<button type="button" data-period="${p}" class="${o.period === p ? "on" : ""}">${p === "all" ? "all" : p.replace("y", " y")}</button>`).join("")}</span>`, "Publication years searched"),
 			row("perSource", "Per source", `<span class="stepper"><button type="button" data-step="-10" aria-label="Fewer">-</button><input type="text" inputmode="numeric" data-num="perSource" value="${o.perSource}" aria-label="Papers per source"><button type="button" data-step="10" aria-label="More">+</button></span>`, "Papers asked from each source"),
 			row("minCites", "Min. citations", `<span class="stepper"><input type="text" inputmode="numeric" data-num="minCites" value="${o.minCites ?? ""}" placeholder="any" aria-label="Minimum citations"></span>`, "Leave out papers cited fewer times than this; empty = no limit"),
 			'<div class="sep"></div>',
 			facetRow("journals", "Journals", "Only papers from the ticked journals"),
-			facetRow("authors", "Authors", "Only papers by the ticked authors"),
+			facetRow("authors", "Authors", text ? "Only papers by the ticked authors" : "Find authors by name; Search with an empty box lists all their work"),
 		].join("");
 	}
 	/** The synonym blocks under their switch: one row per block, one box
@@ -1469,7 +1505,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		if (o.minCites !== null) add("minCites", `≥ ${o.minCites} citations`);
 		if (o.journals.on.size) add("journals", `Journals: ${o.journals.on.size}`);
 		const authors = pickedAuthors(o);
-		if (authors.length) add("authors", `${authors.length === 1 ? authors[0].name : `Authors: ${authors.length}`}${o.authors.scope === "all" ? " (all their work)" : ""}`);
+		if (authors.length) add("authors", `${authors.length === 1 ? authors[0].name : `Authors: ${authors.length}`}${o.authors.first ? ", first author" : ""}${o.authors.scope === "all" || !$("input").value.trim() ? " (all their work)" : ""}`);
 		return pills.join("");
 	}
 	/** What the menu adds to the request answer. */
@@ -1480,7 +1516,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 			perSource: o.perSource,
 			minCites: o.minCites,
 			...(facet(o.journals) ? { journals: facet(o.journals) } : {}),
-			...(authorCount(o) ? { pickedAuthors: pickedAuthors(o), authorScope: o.authors.scope } : {}),
+			...(authorCount(o) ? { pickedAuthors: pickedAuthors(o), authorScope: $("input").value.trim() ? o.authors.scope : "all", ...(o.authors.first ? { firstAuthor: true } : {}) } : {}),
 		};
 		const lines = o.synonyms && o.syn.lines && o.syn.key === $("input").value.trim() ? o.syn.lines.filter(Boolean) : [];
 		return { code: o.code, synonyms: o.synonyms, period: o.period, options, ...(lines.length ? { blocks: lines } : {}) };
@@ -1533,7 +1569,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		const o = state.options;
 		if (editBlocks(event)) { syncSynonyms(); return; }
 		if (event.target.closest('[data-act="regen"]')) { loadSynonyms(true); return; }
-		const target = event.target.closest("[data-toggle],[data-period],[data-step],[data-open],[data-scope],[data-synfold]");
+		const target = event.target.closest("[data-toggle],[data-period],[data-step],[data-open],[data-scope],[data-first],[data-synfold]");
 		if (!target) return;
 		if (target.dataset.synfold) { syncSynonyms(); o.syn.open = !o.syn.open; }
 		if (target.dataset.toggle) {
@@ -1546,6 +1582,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		if (target.dataset.period && o.period !== target.dataset.period) { o.period = target.dataset.period; staleFacets(); }
 		if (target.dataset.step) o.perSource = Math.min(PER_SOURCE_MAX, Math.max(10, o.perSource + Number(target.dataset.step)));
 		if (target.dataset.scope) o.authors.scope = target.dataset.scope;
+		if (target.dataset.first) o.authors.first = target.dataset.first === "1";
 		if (target.dataset.open) {
 			const facet = o[target.dataset.open];
 			facet.open = !facet.open;
@@ -1652,13 +1689,18 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 			else if (key === "perSource") o.perSource = PER_SOURCE_DEFAULT;
 			else if (key === "minCites") o.minCites = null;
 			else if (key === "journals") o.journals.on.clear();
-			else if (key === "authors") { o.authors.on.clear(); o.authors.picked.clear(); }
+			else if (key === "authors") { o.authors.on.clear(); o.authors.picked.clear(); o.authors.first = false; }
 			renderOptions(true);
 			return;
 		}
 		if (event.target.closest("[data-go]")) { event.stopPropagation(); setMenu(true); }
 	});
-	$("input").addEventListener("input", () => { if (!state.dropMode) staleFacets(); });
+	$("input").addEventListener("input", () => {
+		if (state.dropMode) return;
+		staleFacets();
+		// The author pill says "(all their work)" while the box is empty.
+		if (!state.chatMenu && authorCount(state.options)) $("pills").innerHTML = pillsHtml();
+	});
 	document.addEventListener("click", (event) => { if (menuOpen() && !event.target.closest(".plusanchor")) setMenu(false); });
 	document.addEventListener("keydown", (event) => { if (event.key === "Escape" && menuOpen()) setMenu(false); });
 	renderOptions(false);
@@ -2085,6 +2127,13 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 			state.chat.reportOn.clear();
 			chatSendLabel();
 			answer(body);
+			return;
+		}
+		// An empty request box with ticked authors searches all their work.
+		const authorsAlone = !text && !state.chatMenu && state.dialog && (state.dialog.step === "start" || state.dialog.step === "topic") && authorCount(state.options) > 0;
+		if (authorsAlone) {
+			setMenu(false);
+			answer({ text: "", ...collect(currentQuestion()), ...optionsPayload() });
 			return;
 		}
 		if (!text) return;

@@ -204,22 +204,22 @@ const parseJournalFacetPage = parseFacetPage;
 	// Scope "query": text search plus the id filter (ids win over names).
 	const byQuery = buildWorksParams("water flood", 5, { authorIds: ["A5059343226"], authors: ["Claudia Kuenzer"], blocks: [["water"], ["flood"]] });
 	assert.equal(byQuery.get("search"), "water AND flood");
-	assert.equal(byQuery.get("filter"), "type:!peer-review|supplementary-materials|paratext|dataset|grant,authorships.author.id:A5059343226");
+	assert.equal(byQuery.get("filter"), "type:!peer-review|supplementary-materials|paratext|dataset,authorships.author.id:A5059343226");
 	assert.equal(byQuery.get("sort"), null);
 	// Scope "all": no text search, citation-sorted, the id filter alone.
 	const all = buildWorksParams("water flood", 5, { authorIds: ["A5059343226"], authorScope: "all", blocks: [["water"]] });
 	assert.equal(all.get("search"), null);
 	assert.equal(all.get("sort"), "cited_by_count:desc");
-	assert.equal(all.get("filter"), "type:!peer-review|supplementary-materials|paratext|dataset|grant,authorships.author.id:A5059343226");
+	assert.equal(all.get("filter"), "type:!peer-review|supplementary-materials|paratext|dataset,authorships.author.id:A5059343226");
 	// Scope "all" without any author falls back to the text search.
 	assert.equal(buildWorksParams("water", 5, { authorScope: "all" }).get("search"), "water");
 	// Names only (no ids): the raw_author_name search as before.
-	assert.equal(buildWorksParams("water", 5, { authors: ["Kuenzer"] }).get("filter"), "type:!peer-review|supplementary-materials|paratext|dataset|grant,raw_author_name.search:Kuenzer");
+	assert.equal(buildWorksParams("water", 5, { authors: ["Kuenzer"] }).get("filter"), "type:!peer-review|supplementary-materials|paratext|dataset,raw_author_name.search:Kuenzer");
 	// Type exclusion on EVERY works search (peer-review reports and author
 	// replies of open review platforms are typed peer-review; measured
 	// 2026-09-15: the negated pipe form and the comma form agree, 210 -> 188
 	// works for one author), also without any author scope.
-	assert.equal(buildWorksParams("water", 5).get("filter"), "type:!peer-review|supplementary-materials|paratext|dataset|grant");
+	assert.equal(buildWorksParams("water", 5).get("filter"), "type:!peer-review|supplementary-materials|paratext|dataset");
 }
 
 /* ---------------- accessFromWork ---------------- */
@@ -302,7 +302,7 @@ const parseJournalFacetPage = parseFacetPage;
 	assert.equal(params.get("group_by"), "authorships.author.id");
 	assert.equal(params.get("filter"),
 		'title_and_abstract.search:"water level" AND monitoring AND river,'
-		+ "type:!peer-review|supplementary-materials|paratext|dataset|grant,"
+		+ "type:!peer-review|supplementary-materials|paratext|dataset,"
 		+ "from_publication_date:2017-01-01,primary_location.source.id:S1");
 	// Without blocks (quoted or field-syntax queries) the text goes as is.
 	assert.ok(buildFacetParams("sar, flood | mapping", "primary_location.source.id").get("filter")!

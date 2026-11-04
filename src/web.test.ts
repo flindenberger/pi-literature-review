@@ -260,6 +260,11 @@ try {
 	assert.equal(state.provider.modelReachable, false);
 	assert.equal(state.provider.embeddingsReachable, true);
 	assert.equal(state.counts.runs, 1);
+	// Example questions: no chosen paper of the library -> null (templates stay).
+	for (const body of [{ bases: [] }, { bases: ["no-such-paper"] }]) {
+		const reply = await (await fetch(`${base}/api/chat/examples`, { method: "POST", headers: { authorization: "Bearer t0ken", "content-type": "application/json" }, body: JSON.stringify(body) })).json();
+		assert.equal(reply.examples, null);
+	}
 	assert.equal(state.root, root);
 	// Path traversal and unknown names are 404; the saved report is served.
 	assert.equal((await fetch(`${base}/files/lit-search/..%2F..%2Fpackage.json`, { headers: auth })).status, 404);

@@ -23,6 +23,26 @@ export interface FilterResult {
  * records, stray keyword matches without authors) without touching real
  * papers.
  */
+/** Surname and first given-name initial of a name ("Legleiter, Carl J."
+ * and "Carl J. Legleiter" -> legleiter + c), accents folded. */
+function nameParts(name: string): { surname: string; initial: string } {
+	const plain = name.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+	const comma = plain.indexOf(",");
+	const words = (comma > 0 ? `${plain.slice(comma + 1)} ${plain.slice(0, comma)}` : plain).split(/[\s.]+/).filter(Boolean);
+	const surname = words.length ? words[words.length - 1] : "";
+	return { surname, initial: words.length > 1 ? words[0][0] : "" };
+}
+
+/** One person under two spellings: same surname, and the same first
+ * initial when both carry a given name ("Carl Legleiter" = "Carl J.
+ * Legleiter" = "C. J. Legleiter" = "Legleiter, C."). Pure. */
+export function sameAuthorName(a: string, b: string): boolean {
+	const x = nameParts(a);
+	const y = nameParts(b);
+	if (!x.surname || x.surname.length < 2 || x.surname !== y.surname) return false;
+	return !x.initial || !y.initial || x.initial === y.initial;
+}
+
 export function filterRecords(records: SourceRecord[]): FilterResult {
 	const kept: SourceRecord[] = [];
 	const dropped: FilterResult["dropped"] = [];
@@ -249,7 +269,7 @@ function filterReason(record: FilterableRecord, filters: ResultFilters): string 
 	let byPickedAuthor = false;
 	if (picked.length) {
 		const names = record.authors.map((author) => author.toLowerCase());
-		const matchesPicked = (author: string): boolean => picked.some((name) => author.includes(name));
+		const matchesPicked = (author: string): boolean => picked.some((name) => author.includes(name) || sameAuthorName(author, name));
 		const anyMatch = names.some(matchesPicked);
 		if (!anyMatch) {
 			return `filtered: none of the authors is a picked author (${(filters.pickedAuthors ?? []).join(", ")})`;

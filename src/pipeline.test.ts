@@ -7,7 +7,7 @@
  */
 
 import assert from "node:assert/strict";
-import { applyFilters, dedupe, dropLateCodePairs, dropOffTopicCodeRecords, dropWithoutAbstract, filterRecords, groupAcrossQueries, sanitizeTermGroups, requiredBlockHits, sortRecords, termMatches, venueKey } from "./pipeline.ts";
+import { applyFilters, dedupe, dropLateCodePairs, dropOffTopicCodeRecords, dropWithoutAbstract, filterRecords, groupAcrossQueries, sanitizeTermGroups, requiredBlockHits, sameAuthorName, sortRecords, termMatches, venueKey } from "./pipeline.ts";
 import type { SourceRecord } from "./types.ts";
 
 function record(overrides: Partial<SourceRecord>): SourceRecord {
@@ -549,3 +549,12 @@ console.log("pipeline.test.ts: all assertions passed");
 	// Two blocks: both must hit.
 	assert.equal(dropOffTopicCodeRecords([oneShort], [[["water level"], ["cameras"]]], isCode).dropped.length, 1);
 }
+
+// Author names: surname + first initial, accents folded.
+assert.ok(sameAuthorName("Carl Legleiter", "Carl J. Legleiter"));
+assert.ok(sameAuthorName("Legleiter, C. J.", "carl j. legleiter"));
+assert.ok(sameAuthorName("C.J. Legleiter", "Carl J. Legleiter"));
+assert.ok(sameAuthorName("José Pérez", "Jose Perez"));
+assert.ok(!sameAuthorName("Daniel Legleiter", "Carl J. Legleiter"));
+assert.ok(!sameAuthorName("Carl Kinzel", "Carl J. Legleiter"));
+console.log("author name tests ok");

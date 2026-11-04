@@ -15,7 +15,7 @@ import {
 	topicSlug,
 } from "../intake.ts";
 import type { ResultFilters } from "../pipeline.ts";
-import { DEFAULT_PER_SOURCE, MAX_PER_SOURCE, SEARCHERS, type SearchOptions } from "../search.ts";
+import { DEFAULT_PER_SOURCE, MAX_AUTHOR_WORKS_PER_SOURCE, MAX_PER_SOURCE, SEARCHERS, type SearchOptions } from "../search.ts";
 
 /** Concept blocks the query form offers by default and at most. */
 export const QUERY_BLOCK_MIN = 5;
@@ -90,11 +90,14 @@ export function intakeFromForm(form: SearchForm, thisYear = new Date().getFullYe
 
 	let perSource: number | undefined;
 	const countSpec = text(form.perSource);
+	// A search of picked authors' works without a query may ask for more.
+	const authorsOnly = !query.query && form.authorScope === "all" && Array.isArray(form.pickedAuthors) && form.pickedAuthors.length > 0;
+	const cap = authorsOnly ? MAX_AUTHOR_WORKS_PER_SOURCE : MAX_PER_SOURCE;
 	if (countSpec) {
-		const parsed = parsePerSource(countSpec, MAX_PER_SOURCE);
+		const parsed = parsePerSource(countSpec, cap);
 		if (parsed === null) warnings.push(`records per source "${countSpec}" not understood -- using ${DEFAULT_PER_SOURCE}`);
 		else {
-			if (String(parsed) !== countSpec) warnings.push(`capped at ${MAX_PER_SOURCE} records per source (consideration for the free APIs)`);
+			if (String(parsed) !== countSpec) warnings.push(`capped at ${cap} records per source (consideration for the free APIs)`);
 			perSource = parsed;
 		}
 	}

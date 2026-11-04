@@ -33,9 +33,13 @@ The store is a folder next to the configuration (`~/.config/pi-literature-review
 
 Each command opens its wizard-dialog directly in Pi. Dialogs can be cancelled with `Esc` before anything is sent.
 
-Prefer a chat in the browser? `/pi-literature-review` starts a local web
-interface that walks through the same three stages as a conversation
-(see [Web interface](docs/web.md)).
+Three ways to use it:
+
+- **in Pi, in the terminal:** `/lit-search`, `/lit-selection`, `/lit-synthesis`
+- **in Pi, in the browser:** `/pi-literature-review` starts a local web interface over the same stages, with the model selected in Pi
+- **without Pi, in the browser:** `npx pi-literature-review web` (Node.js 22.19 or newer); the writing model (Ollama, llama.cpp or any OpenAI-compatible address) is chosen under Settings
+
+See [Web interface](docs/web.md).
 
 You can also just describe the task in chat and let the agent invoke the
 same tools:

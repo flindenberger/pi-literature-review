@@ -170,10 +170,11 @@ export function buildBlockSearch(blocks: string[][] | undefined): string {
  * Pure; exported so the payload can show what was sent. */
 /** Record types EXCLUDED from OpenAlex work searches (negated filter):
  * peer-review reports and author replies of open review platforms,
- * supplementary material, datasets, paratext (covers, issue matter) and
- * grants are not papers. Errata and retraction notices stay: they
- * concern papers. */
-export const OPENALEX_EXCLUDED_TYPES = ["peer-review", "supplementary-materials", "paratext", "dataset", "grant"];
+ * supplementary material, datasets and paratext (covers, issue matter)
+ * are not papers. Errata and retraction notices stay: they concern
+ * papers. Only types OpenAlex still lists may appear: an unknown type
+ * ("grant", removed by OpenAlex) fails every request with HTTP 400. */
+export const OPENALEX_EXCLUDED_TYPES = ["peer-review", "supplementary-materials", "paratext", "dataset"];
 
 export function buildWorksParams(query: string, rows: number, scope?: SourceScope): URLSearchParams {
 	const params = new URLSearchParams();
