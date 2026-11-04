@@ -651,6 +651,21 @@ dialog.paperinfo details.abstract p { margin: 0.4rem 0 0; line-height: 1.5; }
 #settings .keys { display: flex; flex-wrap: wrap; gap: 0.4rem; }
 #settings .key { border: 1px solid var(--line); border-radius: 999px; padding: 0.1rem 0.6rem; font-size: 0.78rem; color: var(--muted); }
 #settings .key.on { color: var(--ink); border-color: #9a9a94; }
+#settings .kv.lib, #settings .kv.store { align-items: start; }
+#settings .kv.lib > span:first-child, #settings .kv.store > span:first-child { padding-top: 0.15rem; }
+#settings .kv.lib > div { grid-column: 2 / 4; min-width: 0; }
+#settings .kv.lib .folders { margin-top: 0; }
+#settings button.key { font: inherit; font-size: 0.78rem; background: #fff; cursor: pointer; }
+#settings button.key:hover { border-color: #9a9a94; color: var(--ink); }
+#settings button.key.editing { border-color: var(--ink); color: var(--ink); }
+#settings .kv.keyedit[hidden] { display: none; }
+#settings .kv.keyedit > span:first-child { font-weight: 400; color: var(--muted); }
+#settings .keyrow { grid-column: 2 / 4; display: flex; gap: 0.4rem; align-items: center; }
+#settings .keyrow input { flex: 1; min-width: 0; }
+#settings .keyrow [hidden] { display: none; }
+#settings .count { display: flex; align-items: center; gap: 0.5rem; }
+#settings .count .ibtn { border: 1px solid var(--line); background: #fff; border-radius: 6px; padding: 0.1rem 0.35rem; cursor: pointer; display: inline-flex; align-items: center; }
+#settings .count .ibtn svg { width: 0.9rem; height: 0.9rem; }
 #settings .folder-add { display: flex; gap: 0.5rem; align-items: center; margin: 0.35rem 0 0.2rem; }
 #settings .folder-add [hidden] { display: none; }
 @media (max-width: 34rem) {

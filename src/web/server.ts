@@ -1719,7 +1719,7 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 			// one of them, from the library tree) or the last download folder.
 			if (typeof body.path === "string" && body.path.trim()) {
 				const wantedPath = resolve(body.path.trim());
-				const known = [...pdfFolders(), lastDownloadDir(), root].filter(Boolean);
+				const known = [...pdfFolders(), lastDownloadDir(), root, dirname(configPath()), historyRoot, dirname(blockCacheFile)].filter(Boolean);
 				if (!isAbsolute(body.path.trim()) || !known.some((folder) => wantedPath === folder || wantedPath.startsWith(`${folder}/`) || wantedPath.startsWith(`${folder}\\`))) throw new HttpError(400, "not one of your folders");
 				if (!existsSync(wantedPath)) throw new HttpError(404, `${wantedPath} does not exist`);
 				revealFolder(wantedPath);
@@ -1809,7 +1809,7 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 
 		/* ---- settings ---- */
 		if (route === "GET /api/settings") {
-			return json(res, 200, { ...storedConfigView(), path: configPath(), resolved: llmConfig(), models: await modelRows(), mailtoResolved: contactMailto(), embedState, historyDir: historyRoot, conversations: listConversations(historyRoot).conversations.length, savedBlocks: blockCacheSize(blockCacheFile) });
+			return json(res, 200, { ...storedConfigView(), path: configPath(), resolved: llmConfig(), models: await modelRows(), mailtoResolved: contactMailto(), embedState, historyDir: historyRoot, blockCacheDir: dirname(blockCacheFile), configDir: dirname(configPath()), conversations: listConversations(historyRoot).conversations.length, savedBlocks: blockCacheSize(blockCacheFile) });
 		}
 		// The models a server offers, for the Settings' model lists: the
 		// address and dialect as the page shows them (unsaved edits too);
@@ -1858,14 +1858,31 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 					if (value) llm[key] = value;
 					else delete llm[key];
 				}
-				// The api key never comes from a page: by design it is edited in
-				// the file by hand; an existing value survives every save.
+				// The api key has its own route (POST /api/settings/key); an
+				// existing value survives every save of the other fields.
 				const stored = (storedConfigView().keys.llmApiKey ? { apiKey: llmConfig().apiKey } : {});
 				patch.llm = { ...llm, ...stored } as typeof patch.llm;
 			}
 			const written = updateStoredConfig(patch);
 			embedState = null;
 			return json(res, 200, { written, ...storedConfigView(), resolved: llmConfig(), mailtoResolved: contactMailto() });
+		}
+		// One key at a time: the page sends a value (empty = remove) and only
+		// ever reads back set / not set, never the key itself.
+		if (route === "POST /api/settings/key") {
+			const body = (await readBody(req)) as Record<string, unknown>;
+			const value = typeof body.value === "string" ? body.value.trim() : "";
+			if (/\s/.test(value)) throw new HttpError(400, "a key has no spaces");
+			if (body.name === "s2ApiKey" || body.name === "githubToken") {
+				updateStoredConfig({ [body.name]: value || undefined });
+			} else if (body.name === "llmApiKey") {
+				const llm: Record<string, unknown> = { ...storedConfigView().llm };
+				if (value) llm.apiKey = value;
+				updateStoredConfig({ llm: llm as Parameters<typeof updateStoredConfig>[0]["llm"] });
+			} else {
+				throw new HttpError(400, "unknown key");
+			}
+			return json(res, 200, { keys: storedConfigView().keys });
 		}
 		if (route === "POST /api/settings/pull-embed") {
 			const job = startJob("pull", `fetch the embedding model ${llmConfig().embedModel}`, async ({ signal, log }) => {

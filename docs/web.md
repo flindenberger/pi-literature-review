@@ -487,7 +487,8 @@ address (DNS rebinding), API answers are `Cache-Control: no-store`, and
 files are served only from the stage folders of the store and from the
 PDF library (found by scanning, never built from the request). Folders
 are shown in the file manager only when they are one of yours (PDF
-folders, the download folder, the store). Another computer on the network reaches nothing.
+folders, the download folder, the store, the history and keyword-block
+folders). Another computer on the network reaches nothing.
 
 ## Settings and keys
 
@@ -516,13 +517,18 @@ The Settings dialog writes `~/.config/pi-literature-review/config.json`
   and the shared address (the awesome-list topics stay in config.json,
   `codeListTopics`; the browser picks topics automatically).
 - **Sources**: contact email (empty = asked at each download) and the
-  keys as set / not set (they are edited in the file by hand, never on a
-  page).
-- **Folders**: the PDF folders (show, remove -- removing never touches the
-  files; **+ Add folder** opens the folder window, a typed path only where
-  no folder window exists) and the store.
+  optional keys (Semantic Scholar, GitHub, LLM API) as chips marked set /
+  not set. A click opens a password field: Save key, Remove, Cancel
+  (`POST /api/settings/key`, one key per call). The page only writes a
+  key; it never reads one back, only whether it is set.
+- **Folders**: **Library** = the PDF folders (show, remove -- removing
+  never touches the files; **+ Add folder** opens the folder window, a
+  typed path only where no folder window exists) and **Config & data** =
+  the store (configuration file, search runs, reports, conversations).
 - **Saved data**: number of conversations (Delete all) and of saved
-  keyword blocks (Forget).
+  keyword blocks (Forget), each with a button that shows its folder in
+  the file manager. A search request keeps the keyword blocks it was
+  searched with, so the same request searches the same way again.
 
 ## Not on the page
 

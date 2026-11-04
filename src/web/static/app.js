@@ -3079,9 +3079,11 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		loadFolders();
 		state.settingsBlocks = data.savedBlocks || 0;
 		$("set-blocks").textContent = String(data.savedBlocks || 0);
-		$("set-blocks").title = "Requests whose keyword blocks are kept: the same request searches with the same blocks";
 		$("set-history").textContent = String(data.conversations || 0);
-		$("set-history").title = data.historyDir;
+		$("reveal-history").innerHTML = ICON_REVEAL;
+		$("reveal-history").dataset.path = data.historyDir;
+		$("reveal-blocks").innerHTML = ICON_REVEAL;
+		$("reveal-blocks").dataset.path = data.blockCacheDir;
 		$("set-title").title = `Configuration file: ${data.path}`;
 		const llm = data.llm || {};
 		const models = data.models || {};
@@ -3123,14 +3125,50 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		$("set-thinking").value = data.thinking || "off";
 		$("set-generate-thinking").value = data.generateThinking || data.thinking || "off";
 		showThinkingNote();
-		const keys = data.keys || {};
-		const key = (on, name, title) => `<span class="key ${on ? "on" : ""}" title="${esc(title)}">${name} ${on ? "✓" : "–"}</span>`;
-		$("set-keys").innerHTML = [
-			key(keys.s2ApiKey, "Semantic Scholar", "s2ApiKey in the configuration file: Semantic Scholar as fourth search source (free key)"),
-			key(keys.githubToken, "GitHub", "githubToken in the configuration file: GitHub search 30 instead of 10 per minute for the code sources"),
-			key(keys.llmApiKey, "LLM API", "llm.apiKey in the configuration file: bearer token for a remote model API"),
-		].join("");
+		renderKeys(data.keys || {});
 		renderSettingsProgress();
+	}
+	/** The optional keys as chips: a click opens one write-only field (the
+	 * page never sees a stored key, only whether it is set). */
+	const KEYS = [
+		{ name: "s2ApiKey", label: "Semantic Scholar", title: "Free API key: Semantic Scholar becomes the fourth search source" },
+		{ name: "githubToken", label: "GitHub", title: "Token: GitHub search 30 instead of 10 requests per minute for the code sources" },
+		{ name: "llmApiKey", label: "LLM API", title: "Bearer token for a remote model API" },
+	];
+	function renderKeys(keys) {
+		state.settingsKeys = keys;
+		$("set-keys").innerHTML = KEYS.map((k) => `<button type="button" class="key ${keys[k.name] ? "on" : ""}" data-key="${k.name}" title="${esc(`${k.title} (${keys[k.name] ? "set, click to change" : "not set, click to add"})`)}">${k.label} ${keys[k.name] ? "✓" : "–"}</button>`).join("");
+		$("key-edit").hidden = true;
+	}
+	$("set-keys").addEventListener("click", (event) => {
+		const chip = event.target.closest("[data-key]");
+		if (!chip) return;
+		const spec = KEYS.find((k) => k.name === chip.dataset.key);
+		const set = Boolean((state.settingsKeys || {})[spec.name]);
+		const box = $("key-edit");
+		if (!box.hidden && box.dataset.key === spec.name) { box.hidden = true; chip.classList.remove("editing"); return; }
+		for (const other of $("set-keys").querySelectorAll(".key")) other.classList.toggle("editing", other === chip);
+		box.dataset.key = spec.name;
+		$("key-edit-name").textContent = `${spec.label} key`;
+		$("key-edit-value").value = "";
+		$("key-edit-value").placeholder = set ? "Set; type a new key to replace it" : "Paste the key";
+		$("btn-key-remove").hidden = !set;
+		box.hidden = false;
+		$("key-edit-value").focus();
+	});
+	async function saveKey(value) {
+		try {
+			const result = await post("/api/settings/key", { name: $("key-edit").dataset.key, value });
+			renderKeys(result.keys);
+			toast(value ? "Key saved." : "Key removed.");
+		} catch (error) { $("set-error").textContent = error.message; }
+	}
+	$("btn-key-save").addEventListener("click", () => { const value = $("key-edit-value").value.trim(); if (value) saveKey(value); });
+	$("key-edit-value").addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); $("btn-key-save").click(); } });
+	$("btn-key-remove").addEventListener("click", () => saveKey(""));
+	$("btn-key-cancel").addEventListener("click", () => renderKeys(state.settingsKeys || {}));
+	for (const id of ["reveal-history", "reveal-blocks"]) {
+		$(id).addEventListener("click", () => post("/api/reveal", { path: $(id).dataset.path }).catch((error) => toast(error.message)));
 	}
 	/** The model lists of the Settings: what each server offers (and,
 	 * inside pi, pi's models for the browser's LLM). A list replaces the

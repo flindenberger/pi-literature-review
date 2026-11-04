@@ -606,6 +606,13 @@ try {
 			const b3 = `http://127.0.0.1:${bgServer.port}`;
 			const h3 = { cookie: "plr_token=t3", "content-type": "application/json" };
 			const post3 = async (path: string, body: unknown = {}) => (await fetch(`${b3}${path}`, { method: "POST", headers: h3, body: JSON.stringify(body) })).json();
+			// Keys: written one at a time, read back only as set / not set.
+			assert.deepEqual((await post3("/api/settings/key", { name: "githubToken", value: " ghp_test123 " })).keys.githubToken, true);
+			assert.ok(!JSON.stringify(await (await fetch(`${b3}/api/settings`, { headers: h3 })).json()).includes("ghp_test123"), "the key never leaves the server");
+			assert.equal((await post3("/api/settings/key", { name: "llmApiKey", value: "sk-1" })).keys.llmApiKey, true);
+			assert.equal((await post3("/api/settings/key", { name: "llmApiKey", value: "" })).keys.llmApiKey, false);
+			assert.equal((await post3("/api/settings/key", { name: "githubToken", value: "" })).keys.githubToken, false);
+			assert.equal((await fetch(`${b3}/api/settings/key`, { method: "POST", headers: h3, body: JSON.stringify({ name: "mailto", value: "x" }) })).status, 400);
 			await post3("/api/dialog/new", { start: "search" });
 			const first = await post3("/api/dialog/answer", { text: "(waterline) AND (river)" });
 			await new Promise((resolve) => setTimeout(resolve, 30));

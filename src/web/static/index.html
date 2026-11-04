@@ -149,19 +149,32 @@
   <h4>Sources</h4>
   <div class="kv"><span>Contact email</span><input id="set-mailto" type="text" title="For Unpaywall and the OpenAlex polite pool; empty = asked at each download"></div>
   <div class="kv"><span>Keys</span><div class="keys" id="set-keys"></div></div>
+  <div class="kv keyedit" id="key-edit" hidden>
+    <span id="key-edit-name"></span>
+    <div class="keyrow">
+      <input id="key-edit-value" type="password" autocomplete="off" spellcheck="false">
+      <button id="btn-key-save" type="button" class="mini">Save key</button>
+      <button id="btn-key-remove" type="button" class="mini">Remove</button>
+      <button id="btn-key-cancel" type="button" class="mini">Cancel</button>
+    </div>
+  </div>
 
   <h4>Folders</h4>
-  <div id="set-folders" class="folders"></div>
-  <div class="folder-add">
-    <button id="btn-folder-pick" type="button" class="mini">+ Add folder</button>
-    <input id="set-folder-path" type="text" placeholder="Full path of a folder" aria-label="Folder path" hidden>
-    <button id="btn-folder-add" type="button" class="mini" hidden>Add</button>
+  <div class="kv lib"><span title="Folders with your PDFs, read with their subfolders; never written to">Library</span>
+    <div>
+      <div id="set-folders" class="folders"></div>
+      <div class="folder-add">
+        <button id="btn-folder-pick" type="button" class="mini">+ Add folder</button>
+        <input id="set-folder-path" type="text" placeholder="Full path of a folder" aria-label="Folder path" hidden>
+        <button id="btn-folder-add" type="button" class="mini" hidden>Add</button>
+      </div>
+    </div>
   </div>
-  <div class="kv store"><span>Store</span><div class="folders" id="set-store"></div></div>
+  <div class="kv store"><span title="Settings, search results, reports and conversations">Config &amp; data</span><div class="folders" id="set-store"></div></div>
 
   <h4>Saved data</h4>
-  <div class="kv"><span>Conversations</span><b id="set-history"></b><button id="btn-history-clear" type="button" class="mini">Delete all</button></div>
-  <div class="kv"><span>Keyword blocks</span><b id="set-blocks"></b><button id="btn-blocks-clear" type="button" class="mini">Forget</button></div>
+  <div class="kv"><span>Conversations</span><div class="count"><b id="set-history"></b><button type="button" class="ibtn" id="reveal-history" title="Show in the file manager" aria-label="Show in the file manager"></button></div><button id="btn-history-clear" type="button" class="mini">Delete all</button></div>
+  <div class="kv"><span title="Each search request keeps its keyword blocks, so the same request searches the same way again">Keyword blocks</span><div class="count"><b id="set-blocks"></b><button type="button" class="ibtn" id="reveal-blocks" title="Show in the file manager" aria-label="Show in the file manager"></button></div><button id="btn-blocks-clear" type="button" class="mini">Forget</button></div>
 
   <pre class="progress" id="progress-settings"></pre>
   <p class="hint error" id="set-error"></p>
