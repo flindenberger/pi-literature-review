@@ -20,7 +20,7 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
@@ -479,6 +479,8 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 	 * one, while no chat or report runs; progress goes to the page as SSE
 	 * event "index" and into GET /api/library. */
 	const indexDir = join(root, "lit-synthesis", "index");
+	/** A job that reads or writes indexes (the background pass waits for it). */
+	const readsIndexes = (): boolean => jobs.snapshot().running.some((job) => job.kind === "chat" || job.kind === "report" || job.kind === "chat-report" || job.kind === "index" || job.kind === "selection");
 	const indexer = new Indexer({
 		ready: requireEmbedding,
 		pool: async (signal) => chatPool(await deps.ensureLibrary(root, () => {}, signal)),
@@ -491,7 +493,7 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 			const outcome = await deps.ensureIndexed([paper], indexDir, llmConfig().embedModel, (texts, s) => wiring.backend.embed(texts, s), { onProgress: () => {}, signal });
 			return outcome.failures[0]?.reason ?? null;
 		},
-		busy: () => jobs.snapshot().running.some((job) => job.kind === "chat" || job.kind === "report" || job.kind === "chat-report" || job.kind === "index" || job.kind === "selection"),
+		busy: () => readsIndexes(),
 		fileStamp: (file) => {
 			try {
 				const info = statSync(file);
@@ -505,6 +507,21 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 	indexer.subscribe((status) => {
 		for (const connection of connections) connection.send("index", status);
 	});
+	/** Number and total size of the index files (Settings, "Saved data"). */
+	const indexUsage = (): { dir: string; count: number; bytes: number } => {
+		let count = 0;
+		let bytes = 0;
+		try {
+			for (const name of readdirSync(indexDir)) {
+				if (!name.endsWith(".json")) continue;
+				count++;
+				bytes += statSync(join(indexDir, name)).size;
+			}
+		} catch {
+			// no index folder yet
+		}
+		return { dir: indexDir, count, bytes };
+	};
 	/** Start (or queue) a background pass; a no-op without the option. */
 	const kickIndex = (): void => {
 		if (options.backgroundIndex) indexer.kick();
@@ -1713,6 +1730,22 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 		// Show a data folder in the file manager: one of the three stage
 		// folders (the folder button of a file card) or the data root itself
 		// (the folder icon in the rail). Nothing else.
+		// Delete every index file; the PDFs stay and the background pass
+		// builds the indexes again. Refused while a chat, report or index
+		// job reads them.
+		if (route === "POST /api/indexes/clear") {
+			if (readsIndexes()) throw new HttpError(409, "a chat, report or indexing job is running -- try again when it has finished");
+			indexer.stop();
+			await indexer.idle();
+			let deleted = 0;
+			for (const name of existsSync(indexDir) ? readdirSync(indexDir) : []) {
+				if (!name.endsWith(".json")) continue;
+				rmSync(join(indexDir, name), { force: true });
+				deleted++;
+			}
+			kickIndex();
+			return json(res, 200, { deleted });
+		}
 		if (route === "POST /api/reveal") {
 			const body = (await readBody(req)) as Record<string, unknown>;
 			// A known folder by path: one of the PDF folders (or a folder in
@@ -1809,7 +1842,7 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 
 		/* ---- settings ---- */
 		if (route === "GET /api/settings") {
-			return json(res, 200, { ...storedConfigView(), path: configPath(), resolved: llmConfig(), models: await modelRows(), mailtoResolved: contactMailto(), embedState, historyDir: historyRoot, blockCacheDir: dirname(blockCacheFile), configDir: dirname(configPath()), conversations: listConversations(historyRoot).conversations.length, savedBlocks: blockCacheSize(blockCacheFile) });
+			return json(res, 200, { ...storedConfigView(), path: configPath(), resolved: llmConfig(), models: await modelRows(), mailtoResolved: contactMailto(), embedState, historyDir: historyRoot, blockCacheDir: dirname(blockCacheFile), configDir: dirname(configPath()), indexes: indexUsage(), conversations: listConversations(historyRoot).conversations.length, savedBlocks: blockCacheSize(blockCacheFile) });
 		}
 		// The models a server offers, for the Settings' model lists: the
 		// address and dialect as the page shows them (unsaved edits too);

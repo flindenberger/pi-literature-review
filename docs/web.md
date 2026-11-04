@@ -208,8 +208,8 @@ arXiv ID in the PDF) of those papers only, never of the whole library. The
 rail's right edge can be dragged (10 to 30 rem, kept per browser; a double
 click resets it). Below the stages: the model in use (a local model or embedding
 server that is not running shows a red dot: the server probes 127.0.0.1
-addresses on every state read), a folder icon that opens the data folder
-in the file manager (tooltip: its path), a gear icon for Settings, and at the right the GitHub
+addresses on every state read), an info icon, a gear icon for Settings
+(its **Config & data** row opens the data folder), and at the right the GitHub
 and npm marks linking to the package's repository and npm page.
 The **+ New search** and **+ New paper chat** rows open a conversation at
 that stage's first question, shown alone in the middle of the column with the
@@ -525,9 +525,11 @@ The Settings dialog writes `~/.config/pi-literature-review/config.json`
   never touches the files; **+ Add folder** opens the folder window, a
   typed path only where no folder window exists) and **Config & data** =
   the store (configuration file, search runs, reports, conversations).
-- **Saved data**: number of conversations (Delete all) and of saved
-  keyword blocks (Forget), each with a button that shows its folder in
-  the file manager. A search request keeps the keyword blocks it was
+- **Saved data**: number of conversations (Delete all), indexes with
+  their size (Delete all; `POST /api/indexes/clear`, refused while a
+  chat, report or index job runs; the PDFs stay and the background pass
+  builds the indexes again) and saved keyword blocks (Forget), each with
+  a button that shows its folder in the file manager. A search request keeps the keyword blocks it was
   searched with, so the same request searches the same way again.
 
 ## Not on the page

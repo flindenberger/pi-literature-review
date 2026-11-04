@@ -2450,7 +2450,6 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	async function loadState() {
 		try { state.info = await get("/api/state"); } catch (error) { $("status").innerHTML = `<span class="dot bad"></span>${esc(error.message)}`; return; }
 		const info = state.info;
-		$("btn-folder").title = `Working folder: ${info.root}`;
 		const p = info.provider;
 		// The brand mark: a plain Greek pi everywhere until pi.dev's permission
 		// for its logo is confirmed; then the logo inside pi, the glyph standalone.
@@ -3008,9 +3007,6 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		for (const [name, entry] of state.results) if (entry.sortOpen) { entry.sortOpen = false; redrawResults(name); }
 	});
 	// Opens the data folder in the file manager (same launcher as the file cards).
-	$("btn-folder").addEventListener("click", () => {
-		post("/api/reveal", { stage: "root" }).then((r) => toast(`Opened ${r.opened} in the file manager.`)).catch((error) => toast(error.message));
-	});
 
 	/* ---------------- SSE ---------------- */
 	function connectEvents() {
@@ -3082,6 +3078,13 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		$("set-history").textContent = String(data.conversations || 0);
 		$("reveal-history").innerHTML = ICON_REVEAL;
 		$("reveal-history").dataset.path = data.historyDir;
+		const ix = data.indexes || { count: 0, bytes: 0 };
+		state.settingsIndexes = ix.count;
+		$("set-indexes").textContent = ix.count ? `${ix.count} · ${formatBytes(ix.bytes)}` : "0";
+		$("reveal-indexes").innerHTML = ICON_REVEAL;
+		$("reveal-indexes").dataset.path = ix.dir;
+		$("reveal-indexes").hidden = !ix.count;
+		$("btn-indexes-clear").disabled = !ix.count;
 		$("reveal-blocks").innerHTML = ICON_REVEAL;
 		$("reveal-blocks").dataset.path = data.blockCacheDir;
 		$("set-title").title = `Configuration file: ${data.path}`;
@@ -3167,7 +3170,22 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	$("key-edit-value").addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); $("btn-key-save").click(); } });
 	$("btn-key-remove").addEventListener("click", () => saveKey(""));
 	$("btn-key-cancel").addEventListener("click", () => renderKeys(state.settingsKeys || {}));
-	for (const id of ["reveal-history", "reveal-blocks"]) {
+	/** 102400 -> "100 kB", 107000000 -> "102 MB". */
+	function formatBytes(bytes) {
+		if (bytes >= 1e9) return `${(bytes / 1e9).toFixed(1)} GB`;
+		if (bytes >= 1e6) return `${Math.round(bytes / 1e6)} MB`;
+		return `${Math.max(1, Math.round(bytes / 1e3))} kB`;
+	}
+	$("btn-indexes-clear").addEventListener("click", async () => {
+		const n = state.settingsIndexes || 0;
+		if (!confirm(`Delete all ${n} index${n === 1 ? "" : "es"}? Your PDFs stay. The indexes are rebuilt in the background, about 8 seconds per PDF.`)) return;
+		try {
+			const result = await post("/api/indexes/clear");
+			await loadSettings();
+			toast(`${result.deleted} index${result.deleted === 1 ? "" : "es"} deleted; rebuilding in the background.`);
+		} catch (error) { $("set-error").textContent = error.message; }
+	});
+	for (const id of ["reveal-history", "reveal-blocks", "reveal-indexes"]) {
 		$(id).addEventListener("click", () => post("/api/reveal", { path: $(id).dataset.path }).catch((error) => toast(error.message)));
 	}
 	/** The model lists of the Settings: what each server offers (and,

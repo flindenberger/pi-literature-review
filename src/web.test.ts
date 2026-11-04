@@ -613,6 +613,13 @@ try {
 			assert.equal((await post3("/api/settings/key", { name: "llmApiKey", value: "" })).keys.llmApiKey, false);
 			assert.equal((await post3("/api/settings/key", { name: "githubToken", value: "" })).keys.githubToken, false);
 			assert.equal((await fetch(`${b3}/api/settings/key`, { method: "POST", headers: h3, body: JSON.stringify({ name: "mailto", value: "x" }) })).status, 400);
+			// Indexes: counted in Settings, deleted on request (PDFs untouched).
+			mkdirSync(join(root, "lit-synthesis", "index"), { recursive: true });
+			writeFileSync(join(root, "lit-synthesis", "index", "zz_test.json"), "{}");
+			const ixBefore = (await (await fetch(`${b3}/api/settings`, { headers: h3 })).json()).indexes;
+			assert.ok(ixBefore.count >= 1 && ixBefore.bytes >= 2);
+			assert.ok((await post3("/api/indexes/clear")).deleted >= 1);
+			assert.equal((await (await fetch(`${b3}/api/settings`, { headers: h3 })).json()).indexes.count, 0);
 			await post3("/api/dialog/new", { start: "search" });
 			const first = await post3("/api/dialog/answer", { text: "(waterline) AND (river)" });
 			await new Promise((resolve) => setTimeout(resolve, 30));

@@ -54,7 +54,6 @@
     <div class="spacer"></div>
     <div class="status" id="status"><span class="dot idle"></span>connecting ...</div>
     <div class="links">
-      <button id="btn-folder" type="button" class="rail-icon" title="Open the working folder in the file manager" aria-label="Open the working folder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg></button>
       <div class="info-pop" id="info-pop" hidden></div>
       <button id="btn-info" type="button" class="rail-icon" title="About this tool and where your data goes" aria-label="About"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 16v-5M12 8h.01"/></svg></button>
       <button id="btn-settings" type="button" class="rail-icon" title="Settings" aria-label="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg></button>
@@ -174,6 +173,7 @@
 
   <h4>Saved data</h4>
   <div class="kv"><span>Conversations</span><div class="count"><b id="set-history"></b><button type="button" class="ibtn" id="reveal-history" title="Show in the file manager" aria-label="Show in the file manager"></button></div><button id="btn-history-clear" type="button" class="mini">Delete all</button></div>
+  <div class="kv"><span title="Searchable copies of your PDFs for the paper chat; rebuilt in the background when deleted">Indexes</span><div class="count"><b id="set-indexes"></b><button type="button" class="ibtn" id="reveal-indexes" title="Show in the file manager" aria-label="Show in the file manager"></button></div><button id="btn-indexes-clear" type="button" class="mini">Delete all</button></div>
   <div class="kv"><span title="Each search request keeps its keyword blocks, so the same request searches the same way again">Keyword blocks</span><div class="count"><b id="set-blocks"></b><button type="button" class="ibtn" id="reveal-blocks" title="Show in the file manager" aria-label="Show in the file manager"></button></div><button id="btn-blocks-clear" type="button" class="mini">Forget</button></div>
 
   <pre class="progress" id="progress-settings"></pre>
