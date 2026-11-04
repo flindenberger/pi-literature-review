@@ -63,10 +63,22 @@ export interface StoredConfig {
 	/** Folders the library read on its own (a lit-selection/ or loose PDFs
 	 * where pi was started) that the user took out of the library. */
 	ignoredFolders?: string[];
-	/** Hidden reasoning ("thinking") for every model call of this package,
-	 * inside pi and standalone alike; default off. */
+	/** Hidden reasoning ("thinking") for the LLM role (every model call
+	 * except the synthesis units), inside pi and standalone alike; default
+	 * off. */
 	thinking?: ThinkingSetting;
+	/** Thinking for the generation role (synthesis units); unset = the
+	 * LLM's setting. */
+	generateThinking?: ThinkingSetting;
+	/** The browser interface's own LLM inside pi ("provider/id" of a pi
+	 * model); unset = follow the model selected in pi. Never changes pi's
+	 * session model, and the terminal tools never read it. */
+	browserModel?: string;
 }
+
+/** The two model roles that write text: the LLM (block proposals, help,
+ * chat answers, summaries) and generation (the synthesis units). */
+export type ModelRole = "llm" | "generation";
 
 /** The package's own thinking setting, independent of pi's. */
 export type ThinkingSetting = "off" | "low" | "medium" | "high";
@@ -80,6 +92,24 @@ export function thinkingSetting(
 ): ThinkingSetting {
 	const value = (env.PI_LITERATURE_REVIEW_THINKING ?? stored.thinking ?? "off").trim().toLowerCase();
 	return (THINKING_SETTINGS as readonly string[]).includes(value) ? value as ThinkingSetting : "off";
+}
+
+/** Thinking for one role: PI_LITERATURE_REVIEW_GENERATE_THINKING >
+ * config generateThinking > the LLM's setting for "generation";
+ * thinkingSetting for "llm". */
+export function thinkingFor(
+	role: ModelRole,
+	env: Record<string, string | undefined> = process.env,
+	stored: StoredConfig = loadStoredConfig(),
+): ThinkingSetting {
+	if (role === "llm") return thinkingSetting(env, stored);
+	const value = (env.PI_LITERATURE_REVIEW_GENERATE_THINKING ?? stored.generateThinking ?? "").trim().toLowerCase();
+	return (THINKING_SETTINGS as readonly string[]).includes(value) ? value as ThinkingSetting : thinkingSetting(env, stored);
+}
+
+/** The browser's own pi model ("provider/id"), "" = follow pi. */
+export function browserModel(stored: StoredConfig = loadStoredConfig()): string {
+	return (stored.browserModel ?? "").trim();
 }
 
 let cache: StoredConfig | null = null;
@@ -129,6 +159,8 @@ export function storedConfigView(): {
 	mailto: string;
 	codeListTopics: string[] | undefined;
 	thinking: ThinkingSetting;
+	generateThinking: ThinkingSetting;
+	browserModel: string;
 	llm: Partial<LlmConfig> & { chatModel?: string };
 	keys: { s2ApiKey: boolean; githubToken: boolean; llmApiKey: boolean };
 } {
@@ -138,6 +170,8 @@ export function storedConfigView(): {
 		mailto: (stored.mailto ?? "").trim(),
 		codeListTopics: stored.codeListTopics,
 		thinking: thinkingSetting({}, stored),
+		generateThinking: thinkingFor("generation", {}, stored),
+		browserModel: browserModel(stored),
 		llm,
 		keys: { s2ApiKey: Boolean(stored.s2ApiKey), githubToken: Boolean(stored.githubToken), llmApiKey: Boolean(apiKey) },
 	};
@@ -239,6 +273,9 @@ export function llmConfig(
 	const embedApi = normalizeApi(env.PI_LITERATURE_REVIEW_EMBED_API) ?? normalizeApi(stored.embedApi);
 	const generateBaseUrl = pick(env.PI_LITERATURE_REVIEW_GENERATE_URL, stored.generateBaseUrl);
 	const generateApi = normalizeApi(env.PI_LITERATURE_REVIEW_GENERATE_API) ?? normalizeApi(stored.generateApi);
+	const chatModelSet = pick(env.PI_LITERATURE_REVIEW_CHAT_MODEL, stored.chatModel);
+	const chatBaseUrl = pick(env.PI_LITERATURE_REVIEW_CHAT_URL, stored.chatBaseUrl);
+	const chatApi = normalizeApi(env.PI_LITERATURE_REVIEW_CHAT_API) ?? normalizeApi(stored.chatApi);
 	return {
 		baseUrl: pick(env.PI_LITERATURE_REVIEW_LLM_URL, stored.baseUrl, LLM_DEFAULTS.baseUrl),
 		api: normalizeApi(env.PI_LITERATURE_REVIEW_LLM_API) ?? normalizeApi(stored.api) ?? LLM_DEFAULTS.api,
@@ -249,6 +286,9 @@ export function llmConfig(
 		...(embedApi ? { embedApi } : {}),
 		...(generateBaseUrl ? { generateBaseUrl } : {}),
 		...(generateApi ? { generateApi } : {}),
+		...(chatModelSet ? { chatModel: chatModelSet } : {}),
+		...(chatBaseUrl ? { chatBaseUrl } : {}),
+		...(chatApi ? { chatApi } : {}),
 	};
 }
 

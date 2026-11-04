@@ -154,4 +154,13 @@ import {
 	assert.deepEqual(codeListTopics({}, { codeListTopics: [] }), DEFAULT_CODE_LIST_TOPICS);
 }
 
+// Thinking per role: generation falls back to the LLM's setting.
+{
+	const { thinkingFor } = await import("./config.ts");
+	assert.equal(thinkingFor("generation", {}, { thinking: "low" }), "low");
+	assert.equal(thinkingFor("generation", {}, { thinking: "low", generateThinking: "off" }), "off");
+	assert.equal(thinkingFor("llm", {}, { thinking: "low", generateThinking: "high" }), "low");
+	assert.equal(thinkingFor("generation", { PI_LITERATURE_REVIEW_GENERATE_THINKING: "medium" }, {}), "medium");
+}
+
 console.log("config.test.ts: all assertions passed");

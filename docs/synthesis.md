@@ -126,11 +126,14 @@ into Ollama; the report names the model that ran. Embeddings always run on the e
 
 ### Thinking
 
-Every model call of this package -- answers, summaries, report units, the
-review synthesis, the English retrieval variant, the query-variant
-suggestions, the browser's keyword blocks, help answers and small-talk
-check -- follows the package's own `thinking` setting (config.json or
-Settings in the browser): **off** by default, or low / medium / high.
+Every model call of this package follows the package's own thinking
+settings (config.json or Settings in the browser), one per role: the
+LLM role (answers, summaries, per-paper report units, the English
+retrieval variant, the query-variant suggestions, the browser's keyword
+blocks, help answers and small-talk check) follows `thinking`; the
+generation role (the cross-paper synthesis and review units of a report)
+follows `generateThinking`, unset = the same as `thinking`. Each is
+**off** by default, or low / medium / high.
 It is independent of pi's thinking level, read anew for each call, and
 works the same inside pi and standalone. When on, every call gets extra
 output room for the hidden reasoning (2k / 4k / 8k tokens).

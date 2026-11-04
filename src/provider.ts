@@ -12,8 +12,8 @@
  * rule lives in the engines).
  */
 
-import { configuredGenerateModel, llmConfig } from "./config.ts";
-import { createBackend, type LlmBackend } from "./llm.ts";
+import { chatModel, llmConfig, type ModelRole } from "./config.ts";
+import { createBackend, type LlmBackend, type LlmConfig } from "./llm.ts";
 
 export interface GenerateCall {
 	system: string;
@@ -23,6 +23,8 @@ export interface GenerateCall {
 	signal?: AbortSignal;
 	/** Without thinking whatever the setting (short helper calls). */
 	noThinking?: boolean;
+	/** The model role of the call (default the LLM); picks its thinking. */
+	role?: ModelRole;
 }
 
 /** What the interface shows about the model in use. */
@@ -46,6 +48,10 @@ export interface ProviderStatus {
 	baseUrl: string | null;
 	/** Address of the embedding server. */
 	embeddingsBaseUrl: string | null;
+	/** Inside pi: the model selected in pi, and whether the browser
+	 * follows it (false = the browser's own choice is in use). */
+	piModel?: string | null;
+	follows?: boolean;
 }
 
 export interface EngineWiring {
@@ -65,37 +71,55 @@ export interface ModelProvider {
 	hasModel(): boolean;
 	/** Backend + model names for runRound / runReport / runChatReport. */
 	wiring(): EngineWiring;
+	/** Inside pi: the models pi can use ("provider/id"), offered as the
+	 * browser's own LLM choice. Absent for the endpoint provider. */
+	choices?(): Array<{ id: string; label: string; local: boolean }>;
 }
 
 /** The configured llm backend as the provider (standalone way, and the
  * CLI): generation and embeddings from config.json / environment. */
-export function endpointProvider(cfg = llmConfig()): ModelProvider {
-	const backend = createBackend(cfg);
-	const generateApi = cfg.generateApi ?? cfg.api;
-	const generateBase = cfg.generateBaseUrl || cfg.baseUrl;
-	const embedBase = cfg.embedBaseUrl || cfg.baseUrl;
+export function endpointProvider(fixed?: LlmConfig): ModelProvider {
+	// Read afresh on every use, so a change in the Settings applies to the
+	// next call without a restart (a fixed config only in tests).
+	const current = () => fixed ?? llmConfig();
 	const local = (url: string) => /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\]|0\.0\.0\.0)(:|\/|$)/i.test(url);
+	/** The LLM role: llm.chatModel on its own address, else generateModel. */
+	const llm = (cfg: LlmConfig) => {
+		const model = fixed ? cfg.chatModel || cfg.generateModel : chatModel();
+		const onChat = Boolean(cfg.chatModel) && model === cfg.chatModel;
+		const base = (onChat && cfg.chatBaseUrl) || cfg.generateBaseUrl || cfg.baseUrl;
+		const api = (onChat && cfg.chatApi) || cfg.generateApi || cfg.api;
+		return { model, base, api };
+	};
 	return {
-		status: () => ({
-			kind: "endpoint",
-			model: cfg.generateModel,
-			via: `${generateApi} at ${generateBase}`,
-			embeddings: cfg.embedModel,
-			embeddingsVia: `${cfg.embedApi ?? cfg.api} at ${embedBase}`,
-			remote: !local(generateBase),
-			baseUrl: generateBase || null,
-			embeddingsBaseUrl: embedBase || null,
-		}),
-		hasModel: () => Boolean(cfg.generateModel),
-		generate: async (call) => backend.generate(call.system, call.user, {
-			temperature: call.temperature,
-			maxTokens: call.maxTokens,
-			noThinking: call.noThinking,
-		}, call.signal),
-		wiring: () => ({
-			backend,
-			explainModel: cfg.generateModel,
-			reviewModel: configuredGenerateModel() || cfg.generateModel,
-		}),
+		status: () => {
+			const cfg = current();
+			const role = llm(cfg);
+			const embedBase = cfg.embedBaseUrl || cfg.baseUrl;
+			return {
+				kind: "endpoint",
+				model: role.model,
+				via: `${role.api} at ${role.base}`,
+				embeddings: cfg.embedModel,
+				embeddingsVia: `${cfg.embedApi ?? cfg.api} at ${embedBase}`,
+				remote: !local(role.base),
+				baseUrl: role.base || null,
+				embeddingsBaseUrl: embedBase || null,
+			};
+		},
+		hasModel: () => Boolean(llm(current()).model),
+		generate: async (call) => {
+			const cfg = current();
+			return createBackend(cfg).generate(call.system, call.user, {
+				model: llm(cfg).model,
+				temperature: call.temperature,
+				maxTokens: call.maxTokens,
+				noThinking: call.noThinking,
+			}, call.signal);
+		},
+		wiring: () => {
+			const cfg = current();
+			return { backend: createBackend(cfg), explainModel: llm(cfg).model, reviewModel: cfg.generateModel };
+		},
 	};
 }

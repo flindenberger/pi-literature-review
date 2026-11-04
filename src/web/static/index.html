@@ -102,60 +102,70 @@
 <dialog id="modal" class="modal"><div id="modal-body"></div></dialog>
 <div id="dropzone" hidden><div class="dz"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3h8l4 4v14H7z"/><path d="M15 3v4h4M13 11v6M10 14l3 3 3-3"/></svg><span>Drop PDFs to chat about them</span></div></div>
 
-<dialog id="settings">
-  <h3>Settings</h3>
-  <p class="hint" id="set-path"></p>
-  <p class="hint" id="set-model"></p>
-  <p class="hint" id="set-model-hint"></p>
+<dialog id="settings" class="settings">
+  <h3 id="set-title">Settings</h3>
 
-  <label title="Hidden reasoning before every answer, report and suggestion of this tool, inside pi and standalone. Slower; on small local models it rarely helps. Independent of pi's own thinking level.">Thinking<select id="set-thinking"><option value="off">Off</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label>
-  <p class="hint error" id="set-thinking-note" hidden>Thinking slows answers and consumes extra tokens. On smaller models, hidden reasoning may exhaust the budget before generating text. If this happens, set Thinking to Off.</p>
-
-  <h4>Writing model (standalone)</h4>
-  <div class="grid2">
-    <label>API dialect<select id="set-api"><option value="">(default)</option><option value="ollama">ollama</option><option value="openai">openai</option></select></label>
-    <label>Shared address<input id="set-base-url" type="text"></label>
-    <label>Generation model<input id="set-generate-model" type="text" placeholder="e.g. qwen3:8b"></label>
-    <label>Generation address (optional)<input id="set-generate-url" type="text"></label>
+  <h4>Models</h4>
+  <div class="mrow" id="row-llm">
+    <div class="mname" title="Keyword blocks, help, chat answers and summaries"><span class="dot idle" id="dot-llm"></span>LLM</div>
+    <div class="mbody">
+      <select id="set-browser-model" aria-label="LLM" title="The browser's own model among pi's models; your terminal keeps the model selected there" hidden></select>
+      <div class="mfields" id="llm-fields">
+        <span class="pick"><select id="pick-chat" aria-label="LLM model" hidden></select><span class="other"><input id="set-chat-model" type="text" aria-label="LLM model" title="LLM model; empty = the generation model"><button type="button" class="back" id="back-chat" title="Back to the list" aria-label="Back to the list" hidden>&#8617;</button></span></span>
+        <input id="set-chat-url" type="text" aria-label="LLM address" title="Address of the server holding this model; empty = the generation address">
+      </div>
+      <label class="think" title="Hidden reasoning before the answer. Slower; on small local models it rarely helps">Thinking<select id="set-thinking"><option value="off">Off</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label>
+    </div>
   </div>
-
-  <h4>Embeddings (always local)</h4>
-  <div class="grid2">
-    <label>Embedding model<input id="set-embed-model" type="text"></label>
-    <label>Embedding address (optional)<input id="set-embed-url" type="text"></label>
+  <div class="mrow" id="row-generation">
+    <div class="mname" title="Writes the cross-paper synthesis and review of a report"><span class="dot idle" id="dot-generation"></span>Generation <small>(synthesis)</small></div>
+    <div class="mbody">
+      <div class="mfields">
+        <span class="pick"><select id="pick-generate" aria-label="Generation model" hidden></select><span class="other"><input id="set-generate-model" type="text" aria-label="Generation model" title="Generation model"><button type="button" class="back" id="back-generate" title="Back to the list" aria-label="Back to the list" hidden>&#8617;</button></span></span>
+        <input id="set-generate-url" type="text" aria-label="Generation address" title="Address of the server holding this model; empty = the shared address">
+      </div>
+      <label class="think" title="Hidden reasoning before each synthesis unit">Thinking<select id="set-generate-thinking"><option value="off">Off</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option></select></label>
+    </div>
   </div>
-  <p class="hint" id="set-embed-state"></p>
+  <div class="mrow" id="row-embedding">
+    <div class="mname" title="Turns PDF passages and questions into vectors to find the passages (RAG); always local"><span class="dot idle" id="dot-embedding"></span>Embedding <small>(RAG)</small></div>
+    <div class="mbody">
+      <div class="mfields">
+        <span class="pick"><select id="pick-embed" aria-label="Embedding model" hidden></select><span class="other"><input id="set-embed-model" type="text" aria-label="Embedding model" title="Embedding model"><button type="button" class="back" id="back-embed" title="Back to the list" aria-label="Back to the list" hidden>&#8617;</button></span></span>
+        <input id="set-embed-url" type="text" aria-label="Embedding address" title="Address of the server holding this model; empty = the shared address">
+      </div>
+      <button id="btn-pull-embed" type="button" class="mini" title="Download the embedding model into Ollama">Fetch</button>
+    </div>
+  </div>
+  <p class="warnline" id="set-thinking-note" hidden>Thinking can cut answers off on smaller models.</p>
+  <details class="adv">
+    <summary>Advanced</summary>
+    <div class="grid2">
+      <label>API dialect<select id="set-api"><option value="">(default)</option><option value="ollama">ollama</option><option value="openai">openai</option></select></label>
+      <label>Shared address<input id="set-base-url" type="text"></label>
+    </div>
+  </details>
 
-  <h4>Contact and lists</h4>
-  <label>Contact email for Unpaywall and the OpenAlex polite pool<input id="set-mailto" type="text"></label>
-  <p class="hint" id="set-mailto-hint"></p>
-  <label>Stored GitHub list topics (comma-separated)<input id="set-topics" type="text"></label>
-  <table class="keys"><tbody id="set-keys"></tbody></table>
-  <p class="hint">Keys are edited in the configuration file by hand; this page shows only whether they are set.</p>
+  <h4>Sources</h4>
+  <div class="kv"><span>Contact email</span><input id="set-mailto" type="text" title="For Unpaywall and the OpenAlex polite pool; empty = asked at each download"></div>
+  <div class="kv"><span>Keys</span><div class="keys" id="set-keys"></div></div>
 
-  <h4>PDF folders</h4>
+  <h4>Folders</h4>
   <div id="set-folders" class="folders"></div>
-  <div class="row folder-add">
-    <button id="btn-folder-pick" type="button">Add folder ...</button>
-    <input id="set-folder-path" type="text" placeholder="or type a full path" aria-label="Folder path">
-    <button id="btn-folder-add" type="button">Add</button>
+  <div class="folder-add">
+    <button id="btn-folder-pick" type="button" class="mini">+ Add folder</button>
+    <input id="set-folder-path" type="text" placeholder="Full path of a folder" aria-label="Folder path" hidden>
+    <button id="btn-folder-add" type="button" class="mini" hidden>Add</button>
   </div>
-  <h4>Store (search runs, reports, index, dropped PDFs)</h4>
-  <div class="folders" id="set-store"></div>
+  <div class="kv store"><span>Store</span><div class="folders" id="set-store"></div></div>
 
-  <h4>Conversation history</h4>
-  <p class="hint" id="set-history"></p>
-  <button id="btn-history-clear" type="button">Delete all conversations</button>
-
-  <h4>Saved keyword blocks</h4>
-  <p class="hint" id="set-blocks"></p>
-  <button id="btn-blocks-clear" type="button">Forget saved keyword blocks</button>
+  <h4>Saved data</h4>
+  <div class="kv"><span>Conversations</span><b id="set-history"></b><button id="btn-history-clear" type="button" class="mini">Delete all</button></div>
+  <div class="kv"><span>Keyword blocks</span><b id="set-blocks"></b><button id="btn-blocks-clear" type="button" class="mini">Forget</button></div>
 
   <pre class="progress" id="progress-settings"></pre>
   <p class="hint error" id="set-error"></p>
   <div class="row">
-    <button id="btn-settings-test" type="button">Test setup</button>
-    <button id="btn-pull-embed" type="button">Fetch embedding model</button>
     <button id="btn-settings-save" type="button" class="primary">Save</button>
     <button id="btn-settings-close" type="button">Close</button>
   </div>

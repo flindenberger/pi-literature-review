@@ -41,11 +41,14 @@ copies a provider key from Pi's own configuration.
 | `llm.api` | `PI_LITERATURE_REVIEW_LLM_API` | `ollama` (default) or `openai` for any OpenAI-compatible server (llama.cpp's llama-server, vLLM, ...). |
 | `llm.embedModel` | `PI_LITERATURE_REVIEW_EMBED_MODEL` | Embedding model (default `bge-m3`, multilingual). Changing it re-embeds the index automatically. |
 | `llm.generateModel` | `PI_LITERATURE_REVIEW_LLM_MODEL` | Optional dedicated model for the review genres inside Pi (unset = the model selected in Pi runs everything). Headless/CLI runs use it for all generation (default `openscholar-8b`). |
-| `llm.chatModel` | `PI_LITERATURE_REVIEW_CHAT_MODEL` | CLI generator for chat answers and summaries; falls back to `generateModel`. |
+| `llm.chatModel` | `PI_LITERATURE_REVIEW_CHAT_MODEL` | The LLM role without pi (keyword blocks, help, chat answers, summaries); falls back to `generateModel`. Inside pi the model selected there takes this role. |
+| `llm.chatBaseUrl`, `llm.chatApi` | `PI_LITERATURE_REVIEW_CHAT_URL`, `_CHAT_API` | Per-role split: a separate server for `chatModel` (a llama-server holds one model). Unset = the generation backend. |
 | `llm.embedBaseUrl`, `llm.embedApi` | `PI_LITERATURE_REVIEW_EMBED_URL`, `_EMBED_API` | Per-role split: a separate backend for embeddings. |
 | `llm.generateBaseUrl`, `llm.generateApi` | `PI_LITERATURE_REVIEW_GENERATE_URL`, `_GENERATE_API` | Per-role split: a separate backend for generation. Unset roles use the shared `baseUrl`/`api`. |
 | `llm.apiKey` | `PI_LITERATURE_REVIEW_LLM_API_KEY` | Bearer token sent on every LLM-backend request; opens the `openai` dialect to REMOTE providers. |
-| `thinking` | `PI_LITERATURE_REVIEW_THINKING` | Hidden reasoning for every model call of this package: `off` (default), `low`, `medium`, `high`. Independent of pi's own thinking level; see [Thinking](#thinking). |
+| `thinking` | `PI_LITERATURE_REVIEW_THINKING` | Hidden reasoning for the LLM role (every model call except the synthesis units): `off` (default), `low`, `medium`, `high`. Independent of pi's own thinking level; see [Thinking](#thinking). |
+| `browserModel` | -- | Inside pi: the browser interface's own LLM among pi's models (`provider/id`); unset = follow the model selected in pi. Never changes pi's session model; the terminal tools ignore it. |
+| `generateThinking` | `PI_LITERATURE_REVIEW_GENERATE_THINKING` | Hidden reasoning for the generation role (the cross-paper synthesis and review units of a report); unset = the value of `thinking`. |
 | `pdfFolders` | `PI_LITERATURE_REVIEW_PDF_FOLDERS` | Your PDF folders, read with all their subfolders, never written to (see below). The variable (separated by `:`, on Windows `;`) replaces the stored list. |
 | `lastDownloadDir` | -- | The folder of the last download, preselected next time. |
 | `ignoredFolders` | -- | Folders the library would read on its own (an older `lit-selection/`, loose PDFs where pi was started) that you took out of the library. |
@@ -110,10 +113,11 @@ this package, keeping your documents on your machine.
 
 ## Thinking
 
-The package has its own thinking setting, `thinking` in config.json
-(Settings in the browser: Off / Low / Medium / High), default **off**.
-It applies to every model call of this package, inside pi and
-standalone alike, and is independent of pi's own thinking level (your
+The package has its own thinking settings, one per model role:
+`thinking` for the LLM role and `generateThinking` for the synthesis
+units (unset = the same as `thinking`); in the browser's Settings each
+sits under its model (Off / Low / Medium / High), default **off**.
+They apply inside pi and standalone alike, and is independent of pi's own thinking level (your
 other pi work keeps its setting). When on, each call gets extra output
 room for the hidden reasoning (2k / 4k / 8k tokens). On the wire: the
 Ollama dialect sends `think`; a local OpenAI-compatible server

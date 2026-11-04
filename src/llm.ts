@@ -25,7 +25,7 @@
  * ever accepts bracketed chunk numbers from it, never bibliographic text.
  */
 
-import { thinkingSetting, type ThinkingSetting } from "./config.ts";
+import { thinkingFor, type ModelRole, type ThinkingSetting } from "./config.ts";
 
 export interface LlmConfig {
 	/** Server base URL without trailing slash, e.g. http://127.0.0.1:11434 */
@@ -56,6 +56,13 @@ export interface LlmConfig {
 	embedApi?: "ollama" | "openai";
 	generateBaseUrl?: string;
 	generateApi?: "ollama" | "openai";
+	/** The LLM role without pi (block proposals, help, chat answers,
+	 * summaries); unset = generateModel. Its own address/dialect for a
+	 * second server (a llama-server holds one model); unset = the
+	 * generation address. */
+	chatModel?: string;
+	chatBaseUrl?: string;
+	chatApi?: "ollama" | "openai";
 }
 
 export interface GenerateOptions {
@@ -80,6 +87,10 @@ export interface GenerateOptions {
 	think?: boolean;
 	/** OpenAI dialect, remote API: the reasoning effort when think is on. */
 	reasoning?: Exclude<ThinkingSetting, "off">;
+	/** Which model role the call belongs to: "generation" = the synthesis
+	 * units (review genres), with their own thinking setting; default the
+	 * LLM role. */
+	role?: ModelRole;
 	/** This call runs without thinking whatever the setting (short helper
 	 * calls such as the example questions). */
 	noThinking?: boolean;
@@ -270,7 +281,7 @@ function combinedSignal(timeoutMs: number, signal?: AbortSignal): AbortSignal {
 	return signal ? AbortSignal.any([signal, timeout]) : timeout;
 }
 
-export function createBackend(cfg: LlmConfig, fetchJson: FetchJson = fetchJsonHttp, thinking: () => ThinkingSetting = thinkingSetting): LlmBackend {
+export function createBackend(cfg: LlmConfig, fetchJson: FetchJson = fetchJsonHttp, thinking: (role: ModelRole) => ThinkingSetting = (role) => thinkingFor(role)): LlmBackend {
 	// Per-role backend resolution: split fields win, else the shared pair.
 	const embedOpenai = (cfg.embedApi ?? cfg.api) === "openai";
 	const embedBase = cfg.embedBaseUrl || cfg.baseUrl;
@@ -312,11 +323,15 @@ export function createBackend(cfg: LlmConfig, fetchJson: FetchJson = fetchJsonHt
 				: parseOllamaEmbedResponse(json, texts.length);
 		},
 		async generate(system, user, given = {}, signal) {
-			const opts = withThinking(given, given.noThinking ? "off" : thinking());
+			const opts = withThinking(given, given.noThinking ? "off" : thinking(given.role ?? "llm"));
 			const model = opts.model || cfg.generateModel;
-			const request = generateOpenai
-				? openaiChatRequest(generateBase, model, system, user, opts)
-				: ollamaChatRequest(generateBase, model, system, user, opts);
+			// The LLM model may sit on its own server.
+			const onChat = Boolean(cfg.chatModel) && model === cfg.chatModel;
+			const base = onChat ? cfg.chatBaseUrl || generateBase : generateBase;
+			const openai = onChat ? (cfg.chatApi ?? cfg.generateApi ?? cfg.api) === "openai" : generateOpenai;
+			const request = openai
+				? openaiChatRequest(base, model, system, user, opts)
+				: ollamaChatRequest(base, model, system, user, opts);
 			let json: unknown;
 			try {
 				json = await fetchJson(request.url, request.body, combinedSignal(GENERATE_TIMEOUT_MS, signal), headers);
@@ -324,7 +339,39 @@ export function createBackend(cfg: LlmConfig, fetchJson: FetchJson = fetchJsonHt
 				if (signal?.aborted) throw error;
 				throw failure("generation", model, error);
 			}
-			return generateOpenai ? parseOpenaiChatResponse(json) : parseOllamaChatResponse(json);
+			return openai ? parseOpenaiChatResponse(json) : parseOllamaChatResponse(json);
 		},
 	};
+}
+
+/* ---------------- model lists of a server ---------------- */
+
+/** Where a server lists its models: Ollama /api/tags, OpenAI-compatible
+ * servers (llama-server, LM Studio, vLLM) /v1/models. Pure. */
+export function modelListUrl(baseUrl: string, api: "ollama" | "openai"): string {
+	return `${base(baseUrl)}${api === "ollama" ? "/api/tags" : "/v1/models"}`;
+}
+
+/** Model names from either answer shape (Ollama `models[].name`,
+ * OpenAI `data[].id`), sorted, without duplicates. Pure. */
+export function parseModelList(json: unknown): string[] {
+	const data = json as { models?: Array<{ name?: unknown; model?: unknown }>; data?: Array<{ id?: unknown }> } | null;
+	const names = [
+		...(Array.isArray(data?.models) ? data.models.map((entry) => entry?.name ?? entry?.model) : []),
+		...(Array.isArray(data?.data) ? data.data.map((entry) => entry?.id) : []),
+	].filter((name): name is string => typeof name === "string" && name.trim().length > 0).map((name) => name.trim());
+	return [...new Set(names)].sort((a, b) => a.localeCompare(b));
+}
+
+/** The models a server offers; [] when it does not answer within the cap
+ * (the page then keeps free typing). No key is sent: the list is a
+ * convenience, not worth handing a token to a typed address. */
+export async function listServerModels(baseUrl: string, api: "ollama" | "openai", timeoutMs = 2000): Promise<string[]> {
+	try {
+		const response = await fetch(modelListUrl(baseUrl, api), { signal: AbortSignal.timeout(timeoutMs) });
+		if (!response.ok) return [];
+		return parseModelList(await response.json());
+	} catch {
+		return [];
+	}
 }

@@ -2463,7 +2463,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		const dot = (reachable) => `<span class="dot ${reachable === false ? "bad" : ""}"></span>`;
 		const down = (reachable, what) => (reachable === false ? ` <span class="down">-- not running: start ${what} first</span>` : "");
 		$("status").innerHTML = p.model
-			? `${dot(p.modelReachable)}model <b>${esc(p.model)}</b> ${esc(p.via)}${p.remote ? " (remote service)" : p.remote === false ? ", local" : ""} · thinking: ${esc(p.thinking || "off")}${down(p.modelReachable, "the model server")}<br>${dot(p.embeddingsReachable)}embeddings <b>${esc(p.embeddings)}</b>, ${esc(p.embeddingsVia)}${down(p.embeddingsReachable, "the embedding server")}`
+			? `${dot(p.modelReachable)}model <b>${esc(p.model)}</b> ${esc(p.via)}${p.remote ? " (remote service)" : p.remote === false ? ", local" : ""} · thinking: ${esc(p.thinking || "off")}${p.generateThinking && p.generateThinking !== (p.thinking || "off") ? `, synthesis ${esc(p.generateThinking)}` : ""}${down(p.modelReachable, "the model server")}<br>${dot(p.embeddingsReachable)}embeddings <b>${esc(p.embeddings)}</b>, ${esc(p.embeddingsVia)}${down(p.embeddingsReachable, "the embedding server")}`
 			: `<span class="dot bad"></span>no model selected ${p.kind === "pi" ? "(choose one with /model in pi)" : "(set the generation model in Settings)"}<br>${dot(p.embeddingsReachable)}embeddings <b>${esc(p.embeddings)}</b>${down(p.embeddingsReachable, "the embedding server")}`;
 		$("cnt-pdfs").textContent = info.counts.pdfs ? String(info.counts.pdfs) : "";
 	}
@@ -2985,14 +2985,21 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	$("btn-new-chat").addEventListener("click", () => startNew("synthesis"));
 	// The package name returns to the start screen (a new conversation; the current one stays in History).
 	$("brand-home").addEventListener("click", () => startNew());
+	/** The package's citation (CITATION.cff; the concept DOI resolves to the latest version). */
+	const CITE_TEXT = "Lindenberger, F. (2026). pi-literature-review [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.22954995";
 	// Info: where the data goes and which sources are asked, from the server's state.
 	$("btn-info").addEventListener("click", () => {
 		const pop = $("info-pop");
 		if (!pop.hidden) { pop.hidden = true; return; }
 		const p = state.info && state.info.provider;
 		const model = p && p.model ? `${esc(p.model)}${p.remote ? " (a remote service: the passages you ask about go there)" : " (local)"}` : "none selected yet";
-		pop.innerHTML = `<p><b>Where your data goes.</b> Search queries go to arXiv, Crossref and OpenAlex (open, no account; Semantic Scholar only with a free key). Your PDFs stay on this machine. Writing model: ${model}. Embeddings: ${esc(p ? p.embeddings : "")}, local.</p><p><b>Citations</b> are inserted and checked by code, never written by the model.</p><p><b>Downloads</b> are legal open access only; restricted papers are listed with a browser link.</p>`;
+		pop.innerHTML = `<p><b>Where your data goes.</b> Search queries go to arXiv, Crossref and OpenAlex (open, no account; Semantic Scholar only with a free key). Your PDFs stay on this machine. LLM: ${model}. Embeddings: ${esc(p ? p.embeddings : "")}, local.</p><p><b>Citations</b> are inserted and checked by code, never written by the model.</p><p><b>Downloads</b> are legal open access only; restricted papers are listed with a browser link.</p><p><b>License.</b> Free and open source under the MIT License: use, change and share it, also commercially, as long as the copyright notice stays. <a href="https://github.com/flindenberger/pi-literature-review/blob/main/LICENSE" target="_blank" rel="noopener">LICENSE</a></p><p class="cite"><b>How to cite.</b> If this tool supports your academic work, please cite it:<span class="ref" id="cite-text">${esc(CITE_TEXT)}</span><button type="button" class="ibtn" id="btn-cite-copy" title="Copy the citation">Copy</button></p>`;
 		pop.hidden = false;
+	});
+	$("info-pop").addEventListener("click", async (event) => {
+		if (!event.target.closest("#btn-cite-copy")) return;
+		try { await navigator.clipboard.writeText(CITE_TEXT); toast("Citation copied."); }
+		catch { toast("Copying is blocked here; select the text instead."); }
 	});
 	document.addEventListener("click", (event) => { if (!event.target.closest("#btn-info") && !event.target.closest("#info-pop")) $("info-pop").hidden = true; });
 	// An open sort menu closes on a click anywhere else.
@@ -3058,48 +3065,144 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		const lines = [...state.lines.entries()].filter(([job]) => /^(check|pull)-/.test(job)).flatMap(([, list]) => list).slice(-60);
 		$("progress-settings").innerHTML = lines.map(lineHtml).join("");
 	}
+	/** A status dot: green = a local server answers, red = it does not,
+	 * grey = remote or not checked. */
+	function setDot(id, reachable, title) {
+		const dot = $(id);
+		dot.className = `dot${reachable === false ? " bad" : reachable === null || reachable === undefined ? " idle" : ""}`;
+		dot.title = title;
+	}
 	async function loadSettings() {
 		let data;
 		try { data = await get("/api/settings"); } catch (error) { $("set-error").textContent = error.message; return; }
 		state.settingsConversations = data.conversations || 0;
 		loadFolders();
 		state.settingsBlocks = data.savedBlocks || 0;
-		$("set-blocks").textContent = `${data.savedBlocks || 0} request${data.savedBlocks === 1 ? "" : "s"} with saved keyword blocks. The same request text always searches with the same blocks; forget them to let the model build new ones.`;
-		$("set-history").textContent = `${data.conversations || 0} saved conversation${data.conversations === 1 ? "" : "s"} in ${data.historyDir} (one JSON file each; PI_LITERATURE_REVIEW_HISTORY moves the folder).`;
-		const info = state.info || {};
-		const p = info.provider || {};
-		$("set-path").textContent = `Configuration file: ${data.path}`;
-		$("set-model").innerHTML = p.model ? `Writing model: <b>${esc(p.model)}</b> ${esc(p.via)}${p.remote ? " (remote service: your questions leave this machine)" : p.remote === false ? " (local)" : ""}` : "No writing model selected.";
-		$("set-model-hint").textContent = p.kind === "pi"
-			? "Inside pi the model is the one selected with /model; it takes effect on the next job. The fields below matter for the standalone server only."
-			: "Standalone: the writing model is the generation model below, at the shared or the generation address.";
+		$("set-blocks").textContent = String(data.savedBlocks || 0);
+		$("set-blocks").title = "Requests whose keyword blocks are kept: the same request searches with the same blocks";
+		$("set-history").textContent = String(data.conversations || 0);
+		$("set-history").title = data.historyDir;
+		$("set-title").title = `Configuration file: ${data.path}`;
 		const llm = data.llm || {};
-		$("set-api").value = llm.api || "";
-		$("set-base-url").value = llm.baseUrl || "";
-		$("set-base-url").placeholder = data.resolved.baseUrl;
+		const models = data.models || {};
+		const inPi = models.llm && models.llm.kind === "pi";
+		const reach = (row, where) => row.reachable === false ? `not reachable at ${where}` : row.reachable ? `running at ${where}` : `${where} (not checked)`;
+		// LLM: inside pi a choice among pi's models (the terminal keeps its
+		// own), standalone a model at an address.
+		$("set-browser-model").hidden = !inPi;
+		$("llm-fields").hidden = inPi;
+		state.settingsData = data;
+		if (inPi) $("set-browser-model").innerHTML = `<option value="">Follow pi (/model)</option>${data.browserModel ? `<option value="${esc(data.browserModel)}" selected>${esc(data.browserModel)}</option>` : ""}`;
+		loadModelLists(data, inPi);
+		$("set-chat-model").value = llm.chatModel || "";
+		$("set-chat-model").placeholder = "same as Generation";
+		$("set-chat-url").value = llm.chatBaseUrl || "";
+		$("set-chat-url").placeholder = data.resolved.generateBaseUrl || data.resolved.baseUrl;
+		if (models.llm) setDot("dot-llm", models.llm.model ? models.llm.reachable : false, models.llm.model ? `${models.llm.model} ${models.llm.via}` : "no model");
 		$("set-generate-model").value = llm.generateModel || "";
+		$("set-generate-model").placeholder = inPi ? "same as LLM" : data.resolved.generateModel;
 		$("set-generate-url").value = llm.generateBaseUrl || "";
+		$("set-generate-url").placeholder = data.resolved.generateBaseUrl || data.resolved.baseUrl;
+		if (models.generation) setDot("dot-generation", models.generation.reachable, models.generation.model ? `${models.generation.model}: ${reach(models.generation, models.generation.base)}` : "the LLM writes the synthesis");
 		$("set-embed-model").value = llm.embedModel || "";
 		$("set-embed-model").placeholder = data.resolved.embedModel;
 		$("set-embed-url").value = llm.embedBaseUrl || "";
-		$("set-mailto").value = data.mailto || "";
-		$("set-mailto-hint").textContent = data.mailtoResolved && !data.mailto ? `Set by the environment variable PI_LITERATURE_REVIEW_MAILTO: ${data.mailtoResolved}` : "Leave empty and the download step asks each run.";
-		$("set-topics").value = (data.codeListTopics || []).join(", ");
-		$("set-thinking").value = data.thinking || "off";
-		showThinkingNote();
+		$("set-embed-url").placeholder = data.resolved.embedBaseUrl || data.resolved.baseUrl;
 		const embed = data.embedState;
-		$("set-embed-state").innerHTML = embed
-			? (embed.state === "ok" ? `<span class="dot"></span>reachable · ${esc(data.resolved.embedModel)} present`
-				: embed.state === "not-ollama" ? `<span class="dot"></span>${esc(data.resolved.embedApi || data.resolved.api)} dialect: no automatic check; Test setup tries one embedding call`
-				: embed.state === "missing" ? `<span class="dot bad"></span>${esc(embed.model)} is not present at ${esc(embed.baseUrl)} -- fetch it below`
-				: `<span class="dot bad"></span>${esc(embed.baseUrl)} unreachable: ${esc(embed.error)}`)
-			: `<span class="dot idle"></span>not checked yet · resolved: ${esc(data.resolved.embedModel)} via ${esc(data.resolved.embedApi || data.resolved.api)} at ${esc(data.resolved.embedBaseUrl || data.resolved.baseUrl)}`;
-		$("btn-pull-embed").disabled = (data.resolved.embedApi || data.resolved.api) !== "ollama" || Boolean(state.job);
+		if (embed && embed.state === "missing") setDot("dot-embedding", false, `${embed.model} is not present at ${embed.baseUrl}: Fetch downloads it`);
+		else if (embed && embed.state === "unreachable") setDot("dot-embedding", false, `${embed.baseUrl} unreachable: ${embed.error}`);
+		else if (models.embedding) setDot("dot-embedding", models.embedding.reachable, `${models.embedding.model}: ${reach(models.embedding, models.embedding.base)}`);
+		const ollama = (data.resolved.embedApi || data.resolved.api) === "ollama";
+		$("btn-pull-embed").hidden = !ollama;
+		$("btn-pull-embed").disabled = Boolean(state.job);
+		$("set-api").value = llm.api || "";
+		$("set-base-url").value = llm.baseUrl || "";
+		$("set-base-url").placeholder = data.resolved.baseUrl;
+		$("set-mailto").value = data.mailto || "";
+		$("set-mailto").placeholder = data.mailtoResolved && !data.mailto ? `${data.mailtoResolved} (environment)` : "asked at each download";
+		$("set-thinking").value = data.thinking || "off";
+		$("set-generate-thinking").value = data.generateThinking || data.thinking || "off";
+		showThinkingNote();
 		const keys = data.keys || {};
-		$("set-keys").innerHTML = `<tr><td><code>s2ApiKey</code></td><td>${keys.s2ApiKey ? "set" : "not set"}</td><td>Semantic Scholar as fourth search source (free key)</td></tr>
-<tr><td><code>githubToken</code></td><td>${keys.githubToken ? "set" : "not set"}</td><td>GitHub search limit 10 -> 30 per minute for the code sources</td></tr>
-<tr><td><code>llm.apiKey</code></td><td>${keys.llmApiKey ? "set" : "not set"}</td><td>Bearer token for a remote LLM backend</td></tr>`;
+		const key = (on, name, title) => `<span class="key ${on ? "on" : ""}" title="${esc(title)}">${name} ${on ? "✓" : "–"}</span>`;
+		$("set-keys").innerHTML = [
+			key(keys.s2ApiKey, "Semantic Scholar", "s2ApiKey in the configuration file: Semantic Scholar as fourth search source (free key)"),
+			key(keys.githubToken, "GitHub", "githubToken in the configuration file: GitHub search 30 instead of 10 per minute for the code sources"),
+			key(keys.llmApiKey, "LLM API", "llm.apiKey in the configuration file: bearer token for a remote model API"),
+		].join("");
 		renderSettingsProgress();
+	}
+	/** The model lists of the Settings: what each server offers (and,
+	 * inside pi, pi's models for the browser's LLM). A list replaces the
+	 * text field; "Other ..." and an unreachable server keep typing. */
+	const PICKS = [
+		{ pick: "pick-chat", back: "back-chat", input: "set-chat-model", url: "set-chat-url", empty: () => "Same as Generation", api: (r) => r.chatApi || r.generateApi || r.api, base: (r) => r.chatBaseUrl || r.generateBaseUrl || r.baseUrl },
+		{ pick: "pick-generate", back: "back-generate", input: "set-generate-model", url: "set-generate-url", empty: (r, inPi) => (inPi ? "Same as LLM" : `Default (${r.generateModel})`), api: (r) => r.generateApi || r.api, base: (r) => r.generateBaseUrl || r.baseUrl },
+		{ pick: "pick-embed", back: "back-embed", input: "set-embed-model", url: "set-embed-url", empty: (r) => `Default (${r.embedModel})`, api: (r) => r.embedApi || r.api, base: (r) => r.embedBaseUrl || r.baseUrl },
+	];
+	async function loadPick(spec, data, inPi) {
+		const r = data.resolved;
+		const base = $(spec.url).value.trim() || spec.base(r);
+		let list = [];
+		try { list = (await get(`/api/models?base=${encodeURIComponent(base)}&api=${encodeURIComponent(spec.api(r))}`)).models || []; } catch { list = []; }
+		const select = $(spec.pick);
+		const input = $(spec.input);
+		if (!list.length) { select.hidden = true; input.hidden = false; $(spec.back).hidden = true; return; }
+		const value = input.value.trim();
+		// Ollama names carry a tag: "bge-m3" is "bge-m3:latest".
+		const match = !value ? "" : list.find((name) => name === value || name === `${value}:latest`) || null;
+		const host = base.replace(/^https?:\/\//i, "").replace(/\/+$/, "");
+		const where = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\]|0\.0\.0\.0)(:|\/|$)/i.test(base) ? `Local · ${host}` : `Remote · ${host} (data leaves this machine)`;
+		select.innerHTML = `<option value="">${esc(spec.empty(r, inPi))}</option><optgroup label="${esc(where)}">${list.map((name) => `<option value="${esc(name)}">${esc(name)}</option>`).join("")}</optgroup>${match === null ? `<option value="${esc(value)}">${esc(value)} (not found here)</option>` : ""}<option value="__other">Other ...</option>`;
+		select.value = match === null ? value : match;
+		select.hidden = false;
+		input.hidden = true;
+		$(spec.back).hidden = true;
+	}
+	async function loadModelLists(data, inPi) {
+		const jobs = PICKS.filter((spec) => !(inPi && spec.pick === "pick-chat")).map((spec) => loadPick(spec, data, inPi));
+		if (inPi) {
+			jobs.push(get("/api/models?pi=1").then((reply) => {
+				const select = $("set-browser-model");
+				const current = data.browserModel || "";
+				const p = (state.info && state.info.provider) || {};
+				const choices = reply.pi || [];
+				// Models on this machine first, then remote services.
+				const option = (choice) => `<option value="${esc(choice.id)}">${esc(choice.label)}${choice.label === choice.id ? "" : ` (${esc(choice.id)})`}</option>`;
+				const group = (label, list) => (list.length ? `<optgroup label="${label}">${list.map(option).join("")}</optgroup>` : "");
+				select.innerHTML = `<option value="">Follow pi (/model)${p.piModel ? `: ${esc(p.piModel)}` : ""}</option>${group("Local", choices.filter((choice) => choice.local))}${group("Remote (data leaves this machine)", choices.filter((choice) => !choice.local))}`;
+				select.value = choices.some((choice) => choice.id === current) ? current : "";
+			}).catch(() => {}));
+		}
+		await Promise.all(jobs);
+	}
+	for (const spec of PICKS) {
+		$(spec.pick).addEventListener("change", () => {
+			const select = $(spec.pick);
+			if (select.value === "__other") {
+				// Free typing; the back button returns to the list and its choice.
+				select.dataset.before = $(spec.input).value;
+				select.hidden = true;
+				$(spec.input).hidden = false;
+				$(spec.back).hidden = false;
+				$(spec.input).value = "";
+				$(spec.input).focus();
+				return;
+			}
+			$(spec.input).value = select.value;
+		});
+		$(spec.back).addEventListener("click", () => {
+			const select = $(spec.pick);
+			const before = select.dataset.before || "";
+			$(spec.input).value = before;
+			select.value = [...select.options].some((option) => option.value === before) ? before : "";
+			if (select.value !== before) select.value = [...select.options].find((option) => option.value === `${before}:latest`)?.value ?? "";
+			select.hidden = false;
+			$(spec.input).hidden = true;
+			$(spec.back).hidden = true;
+		});
+		// A changed address asks that server for its list.
+		$(spec.url).addEventListener("change", () => { if (state.settingsData) loadPick(spec, state.settingsData, state.settingsData.models && state.settingsData.models.llm && state.settingsData.models.llm.kind === "pi"); });
 	}
 	$("btn-settings").addEventListener("click", () => openSettingsAt(null));
 	async function openSettingsAt(focusId) {
@@ -3116,6 +3219,9 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 				? data.pdfFolders.map((folder) => `<div class="folder"><span title="${esc(folder)}">${esc(folder)}</span><button type="button" class="ibtn" data-reveal-folder="${esc(folder)}" title="Show in the file manager" aria-label="Show in the file manager">${ICON_REVEAL}</button><button type="button" class="ibtn" data-remove-folder="${esc(folder)}" title="Stop reading this folder (its files stay where they are)" aria-label="Remove">×</button></div>`).join("")
 				: "";
 			$("btn-folder-pick").hidden = !data.canPick;
+			// Without a folder window the path is typed.
+			$("set-folder-path").hidden = data.canPick;
+			$("btn-folder-add").hidden = data.canPick;
 			$("set-store").innerHTML = `<div class="folder"><span title="${esc(data.store)}">${esc(data.store)}</span><button type="button" class="ibtn" data-reveal-folder="${esc(data.store)}" title="Show in the file manager" aria-label="Show in the file manager">${ICON_REVEAL}</button></div>`;
 		} catch (error) {
 			$("set-error").textContent = error.message;
@@ -3144,8 +3250,9 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	$("btn-folder-add").addEventListener("click", addTyped);
 	$("set-folder-path").addEventListener("keydown", (event) => { if (event.key === "Enter") { event.preventDefault(); addTyped(); } });
 	/** A level above Off can cut answers off on modest hardware. */
-	function showThinkingNote() { $("set-thinking-note").hidden = $("set-thinking").value === "off"; }
+	function showThinkingNote() { $("set-thinking-note").hidden = $("set-thinking").value === "off" && $("set-generate-thinking").value === "off"; }
 	$("set-thinking").addEventListener("change", showThinkingNote);
+	$("set-generate-thinking").addEventListener("change", showThinkingNote);
 	$("btn-settings-close").addEventListener("click", () => $("settings").close());
 	$("btn-history-clear").addEventListener("click", async () => {
 		const n = state.settingsConversations || 0;
@@ -3171,24 +3278,22 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		try {
 			await post("/api/settings", {
 				mailto: $("set-mailto").value,
-				codeListTopics: $("set-topics").value.split(",").map((t) => t.trim()).filter(Boolean),
 				thinking: $("set-thinking").value,
+				generateThinking: $("set-generate-thinking").value,
+				...($("set-browser-model").hidden ? {} : { browserModel: $("set-browser-model").value }),
 				llm: {
 					api: $("set-api").value, baseUrl: $("set-base-url").value,
+					...($("llm-fields").hidden ? {} : { chatModel: $("set-chat-model").value, chatBaseUrl: $("set-chat-url").value }),
 					generateModel: $("set-generate-model").value, generateBaseUrl: $("set-generate-url").value,
 					embedBaseUrl: $("set-embed-url").value, embedModel: $("set-embed-model").value,
 				},
 			});
 			await loadState();
 			await loadSettings();
-			$("progress-settings").innerHTML = `<span class="ok">saved to ${esc($("set-path").textContent.replace(/^Configuration file: /, ""))}</span>\n`;
+			$("progress-settings").innerHTML = `<span class="ok">saved to ${esc($("set-title").title.replace(/^Configuration file: /, ""))}</span>\n`;
 		} catch (error) {
 			$("set-error").textContent = error.message;
 		}
-	});
-	$("btn-settings-test").addEventListener("click", async () => {
-		$("set-error").textContent = "";
-		try { await post("/api/settings/check"); } catch (error) { $("set-error").textContent = error.message; }
 	});
 	$("btn-pull-embed").addEventListener("click", async () => {
 		$("set-error").textContent = "";

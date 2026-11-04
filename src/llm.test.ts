@@ -268,4 +268,35 @@ import {
 	await assert.rejects(() => cancelled.embed(["x"], aborter.signal), /^Error: aborted mid-flight$/);
 }
 
+/* ---------------- LLM model on its own server, thinking per role ---------------- */
+{
+	const cfg: LlmConfig = {
+		baseUrl: "http://127.0.0.1:11434", api: "ollama", generateModel: "gen-model", embedModel: "embed-model",
+		chatModel: "chat-model", chatBaseUrl: "http://127.0.0.1:8080", chatApi: "openai",
+	};
+	const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+	const roles: string[] = [];
+	const backend = createBackend(cfg, async (url, body) => {
+		calls.push({ url, body });
+		return url.includes("/v1/") ? { choices: [{ message: { content: "chat" } }] } : { message: { content: "gen" } };
+	}, (role) => { roles.push(role); return role === "generation" ? "low" : "off"; });
+	assert.equal(await backend.generate("S", "U", { model: "chat-model" }), "chat");
+	assert.equal(calls[0].url, "http://127.0.0.1:8080/v1/chat/completions");
+	assert.equal(await backend.generate("S", "U", { model: "gen-model", role: "generation", maxTokens: 100 }), "gen");
+	assert.equal(calls[1].url, "http://127.0.0.1:11434/api/chat");
+	assert.deepEqual(roles, ["llm", "generation"]);
+	assert.equal((calls[1].body as { think?: boolean }).think, true);
+	assert.equal((calls[0].body as { chat_template_kwargs?: { enable_thinking?: boolean } }).chat_template_kwargs?.enable_thinking, false);
+}
+
+/* ---------------- model lists ---------------- */
+{
+	const { modelListUrl, parseModelList } = await import("./llm.ts");
+	assert.equal(modelListUrl("http://127.0.0.1:11434/", "ollama"), "http://127.0.0.1:11434/api/tags");
+	assert.equal(modelListUrl("http://127.0.0.1:8080", "openai"), "http://127.0.0.1:8080/v1/models");
+	assert.deepEqual(parseModelList({ models: [{ name: "qwen3:8b" }, { name: "bge-m3:latest" }, { name: "qwen3:8b" }] }), ["bge-m3:latest", "qwen3:8b"]);
+	assert.deepEqual(parseModelList({ object: "list", data: [{ id: "unsloth/Qwen3.5-9B-GGUF:UD-Q4_K_XL" }] }), ["unsloth/Qwen3.5-9B-GGUF:UD-Q4_K_XL"]);
+	assert.deepEqual(parseModelList(null), []);
+}
+
 console.log("llm.test.ts: all assertions passed");

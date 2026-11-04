@@ -111,11 +111,12 @@ changed request in the box asks for new blocks. The model's blocks are
 saved per request text (`keyword-blocks.json` next to the configuration
 file, `PI_LITERATURE_REVIEW_BLOCK_CACHE` overrides), so the same request
 always searches with the same blocks; **Propose again** asks the model
-afresh, and Settings has **Forget saved keyword blocks**. The sources
+afresh, and Settings has **Forget** under Saved data. The sources
 still add new papers over time, so a repeated search weeks later can
 find more. The **i** button next to the gear says where the data
 goes (sources, model, embeddings, citations by code, open-access
-downloads). A white Greek pi on a dark disc stands next to the name, the same mark as the browser tab icon. Left, a slim rail: the
+downloads) and how to cite the tool (the Zenodo concept DOI, with a
+Copy button). A white Greek pi on a dark disc stands next to the name, the same mark as the browser tab icon. Left, a slim rail: the
 two stages -- **SEARCH & SELECT** (magnifier with a download arrow) and
 **SUMMARIZE & SYNTHESIZE** (sheet with a pen).
 Nothing is selected until you click; a click opens a stage's block and
@@ -491,15 +492,37 @@ folders, the download folder, the store). Another computer on the network reache
 ## Settings and keys
 
 The Settings dialog writes `~/.config/pi-literature-review/config.json`
-(see [Configuration](configuration.md)): **Thinking** (Off / Low /
-Medium / High, default Off; applies to every model call of this tool,
-inside pi and standalone; above Off a red note warns that hidden reasoning can
-exhaust the output budget before any text; the rail's status line names the level), contact email, awesome-list
-topics, the `llm` block (shared address and dialect, embedding and
-generation split, review model) and the **PDF folders** (add by folder
-window or typed path, show, remove -- removing never touches the files);
-the store's path is shown with a button. API keys are deliberately not
-editable on a page; the table shows only whether each is set.
+(its path is the tooltip of the title; see
+[Configuration](configuration.md)). Explanations sit in tooltips only.
+
+- **Models**, one row per role, each with a status dot (green = a local
+  server answers, red = it does not, grey = remote or not checked):
+  **LLM** (keyword blocks, help, chat answers, summaries) with its
+  **Thinking**: inside pi a list of pi's models, first entry **Follow pi
+  (/model)**; a model picked here is the browser's own (`browserModel`),
+  used per call and never set as pi's session model, so the terminal keeps
+  its model and a later `/model` does not change the browser's choice;
+  standalone `llm.chatModel` and its address, empty = the generation model;
+  **Generation (synthesis)** (the cross-paper synthesis and review units,
+  `llm.generateModel` and address; inside pi empty = the LLM) with its own
+  **Thinking** (`generateThinking`, unset = the LLM's level);
+  **Embedding (RAG)** (`llm.embedModel` and address) with **Fetch** when
+  the backend is Ollama. Each model field is a list of what the server
+  at that address offers (Ollama `/api/tags`, OpenAI-compatible servers
+  `/v1/models`; a llama-server lists its one loaded model), with
+  **Other ...** for free typing; an unreachable server leaves the text
+  field. Any Thinking above Off shows one red line; the
+  rail's status line names the levels. **Advanced** holds the dialect
+  and the shared address (the awesome-list topics stay in config.json,
+  `codeListTopics`; the browser picks topics automatically).
+- **Sources**: contact email (empty = asked at each download) and the
+  keys as set / not set (they are edited in the file by hand, never on a
+  page).
+- **Folders**: the PDF folders (show, remove -- removing never touches the
+  files; **+ Add folder** opens the folder window, a typed path only where
+  no folder window exists) and the store.
+- **Saved data**: number of conversations (Delete all) and of saved
+  keyword blocks (Forget).
 
 ## Not on the page
 

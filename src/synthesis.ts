@@ -24,7 +24,7 @@
 import { join } from "node:path";
 
 import { adoptUnmatched, type AdoptionResult, realAdoptDeps } from "./adopt.ts";
-import { chatModel, llmConfig } from "./config.ts";
+import { chatModel, llmConfig, type ModelRole } from "./config.ts";
 import {
 	type CorpusDeps,
 	ensureIndexed,
@@ -212,6 +212,8 @@ async function generateGrounded(args: {
 	promptOf: (chunks: RetrievedChunk[]) => { system: string; user: string };
 	backend: LlmBackend;
 	model: string;
+	/** "generation" for the synthesis units (their own thinking setting). */
+	role?: ModelRole;
 	onWarn: (message: string) => void;
 	/** Status line before the generation call; receives the final excerpt count. */
 	progress?: (excerpts: number) => string;
@@ -231,7 +233,7 @@ async function generateGrounded(args: {
 	if (args.signal?.aborted) throw new Error(args.abortMessage);
 	if (args.progress) args.onWarn(args.progress(retrieved.length));
 	// Thinking on/off comes from the package setting (the backend applies it).
-	const generateOptions: GenerateOptions = { model: args.model, numCtx: NUM_CTX, temperature: TEMPERATURE };
+	const generateOptions: GenerateOptions = { model: args.model, numCtx: NUM_CTX, temperature: TEMPERATURE, ...(args.role ? { role: args.role } : {}) };
 	const rawOutput = await args.backend.generate(prompt.system, prompt.user, generateOptions, args.signal);
 	requireOutput(rawOutput);
 	const scan = enforceCitations(rawOutput, retrieved.length);
@@ -1478,6 +1480,7 @@ export async function runReport(options: ReportOptions, deps?: ChatDeps): Promis
 				: buildPrompt(plan.question!, chunks, options.language),
 			backend,
 			model,
+			...(plan.kind === "summary" || plan.kind === "detail-per-paper" ? {} : { role: "generation" as const }),
 			onWarn,
 			abortMessage: "report aborted by the user",
 			signal: options.signal,

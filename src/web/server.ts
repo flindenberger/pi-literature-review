@@ -40,11 +40,13 @@ import {
 	s2ApiKey,
 	storedConfigView,
 	THINKING_SETTINGS,
+	thinkingFor,
 	thinkingSetting,
 	type ThinkingSetting,
 	updateStoredConfig,
 } from "../config.ts";
 import { canPickFolder, pickFiles, pickFolder } from "../folderpick.ts";
+import { listServerModels } from "../llm.ts";
 import { lookupWorkFacts, type WorkFacts } from "../sources/openalex.ts";
 import { EXAMPLES_SYSTEM, type ExamplePaper, examplePaperName, examplesPrompt, parseExamples } from "./examples.ts";
 import { chatPool, ensureLibrary, runChatReport, runReport, runRound, type ChatAnswer, type ChatDeps, type ChatReport, type ChatReportOptions, type ChatOptions, type ReportOptions, type SynthReport } from "../synthesis.ts";
@@ -1140,6 +1142,27 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 		return { modelReachable, embeddingsReachable };
 	};
 
+	/** The three model rows of the Settings: what runs each role, where,
+	 * and whether a local server answers (null = remote, not probed). */
+	const modelRows = async () => {
+		const status = provider.status();
+		const cfg = llmConfig();
+		const check = async (url: string | null): Promise<boolean | null> => (url && LOCAL_URL.test(url) ? deps.probe(url, AbortSignal.timeout(1500)) : null);
+		const generateBase = cfg.generateBaseUrl || cfg.baseUrl;
+		const generation = configuredGenerateModel() || (status.kind === "endpoint" ? cfg.generateModel : "");
+		const embedBase = cfg.embedBaseUrl || cfg.baseUrl;
+		const [llmOk, generationOk, embedOk] = await Promise.all([
+			check(status.model ? status.baseUrl : null),
+			check(generation ? generateBase : null),
+			check(embedBase),
+		]);
+		return {
+			llm: { model: status.model, via: status.via, kind: status.kind, reachable: llmOk },
+			generation: { model: generation || null, base: generateBase, reachable: generation ? generationOk : llmOk },
+			embedding: { model: cfg.embedModel, base: embedBase, reachable: embedOk },
+		};
+	};
+
 	const state = async () => {
 		const status = provider.status();
 		const reachable = await reachability(status);
@@ -1153,7 +1176,7 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 			root,
 			cwd,
 			url: `http://127.0.0.1:${port}/`,
-			provider: { ...status, ...reachable, thinking: thinkingSetting() },
+			provider: { ...status, ...reachable, thinking: thinkingSetting(), generateThinking: thinkingFor("generation") },
 			job: jobs.snapshot().current,
 			chatSession,
 			counts: {
@@ -1786,7 +1809,19 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 
 		/* ---- settings ---- */
 		if (route === "GET /api/settings") {
-			return json(res, 200, { ...storedConfigView(), path: configPath(), resolved: llmConfig(), mailtoResolved: contactMailto(), embedState, historyDir: historyRoot, conversations: listConversations(historyRoot).conversations.length, savedBlocks: blockCacheSize(blockCacheFile) });
+			return json(res, 200, { ...storedConfigView(), path: configPath(), resolved: llmConfig(), models: await modelRows(), mailtoResolved: contactMailto(), embedState, historyDir: historyRoot, conversations: listConversations(historyRoot).conversations.length, savedBlocks: blockCacheSize(blockCacheFile) });
+		}
+		// The models a server offers, for the Settings' model lists: the
+		// address and dialect as the page shows them (unsaved edits too);
+		// inside pi also pi's own models for the browser's LLM choice.
+		if (route === "GET /api/models") {
+			const base = (url.searchParams.get("base") ?? "").trim();
+			const api = url.searchParams.get("api") === "openai" ? "openai" : "ollama";
+			const valid = /^https?:\/\/[^\s]+$/i.test(base);
+			// The other dialect as a second try (a dialect left at its default).
+			let models = valid ? await listServerModels(base, api) : [];
+			if (valid && !models.length) models = await listServerModels(base, api === "openai" ? "ollama" : "openai");
+			return json(res, 200, { models, ...(url.searchParams.get("pi") === "1" && provider.choices ? { pi: provider.choices() } : {}) });
 		}
 		if (route === "POST /api/settings") {
 			const body = (await readBody(req)) as Record<string, unknown>;
@@ -1800,6 +1835,15 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 				if (!(THINKING_SETTINGS as readonly string[]).includes(body.thinking)) throw new HttpError(400, `thinking must be one of ${THINKING_SETTINGS.join(", ")}`);
 				patch.thinking = body.thinking === "off" ? undefined : body.thinking as ThinkingSetting;
 			}
+			if (typeof body.browserModel === "string") {
+				const id = body.browserModel.trim();
+				if (id && !(provider.choices?.() ?? []).some((choice) => choice.id === id)) throw new HttpError(400, `"${id}" is not a model pi offers`);
+				patch.browserModel = id || undefined;
+			}
+			if (typeof body.generateThinking === "string") {
+				if (!(THINKING_SETTINGS as readonly string[]).includes(body.generateThinking)) throw new HttpError(400, `generateThinking must be one of ${THINKING_SETTINGS.join(", ")}`);
+				patch.generateThinking = body.generateThinking as ThinkingSetting;
+			}
 			if (Array.isArray(body.codeListTopics)) {
 				const topics = body.codeListTopics.filter((t): t is string => typeof t === "string").map((t) => t.trim()).filter(Boolean);
 				patch.codeListTopics = topics.length ? topics : undefined;
@@ -1808,7 +1852,7 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 				const given = body.llm as Record<string, unknown>;
 				const current = storedConfigView().llm;
 				const llm: Record<string, unknown> = { ...current };
-				for (const key of ["baseUrl", "api", "generateModel", "embedModel", "embedBaseUrl", "embedApi", "generateBaseUrl", "generateApi", "chatModel"]) {
+				for (const key of ["baseUrl", "api", "generateModel", "embedModel", "embedBaseUrl", "embedApi", "generateBaseUrl", "generateApi", "chatModel", "chatBaseUrl", "chatApi"]) {
 					if (!(key in given)) continue;
 					const value = typeof given[key] === "string" ? (given[key] as string).trim() : "";
 					if (value) llm[key] = value;
@@ -1822,27 +1866,6 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 			const written = updateStoredConfig(patch);
 			embedState = null;
 			return json(res, 200, { written, ...storedConfigView(), resolved: llmConfig(), mailtoResolved: contactMailto() });
-		}
-		if (route === "POST /api/settings/check") {
-			const job = startJob("check", "test the setup", async ({ signal, log }) => {
-				const cfg = llmConfig();
-				log(`config   ${configPath()}`);
-				log(`embed    ${cfg.embedModel} (${cfg.embedApi ?? cfg.api} at ${cfg.embedBaseUrl || cfg.baseUrl})`);
-				const status = provider.status();
-				log(`model    ${status.model ?? "(none)"} ${status.via}`);
-				embedState = await deps.checkEmbedModel(signal);
-				log(`doctor   ${embedState.state}${"baseUrl" in embedState ? ` at ${embedState.baseUrl}` : ""}${"error" in embedState ? `: ${embedState.error}` : ""}`);
-				const wiring = provider.wiring();
-				let started = Date.now();
-				const [vector] = await wiring.backend.embed(["river sandbar detection with Sentinel-2 imagery"], signal);
-				log(`embed OK: ${vector.length} dimensions in ${Date.now() - started} ms`);
-				started = Date.now();
-				const reply = await provider.generate({ system: "You are a connectivity test. Answer with a single short sentence.", user: "Say that the connection works.", maxTokens: 24, temperature: 0, signal });
-				log(`generate OK in ${Date.now() - started} ms: ${reply.trim().replace(/\s+/g, " ").slice(0, 120)}`);
-				log(`mailto   ${contactMailto() ? "set" : "not set"} · s2ApiKey ${s2ApiKey() ? "set" : "not set (Semantic Scholar off)"}`);
-				return { ok: true, embedState };
-			});
-			return json(res, 202, { job });
 		}
 		if (route === "POST /api/settings/pull-embed") {
 			const job = startJob("pull", `fetch the embedding model ${llmConfig().embedModel}`, async ({ signal, log }) => {
