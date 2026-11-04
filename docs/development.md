@@ -115,7 +115,8 @@ Where each stage lives; the adapter/engine pair shares its basename.
 |---|---|
 | `extensions/search.ts` | the `pi-literature-search` tool + `/lit-search` command: intake wizard (tabs, variant suggestions via the Pi model, journal/author loaders), digest card |
 | `src/search.ts` | run orchestration: per source and query fetch, pipeline steps in order, payload assembly, source failures |
-| `src/sources/arxiv.ts`, `crossref.ts`, `openalex.ts`, `semanticscholar.ts` | one client per source: query building (booleans, author scope), record normalization; OpenAlex also holds the facet queries, the abstract reconstruction and the access classification (`accessFromWork`, `lookupAccessByDoi`); CrossRef also the data-link lookup (`lookupDataLinksByDoi`, archive list `DATA_ARCHIVES`) |
+| `src/sources/arxiv.ts`, `crossref.ts`, `openalex.ts`, `semanticscholar.ts` | one client per source: query building (booleans, author scope), record normalization; OpenAlex also holds the facet queries, the abstract reconstruction and the access classification (`accessFromWork`, `lookupAccessByDoi`); CrossRef also the data-link lookup (`lookupDataLinksByDoi`, archive list `DATA_ARCHIVES`); OpenAlex also the author window's lookups (`lookupWorkAuthors`, `lookupAuthorFacts`) |
+| `src/sources/orcid.ts` | current employments from the public ORCID record (`lookupOrcidEmployments`, pure `currentEmployments`), for the browser's author window |
 | `src/sources/polite.ts` | the shared politeness: per-source request spacing, timeout, retry on rate-limit answers (used by every client) |
 | `src/sources/github.ts` | GitHub: the search pacer of the code-first sources, aggregator-name filter, repository search, raw README fetch |
 | `src/sources/huggingface.ts` | Hugging Face Papers search (arXiv id + linked repository per hit; undocumented site API, shape pinned) |

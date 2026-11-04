@@ -303,6 +303,9 @@ citations as arrows towards the cited work. Hover focuses a node; hovering
 a line names why it exists. The mouse wheel zooms, dragging pans, a
 double-click resets the view.
 
+In the browser interface the same page opens in a light view
+(`#...&light=1`): the explanations move behind a **Legend** button.
+
 The data is fetched from OpenAlex only when you open the graph. Only the
 DOI or title is sent, and no language model is involved.
 

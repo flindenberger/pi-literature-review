@@ -289,6 +289,9 @@ export interface AccessInfo {
 	work_type?: string;
 	/** Type of the primary location's source verbatim (journal, conference, repository, ...). */
 	source_type?: string;
+	/** False when OpenAlex lists neither references nor citing works: the
+	 * citation graph would have nothing to draw. */
+	graph?: boolean;
 }
 
 /** Image files that OpenAlex sometimes lists as a pdf_url (graphical
@@ -325,6 +328,9 @@ export function accessFromWork(work: Record<string, any>): AccessInfo {
 		...(urls.length ? { pdf_urls: urls } : {}),
 		...(workType ? { work_type: workType } : {}),
 		...(sourceType ? { source_type: sourceType } : {}),
+		...(typeof work?.referenced_works_count === "number" && typeof work?.cited_by_count === "number"
+			? { graph: work.referenced_works_count > 0 || work.cited_by_count > 0 }
+			: {}),
 	};
 }
 
@@ -340,7 +346,7 @@ export async function lookupAccessByDoi(dois: string[]): Promise<Map<string, Acc
 		const batch = unique.slice(i, i + DOI_BATCH_SIZE);
 		const params = withContact(new URLSearchParams({
 			filter: `doi:${batch.join("|")}`,
-			select: "doi,type,open_access,best_oa_location,locations,primary_location",
+			select: "doi,type,open_access,best_oa_location,locations,primary_location,referenced_works_count,cited_by_count",
 			"per-page": String(DOI_BATCH_SIZE),
 		}));
 		const response = await fetchLookup(`${BASE_URL}?${params}`, { headers: HEADERS() });
@@ -535,4 +541,92 @@ export async function lookupWorkFacts(doi: string, signal?: AbortSignal): Promis
 	}
 	const data = (await response.json()) as Record<string, any>;
 	return workFacts(data);
+}
+
+/* ---------------- Author facts (the author window) ---------------- */
+
+const bareOpenAlexId = (value: unknown): string =>
+	typeof value === "string" ? value.replace("https://openalex.org/", "").trim() : "";
+
+/** The authors of one work as OpenAlex lists them: the way from a name on
+ * a result card to the right author record (namesakes stay apart). */
+export async function lookupWorkAuthors(doi: string, signal?: AbortSignal): Promise<Array<{ id: string; name: string; raw: string }>> {
+	const params = withContact(new URLSearchParams({ select: "authorships" }));
+	let response: Response;
+	try {
+		response = await fetchLookup(`${BASE_URL}/doi:${encodeURIComponent(doi.trim().toLowerCase())}?${params}`, { headers: HEADERS(), signal });
+	} catch (error) {
+		if (/HTTP 404\b/.test(error instanceof Error ? error.message : String(error))) return [];
+		throw error;
+	}
+	const data = (await response.json()) as Record<string, any>;
+	return ((data?.authorships ?? []) as Array<Record<string, any>>)
+		.map((entry) => ({
+			id: bareOpenAlexId(entry?.author?.id),
+			name: typeof entry?.author?.display_name === "string" ? entry.author.display_name : "",
+			raw: typeof entry?.raw_author_name === "string" ? entry.raw_author_name : "",
+		}))
+		.filter((entry) => entry.id && entry.name);
+}
+
+/** What the author window shows, straight from the author object. */
+export interface AuthorFacts {
+	id: string;
+	name: string;
+	orcid: string;
+	works: number | null;
+	cited_by: number | null;
+	h_index: number | null;
+	/** Citations per year, newest first. */
+	cited_by_year: Array<{ year: number; count: number }>;
+	topics: string[];
+	/** OpenAlex's last known institutions (derived from the newest papers). */
+	last_known: Array<{ name: string; country: string }>;
+	/** Institutions with the years OpenAlex saw them, newest first. */
+	affiliations: Array<{ name: string; years: number[] }>;
+}
+
+export function authorFacts(author: Record<string, any>): AuthorFacts {
+	const num = (value: unknown) => (typeof value === "number" ? value : null);
+	const years = Array.isArray(author?.counts_by_year) ? author.counts_by_year : [];
+	return {
+		id: bareOpenAlexId(author?.id),
+		name: typeof author?.display_name === "string" ? author.display_name : "",
+		orcid: typeof author?.orcid === "string" ? author.orcid.replace(/^https?:\/\/orcid\.org\//, "") : "",
+		works: num(author?.works_count),
+		cited_by: num(author?.cited_by_count),
+		h_index: num(author?.summary_stats?.h_index),
+		cited_by_year: years
+			.filter((entry: any) => Number.isInteger(entry?.year) && typeof entry?.cited_by_count === "number")
+			.map((entry: any) => ({ year: entry.year, count: entry.cited_by_count }))
+			.sort((a: { year: number }, b: { year: number }) => b.year - a.year),
+		topics: ((author?.topics ?? []) as Array<Record<string, any>>)
+			.map((topic) => (typeof topic?.display_name === "string" ? topic.display_name : ""))
+			.filter(Boolean)
+			.slice(0, 3),
+		last_known: ((author?.last_known_institutions ?? []) as Array<Record<string, any>>)
+			.filter((entry) => typeof entry?.display_name === "string")
+			.map((entry) => ({ name: entry.display_name, country: typeof entry.country_code === "string" ? entry.country_code : "" })),
+		affiliations: ((author?.affiliations ?? []) as Array<Record<string, any>>)
+			.filter((entry) => typeof entry?.institution?.display_name === "string")
+			.map((entry) => ({
+				name: entry.institution.display_name,
+				years: (Array.isArray(entry.years) ? entry.years.filter((y: unknown) => Number.isInteger(y)) : []).sort((a: number, b: number) => b - a),
+			}))
+			.sort((a, b) => (b.years[0] ?? 0) - (a.years[0] ?? 0))
+			.slice(0, 5),
+	};
+}
+
+/** One author record (a single-entity lookup). */
+export async function lookupAuthorFacts(id: string, signal?: AbortSignal): Promise<AuthorFacts | null> {
+	const params = withContact(new URLSearchParams());
+	let response: Response;
+	try {
+		response = await fetchLookup(`https://api.openalex.org/authors/${encodeURIComponent(id)}?${params}`, { headers: HEADERS(), signal });
+	} catch (error) {
+		if (/HTTP 404\b/.test(error instanceof Error ? error.message : String(error))) return null;
+		throw error;
+	}
+	return authorFacts((await response.json()) as Record<string, any>);
 }

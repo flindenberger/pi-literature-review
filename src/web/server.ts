@@ -47,7 +47,8 @@ import {
 } from "../config.ts";
 import { canPickFolder, pickFiles, pickFolder } from "../folderpick.ts";
 import { listServerModels } from "../llm.ts";
-import { lookupWorkFacts, type WorkFacts } from "../sources/openalex.ts";
+import { type AuthorFacts, lookupAuthorFacts, lookupWorkAuthors, lookupWorkFacts, type WorkFacts } from "../sources/openalex.ts";
+import { type Employment, lookupOrcidEmployments } from "../sources/orcid.ts";
 import { EXAMPLES_SYSTEM, type ExamplePaper, examplePaperName, examplesPrompt, parseExamples } from "./examples.ts";
 import { chatPool, ensureLibrary, runChatReport, runReport, runRound, type ChatAnswer, type ChatDeps, type ChatReport, type ChatReportOptions, type ChatOptions, type ReportOptions, type SynthReport } from "../synthesis.ts";
 import { ensureIndexed, libraryFiles, type LibraryMatch, type LibraryPaper, matchLibrary, realCorpusDeps } from "../corpus.ts";
@@ -76,14 +77,14 @@ import {
 	variantPrompt,
 	type VariantSuggestion,
 } from "../intake.ts";
-import { writeNetworkPage } from "../network.ts";
+import { NETWORK_PAGE_NAME, renderNetworkHtml, writeNetworkPage } from "../network.ts";
 import { htmlPathFor, jsonPathFor, outputRoot, synthReportName, writeRunOutputs } from "../output.ts";
-import { sanitizeTermGroups } from "../pipeline.ts";
+import { sameAuthorName, sanitizeTermGroups } from "../pipeline.ts";
 import type { ModelProvider, ProviderStatus } from "../provider.ts";
 import { type BlockMode, blockCachePath, blockCacheSize, cachedBlocks, clearBlockCache, saveBlocks } from "./blockcache.ts";
 import { clearConversations, conversationFiles, deleteConversation, historyDir, listConversations, loadConversation, newConversationId, saveConversation } from "./history.ts";
 import { parseSocialReply, SOCIAL_SYSTEM, socialCandidate, STEP_ACCEPTS } from "./help.ts";
-import { prismaSvgFor, renderHtml, searchLabel, renderPaperChatReportHtml, renderSynthReportHtml, webPdfHref } from "../render.ts";
+import { describeFilters, prismaSvgFor, renderHtml, searchLabel, renderPaperChatReportHtml, renderSynthReportHtml, webPdfHref } from "../render.ts";
 import { keyRequirement, runSearch, SEARCHERS, type SearchOptions, type SearchPayload } from "../search.ts";
 import { parseIdentifier, renderFetchReport, runSelection, type SelectionRunOptions } from "../selection.ts";
 import { listsForTopic } from "../sources/ecosystems.ts";
@@ -152,6 +153,12 @@ export interface WebDeps {
 	pickFiles: (title: string, start: string) => Promise<string[]>;
 	/** OpenAlex facts of one work by DOI (citations, venue, access, abstract). */
 	workFacts: (doi: string, signal?: AbortSignal) => Promise<WorkFacts | null>;
+	/** The authors of one work by DOI (OpenAlex ids and names). */
+	workAuthors: (doi: string, signal?: AbortSignal) => Promise<Array<{ id: string; name: string; raw: string }>>;
+	/** One OpenAlex author record. */
+	authorFacts: (id: string, signal?: AbortSignal) => Promise<AuthorFacts | null>;
+	/** Current employments from the public ORCID record. */
+	orcidEmployments: (orcid: string, signal?: AbortSignal) => Promise<Employment[]>;
 	canPickFolder: () => boolean;
 	/** Keep the download folder for next time and read it as a PDF folder. */
 	rememberDownloadDir: (folder: string) => void;
@@ -199,6 +206,11 @@ const AUTHOR_MATCH_LIMIT = 6;
 const CODE_TOPIC_LIMIT = 5;
 const LOOKUP_TIMEOUT_MS = 8_000;
 const COOKIE = "plr_token";
+/** Hides the terminal hand-off (tick column, copy steps) in search reports
+ * opened in the browser; the file on disk keeps it for the terminal. */
+const BROWSER_REPORT_STYLE = `<style>.selectsteps, td.pickcell > *, th[title^="Select rows"] > * { display: none !important; }
+table col:first-child { width: 0 !important; }
+td.pickcell, th[title^="Select rows"] { padding: 0 !important; border-left: 0 !important; border-right: 0 !important; }</style>`;
 const STATIC_DIR = fileURLToPath(new URL("./static/", import.meta.url));
 const PDF_ROUTE = "/pdf";
 
@@ -244,6 +256,9 @@ export function realWebDeps(): WebDeps {
 		pickFolder,
 		pickFiles,
 		workFacts: lookupWorkFacts,
+		workAuthors: lookupWorkAuthors,
+		authorFacts: lookupAuthorFacts,
+		orcidEmployments: lookupOrcidEmployments,
 		canPickFolder,
 		rememberDownloadDir,
 	};
@@ -548,6 +563,7 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 	/** Files chosen in the system's file window (only these may be imported). */
 	const exampleCache = new Map<string, string[] | null>();
 	const workFactsCache = new Map<string, { at: number; facts: WorkFacts | null }>();
+	const authorCache = new Map<string, { at: number; body: Record<string, unknown> }>();
 	const pickedFiles = new Set<string>();
 	let lastPickDir = "";
 
@@ -1263,6 +1279,13 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 			const [stageName, ...rest] = path.slice("/files/".length).split("/");
 			const stage = stageOf(stageName);
 			const name = rest.length === 1 ? decodeURIComponent(rest[0]) : "";
+			// The citation graph is one static page: served from this
+			// version's code, so an older copy on disk never shows.
+			if (stage === "lit-search" && name === NETWORK_PAGE_NAME) {
+				res.writeHead(200, { "content-type": FILE_TYPES.html, "cache-control": "no-store" });
+				res.end(renderNetworkHtml());
+				return;
+			}
 			const home = stage && name ? dataRoots().find((dir) => stageFile(dir, stage, name)) : undefined;
 			const file = stage && home ? stageFile(home, stage, name) : null;
 			if (!file || !stage || !home) throw new HttpError(404, "no such file");
@@ -1274,6 +1297,15 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 					res.end(rendered);
 					return;
 				}
+			}
+			// A search report in the browser: the tick column and the
+			// "copy into the Pi chat" steps belong to the terminal flow (the
+			// browser downloads from its result list), so they are hidden.
+			if (stage === "lit-search" && /\.html?$/i.test(name)) {
+				const html = readFileSync(file, "utf8").replace("</head>", `${BROWSER_REPORT_STYLE}</head>`);
+				res.writeHead(200, { "content-type": FILE_TYPES.html, "cache-control": "no-store" });
+				res.end(html);
+				return;
 			}
 			return serveFile(res, file);
 		}
@@ -1331,6 +1363,37 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 		// One paper's facts for the info window: the library record, and from
 		// OpenAlex (by DOI, an arXiv id as its DataCite DOI) citations, venue,
 		// access and abstract, kept for six hours.
+		// The author window: the author record behind a name on a result
+		// card, found through the card's work (so a namesake never answers),
+		// plus the current employment from ORCID when the record links one.
+		if (route === "GET /api/author") {
+			let id = (url.searchParams.get("id") ?? "").trim();
+			const doi = (url.searchParams.get("doi") ?? "").trim();
+			const name = (url.searchParams.get("name") ?? "").trim();
+			if (!/^A\d+$/.test(id)) {
+				if (!doi || !name) throw new HttpError(400, "an author id, or a DOI and a name, is needed");
+				const authors = await deps.workAuthors(doi, AbortSignal.timeout(15_000));
+				const match = authors.find((author) => sameAuthorName(author.name, name) || (author.raw && sameAuthorName(author.raw, name)));
+				if (!match) throw new HttpError(404, `OpenAlex does not list ${name} for this paper`);
+				id = match.id;
+			}
+			const cached = authorCache.get(id);
+			if (cached && Date.now() - cached.at < 6 * 3600_000) return json(res, 200, cached.body);
+			const facts = await deps.authorFacts(id, AbortSignal.timeout(15_000));
+			if (!facts) throw new HttpError(404, "OpenAlex has no record of this author");
+			let employments: Employment[] = [];
+			let orcidError: string | null = null;
+			if (facts.orcid) {
+				try {
+					employments = await deps.orcidEmployments(facts.orcid, AbortSignal.timeout(8_000));
+				} catch (failure) {
+					orcidError = errorMessage(failure);
+				}
+			}
+			const body = { author: facts, employments, orcidError, checked: new Date().toISOString() };
+			if (!orcidError) authorCache.set(id, { at: Date.now(), body });
+			return json(res, 200, body);
+		}
 		if (route === "GET /api/paper") {
 			const base = url.searchParams.get("base") ?? "";
 			const paper = listLibrary(root, cwd, deps.matchLibrary(root)).papers.find((entry) => entry.base === base);
@@ -1493,6 +1556,25 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 				yearFrom: typeof payload.filters?.yearFrom === "number" ? payload.filters.yearFrom : null,
 				thisYear: new Date().getFullYear(),
 				rows: cardRows(payload as never, library.keys),
+			});
+		}
+		// Provenance behind a flow diagram (the PRISMA viewer's Details):
+		// request, date, raw hits per source, filters. A filtered diagram
+		// reads its own sidecar when one exists, else the run's.
+		if (route === "GET /api/runs/facts") {
+			const name = url.searchParams.get("name") ?? "";
+			const payload = runPayload(name) ?? runPayload(name.replace(/_filtered(_\d+)?$/, ""));
+			if (!payload) throw new HttpError(404, "no such search run");
+			const run = payload as unknown as SearchPayload & { list_filters?: string[] | null };
+			return json(res, 200, {
+				query: searchLabel(run),
+				generated: run.generated,
+				perSource: run.per_source,
+				sources: (run.source_counts ?? []).map((entry) => ({ source: entry.source, query: entry.query, count: entry.count })),
+				skipped: (run.sources_skipped ?? []).map((entry) => entry.source),
+				failures: (run.source_failures ?? []).map((failure) => failure.source),
+				filters: describeFilters(run.filters),
+				listFilters: run.list_filters ?? null,
 			});
 		}
 		// A report from the (filtered) list: the run's payload with the list

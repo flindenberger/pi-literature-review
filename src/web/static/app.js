@@ -283,6 +283,10 @@
 	const ICON_EDIT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M14 6l4 4"/></svg>';
 	const SORT_LABELS = { relevance: "Relevance", cites: "Most cited", year: "Newest" };
 	const ICON_SORT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h10M4 17h5"/></svg>';
+	const ICON_LINK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 14a4.5 4.5 0 0 0 6.4 0l3-3a4.5 4.5 0 0 0-6.4-6.4l-1.2 1.2"/><path d="M14 10a4.5 4.5 0 0 0-6.4 0l-3 3a4.5 4.5 0 0 0 6.4 6.4l1.2-1.2"/></svg>';
+	const ICON_PDF = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5M9 13h6M9 17h4"/></svg>';
+	const ICON_CODE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 7l-5 5 5 5M16 7l5 5-5 5"/></svg>';
+	const ICON_DATA = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5.5" rx="7" ry="2.5"/><path d="M5 5.5v13c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5v-13M5 12c0 1.4 3.1 2.5 7 2.5s7-1.1 7-2.5"/></svg>';
 	const ICON_GRAPH = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="8" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M8.2 7l7.4.8M7.5 8l3.5 8M16.8 10l-3.6 6"/></svg>';
 	/** Reports written on click from the (filtered) list; further add-ons
 	 * are one more entry here (the server route decides what it writes). */
@@ -448,16 +452,24 @@
 
 	function cardRowHtml(row, entry) {
 		const access = row.access || "unknown";
-		const authors = row.authors.slice(0, 3).join(", ") + (row.authors.length > 3 ? ` and ${row.authors.length - 3} more` : "");
+		// Names open the author window, found through this paper's DOI (an
+		// arXiv id goes by its DataCite DOI); without either they stay text.
+		const workDoi = row.doi || (row.arxiv ? `10.48550/arxiv.${row.arxiv.replace(/v\d+$/i, "")}` : "");
+		const nameHtml = (author) => workDoi
+			? `<button type="button" class="au" data-act="author" data-name="${esc(author)}" data-doi="${esc(workDoi)}" title="About ${esc(author)}">${esc(author)}</button>`
+			: esc(author);
+		const shown = entry.allAuthors && entry.allAuthors.has(row.n) ? row.authors : row.authors.slice(0, 3);
+		const authors = shown.map(nameHtml).join(", ")
+			+ (shown.length < row.authors.length ? ` <button type="button" class="au more" data-act="moreauthors" data-n="${row.n}">and ${row.authors.length - 3} more</button>` : "");
 		const links = [];
-		if (row.doi) links.push(`<a href="https://doi.org/${esc(row.doi)}" target="_blank" rel="noopener">DOI</a>`);
-		if (row.arxiv) links.push(`<a href="https://arxiv.org/abs/${esc(row.arxiv)}" target="_blank" rel="noopener">arXiv</a>`);
-		if (row.pdf) links.push(`<a href="${esc(row.pdf)}" target="_blank" rel="noopener">PDF</a>`);
-		if (row.codeUrl) links.push(`<a href="${esc(row.codeUrl)}" target="_blank" rel="noopener">Code</a>`);
+		if (row.doi) links.push(`<a href="https://doi.org/${esc(row.doi)}" target="_blank" rel="noopener" title="Publisher page (doi.org/${esc(row.doi)})">${ICON_LINK}DOI</a>`);
+		if (row.arxiv) links.push(`<a href="https://arxiv.org/abs/${esc(row.arxiv)}" target="_blank" rel="noopener" title="arXiv page">${ICON_LINK}arXiv</a>`);
+		if (row.pdf) links.push(`<a href="${esc(row.pdf)}" target="_blank" rel="noopener" title="Open-access PDF">${ICON_PDF}PDF</a>`);
+		if (row.codeUrl) links.push(`<a href="${esc(row.codeUrl)}" target="_blank" rel="noopener" title="Code repository">${ICON_CODE}Code</a>`);
 		const seenArchives = new Set();
-		for (const link of row.dataLinks) { if (seenArchives.has(link.archive)) continue; seenArchives.add(link.archive); links.push(`<a href="${esc(link.url)}" target="_blank" rel="noopener">Data${link.archive ? ` (${esc(link.archive)})` : ""}</a>`); }
+		for (const link of row.dataLinks) { if (seenArchives.has(link.archive)) continue; seenArchives.add(link.archive); links.push(`<a href="${esc(link.url)}" target="_blank" rel="noopener" title="Data archive">${ICON_DATA}Data${link.archive ? ` (${esc(link.archive)})` : ""}</a>`); }
 		const graphHash = [row.doi ? `doi=${encodeURIComponent(row.doi)}` : "", `title=${encodeURIComponent(row.title)}`].filter(Boolean).join("&");
-		links.push(`<a href="/files/lit-search/network.html#${graphHash}" class="graph" data-act="graph" data-title="${esc(row.title)}" title="Citation neighbourhood of this paper (fetched live from OpenAlex)">${ICON_GRAPH}Graph</a>`);
+		if (row.graph !== false) links.push(`<a href="/files/lit-search/network.html#${graphHash}&light=1" class="graph" data-act="graph" data-title="${esc(row.title)}" title="Citation neighbourhood of this paper (fetched live from OpenAlex)">${ICON_GRAPH}Graph</a>`);
 		const tick = row.id
 			? `<input type="checkbox" data-act="tick" data-id="${esc(row.id)}" ${entry.ticked.has(row.id) ? "checked" : ""} title="Tick for download">`
 			: `<span class="notick" title="No DOI or arXiv id: cannot be downloaded here"></span>`;
@@ -465,7 +477,7 @@
 		const flags = [row.inLibrary ? '<span class="flag">in library</span>' : "", row.group === "on_target" ? '<span class="flag">on target</span>' : "", row.dropped ? `<span class="flag dropped" title="${esc(row.reason || "")}">dropped: ${esc(row.reason || "")}</span>` : ""].join("");
 		return `<div class="pcard ${row.dropped ? "isdropped" : ""}" data-n="${row.n}">${tick}
 <div class="body"><div class="t">${row.url ? `<a href="${esc(row.url)}" target="_blank" rel="noopener">${esc(row.title)}</a>` : esc(row.title)}</div>
-<div class="a">${esc(authors) || "authors not given"}</div><div class="v">${meta}</div>${flags ? `<div class="flags">${flags}</div>` : ""}</div>
+<div class="a">${authors || "authors not given"}</div><div class="v">${meta}</div>${flags ? `<div class="flags">${flags}</div>` : ""}</div>
 <div class="right"><span class="badge ${esc(access)}">${ACCESS_LABEL[access]}</span><span class="cites"><b>${row.cites === null ? "–" : row.cites}</b> citations</span></div>
 <div class="links">${links.join("")}<span class="src">${esc(row.sources.join(" + "))}</span></div>
 ${row.abstract ? `<details class="abs"><summary>Abstract</summary>${esc(row.abstract)}</details>` : ""}</div>`;
@@ -568,6 +580,8 @@ ${latest && !byAuthors ? `<span class="tsep" aria-hidden="true"></span><button t
 		if (!target || ["tick", "narrow", "pickname"].includes(target.dataset.act)) return;
 		const node = target.closest(".msg.results"); const name = node.dataset.run; const entry = resultsEntry(name); const f = entry.filters;
 		const act = target.dataset.act;
+		if (act === "author") { event.preventDefault(); showAuthorInfo({ name: target.dataset.name, doi: target.dataset.doi }); return; }
+		if (act === "moreauthors") { (entry.allAuthors ||= new Set()).add(Number(target.dataset.n)); redrawResults(name); return; }
 		if (act === "graph") { event.preventDefault(); state.panelClosedByUser = false; showReport(target.getAttribute("href"), `Citation graph: ${target.dataset.title}`); setPopup(true); return; }
 		if (act === "dropped") { event.preventDefault(); entry.showDropped = !entry.showDropped; redrawResults(name); return; }
 		if (act === "filters") { entry.open = !entry.open; redrawResults(name); return; }
@@ -2237,7 +2251,11 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	/* ---------------- report panel ---------------- */
 	const shell = $("shell"), frame = $("frame"), reportBox = $("report");
 	function showReport(url, name) {
+		// A flow diagram opens in its viewer (export buttons, details).
+		const diagram = /\.prisma\.svg$/i.test(url.replace(/[?#].*$/, ""));
+		if (diagram) url = `/static/prisma.html?file=${encodeURIComponent(url)}`;
 		clearTabs();
+		reportBox.classList.toggle("compact", diagram);
 		state.report = { url, name };
 		if (frame.getAttribute("src") !== url) frame.src = url;
 		frame.hidden = false;
@@ -2341,6 +2359,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	state.tabs = [];
 	state.activeTab = null;
 	function clearTabs() {
+		reportBox.classList.remove("compact");
 		for (const tab of state.tabs) tab.frame.remove();
 		state.tabs = [];
 		state.activeTab = null;
@@ -2673,6 +2692,49 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		row("Index", indexed ? `${p.index.chunks} passages` : "not indexed yet");
 		row("File", `<span class="path">${esc(p.file)}</span> <button type="button" class="icon" data-reveal-path="${esc(p.dir)}" title="Show in the file manager" aria-label="Show in the file manager">${ICON_REVEAL}</button>`);
 		box.innerHTML = `<h3>${esc(p.title || p.base)}</h3><table class="infotable">${rows.join("")}</table>${oa && oa.abstract ? `<details class="abstract"><summary>Abstract</summary><p>${esc(oa.abstract)}</p></details>` : ""}<div class="modal-actions"><button type="button" class="primary" data-close-info>Close</button></div>`;
+	}
+	/** The author window: OpenAlex record (works, citations, h-index,
+	 * citations per year, topics) and the place of work -- the current
+	 * ORCID employment when the record links an ORCID iD, else OpenAlex's
+	 * last known institution (derived from the newest papers). */
+	async function showAuthorInfo(query) {
+		let box = document.getElementById("authorinfo");
+		if (!box) {
+			box = document.createElement("dialog");
+			box.id = "authorinfo";
+			box.className = "modal paperinfo";
+			document.body.appendChild(box);
+			box.addEventListener("click", (event) => {
+				if (event.target === box || event.target.closest("[data-close-info]")) box.close();
+			});
+		}
+		box.innerHTML = `<h3>${esc(query.name)}</h3><p class="wait"><span class="dot busy"></span>Loading ...</p>`;
+		if (!box.open) box.showModal();
+		const params = new URLSearchParams(query.id ? { id: query.id } : { doi: query.doi, name: query.name });
+		let data;
+		try { data = await get(`/api/author?${params}`); } catch (error) { box.innerHTML = `<h3>${esc(query.name)}</h3><p>${esc(error.message)}</p><div class="modal-actions"><button type="button" class="primary" data-close-info>Close</button></div>`; return; }
+		const a = data.author;
+		const rows = [];
+		const row = (label, value) => { if (value) rows.push(`<tr><th>${label}</th><td>${value}</td></tr>`); };
+		const job = (data.employments || [])[0];
+		if (job) {
+			row("Works at", `${esc(job.organization)}${job.role ? `<br><span class="muted">${esc(job.role)}</span>` : ""}${job.since ? ` <span class="muted">since ${job.since}</span>` : ""} <span class="muted" title="From the researcher's own ORCID record">(ORCID)</span>`);
+		} else if (a.last_known.length) {
+			row("Works at", `${a.last_known.map((i) => esc(i.name)).join("; ")} <span class="muted" title="OpenAlex derives this from the affiliations in the newest papers">(per OpenAlex)</span>`);
+		}
+		const past = a.affiliations.filter((entry) => !(job && entry.name === job.organization) && !a.last_known.some((i) => i.name === entry.name));
+		if (past.length) row("Earlier", past.slice(0, 3).map((entry) => `${esc(entry.name)}${entry.years.length ? ` <span class="muted">${entry.years[entry.years.length - 1]}${entry.years[0] !== entry.years[entry.years.length - 1] ? `–${entry.years[0]}` : ""}</span>` : ""}`).join("<br>"));
+		row("Works", a.works !== null ? String(a.works) : "");
+		if (a.cited_by !== null) {
+			const years = (a.cited_by_year || []).slice(0, 8).reverse();
+			const top = Math.max(1, ...years.map((entry) => entry.count));
+			const bars = years.length ? `<span class="cbars" title="Citations per year">${years.map((entry) => `<span class="cbar" title="${entry.year}: ${entry.count}"><i style="height:${Math.round((100 * entry.count) / top)}%"></i><small>${String(entry.year).slice(2)}</small></span>`).join("")}</span>` : "";
+			row("Citations", `<b>${a.cited_by}</b>${a.h_index !== null ? ` <span class="muted">· h-index ${a.h_index}</span>` : ""}${bars}`);
+		}
+		row("Topics", a.topics.map(esc).join("; "));
+		const links = [a.orcid ? `<a href="https://orcid.org/${esc(a.orcid)}" target="_blank" rel="noopener">ORCID</a>` : "", `<a href="https://openalex.org/${esc(a.id)}" target="_blank" rel="noopener">OpenAlex</a>`].filter(Boolean).join(" · ");
+		row("Profiles", links);
+		box.innerHTML = `<h3>${esc(a.name || query.name)}</h3><table class="infotable">${rows.join("")}</table><div class="modal-actions"><button type="button" class="primary" data-close-info>Close</button></div>`;
 	}
 	/** The library PDF shown in the panel (single view or active tab), else null. */
 	function panelPaperBase() {

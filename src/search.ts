@@ -386,8 +386,10 @@ export async function runSearch(options: SearchOptions) {
 	// Abstract gate: a record still without an abstract AFTER enrichment
 	// cannot be judged by the block labeling (title-only matching
 	// under-matches systematically) and moves to the dropped table --
-	// visible and selectable there, never silently gone.
-	const abstractGate = dropWithoutAbstract(scored, (record) =>
+	// visible and selectable there, never silently gone. An author-only
+	// search has no topic to judge, so it keeps every work (publishers
+	// such as Elsevier withhold abstracts from the open sources).
+	const abstractGate = authorsOnly ? { kept: scored, dropped: [] } : dropWithoutAbstract(scored, (record) =>
 		options.enrich === false
 			? "no abstract (sources delivered none; enrichment disabled)"
 			: !s2ApiKey()

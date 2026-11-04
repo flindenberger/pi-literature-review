@@ -46,6 +46,8 @@ export interface CardRow {
 	inLibrary: boolean;
 	abstract: string;
 	kind: PaperKind;
+	/** False when OpenAlex knows no references and no citing works (no graph). */
+	graph: boolean;
 }
 
 /** The list filters of the browser; every field optional, absent = off. */
@@ -144,6 +146,7 @@ function rowOf(record: AnyRecord, n: number, dropped: boolean, reason: string | 
 		inLibrary: Boolean(key) && libraryKeys.has(key),
 		abstract: str(record.abstract),
 		kind: paperKind(record),
+		graph: !(access && access.graph === false),
 	};
 }
 

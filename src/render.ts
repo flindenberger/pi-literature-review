@@ -898,71 +898,93 @@ export function flowDiagramSvg(
 	extras: FlowDiagramExtras,
 ): string {
 	const LINE = 17;
-	const PAD = 9;
-	const MAIN_X = 20;
-	const MAIN_W = 320;
-	const SIDE_X = 400;
-	const SIDE_W = 330;
-	const WIDTH = 750;
+	const PAD = 11;
+	const BAND_X = 12;
+	const BAND_W = 26;
+	const MAIN_X = 54;
+	const MAIN_W = 300;
+	const SIDE_X = 404;
+	const SIDE_W = 340;
+	const WIDTH = 760;
+	const GAP = 16;
 	const mainCx = MAIN_X + MAIN_W / 2;
+	const FONT = 'font-family="system-ui, -apple-system, \'Segoe UI\', Helvetica, Arial, sans-serif"';
 
 	const excludedTotal = (flow.late_code_pairs_removed ?? 0) + (flow.no_abstract_removed ?? 0)
 		+ (flow.off_topic_code_removed ?? 0) + flow.excluded_by_filters;
 	const side1Lines = [
-		"Records removed before screening",
 		`uncitable (no title or no authors): n = ${flow.junk_removed}`,
 		`duplicate records merged: n = ${flow.duplicates_removed}`,
 	];
-	const side2Lines = [`Records excluded: n = ${excludedTotal}`];
+	const side2Lines: string[] = [];
 	if (flow.late_code_pairs_removed) side2Lines.push(`code repository > 1 year after paper: n = ${flow.late_code_pairs_removed}`);
 	if (extras.abstractNone) side2Lines.push(`no abstract available: n = ${extras.abstractNone}`);
 	if (extras.abstractFailed) side2Lines.push(`abstract retrieval failed: n = ${extras.abstractFailed}`);
 	if (flow.off_topic_code_removed) side2Lines.push(`code-only find off topic: n = ${flow.off_topic_code_removed}`);
 	if (flow.excluded_by_filters) {
 		side2Lines.push(`user filters: n = ${flow.excluded_by_filters}`);
-		for (const entry of extras.filterBreakdown) side2Lines.push(` ${entry.label}: n = ${entry.count}`);
+		for (const entry of extras.filterBreakdown) side2Lines.push(`  ${entry.label}: n = ${entry.count}`);
 	}
+	type Box = { x: number; w: number; title: string; n: number; lines: string[]; main: boolean; y: number; h: number };
+	const box = (main: boolean, title: string, n: number, lines: string[] = []): Box => ({
+		x: main ? MAIN_X : SIDE_X, w: main ? MAIN_W : SIDE_W, title, n, lines, main, y: 0,
+		// title row, the count, then the breakdown lines
+		h: PAD * 2 + 16 + (main ? 22 : 18) + lines.length * LINE,
+	});
 	const boxes = [
-		{ x: MAIN_X, w: MAIN_W, lines: ["Records identified", `n = ${flow.identified}`] },
-		{ x: SIDE_X, w: SIDE_W, lines: side1Lines },
-		{ x: MAIN_X, w: MAIN_W, lines: ["Records screened", `n = ${flow.screened}`] },
-		{ x: SIDE_X, w: SIDE_W, lines: side2Lines },
-		{ x: MAIN_X, w: MAIN_W, lines: ["Records found", `n = ${flow.included}`] },
-	] as Array<{ x: number; w: number; lines: string[]; y?: number; h?: number }>;
-	for (const box of boxes) box.h = PAD * 2 + box.lines.length * LINE;
-
+		box(true, "Records identified", flow.identified),
+		box(false, "Records removed before screening", flow.junk_removed + flow.duplicates_removed, side1Lines),
+		box(true, "Records screened", flow.screened),
+		box(false, "Records excluded", excludedTotal, side2Lines),
+		box(true, "Records found", flow.included),
+	];
 	// Main boxes stack down the left; each side box sits in the gap to its
 	// right, and the gap grows with the side box so nothing overlaps.
-	boxes[0].y = 10;
-	boxes[1].y = boxes[0].y! + boxes[0].h! + 14;
-	boxes[2].y = boxes[1].y! + boxes[1].h! + 14;
-	boxes[3].y = boxes[2].y! + boxes[2].h! + 14;
-	boxes[4].y = boxes[3].y! + boxes[3].h! + 14;
-	const height = boxes[4].y! + boxes[4].h! + 10;
+	boxes[0].y = 14;
+	for (let i = 1; i < boxes.length; i++) boxes[i].y = boxes[i - 1].y + boxes[i - 1].h + GAP;
+	const height = boxes[4].y + boxes[4].h + 14;
 
-	const boxSvg = boxes.map((box) => {
-		const text = box.lines.map((line, i) =>
-			`<tspan x="${box.x + PAD}" dy="${i === 0 ? 0 : LINE}"${i === 0 ? ' font-weight="600"' : ""}>${esc(line)}</tspan>`).join("");
-		return `<rect x="${box.x}" y="${box.y}" width="${box.w}" height="${box.h}" rx="3" fill="#f1f1ec" stroke="#c9c9c2"/>`
-			+ `<text x="${box.x + PAD}" y="${box.y! + PAD + 12}" font-family="system-ui, sans-serif" font-size="13" fill="#1c1c1c">${text}</text>`;
+	const boxSvg = boxes.map((b) => {
+		const count = `<text x="${b.x + PAD}" y="${b.y + PAD + 16 + (b.main ? 20 : 16)}" ${FONT} font-size="${b.main ? 17 : 14}" font-weight="700" fill="#1c1c1c">n = ${b.n}</text>`;
+		const detail = b.lines.length
+			? `<text x="${b.x + PAD}" y="${b.y + PAD + 16 + 18 + 14}" ${FONT} font-size="12.5" fill="#4a4a4a">${b.lines.map((line, i) =>
+				`<tspan x="${b.x + PAD + (line.startsWith("  ") ? 12 : 0)}" dy="${i === 0 ? 0 : LINE}">${esc(line.trim())}</tspan>`).join("")}</text>`
+			: "";
+		return `<rect x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" rx="8" fill="${b.main ? "#ffffff" : "#f6f6f2"}" stroke="${b.main ? "#2a2a2a" : "#c9c9c2"}" stroke-width="${b.main ? 1.4 : 1}"/>`
+			+ `<text x="${b.x + PAD}" y="${b.y + PAD + 12}" ${FONT} font-size="13" font-weight="600" fill="#3d3d3d">${esc(b.title)}</text>`
+			+ count + detail;
 	}).join("\n");
+
+	// PRISMA 2020 phase bands down the left edge.
+	const band = (label: string, top: number, bottom: number) => {
+		const cy = (top + bottom) / 2;
+		const cx = BAND_X + BAND_W / 2;
+		return `<rect x="${BAND_X}" y="${top}" width="${BAND_W}" height="${bottom - top}" rx="6" fill="#2a2a2a"/>`
+			+ `<text x="${cx}" y="${cy}" transform="rotate(-90 ${cx} ${cy})" text-anchor="middle" dominant-baseline="central" ${FONT} font-size="12" font-weight="600" letter-spacing="0.06em" fill="#ffffff">${label}</text>`;
+	};
+	const bands = [
+		band("Identification", boxes[0].y, boxes[1].y + boxes[1].h),
+		band("Screening", boxes[2].y, boxes[3].y + boxes[3].h),
+		band("Included", boxes[4].y, boxes[4].y + boxes[4].h),
+	].join("\n");
 
 	// One vertical spine through the main column, horizontal branches into
 	// the side boxes at their vertical centre.
 	const arrow = (x1: number, y1: number, x2: number, y2: number) =>
 		`<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#6b6b6b" stroke-width="1.3" marker-end="url(#pf-arrow)"/>`;
 	const arrows = [
-		arrow(mainCx, boxes[0].y! + boxes[0].h!, mainCx, boxes[2].y! - 2),
-		arrow(mainCx, boxes[1].y! + boxes[1].h! / 2, SIDE_X - 3, boxes[1].y! + boxes[1].h! / 2),
-		arrow(mainCx, boxes[2].y! + boxes[2].h!, mainCx, boxes[4].y! - 2),
-		arrow(mainCx, boxes[3].y! + boxes[3].h! / 2, SIDE_X - 3, boxes[3].y! + boxes[3].h! / 2),
+		arrow(mainCx, boxes[0].y + boxes[0].h, mainCx, boxes[2].y - 2),
+		arrow(mainCx, boxes[1].y + boxes[1].h / 2, SIDE_X - 3, boxes[1].y + boxes[1].h / 2),
+		arrow(mainCx, boxes[2].y + boxes[2].h, mainCx, boxes[4].y - 2),
+		arrow(mainCx, boxes[3].y + boxes[3].h / 2, SIDE_X - 3, boxes[3].y + boxes[3].h / 2),
 	].join("\n");
 
-	return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${WIDTH} ${height}" width="${WIDTH}" height="${height}" role="img" aria-label="Screening flow diagram">
+	return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${WIDTH} ${height}" width="${WIDTH}" height="${height}" role="img" aria-label="PRISMA 2020 flow diagram">
 <defs><marker id="pf-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#6b6b6b"/></marker></defs>
-<rect width="${WIDTH}" height="${height}" fill="#fdfdfc"/>
-${boxSvg}
+<rect width="${WIDTH}" height="${height}" fill="#ffffff"/>
+${bands}
 ${arrows}
+${boxSvg}
 </svg>`;
 }
 

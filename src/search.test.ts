@@ -112,4 +112,26 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 	await assert.rejects(collectDataLinks(failed, ["10.1/a"], ["10.1/a"]), /HTTP 503/);
 }
 
+
+// Author-only search: no topic to judge, so a work without an abstract
+// stays in the results; a topic search still moves it to the dropped table.
+{
+	const realFetch = globalThis.fetch;
+	globalThis.fetch = (async () => new Response(null, { status: 302 })) as typeof fetch;
+	SEARCHERS.authors = async () => [
+		{ ...record("authors", "10.1/with", "With abstract"), authors: ["Jane Doe"] },
+		{ ...record("authors", "10.1/without", "Without abstract"), authors: ["Jane Doe"], abstract: "" },
+	];
+	try {
+		const all = await runSearch({ query: "", sources: ["authors"], enrich: false, authorScope: "all", filters: { pickedAuthors: ["Jane Doe"] } });
+		assert.deepEqual(all.results.map((r) => r.title).sort(), ["With abstract", "Without abstract"]);
+		assert.equal(all.flow?.no_abstract_removed, 0);
+		const topic = await runSearch({ query: "river sandbar", sources: ["authors"], enrich: false });
+		assert.deepEqual(topic.results.map((r) => r.title), ["With abstract"]);
+		assert.equal(topic.dropped[0].record.title, "Without abstract");
+	} finally {
+		globalThis.fetch = realFetch;
+		delete SEARCHERS.authors;
+	}
+}
 console.log("search.test.ts: all assertions passed");

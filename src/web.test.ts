@@ -499,6 +499,13 @@ try {
 	assert.match(filteredHtml, /List filters/);
 	const prisma = await (await fetch(`${base}/api/runs/report`, { method: "POST", headers, body: JSON.stringify({ name: "2026-10-15_stub", kind: "prisma" }) })).json();
 	assert.equal(prisma.card.name, "2026-10-15_stub.prisma.svg");
+	// The diagram viewer's Details: the run's provenance, also for a filtered name.
+	const facts = await (await fetch(`${base}/api/runs/facts?name=2026-10-15_stub_filtered_2`, { headers: auth })).json();
+	assert.equal(typeof facts.query, "string");
+	assert.ok(Array.isArray(facts.sources));
+	assert.equal((await fetch(`${base}/api/runs/facts?name=nope`, { headers: auth })).status, 404);
+	assert.equal((await fetch(`${base}/static/prisma.html`, { headers: auth })).status, 200);
+	assert.ok((await (await fetch(`${base}/files/lit-search/network.html`, { headers: auth })).text()).includes("about-btn"));
 	const svgResponse = await fetch(`${base}${prisma.card.url}`, { headers: auth });
 	assert.equal(svgResponse.status, 200);
 	assert.match(svgResponse.headers.get("content-type") ?? "", /image\/svg\+xml/);
@@ -673,6 +680,9 @@ try {
 				checkEmbedModel: async () => ({ state: "ok" }) as never,
 				pickFiles: async () => [join(elsewhere, "x.pdf"), join(elsewhere, "notes.txt")],
 				workFacts: async () => { workFactCalls++; return null; },
+				workAuthors: async () => [{ id: "A9", name: "Jane Q. Doe", raw: "Doe, J." }],
+				authorFacts: async (id) => ({ id, name: "Jane Q. Doe", orcid: "0000-0001-2345-6789", works: 3, cited_by: 10, h_index: 1, cited_by_year: [], topics: [], last_known: [], affiliations: [] }),
+				orcidEmployments: async () => [{ organization: "Some University", role: "", since: 2024 }],
 				matchLibrary: () => match as never,
 				ensureLibrary: async () => match as never,
 				ensureIndexed: async (papers, indexDir, embedModel) => {
@@ -703,6 +713,11 @@ try {
 			assert.equal(info.openalex, null);
 			assert.equal(workFactCalls, 0);
 			assert.equal((await fetch(`http://127.0.0.1:${ixServer.port}/api/paper?base=nope`, { headers: h4 })).status, 404);
+			// Author window: the name on a card resolves through the work's authors.
+			const au = await (await fetch(`http://127.0.0.1:${ixServer.port}/api/author?doi=10.1/x&name=${encodeURIComponent("Jane Doe")}`, { headers: h4 })).json();
+			assert.equal(au.author.id, "A9");
+			assert.equal(au.employments[0].organization, "Some University");
+			assert.equal((await fetch(`http://127.0.0.1:${ixServer.port}/api/author?doi=10.1/x&name=Someone%20Else`, { headers: h4 })).status, 404);
 			// An upload starts another pass; the indexed PDFs are not indexed again.
 			const before = indexedBases.length;
 			await fetch(`http://127.0.0.1:${ixServer.port}/api/library/upload?name=c.pdf`, { method: "POST", headers: { ...h4, "content-type": "application/pdf" }, body: "%PDF-1.4 c" });

@@ -81,7 +81,9 @@ untick to drop) are searched by their OpenAlex ids, all with one choice
 ticked authors** lists all their work at once ("Works by A and B": every
 year, up to 200 per source, no keyword blocks, no model call, no code
 sources; OpenAlex by author id sorted by citations, CrossRef and arXiv by
-name, Semantic Scholar skipped). With ticked authors a second choice
+name, Semantic Scholar skipped; works without an abstract stay in the
+list, since there is no topic to judge -- publishers such as Elsevier
+withhold abstracts from the open sources). With ticked authors a second choice
 "any position" / "first author" keeps only papers with a ticked author
 first (pill ", first author"). Author names match by surname and first
 initial ("Carl Legleiter" = "Carl J. Legleiter" = "Legleiter, C."), so a
@@ -261,7 +263,33 @@ the model's suggestion without a question, three at most). **Reports from
 this list** are written on click only: the **HTML report** and the
 **PRISMA diagram** (SVG) of the list as filtered, with the filters
 documented as a screening step (the removed records stand in the dropped
-table with their reason, the flow counts them). A report opens as a window
+table with their reason, the flow counts them). In the browser a search
+report hides the tick column and the "copy into the Pi chat" steps (the
+server adds a style when it serves the file; the file on disk keeps them
+for the terminal). The diagram opens in a compact window with a small
+viewer (`static/prisma.html`): PRISMA 2020 phase bands
+(Identification, Screening, Included), **SVG** and **PNG** download (PNG
+at twice the size, drawn in the browser) and **Details** (request, date,
+raw hits per source, cap, sources not queried or failed, search and list
+filters; `GET /api/runs/facts`). An author's name on a card opens the **author window** (`GET
+/api/author`): the author is found through the card's own work (DOI, or
+an arXiv id's DataCite DOI, then the work's authorships at OpenAlex,
+matched by surname and first initial), so a namesake never answers. It
+shows the place of work -- the current employment from the public ORCID
+record (pub.orcid.org, no key; no contact address is sent there) when
+OpenAlex links an ORCID iD, else OpenAlex's last known institution,
+which OpenAlex derives from the newest papers -- earlier institutions
+with years, works, citations with h-index and citations per year, three
+topics, and links to ORCID and OpenAlex. Everything comes from the two
+APIs as delivered; answers are kept for six hours. A card shows three
+authors; "and n more" lists the rest. A card's **Graph** (left out when OpenAlex lists neither
+references nor citing works for the paper; the access lookup carries
+both counts, no extra request) opens the citation
+graph's light view (`network.html#...&light=1`): title, authors,
+citations, the two citation toggles and the graph; the usage hints, the
+legend, the data note and the method sit behind a **Legend** button. The
+server renders `network.html` from the running version, so an older copy
+on disk never shows. A report opens as a window
 over the list (the citation graph of a card too); closing it (Esc, a click
 beside it, or the close icon) leaves the list as it was, and no message is
 added below the list; an unfiltered report

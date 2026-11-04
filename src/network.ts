@@ -86,6 +86,32 @@ const STYLE = `
 	footer p { margin: 0.15rem 0; }
 	footer summary { cursor: pointer; color: #2a2a2a; }
 	footer details p { margin-left: 0.9rem; }
+	/* Light view (#...&light=1, the browser interface): title, metadata,
+	   the two toggles and the graph; every explanation sits behind the
+	   Legend button. */
+	header { position: relative; }
+	#about-btn { display: none; }
+	.howto { display: none; }
+	body.light h1 { display: none; }
+	body.light header { padding-right: 7rem; }
+	body.light .seed-title { font-size: 1.05rem; font-weight: 600; }
+	body.light .toggles-hint { display: none; }
+	body.light .status.done { display: none; }
+	body.light .toggles button[aria-pressed="true"] { background: #2a2a2a; border-color: #2a2a2a; }
+	body.light .toggles button:hover { border-color: #2a2a2a; }
+	body.light #canvas { border-radius: 8px; }
+	body.light #about-btn { display: inline-flex; align-items: center; gap: 0.35rem; position: absolute; top: 0; right: 0;
+		font: inherit; font-size: 0.82rem; padding: 0.25rem 0.65rem; border: 1px solid #d9d9d4; border-radius: 8px;
+		background: #fff; color: #2a2a2a; cursor: pointer; }
+	body.light #about-btn[aria-expanded="true"] { background: #ecece8; border-color: #bdbdb6; }
+	body.light #about-btn svg { width: 0.95rem; height: 0.95rem; }
+	body.light #about { display: none; position: fixed; top: 2.6rem; right: 1.2rem; width: min(30rem, calc(100vw - 2.4rem));
+		max-height: calc(100vh - 4rem); overflow: auto; background: #fff; border: 1px solid #d9d9d4; border-radius: 10px;
+		box-shadow: 0 6px 24px rgba(0,0,0,0.14); padding: 0.8rem 1rem; z-index: 20; }
+	body.light #about.open { display: block; }
+	body.light .howto { display: block; font-size: 0.8rem; color: #3d3d3d; margin: 0 0 0.5rem; }
+	body.light #about .legend { margin: 0 0 0.5rem; }
+	body.light #about footer { margin-top: 0.5rem; }
 `;
 
 // The page script is plain browser JavaScript embedded verbatim. It
@@ -105,9 +131,32 @@ const PAGE_SCRIPT = `
 	var canvas = document.getElementById("canvas");
 	var tooltip = document.getElementById("tooltip");
 
-	function setStatus(text, isError) {
+	function setStatus(text, isError, done) {
 		statusLine.textContent = text;
-		statusLine.className = isError ? "status error" : "status";
+		statusLine.className = (isError ? "status error" : "status") + (done ? " done" : "");
+		if (done) document.getElementById("howto").textContent = text;
+	}
+
+	// Light view for the browser interface: explanations behind "Legend".
+	if (/(^|[#&])light=1(&|$)/.test(window.location.hash)) {
+		document.body.classList.add("light");
+		var aboutBtn = document.getElementById("about-btn");
+		var about = document.getElementById("about");
+		aboutBtn.addEventListener("click", function (event) {
+			event.stopPropagation();
+			var open = !about.classList.contains("open");
+			about.classList.toggle("open", open);
+			aboutBtn.setAttribute("aria-expanded", String(open));
+		});
+		document.addEventListener("click", function (event) {
+			if (about.classList.contains("open") && !about.contains(event.target)) {
+				about.classList.remove("open");
+				aboutBtn.setAttribute("aria-expanded", "false");
+			}
+		});
+		document.addEventListener("keydown", function (event) {
+			if (event.key === "Escape") { about.classList.remove("open"); aboutBtn.setAttribute("aria-expanded", "false"); }
+		});
 	}
 
 	function hashParams() {
@@ -667,7 +716,7 @@ const PAGE_SCRIPT = `
 		document.getElementById("toggles").style.display = "block";
 		setStatus(nodes.length + " papers, " + graph.edges.filter(function (e) { return !e.pruned; }).length
 			+ " similarity links. Hover a circle or a line for details; click a circle to open the paper. "
-			+ "Mouse wheel zooms, drag pans, double-click resets the view.", false);
+			+ "Mouse wheel zooms, drag pans, double-click resets the view.", false, true);
 	}
 
 	// Mouse-wheel zoom + drag-to-pan + double-click reset, all done by
@@ -838,7 +887,8 @@ export function renderNetworkHtml(): string {
 <style>${STYLE}</style>
 </head>
 <body>
-<header><h1>Citation Network</h1><div class="meta" id="seedline"></div></header>
+<header><h1>Citation Network</h1><div class="meta" id="seedline"></div>
+<button type="button" id="about-btn" aria-expanded="false" aria-controls="about"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.01"/></svg>Legend</button></header>
 <p class="status" id="status">Loading ...</p>
 <p class="toggles" id="toggles"><span class="toggles-label">Show citations:</span>
 <button type="button" id="toggle-refs" aria-pressed="false">Cited by this paper</button>
@@ -846,12 +896,15 @@ export function renderNetworkHtml(): string {
 <span class="toggles-hint">arrows point at the cited work; the graph holds only the best-connected references and citers,
 hence not all citations are shown</span></p>
 <svg id="canvas" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Citation network graph"></svg>
+<div id="about">
+<p class="howto" id="howto"></p>
+<p class="howto">Arrows point at the cited work. The graph holds only the best-connected references and citers,
+hence not all citations are shown.</p>
 <p class="legend">Circle size = citation count (area proportional, scaled to the most-cited work shown) &middot; colour = publication year
 (<span class="swatch" id="legend-old-swatch"></span><span id="legend-old"></span> to
 <span class="swatch" id="legend-new-swatch"></span><span id="legend-new"></span>)
 &middot; line thickness = shared references (<a href="#method">bibliographic coupling</a>, Kessler 1963, and
 <a href="#method">co-citation</a>, Small 1973 -- method note below) &middot; the red-ringed circle is the selected paper.</p>
-<div id="tooltip"></div>
 <footer>
 <p>Data: <a href="https://openalex.org" target="_blank" rel="noopener">OpenAlex</a> (CC0 open scholarly
 catalog). This page contacts api.openalex.org only when opened, sending the paper's DOI or title plus
@@ -875,6 +928,8 @@ Small, H. (1973). Co-citation in the scientific literature: A new measure of the
 &middot; <a href="https://en.wikipedia.org/wiki/Co-citation" target="_blank" rel="noopener">Wikipedia</a></p>
 </details>
 </footer>
+</div>
+<div id="tooltip"></div>
 <script>${PAGE_SCRIPT}</script>
 </body>
 </html>

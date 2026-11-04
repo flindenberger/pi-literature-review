@@ -5,7 +5,7 @@
  */
 
 import assert from "node:assert/strict";
-import { workFacts, accessFromWork, buildAuthorSearchFilter, buildBlockSearch, buildFacetFilter, buildFacetParams, lookupOpenalexDois, parseFacetPage, parseFacets, toSourceRecord,
+import { authorFacts, workFacts, accessFromWork, buildAuthorSearchFilter, buildBlockSearch, buildFacetFilter, buildFacetParams, lookupOpenalexDois, parseFacetPage, parseFacets, toSourceRecord,
 	autocompleteAuthors,
 	buildAuthorIdFilter,
 	buildWorksParams,
@@ -222,7 +222,33 @@ const parseJournalFacetPage = parseFacetPage;
 	assert.equal(buildWorksParams("water", 5).get("filter"), "type:!peer-review|supplementary-materials|paratext|dataset");
 }
 
+/* ---------------- authorFacts ---------------- */
+{
+	const facts = authorFacts({
+		id: "https://openalex.org/A1", display_name: "Mariano Moreno de las Heras", orcid: "https://orcid.org/0000-0003-3366-5060",
+		works_count: 142, cited_by_count: 2414, summary_stats: { h_index: 26 },
+		counts_by_year: [{ year: 2024, cited_by_count: 300 }, { year: 2025, cited_by_count: 310 }],
+		topics: [{ display_name: "A" }, { display_name: "B" }, { display_name: "C" }, { display_name: "D" }],
+		last_known_institutions: [{ display_name: "Universitat de Barcelona", country_code: "ES" }],
+		affiliations: [{ institution: { display_name: "Old" }, years: [2009, 2012] }, { institution: { display_name: "New" }, years: [2021, 2022] }],
+	});
+	assert.equal(facts.id, "A1");
+	assert.equal(facts.orcid, "0000-0003-3366-5060");
+	assert.equal(facts.h_index, 26);
+	assert.deepEqual(facts.cited_by_year.map((e) => e.year), [2025, 2024]);
+	assert.deepEqual(facts.topics, ["A", "B", "C"]);
+	assert.deepEqual(facts.affiliations.map((e) => [e.name, e.years[0]]), [["New", 2022], ["Old", 2012]]);
+	assert.equal(authorFacts({}).orcid, "");
+}
+
 /* ---------------- accessFromWork ---------------- */
+{
+	// Graph flag: false only when both counts are known and zero.
+	assert.equal(accessFromWork({ referenced_works_count: 0, cited_by_count: 0 }).graph, false);
+	assert.equal(accessFromWork({ referenced_works_count: 12, cited_by_count: 0 }).graph, true);
+	assert.equal(accessFromWork({ referenced_works_count: 0, cited_by_count: 3 }).graph, true);
+	assert.equal(accessFromWork({}).graph, undefined);
+}
 {
 	// Hybrid article: best location first, then every OTHER open location;
 	// closed locations and image files (graphical abstracts) are left out.

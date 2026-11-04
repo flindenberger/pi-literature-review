@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PRISMA flow diagram</title>
+<style>
+	:root { --ink: #1c1c1c; --muted: #6b6b6b; --line: #d9d9d4; --accent: #2a2a2a; }
+	html, body { margin: 0; background: #fff; color: var(--ink); font-family: system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+	main { max-width: 52rem; margin: 0 auto; padding: 1rem 1.2rem 2rem; }
+	.bar { display: flex; justify-content: flex-end; gap: 0.4rem; margin-bottom: 0.6rem; }
+	.bar button, .bar a { display: inline-flex; align-items: center; gap: 0.35rem; border: 1px solid var(--line); background: #fff; border-radius: 8px; padding: 0.3rem 0.65rem; font: inherit; font-size: 0.82rem; cursor: pointer; color: var(--ink); text-decoration: none; }
+	.bar button:hover, .bar a:hover { border-color: #9a9a94; }
+	.bar button[aria-pressed="true"] { background: #ecece8; border-color: #bdbdb6; }
+	.bar svg { width: 0.95rem; height: 0.95rem; }
+	#diagram svg { width: 100%; height: auto; display: block; }
+	#details { margin-top: 1rem; border-top: 1px solid var(--line); padding-top: 0.8rem; font-size: 0.85rem; }
+	#details[hidden] { display: none; }
+	#details dl { display: grid; grid-template-columns: 9rem 1fr; gap: 0.35rem 0.8rem; margin: 0; }
+	#details dt { color: var(--muted); }
+	#details dd { margin: 0; }
+	#details table { border-collapse: collapse; }
+	#details td { padding: 0.05rem 0.9rem 0.05rem 0; }
+	#details td.n { text-align: right; font-variant-numeric: tabular-nums; }
+	.error { color: #8a1f11; }
+</style>
+</head>
+<body>
+<main>
+	<div class="bar">
+		<button type="button" id="btn-details" aria-pressed="false" title="Where the numbers come from: request, date, hits per source, filters"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.01"/></svg>Details</button>
+		<a id="dl-svg" download title="For LaTeX and vector graphics programs"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>SVG</a>
+		<button type="button" id="dl-png" title="For Word and slides (twice the screen size)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>PNG</button>
+	</div>
+	<div id="diagram"></div>
+	<section id="details" hidden></section>
+</main>
+<script>
+"use strict";
+(function () {
+	var params = new URLSearchParams(location.search);
+	var file = params.get("file") || "";
+	var name = decodeURIComponent(file.split("/").pop() || "flow.prisma.svg").replace(/[?#].*$/, "");
+	var run = name.replace(/\.prisma\.svg$/, "");
+	var svgText = "";
+	var esc = function (text) { return String(text).replace(/[&<>"]/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;" }[c]; }); };
+	var diagram = document.getElementById("diagram");
+	var details = document.getElementById("details");
+
+	document.getElementById("dl-svg").href = file;
+	document.getElementById("dl-svg").setAttribute("download", name);
+
+	fetch(file).then(function (r) {
+		if (!r.ok) throw new Error("the diagram could not be loaded (HTTP " + r.status + ")");
+		return r.text();
+	}).then(function (text) {
+		svgText = text;
+		diagram.innerHTML = text;
+	}).catch(function (error) {
+		diagram.innerHTML = '<p class="error">' + esc(error.message) + "</p>";
+	});
+
+	document.getElementById("dl-png").addEventListener("click", function () {
+		if (!svgText) return;
+		var url = URL.createObjectURL(new Blob([svgText], { type: "image/svg+xml" }));
+		var img = new Image();
+		img.onload = function () {
+			var scale = 2;
+			var canvas = document.createElement("canvas");
+			canvas.width = img.width * scale;
+			canvas.height = img.height * scale;
+			var ctx = canvas.getContext("2d");
+			ctx.fillStyle = "#ffffff";
+			ctx.fillRect(0, 0, canvas.width, canvas.height);
+			ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+			URL.revokeObjectURL(url);
+			canvas.toBlob(function (blob) {
+				var a = document.createElement("a");
+				a.href = URL.createObjectURL(blob);
+				a.download = name.replace(/\.svg$/, ".png");
+				document.body.appendChild(a);
+				a.click();
+				a.remove();
+				setTimeout(function () { URL.revokeObjectURL(a.href); }, 1000);
+			}, "image/png");
+		};
+		img.src = url;
+	});
+
+	var loaded = false;
+	document.getElementById("btn-details").addEventListener("click", function () {
+		var button = this;
+		var open = details.hidden;
+		details.hidden = !open;
+		button.setAttribute("aria-pressed", String(open));
+		if (!open || loaded) return;
+		loaded = true;
+		details.textContent = "Loading ...";
+		fetch("/api/runs/facts?name=" + encodeURIComponent(run)).then(function (r) {
+			return r.json().then(function (body) { if (!r.ok) throw new Error(body.error || ("HTTP " + r.status)); return body; });
+		}).then(function (facts) {
+			var rows = [];
+			rows.push(["Request", esc(facts.query)]);
+			if (facts.generated) rows.push(["Searched", esc(new Date(facts.generated).toLocaleString())]);
+			if (facts.sources.length) {
+				var queries = facts.sources.map(function (s) { return s.query; }).filter(function (q, i, all) { return all.indexOf(q) === i; });
+				rows.push(["Hits per source", "<table>" + facts.sources.map(function (s) {
+					return "<tr><td>" + esc(s.source) + (queries.length > 1 ? " <small>(" + esc(s.query) + ")</small>" : "") + '</td><td class="n">' + s.count + "</td></tr>";
+				}).join("") + "</table>"]);
+			}
+			if (facts.perSource) rows.push(["Cap per source", String(facts.perSource)]);
+			if (facts.skipped && facts.skipped.length) rows.push(["Not queried", esc(facts.skipped.join(", "))]);
+			if (facts.failures && facts.failures.length) rows.push(["Failed", esc(facts.failures.join(", "))]);
+			rows.push(["Search filters", esc(facts.filters)]);
+			if (facts.listFilters && facts.listFilters.length) rows.push(["List filters", esc(facts.listFilters.join("; "))]);
+			details.innerHTML = "<dl>" + rows.map(function (row) { return "<dt>" + row[0] + "</dt><dd>" + row[1] + "</dd>"; }).join("") + "</dl>";
+		}).catch(function (error) {
+			details.innerHTML = '<p class="error">' + esc(error.message) + "</p>";
+		});
+	});
+})();
+</script>
+</body>
+</html>
