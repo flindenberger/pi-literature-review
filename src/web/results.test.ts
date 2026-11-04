@@ -119,4 +119,17 @@ const unfiltered = applyCardFilters(payload, {}, 2026);
 assert.equal(unfiltered.results.length, 3);
 assert.equal(unfiltered.list_filters, null);
 
+// A deposited GitHub link becomes the code link when the record has none;
+// a record's own code link wins and the GitHub link stays a data link.
+{
+	const zenodo = { title: "Zenodo release", authors: [], year: "2026", venue: "Zenodo", doi: "10.5281/zenodo.1", arxiv_id: "", url: "", cites: 0, sources: ["openalex"], abstract: "x",
+		data_links: [{ url: "https://github.com/a/b", archive: "GitHub" }, { url: "https://doi.org/10.1594/PANGAEA.1", archive: "PANGAEA" }] };
+	const [row] = cardRows({ ...payload, results: [zenodo], dropped: [] } as never, new Set());
+	assert.equal(row.codeUrl, "https://github.com/a/b");
+	assert.deepEqual(row.dataLinks.map((d) => d.archive), ["PANGAEA"]);
+	const [own] = cardRows({ ...payload, results: [{ ...zenodo, code_url: "https://gitlab.com/c/d" }], dropped: [] } as never, new Set());
+	assert.equal(own.codeUrl, "https://gitlab.com/c/d");
+	assert.deepEqual(own.dataLinks.map((d) => d.archive), ["GitHub", "PANGAEA"]);
+}
+
 console.log("results tests passed");

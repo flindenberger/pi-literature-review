@@ -24,7 +24,7 @@
  */
 
 import { s2ApiKey } from "./config.ts";
-import { lookupDataLinksByDoi } from "./sources/crossref.ts";
+import { DATA_LINK_PROVIDER, lookupAllDataLinks } from "./sources/datacite.ts";
 import {
 	type AccessInfo,
 	type AccessLevel,
@@ -361,6 +361,8 @@ export interface AuthorMetrics {
 	 * shown behind the h-index in the author tab. Plain API display names,
 	 * nothing derived. */
 	topics: string[] | undefined;
+	/** OpenAlex's last known institution (derived from the newest papers). */
+	institution?: string;
 }
 
 /**
@@ -378,7 +380,7 @@ export async function fetchAuthorMetrics(
 		try {
 			const data = await fetchJson(`${AUTHORS_URL}${apiQuery({
 				filter: `ids.openalex:${batch.join("|")}`,
-				select: "id,cited_by_count,works_count,summary_stats,topics",
+				select: "id,cited_by_count,works_count,summary_stats,topics,last_known_institutions",
 				"per-page": String(BATCH_SIZE),
 			})}`);
 			for (const author of (data.results ?? []) as Array<Record<string, any>>) {
@@ -399,6 +401,10 @@ export async function fetchAuthorMetrics(
 					hIndex: number(author?.summary_stats?.h_index),
 					topics: topics.length ? topics : undefined,
 				});
+				const institution = (Array.isArray(author.last_known_institutions) ? author.last_known_institutions : [])
+					.map((entry: Record<string, unknown>) => typeof entry?.display_name === "string" ? entry.display_name : "")
+					.find(Boolean);
+				if (institution) byAuthorId.get(id)!.institution = institution;
 			}
 		} catch (error) {
 			warn(`author metrics batch lookup failed: ${error instanceof Error ? error.message : error}; affected authors ship without metrics`);
@@ -521,7 +527,7 @@ export function addCodeLinks<T extends EnrichableRecord & { abstract?: string }>
 export async function addDataLinks<T extends EnrichableRecord>(
 	records: T[],
 	warn: (message: string) => void = defaultWarn,
-	lookup: (dois: string[]) => Promise<Map<string, DataLink[]>> = lookupDataLinksByDoi,
+	lookup: (dois: string[]) => Promise<Map<string, DataLink[]>> = lookupAllDataLinks,
 ): Promise<Array<Enriched<T> & { data_links?: DataLink[] }>> {
 	const dois = records.map((record) => record.doi).filter(Boolean);
 	let byDoi = new Map<string, DataLink[]>();
@@ -540,9 +546,9 @@ export async function addDataLinks<T extends EnrichableRecord>(
 		return {
 			...record,
 			data_links: found,
-			enriched: { ...(record as Enriched<T>).enriched, data_links: "crossref" },
+			enriched: { ...(record as Enriched<T>).enriched, data_links: DATA_LINK_PROVIDER.get(found) ?? "crossref" },
 		};
 	});
-	if (linked) warn(`data links: ${linked} record(s) with data or code archives from CrossRef`);
+	if (linked) warn(`data links: ${linked} record(s) with data or code archives from CrossRef or DataCite`);
 	return out;
 }

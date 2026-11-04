@@ -226,6 +226,13 @@ const RELATION_BATCH_SIZE = 40;
  * non-2xx answer throws; the caller degrades.
  */
 export async function lookupDataLinksByDoi(dois: string[]): Promise<Map<string, DataLink[]>> {
+	return (await lookupCrossrefRelations(dois)).links;
+}
+
+/** The same lookup, also naming every DOI CrossRef holds (`known`), so a
+ * caller can ask DataCite for the rest. */
+export async function lookupCrossrefRelations(dois: string[]): Promise<{ links: Map<string, DataLink[]>; known: Set<string> }> {
+	const known = new Set<string>();
 	const unique = [...new Set(dois.map((doi) => doi.trim().toLowerCase())
 		.filter((doi) => doi && !doi.includes(",") && !doi.startsWith("10.48550/")))];
 	const links = new Map<string, DataLink[]>();
@@ -241,9 +248,10 @@ export async function lookupDataLinksByDoi(dois: string[]): Promise<Map<string, 
 		const data = await fetchWorks(params);
 		for (const item of (data?.message?.items ?? []) as Array<Record<string, any>>) {
 			const doi = typeof item?.DOI === "string" ? item.DOI.trim().toLowerCase() : "";
+			if (doi) known.add(doi);
 			const found = dataLinksFromRelation(item?.relation);
 			if (doi && found.length) links.set(doi, found);
 		}
 	}
-	return links;
+	return { links, known };
 }

@@ -120,9 +120,14 @@ function rowOf(record: AnyRecord, n: number, dropped: boolean, reason: string | 
 	const level = access && typeof access.level === "string" ? (access.level as CardAccess) : null;
 	const pdfUrls = access && Array.isArray(access.pdf_urls) ? access.pdf_urls.filter((u: unknown) => typeof u === "string") : [];
 	const sources = Array.isArray(record.sources) ? record.sources.filter((s: unknown) => typeof s === "string") : record.source ? [str(record.source)] : [];
-	const dataLinks = Array.isArray(record.data_links)
+	const deposited = Array.isArray(record.data_links)
 		? record.data_links.filter((d: AnyRecord) => d && typeof d.url === "string").map((d: AnyRecord) => ({ url: d.url as string, archive: str(d.archive) }))
 		: [];
+	// A repository host among the deposited links is the code link when
+	// the record has none of its own (a Zenodo release of a GitHub repo).
+	const ownCode = str(record.code_url);
+	const repoLink = ownCode ? undefined : deposited.find((d: { archive: string }) => d.archive === "GitHub" || d.archive === "GitLab");
+	const dataLinks = repoLink ? deposited.filter((d: { url: string }) => d !== repoLink) : deposited;
 	return {
 		n,
 		id,
@@ -137,7 +142,7 @@ function rowOf(record: AnyRecord, n: number, dropped: boolean, reason: string | 
 		cites: typeof record.cites === "number" ? record.cites : null,
 		access: level,
 		journalScore: typeof record.journal_2yr_citedness === "number" ? record.journal_2yr_citedness : null,
-		codeUrl: str(record.code_url) || null,
+		codeUrl: ownCode || repoLink?.url || null,
 		dataLinks,
 		sources,
 		group: record.group === "on_target" || record.group === "adjacent" ? record.group : null,

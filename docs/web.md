@@ -277,12 +277,19 @@ an arXiv id's DataCite DOI, then the work's authorships at OpenAlex,
 matched by surname and first initial), so a namesake never answers. It
 shows the place of work -- the current employment from the public ORCID
 record (pub.orcid.org, no key; no contact address is sent there) when
-OpenAlex links an ORCID iD, else OpenAlex's last known institution,
+OpenAlex links an ORCID iD -- or, without one, when exactly one ORCID
+record with the same name lists the card's DOI among its own works
+(expanded search `doi-self`) -- else OpenAlex's last known institution,
 which OpenAlex derives from the newest papers -- earlier institutions
 with years, works, citations with h-index and citations per year, three
 topics, and links to ORCID and OpenAlex. Everything comes from the two
 APIs as delivered; answers are kept for six hours. A card shows three
-authors; "and n more" lists the rest. A card's **Graph** (left out when OpenAlex lists neither
+authors; "and n more" lists the rest. The author lists in the "+" menu
+show OpenAlex's last known institution next to each name (taken from the
+author metrics lookup the list already makes, no extra request); a click
+on a name opens the same author window (the box ticks). Opened from a
+list, without a card, the ORCID fallback uses the author's most cited
+work with a DOI. A card's **Graph** (left out when OpenAlex lists neither
 references nor citing works for the paper; the access lookup carries
 both counts, no extra request) opens the citation
 graph's light view (`network.html#...&light=1`): title, authors,

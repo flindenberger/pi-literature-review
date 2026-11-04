@@ -337,7 +337,7 @@ const batchStub = (async (url: unknown) => {
 	assert.deepEqual(out[0].enriched, { cites: "openalex", data_links: "crossref" }); // merged, not replaced
 	assert.equal(out[1].data_links, undefined);
 	assert.equal(out[2].data_links, undefined);
-	assert.ok(warnings.includes("data links: 1 record(s) with data or code archives from CrossRef"));
+	assert.ok(warnings.includes("data links: 1 record(s) with data or code archives from CrossRef or DataCite"));
 
 	// A failing lookup leaves every record unchanged, loudly.
 	const failed = await addDataLinks(records.slice(0, 1), (m) => warnings.push(m), async () => { throw new Error("CrossRef answered HTTP 503"); });

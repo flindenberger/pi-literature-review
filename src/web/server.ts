@@ -47,8 +47,8 @@ import {
 } from "../config.ts";
 import { canPickFolder, pickFiles, pickFolder } from "../folderpick.ts";
 import { listServerModels } from "../llm.ts";
-import { type AuthorFacts, lookupAuthorFacts, lookupWorkAuthors, lookupWorkFacts, type WorkFacts } from "../sources/openalex.ts";
-import { type Employment, lookupOrcidEmployments } from "../sources/orcid.ts";
+import { type AuthorFacts, lookupAuthorFacts, lookupTopWorkDoi, lookupWorkAuthors, lookupWorkFacts, type WorkFacts } from "../sources/openalex.ts";
+import { type Employment, lookupOrcidByDoi, lookupOrcidEmployments, type OrcidPerson } from "../sources/orcid.ts";
 import { EXAMPLES_SYSTEM, type ExamplePaper, examplePaperName, examplesPrompt, parseExamples } from "./examples.ts";
 import { chatPool, ensureLibrary, runChatReport, runReport, runRound, type ChatAnswer, type ChatDeps, type ChatReport, type ChatReportOptions, type ChatOptions, type ReportOptions, type SynthReport } from "../synthesis.ts";
 import { ensureIndexed, libraryFiles, type LibraryMatch, type LibraryPaper, matchLibrary, realCorpusDeps } from "../corpus.ts";
@@ -138,7 +138,9 @@ export interface WebDeps {
 	journalFacets: (query: string, limit: number, scope: FacetScope) => Promise<FacetPage>;
 	journalScores: (ids: string[]) => Promise<Map<string, number>>;
 	authorFacets: (query: string, limit: number, scope: FacetScope) => Promise<FacetPage>;
-	authorMetrics: (ids: string[]) => Promise<Map<string, { cites?: number; works?: number; hIndex?: number; topics?: string[] }>>;
+	authorMetrics: (ids: string[]) => Promise<Map<string, { cites?: number; works?: number; hIndex?: number; topics?: string[]; institution?: string }>>;
+	/** DOI of an author's most cited work (the ORCID fallback without a card). */
+	topWorkDoi: (authorId: string, signal?: AbortSignal) => Promise<string>;
 	autocompleteAuthors: (prefix: string, signal: AbortSignal) => Promise<AuthorMatch[]>;
 	listsForTopic: (topic: string, signal: AbortSignal) => Promise<{ lists: number; names: string[] } | null>;
 	checkEmbedModel: (signal?: AbortSignal) => Promise<DoctorState>;
@@ -159,6 +161,8 @@ export interface WebDeps {
 	authorFacts: (id: string, signal?: AbortSignal) => Promise<AuthorFacts | null>;
 	/** Current employments from the public ORCID record. */
 	orcidEmployments: (orcid: string, signal?: AbortSignal) => Promise<Employment[]>;
+	/** ORCID records that list a DOI among their own works. */
+	orcidByDoi: (doi: string, signal?: AbortSignal) => Promise<OrcidPerson[]>;
 	canPickFolder: () => boolean;
 	/** Keep the download folder for next time and read it as a PDF folder. */
 	rememberDownloadDir: (folder: string) => void;
@@ -259,6 +263,8 @@ export function realWebDeps(): WebDeps {
 		workAuthors: lookupWorkAuthors,
 		authorFacts: lookupAuthorFacts,
 		orcidEmployments: lookupOrcidEmployments,
+		orcidByDoi: lookupOrcidByDoi,
+		topWorkDoi: lookupTopWorkDoi,
 		canPickFolder,
 		rememberDownloadDir,
 	};
@@ -1383,6 +1389,23 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 			if (!facts) throw new HttpError(404, "OpenAlex has no record of this author");
 			let employments: Employment[] = [];
 			let orcidError: string | null = null;
+			// No ORCID iD at OpenAlex: the ORCID record that lists this paper
+			// among its own works and carries the same name (exactly one).
+			let orcidVia: "openalex" | "paper" | null = facts.orcid ? "openalex" : null;
+			if (!facts.orcid) {
+				try {
+					// From the author list there is no card: the author's most cited work.
+					const workDoi = doi || await deps.topWorkDoi(id, AbortSignal.timeout(8_000));
+					const people = !workDoi ? [] : (await deps.orcidByDoi(workDoi, AbortSignal.timeout(8_000)))
+						.filter((person) => person.names.some((form) => sameAuthorName(form, name) || sameAuthorName(form, facts.name)));
+					if (people.length === 1) {
+						facts.orcid = people[0].orcid;
+						orcidVia = "paper";
+					}
+				} catch (failure) {
+					orcidError = errorMessage(failure);
+				}
+			}
 			if (facts.orcid) {
 				try {
 					employments = await deps.orcidEmployments(facts.orcid, AbortSignal.timeout(8_000));
@@ -1390,7 +1413,7 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 					orcidError = errorMessage(failure);
 				}
 			}
-			const body = { author: facts, employments, orcidError, checked: new Date().toISOString() };
+			const body = { author: facts, employments, orcidVia, orcidError, checked: new Date().toISOString() };
 			if (!orcidError) authorCache.set(id, { at: Date.now(), body });
 			return json(res, 200, body);
 		}

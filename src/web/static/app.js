@@ -1426,7 +1426,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		let body;
 		if (facet.loading) body = `<div class="wait"><span class="dot busy"></span>${kind === "journals" ? "Journals" : "Authors"} for your keywords ...</div>`;
 		else if (facet.error) body = `<div class="wait bad">${esc(facet.error)}</div>`;
-		else body = (facet.rows || []).map((row) => `<label><input type="checkbox" data-pick="${kind}" value="${esc(row.id)}" ${facet.on.has(row.id) ? "checked" : ""}><span>${esc(row.name)}</span><small>${row.works} paper${row.works === 1 ? "" : "s"}</small></label>`).join("");
+		else body = (facet.rows || []).map((row) => `<label><input type="checkbox" data-pick="${kind}" value="${esc(row.id)}" ${facet.on.has(row.id) ? "checked" : ""}>${kind === "authors" ? authorNameHtml(row) : `<span>${esc(row.name)}</span>`}<small>${kind === "authors" && row.institution ? `${esc(row.institution)} · ` : ""}${row.works} paper${row.works === 1 ? "" : "s"}</small></label>`).join("");
 		if (kind === "authors") {
 			const o = state.options.authors;
 			// One scope for every ticked author (found by name or in the
@@ -1444,7 +1444,13 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		const o = state.options.authors;
 		// Ticked name finds stay listed (untick to drop them), new finds below.
 		const shown = [...o.picked.values(), ...o.matches.filter((match) => !o.picked.has(match.id))];
-		return shown.map((match) => `<label><input type="checkbox" data-match="${esc(match.id)}" ${o.picked.has(match.id) ? "checked" : ""}><span>${esc(match.name)}</span><small>${esc(match.hint || "")}</small></label>`).join("");
+		return shown.map((match) => `<label><input type="checkbox" data-match="${esc(match.id)}" ${o.picked.has(match.id) ? "checked" : ""}>${authorNameHtml(match)}<small>${esc(match.hint || match.institution || "")}</small></label>`).join("");
+	}
+	/** An author's name in the "+" menu lists: opens the author window. */
+	function authorNameHtml(author) {
+		return /^A\d+$/.test(author.id || "")
+			? `<span class="au" data-author-id="${esc(author.id)}" role="button" tabindex="0" title="About ${esc(author.name)}">${esc(author.name)}</span>`
+			: `<span>${esc(author.name)}</span>`;
 	}
 	function menuHtml() {
 		const o = state.options;
@@ -1578,6 +1584,9 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		if (menuOpen() && state.options.synonyms) loadSynonyms(false);
 	});
 	$("plus-menu").addEventListener("click", (event) => {
+		// An author's name opens the author window; the box ticks.
+		const who = event.target.closest("[data-author-id]");
+		if (who) { event.preventDefault(); event.stopPropagation(); showAuthorInfo({ id: who.dataset.authorId, name: who.textContent }); return; }
 		event.stopPropagation();
 		if (state.chatMenu) { chatMenuClick(event); return; }
 		const o = state.options;
@@ -1715,8 +1724,10 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		// The author pill says "(all their work)" while the box is empty.
 		if (!state.chatMenu && authorCount(state.options)) $("pills").innerHTML = pillsHtml();
 	});
-	document.addEventListener("click", (event) => { if (menuOpen() && !event.target.closest(".plusanchor")) setMenu(false); });
-	document.addEventListener("keydown", (event) => { if (event.key === "Escape" && menuOpen()) setMenu(false); });
+	// A window opened from the menu (the author window) keeps it open: clicks
+	// and Esc inside a dialog belong to the dialog.
+	document.addEventListener("click", (event) => { if (menuOpen() && !event.target.closest(".plusanchor") && !event.target.closest("dialog")) setMenu(false); });
+	document.addEventListener("keydown", (event) => { if (event.key === "Escape" && menuOpen() && !document.querySelector("dialog[open]")) setMenu(false); });
 	renderOptions(false);
 
 	/* ---------------- the "+" menu of the paper chat ---------------- */
@@ -2718,7 +2729,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		const row = (label, value) => { if (value) rows.push(`<tr><th>${label}</th><td>${value}</td></tr>`); };
 		const job = (data.employments || [])[0];
 		if (job) {
-			row("Works at", `${esc(job.organization)}${job.role ? `<br><span class="muted">${esc(job.role)}</span>` : ""}${job.since ? ` <span class="muted">since ${job.since}</span>` : ""} <span class="muted" title="From the researcher's own ORCID record">(ORCID)</span>`);
+			row("Works at", `${esc(job.organization)}${job.role ? `<br><span class="muted">${esc(job.role)}</span>` : ""}${job.since ? ` <span class="muted">since ${job.since}</span>` : ""} <span class="muted" title="${data.orcidVia === "paper" ? "From the researcher's own ORCID record, found through this paper: the record lists it among its own works" : "From the researcher's own ORCID record"}">(ORCID)</span>`);
 		} else if (a.last_known.length) {
 			row("Works at", `${a.last_known.map((i) => esc(i.name)).join("; ")} <span class="muted" title="OpenAlex derives this from the affiliations in the newest papers">(per OpenAlex)</span>`);
 		}

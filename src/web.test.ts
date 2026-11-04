@@ -680,9 +680,11 @@ try {
 				checkEmbedModel: async () => ({ state: "ok" }) as never,
 				pickFiles: async () => [join(elsewhere, "x.pdf"), join(elsewhere, "notes.txt")],
 				workFacts: async () => { workFactCalls++; return null; },
-				workAuthors: async () => [{ id: "A9", name: "Jane Q. Doe", raw: "Doe, J." }],
-				authorFacts: async (id) => ({ id, name: "Jane Q. Doe", orcid: "0000-0001-2345-6789", works: 3, cited_by: 10, h_index: 1, cited_by_year: [], topics: [], last_known: [], affiliations: [] }),
-				orcidEmployments: async () => [{ organization: "Some University", role: "", since: 2024 }],
+				workAuthors: async () => [{ id: "A9", name: "Jane Q. Doe", raw: "Doe, J." }, { id: "A8", name: "John Roe", raw: "" }],
+				authorFacts: async (id) => ({ id, name: id === "A8" || id === "A7" ? "John Roe" : "Jane Q. Doe", orcid: id === "A8" || id === "A7" ? "" : "0000-0001-2345-6789", works: 3, cited_by: 10, h_index: 1, cited_by_year: [], topics: [], last_known: [], affiliations: [] }),
+				orcidEmployments: async (orcid) => [{ organization: orcid === "0009-0000-0000-0001" ? "Found Via Paper" : "Some University", role: "", since: 2024 }],
+				topWorkDoi: async () => "10.1/top",
+				orcidByDoi: async () => [{ orcid: "0009-0000-0000-0001", names: ["John Roe"] }, { orcid: "0009-0000-0000-0002", names: ["Ann Other"] }],
 				matchLibrary: () => match as never,
 				ensureLibrary: async () => match as never,
 				ensureIndexed: async (papers, indexDir, embedModel) => {
@@ -718,6 +720,14 @@ try {
 			assert.equal(au.author.id, "A9");
 			assert.equal(au.employments[0].organization, "Some University");
 			assert.equal((await fetch(`http://127.0.0.1:${ixServer.port}/api/author?doi=10.1/x&name=Someone%20Else`, { headers: h4 })).status, 404);
+			// No ORCID at OpenAlex: the ORCID record that lists the paper, by name.
+			const roe = await (await fetch(`http://127.0.0.1:${ixServer.port}/api/author?doi=10.1/x&name=John%20Roe`, { headers: h4 })).json();
+			assert.equal(roe.author.orcid, "0009-0000-0000-0001");
+			assert.equal(roe.orcidVia, "paper");
+			assert.equal(roe.employments[0].organization, "Found Via Paper");
+			// From the "+" menu list (id only): the author's most cited work leads to ORCID.
+			const byId = await (await fetch(`http://127.0.0.1:${ixServer.port}/api/author?id=A7`, { headers: h4 })).json();
+			assert.equal(byId.orcidVia, "paper");
 			// An upload starts another pass; the indexed PDFs are not indexed again.
 			const before = indexedBases.length;
 			await fetch(`http://127.0.0.1:${ixServer.port}/api/library/upload?name=c.pdf`, { method: "POST", headers: { ...h4, "content-type": "application/pdf" }, body: "%PDF-1.4 c" });

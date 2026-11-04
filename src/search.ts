@@ -28,7 +28,8 @@ import { codeListTopics, s2ApiKey } from "./config.ts";
 import { addAccessStatus, addCodeLinks, addDataLinks, addJournalScores, enrichAll } from "./enrich.ts";
 import { queryBlocks } from "./intake.ts";
 import { buildSearchQuery, searchArxiv } from "./sources/arxiv.ts";
-import { buildCrossrefParams, lookupDataLinksByDoi, searchCrossref } from "./sources/crossref.ts";
+import { buildCrossrefParams, searchCrossref } from "./sources/crossref.ts";
+import { lookupAllDataLinks } from "./sources/datacite.ts";
 import { type AccessInfo, type AccessLevel, buildWorksParams, searchOpenalex } from "./sources/openalex.ts";
 import { buildHfQuery } from "./sources/huggingface.ts";
 import { buildBulkQuery, searchSemanticScholar } from "./sources/semanticscholar.ts";
@@ -131,7 +132,7 @@ export async function collectDataLinks(
 	early: Promise<{ links: Map<string, DataLink[]>; error: unknown }> | null,
 	earlyDois: string[],
 	dois: string[],
-	lookup: (dois: string[]) => Promise<Map<string, DataLink[]>> = lookupDataLinksByDoi,
+	lookup: (dois: string[]) => Promise<Map<string, DataLink[]>> = lookupAllDataLinks,
 ): Promise<Map<string, DataLink[]>> {
 	const links = new Map<string, DataLink[]>();
 	if (early) {
@@ -349,7 +350,7 @@ export async function runSearch(options: SearchOptions) {
 		? []
 		: [...deduped, ...dropped.map((entry) => entry.record)].map((record) => record.doi).filter(Boolean);
 	const earlyDataLinks = earlyDataDois.length
-		? lookupDataLinksByDoi(earlyDataDois).then(
+		? lookupAllDataLinks(earlyDataDois, warn).then(
 			(links) => ({ links, error: null as unknown }),
 			(error: unknown) => ({ links: new Map<string, DataLink[]>(), error }),
 		)

@@ -45,3 +45,35 @@ export async function lookupOrcidEmployments(orcid: string, signal?: AbortSignal
 	if (!response.ok) throw new Error(`pub.orcid.org answered HTTP ${response.status}`);
 	return currentEmployments(await response.json());
 }
+
+export interface OrcidPerson {
+	orcid: string;
+	names: string[];
+}
+
+/** People in an ORCID expanded-search answer: the iD and every name form
+ * they give (given + family, credit name, other names). E-mail fields
+ * are ignored. Pure. */
+export function orcidPeople(data: unknown): OrcidPerson[] {
+	const rows = ((data as Record<string, any>)?.["expanded-result"] ?? []) as Array<Record<string, any>>;
+	return rows
+		.filter((row) => typeof row?.["orcid-id"] === "string")
+		.map((row) => {
+			const text = (value: unknown) => (typeof value === "string" ? value.trim() : "");
+			const full = [text(row["given-names"]), text(row["family-names"])].filter(Boolean).join(" ");
+			const others = Array.isArray(row["other-name"]) ? row["other-name"].map(text) : [];
+			return { orcid: row["orcid-id"] as string, names: [full, text(row["credit-name"]), ...others].filter(Boolean) };
+		});
+}
+
+/** The ORCID records that list this DOI among their own works: the way to
+ * an author's ORCID iD when OpenAlex has not linked one. */
+export async function lookupOrcidByDoi(doi: string, signal?: AbortSignal): Promise<OrcidPerson[]> {
+	const query = `doi-self:"${doi.trim().toLowerCase().replace(/"/g, "")}"`;
+	const response = await fetch(`https://pub.orcid.org/v3.0/expanded-search/?q=${encodeURIComponent(query)}&rows=50`, {
+		headers: { Accept: "application/json", "User-Agent": userAgent().replace(/; mailto:[^)]*/, "") },
+		signal,
+	});
+	if (!response.ok) throw new Error(`pub.orcid.org answered HTTP ${response.status}`);
+	return orcidPeople(await response.json());
+}

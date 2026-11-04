@@ -630,3 +630,17 @@ export async function lookupAuthorFacts(id: string, signal?: AbortSignal): Promi
 	}
 	return authorFacts((await response.json()) as Record<string, any>);
 }
+
+/** DOI of an author's most cited work with a DOI ("" when none). */
+export async function lookupTopWorkDoi(authorId: string, signal?: AbortSignal): Promise<string> {
+	const params = withContact(new URLSearchParams({
+		filter: `author.id:${authorId},has_doi:true`,
+		sort: "cited_by_count:desc",
+		"per-page": "1",
+		select: "doi",
+	}));
+	const response = await fetchLookup(`${BASE_URL}?${params}`, { headers: HEADERS(), signal });
+	const data = (await response.json()) as Record<string, any>;
+	const doi = data?.results?.[0]?.doi;
+	return typeof doi === "string" ? doi.replace(/^https?:\/\/doi\.org\//, "") : "";
+}

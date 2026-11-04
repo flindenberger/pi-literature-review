@@ -438,6 +438,8 @@ dialog.modal .regen:disabled { opacity: 0.5; cursor: default; }
 .results .pcard .a button.au { font: inherit; color: inherit; background: none; border: 0; padding: 0; margin: 0; cursor: pointer; border-radius: 0; }
 .results .pcard .a button.au:hover { text-decoration: underline; text-decoration-color: #9a9a94; text-underline-offset: 2px; }
 .results .pcard .a button.au.more { color: var(--muted); }
+#plus-menu .au { cursor: pointer; }
+#plus-menu .au:hover { text-decoration: underline; text-decoration-color: #9a9a94; text-underline-offset: 2px; }
 .results .pcard .v { color: var(--muted); font-size: 0.77rem; }
 .results .pcard .v b { color: #333; font-weight: 500; }
 .results .pcard .flags { display: flex; gap: 0.35rem; flex-wrap: wrap; margin-top: 0.2rem; }

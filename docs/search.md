@@ -170,7 +170,8 @@ default. No key needed.
 
 Without any tick the search still shows code and data links it can read
 for free: a code URL named in the abstract, and the data or code archives
-the publisher deposited in the paper's CrossRef record (see the Code /
+the publisher deposited in the paper's CrossRef record, or the
+repository in its DataCite record (Zenodo and similar; see the Code /
 data column below). There is no per-paper GitHub search: in tests it
 found no extra links and cost up to 80 s.
 
@@ -223,7 +224,13 @@ to ies -- and no stemming or synonyms beyond that.
       is-supplemented-by, is-part-of, references) to a known data or code
       archive (Zenodo, PANGAEA, Mendeley Data, Dryad, figshare, Dataverse,
       HydroShare, OSF, Eawag, GitHub, GitLab); one CrossRef request per 40
-      DOIs, started right after deduplication so it runs in parallel;
+      DOIs, started right after deduplication so it runs in parallel. DOIs
+      CrossRef does not hold (repository DOIs such as Zenodo, registered
+      with DataCite) go to DataCite in one batch (relation types
+      IsSupplementTo, IsSupplementedBy, References), so a Zenodo release
+      of a GitHub repository gets its repository; on the browser's cards a
+      GitHub or GitLab link from either registry is the Code link when the
+      record has none of its own;
     - the access status from OpenAlex by DOI (about one request per 50
       records): open-access level and every open PDF location, stored as
       `access` in the JSON (`level`, OpenAlex `oa_status` verbatim,

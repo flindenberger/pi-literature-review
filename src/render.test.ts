@@ -223,7 +223,8 @@ const html = renderHtml(payload);
 	// The footnote names the three places and no longer the removed
 	// per-paper GitHub search.
 	assert.ok(withCode.includes("The paper's own abstract"));
-	assert.ok(withCode.includes("The publisher's CrossRef record"));
+	assert.ok(withCode.includes("The DOI registry record"));
+	assert.ok(withCode.includes("DataCite for repository DOIs"));
 	assert.ok(!withCode.includes("one GitHub search per record"));
 	// Data links alone bring the column: each archive by name, one per
 	// line after the code link; the search documentation counts both kinds;
@@ -1259,7 +1260,7 @@ const baseReport: SynthReport = {
 	assert.ok(codeRun.includes("1 code pair(s) moved to dropped (repository created more than 1 year after the paper)"));
 	assert.ok(codeRun.includes("Repository first (code sources, when enabled)"));
 	assert.ok(codeRun.includes("repos.ecosyste.ms (data CC-BY-SA)"));
-	assert.ok(codeRun.includes("abstract | crossref | hf-papers | github-readme | awesome-lists | gee-github"));
+	assert.ok(codeRun.includes("abstract | crossref | datacite | hf-papers | github-readme | awesome-lists | gee-github"));
 	assert.ok(codeRun.includes("https://github.com/x/cropmask"));
 	assert.ok(codeRun.includes("created 2 years after the paper"));
 	assert.ok(!html.includes("<dt>Code sources</dt>"));
