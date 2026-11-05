@@ -27,7 +27,7 @@
       <div class="block-body">
         <button id="btn-new-search" type="button" class="rail-icon new" title="Start a new search (the current conversation stays in History)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg><span>New search</span></button>
         <details id="hist-1" class="sub">
-          <summary>History <span class="cnt" id="cnt-hist-1"></span></summary>
+          <summary>History</summary>
           <div id="hist-1-list" class="rail-list"><div class="rail-note">loading ...</div></div>
         </details>
       </div>
@@ -37,14 +37,14 @@
       <div class="block-body">
         <button id="btn-new-chat" type="button" class="rail-icon new" title="Start a new chat or report over your PDFs (the current conversation stays in History)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg><span>New paper chat</span></button>
         <details id="rail-library" class="sub">
-          <summary><label class="tickhit whole" title="Use the whole library as the sources of the paper chat"><input type="checkbox" class="tick" id="tick-whole" aria-label="Whole library"></label>Library <span class="cnt" id="cnt-pdfs"></span></summary>
+          <summary>Library</summary>
           <div id="rail-indexing" class="indexing" hidden><span></span><b><i></i></b></div>
           <div id="rail-library-list" class="rail-list"></div>
           <button id="btn-add-folder" type="button" class="rail-icon new" title="Add a folder with PDFs: it is read with all its subfolders, nothing is written into it"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg><span>Add folder</span></button>
           <input type="search" id="lib-find" class="lib-find" placeholder="Find in the library ..." autocomplete="off" aria-label="Find in the library">
         </details>
         <details id="hist-2" class="sub">
-          <summary>History <span class="cnt" id="cnt-hist-2"></span></summary>
+          <summary>History</summary>
           <div id="hist-2-list" class="rail-list"><div class="rail-note">loading ...</div></div>
         </details>
       </div>
@@ -75,6 +75,7 @@
           <div class="plusmenu" id="plus-menu" role="menu" hidden></div>
         </span>
         <button class="primary" type="submit" id="btn-send">Send</button>
+        <div class="mention" id="mention" role="listbox" hidden></div>
       </form>
       <div class="pills" id="pills" hidden></div>
       <div class="drop" id="drop" hidden></div>

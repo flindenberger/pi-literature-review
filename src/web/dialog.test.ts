@@ -32,6 +32,7 @@ import {
 	isAuthorsOnly,
 } from "./dialog.ts";
 import type { JobInfo } from "./jobs.ts";
+import type { AnswerView } from "./dialog.ts";
 
 const library = [
 	{ base: "2016_Legleiter", title: "Inferring river bathymetry", year: "2016", authors: ["Carl J. Legleiter"] },
@@ -987,10 +988,9 @@ console.log("dialog add-on tests ok");
 	// parseChatOptions shapes untrusted JSON.
 	assert.equal(parseChatOptions(null), undefined);
 	assert.equal(parseChatOptions({ scope: 3 }), undefined);
-	assert.deepEqual(parseChatOptions({ scope: "library", report: "nonsense" }), { scope: "library" });
-	assert.deepEqual(parseChatOptions({ scope: ["a", "a", "", 4, "b"], scopeLabel: " 01_Waterline ", report: "crossPaper" }), { scope: ["a", "b"], scopeLabel: "01_Waterline", report: ["crossPaper"] });
-	// A list of ticked parts, kept in the fixed order, unknown ones dropped.
-	assert.deepEqual(parseChatOptions({ scope: "library", report: ["review", "x", "bullets"] }), { scope: "library", report: ["bullets", "review"] });
+	assert.deepEqual(parseChatOptions({ scope: "library", report: "crossPaper" }), { scope: "library" });
+	assert.deepEqual(parseChatOptions({ scope: ["a", "a", "", 4, "b"], scopeLabel: " 01_Waterline " }), { scope: ["a", "b"], scopeLabel: "01_Waterline" });
+	assert.deepEqual(parseChatOptions({ scope: "library", build: { summary: true, synthesis: "yes" } }), { scope: "library", build: { summary: true, synthesis: false } });
 
 	// A folder scope: the question runs over exactly its papers; unknown
 	// basenames are dropped.
@@ -1001,35 +1001,52 @@ console.log("dialog add-on tests ok");
 	out = step(state, { kind: "answer", text: "Which sensors?", chat: { scope: ["9999_Unknown"] } }, ctx);
 	assert.deepEqual(out.effects, [{ kind: "startChat", question: "Which sensors?", papers: "library" }]);
 
-	// "Write a report" on: the typed lines are the questions, the report starts at once.
-	out = step(state, { kind: "answer", text: "Which sensors?\nIs code published?", chat: { scope: "library", report: ["perPaper"] } }, ctx);
-	assert.deepEqual(out.effects, [{ kind: "startReport", papers: "library", questions: ["Which sensors?", "Is code published?"], summary: "none", detailMode: "per-paper", includeReview: false, language: "en" }]);
-	// Several parts at once: summaries + both answer modes + review.
-	out = step(state, { kind: "answer", text: "Which sensors?", chat: { scope: "library", report: ["bullets", "perPaper", "crossPaper", "review"] } }, ctx);
-	assert.deepEqual(out.effects, [{ kind: "startReport", papers: "library", questions: ["Which sensors?"], summary: "bullets", detailMode: "both", includeReview: true, language: "en" }]);
-	// Summaries + review need no question.
-	out = step(state, { kind: "answer", text: "", chat: { scope: "library", report: ["bullets", "review"] } }, ctx);
-	assert.deepEqual(out.effects, [{ kind: "startReport", papers: "library", questions: [], summary: "bullets", detailMode: "per-paper", includeReview: true, language: "en" }]);
-	// Summaries need no question.
-	out = step(state, { kind: "answer", text: "", chat: { scope: ["2022_Salavitabar"], report: ["bullets"] } }, ctx);
-	assert.deepEqual(out.effects, [{ kind: "startReport", papers: ["2022_Salavitabar"], questions: [], summary: "bullets", detailMode: "per-paper", includeReview: false, language: "en" }]);
-	assert.equal(out.state.answers.reported, true); // History names it a report
-	// Cross-paper without a question: asked for one, nothing starts.
-	out = step(state, { kind: "answer", text: "", chat: { scope: "library", report: ["crossPaper"] } }, ctx);
+	// The chat's ONE report: nothing asked and nothing ticked -> a note, no job.
+	out = step(state, { kind: "answer", text: "", chat: { scope: "library", build: { summary: false, synthesis: false } } }, ctx);
 	assert.deepEqual(out.effects, []);
-	assert.equal(out.state.step, "ask");
-	assert.ok(out.state.messages.some((message) => /need at least one question/.test(message.text ?? "")));
-	// The report buttons: the button is remembered, its report url kept,
-	// nothing is added to the thread.
-	assert.deepEqual(parseChatOptions({ scope: "library", report: ["bullets"], reportName: "summary" }), { scope: "library", report: ["bullets"], reportName: "summary" });
-	assert.equal(parseChatOptions({ scope: "library", reportName: "other" })?.reportName, undefined);
-	out = step(state, { kind: "answer", text: "", chat: { scope: "library", report: ["crossPaper", "review"], reportName: "synthesis" } }, ctx);
-	assert.equal(out.state.answers.reportRequest, "synthesis");
-	let rs = step(out.state, { kind: "jobStarted", job: job("report", "report-9") }, ctx).state;
+	assert.ok(out.state.messages.some((message) => /Nothing to write yet/.test(message.text ?? "")));
+	// Summary alone needs no question.
+	out = step(state, { kind: "answer", text: "", chat: { scope: ["2022_Salavitabar"], build: { summary: true, synthesis: false } } }, ctx);
+	assert.deepEqual(out.effects, [{ kind: "startReport", papers: ["2022_Salavitabar"], questions: [], summary: "bullets", detailMode: "per-paper", includeReview: false, language: "en", answered: [], letters: {} }]);
+	assert.equal(out.state.answers.reported, undefined); // History keeps the chat's title
+
+	// A chat with one answered question: the report carries the question
+	// across the papers and hands the chat's answer over for reuse.
+	let rs = step(state, { kind: "answer", text: "Which sensors?", chat: { scope: "library" } }, ctx).state;
+	rs = step(rs, { kind: "jobStarted", job: job("chat", "chat-1") }, ctx).state;
+	const chatAnswer = { question: "Which sensors?", grounded: true, scope: "library", prose: "Sentinel-2 [1].", references: [], sites: [], chunks: [] } as unknown as AnswerView["answer"];
+	rs = step(rs, { kind: "job", job: job("chat", "chat-1", "done"), answer: { answer: chatAnswer, hrefs: [], pdfUrls: {} } }, ctx).state;
+	out = step(rs, { kind: "answer", text: "", chat: { scope: "library", build: { summary: false, synthesis: true } } }, ctx);
+	assert.equal(out.effects.length, 1);
+	const effect = out.effects[0] as Extract<Effect, { kind: "startReport" }>;
+	assert.deepEqual(effect.questions, ["Which sensors?"]);
+	assert.equal(effect.detailMode, "cross-paper");
+	assert.equal(effect.includeReview, true);
+	assert.equal(effect.summary, "none");
+	assert.deepEqual(effect.answered?.map((answer) => answer.question), ["Which sensors?"]);
+	assert.deepEqual(out.state.answers.reportRequest, { summary: false, synthesis: true });
+	// Sources changed since the answer: it is not reused (asked anew).
+	const other = step(rs, { kind: "answer", text: "", chat: { scope: ["2016_Legleiter"], build: { summary: false, synthesis: false } } }, ctx);
+	assert.deepEqual((other.effects[0] as typeof effect).answered, []);
+	// A question sent with a selected report: the answer first, then the
+	// report starts on its own and holds the new question.
+	let qa = step(rs, { kind: "answer", text: "Which methods?", chat: { scope: "library", build: { summary: true, synthesis: false } } }, ctx);
+	assert.deepEqual(qa.effects, [{ kind: "startChat", question: "Which methods?", papers: "library" }]);
+	qa = step(qa.state, { kind: "jobStarted", job: job("chat", "chat-2") }, ctx);
+	qa = step(qa.state, { kind: "job", job: job("chat", "chat-2", "done"), answer: { answer: { ...chatAnswer, question: "Which methods?" }, hrefs: [], pdfUrls: {} } }, ctx);
+	assert.equal(qa.effects.length, 1);
+	const after = qa.effects[0] as Extract<Effect, { kind: "startReport" }>;
+	assert.equal(after.kind, "startReport");
+	assert.deepEqual(after.questions, ["Which sensors?", "Which methods?"]);
+	assert.equal(after.summary, "bullets");
+	assert.equal(qa.state.answers.reportAfter, undefined);
+	assert.ok(qa.state.messages.some((message) => message.role === "answer" && message.answer?.answer.question === "Which methods?"));
+	// Done: the one report is remembered with its parts; no card, no message.
+	rs = step(out.state, { kind: "jobStarted", job: job("report", "report-9") }, ctx).state;
 	const before = rs.messages.length;
 	rs = step(rs, { kind: "job", job: job("report", "report-9", "done"), report: { name: "r", htmlUrl: "/files/lit-synthesis/r.html", grounded: true, units: 2 } }, ctx).state;
 	assert.equal(rs.step, "ask");
-	assert.equal(rs.answers.reports?.synthesis, "/files/lit-synthesis/r.html");
+	assert.deepEqual(rs.answers.report, { url: "/files/lit-synthesis/r.html", parts: { summary: false, synthesis: true }, questions: 1, job: "report-9" });
 	assert.equal(rs.answers.reportRequest, undefined);
 	assert.equal(rs.messages.length, before, "no card, no message");
 

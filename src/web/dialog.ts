@@ -30,7 +30,7 @@ import {
 import { MAX_AUTHOR_WORKS_PER_SOURCE, MAX_PER_SOURCE } from "../search.ts";
 import { parseIdentifier } from "../selection.ts";
 import type { AuthorMatch } from "../sources/openalex.ts";
-import type { ChatAnswer } from "../synthesis.ts";
+import type { AnsweredQuestion, ChatAnswer } from "../synthesis.ts";
 import type { Stage } from "./files.ts";
 import type { SearchForm } from "./intake.ts";
 import type { BlockMode } from "./blockcache.ts";
@@ -240,11 +240,15 @@ export interface DialogAnswers {
 	lastQuestion: string;
 	/** A report was started in this conversation (names it in History). */
 	reported?: boolean;
-	/** The report button(s) whose report is being written ("both": one
-	 * report holding the parts of both). */
-	reportRequest?: ReportButton | "both";
-	/** The newest report of each button, as its HTML url. */
-	reports?: Partial<Record<ReportButton, string>>;
+	/** The chat's report is being written (the parts asked for). */
+	reportRequest?: ReportParts;
+	/** Sent with a question: the report to write once the answer is in. */
+	reportAfter?: ReportParts;
+	/** The chat's ONE report: its HTML url, the parts it holds and how many
+	 * questions it answers (a newer question or other parts = "Update"). */
+	report?: { url: string; parts: ReportParts; questions: number; job?: string };
+	/** Older pages: the newest report of each button, as its HTML url. */
+	reports?: Partial<Record<"summary" | "synthesis", string>>;
 	/** The "+" menu's name for the scope ("01_Waterline", "3 papers"). */
 	scopeLabel?: string;
 	/** A chat on one PDF: the paper in short ("Lee and Kim 2021 · Title"),
@@ -311,7 +315,7 @@ export type Effect =
 	/** `language`: the report's prose and page headings follow the language
 	 * of the user's own questions (German or English, like the terminal
 	 * wizard follows the chat); the chat itself stays English. */
-	| { kind: "startReport"; papers: string[] | "library"; questions: string[]; summary: "bullets" | "none"; detailMode: "per-paper" | "cross-paper" | "both"; includeReview: boolean; language: DialogLang }
+	| { kind: "startReport"; papers: string[] | "library"; questions: string[]; summary: "bullets" | "none"; detailMode: "per-paper" | "cross-paper" | "both"; includeReview: boolean; language: DialogLang; answered?: AnsweredQuestion[]; letters?: Record<string, string> }
 	| { kind: "newChatSession" }
 	/** One model call over the step's help text; the reducer built both
 	 * prompts, the server only runs the model. */
@@ -1248,18 +1252,20 @@ function requestOptions(event: Extract<DialogEvent, { kind: "answer" }>): Reques
 /** The paper chat's "+" menu: which PDFs, and whether Send writes a
  * report (and which kind) instead of answering in the chat. */
 export type ReportKindId = "bullets" | "perPaper" | "crossPaper" | "review";
-/** The paper chat's two report buttons under the question box. */
-export type ReportButton = "summary" | "synthesis";
+/** The optional parts of the paper chat's ONE report; the chat's
+ * questions (answered across the papers) are always in it. */
+export interface ReportParts {
+	/** Summary: each paper on its own. */
+	summary: boolean;
+	/** Synthesis: all papers together. */
+	synthesis: boolean;
+}
 export interface ChatOptionsAnswer {
 	scope: string[] | "library";
 	scopeLabel?: string;
-	/** The ticked report parts (any combination, at least one). */
-	report?: ReportKindId[];
-	/** The report button(s) that asked (the newest report is remembered). */
-	reportName?: ReportButton | "both";
+	/** Build (or update) the chat's report with these parts. */
+	build?: ReportParts;
 }
-
-const REPORT_KINDS: ReportKindId[] = ["bullets", "perPaper", "crossPaper", "review"];
 
 /** Validate the chat menu's settings from the page (untrusted JSON).
  * Pure; the reducer keeps only basenames the library holds. */
@@ -1272,11 +1278,11 @@ export function parseChatOptions(value: unknown): ChatOptionsAnswer | undefined 
 	else return undefined;
 	const out: ChatOptionsAnswer = { scope };
 	if (typeof raw.scopeLabel === "string" && raw.scopeLabel.trim()) out.scopeLabel = raw.scopeLabel.trim().slice(0, 120);
-	// One kind (older pages) or a list of ticked kinds, in the fixed order.
-	const wanted = typeof raw.report === "string" ? [raw.report] : Array.isArray(raw.report) ? raw.report : [];
-	const kinds = REPORT_KINDS.filter((kind) => wanted.includes(kind));
-	if (kinds.length) out.report = kinds;
-	if (raw.reportName === "summary" || raw.reportName === "synthesis" || raw.reportName === "both") out.reportName = raw.reportName;
+	const build = raw.build;
+	if (build && typeof build === "object" && !Array.isArray(build)) {
+		const parts = build as Record<string, unknown>;
+		out.build = { summary: parts.summary === true, synthesis: parts.synthesis === true };
+	}
 	return out;
 }
 
@@ -1586,7 +1592,9 @@ function onPick(state: DialogState, event: Extract<DialogEvent, { kind: "answer"
 
 function onAsk(input: DialogState, text: string, chip: string, ctx: DialogContext, chat?: ChatOptionsAnswer): ReduceResult {
 	const state = chat ? withChatScope(input, chat, ctx) : input;
-	if (chat?.report) return onMenuReport(chat.reportName ? withAnswers(state, { reportRequest: chat.reportName }) : withAnswers(state, { reportRequest: undefined }), chat.report, text, ctx);
+	// Send with a report selected: no question -> the report now; with a
+	// question -> the answer first, then the report (it then holds it).
+	if (chat?.build && !text) return onBuildReport(state, chat.build, ctx);
 	if (chip === "report") {
 		if (state.answers.scope === "library" && ctx.library.length > 1) return result(askPickPapers(state, ctx));
 		return result(askQuestions(state));
@@ -1596,7 +1604,7 @@ function onAsk(input: DialogState, text: string, chip: string, ctx: DialogContex
 	if (chip === "newSearch") return result(askTopic(state));
 	if (!text) return result(askAsk(state, ctx));
 	if (!ctx.hasModel) return result(askAsk(say(state, TEXT.askNoModel), ctx));
-	const next = withAnswers(state, { lastQuestion: text, questions: [...new Set([...state.answers.questions, text])] });
+	const next = withAnswers(state, { lastQuestion: text, questions: [...new Set([...state.answers.questions, text])], reportAfter: chat?.build });
 	return result(pending(next, "retrieving passages and asking the model"), { kind: "startChat", question: text, papers: next.answers.scope });
 }
 
@@ -1629,18 +1637,52 @@ function withChatScope(state: DialogState, chat: ChatOptionsAnswer, ctx: DialogC
 	return push(next, { role: "divider", text: scope === "library" ? "now the whole library" : `now ${scope.length} PDF${scope.length === 1 ? "" : "s"}` });
 }
 
-/** Send with "Write a report" on: the typed lines are the report's
- * questions (with the chat's earlier ones); the report starts at once. */
-function onMenuReport(state: DialogState, kinds: ReportKindId[], text: string, ctx: DialogContext): ReduceResult {
+/** The chat's report (the "Report" window): the chat's questions, each
+ * answered across the papers -- answers given in the chat over the same
+ * sources are taken as they stand -- plus the ticked parts. One report per
+ * chat; building again updates it. */
+function onBuildReport(state: DialogState, parts: ReportParts, ctx: DialogContext): ReduceResult {
 	if (!ctx.hasModel) return result(askAsk(say(state, TEXT.askNoModel), ctx));
-	const typed = text ? parseQuestions(text) : [];
-	const questions = [...new Set([...state.answers.questions, ...typed])];
-	const next = withAnswers(state, { questions, reported: true });
-	const effect = reportEffect(next, kinds, questions);
-	if ((kinds.includes("perPaper") || kinds.includes("crossPaper")) && !questions.length) {
-		return result(askAsk(say(next, "Answers to your questions need at least one question: type it, then Build report."), ctx));
+	const questions = state.answers.questions;
+	if (!questions.length && !parts.summary && !parts.synthesis) {
+		return result(askAsk(say(state, "Nothing to write yet: ask a question, or tick Summary or Synthesis."), ctx));
 	}
-	return result(pending(next, "starting the report"), effect);
+	const next = withAnswers(state, { reportRequest: parts });
+	return result(pending(next, "starting the report"), {
+		...reportEffect(next, [...(parts.summary ? ["bullets" as const] : []), ...(questions.length ? ["crossPaper" as const] : []), ...(parts.synthesis ? ["review" as const] : [])], questions),
+		answered: chatAnswers(state),
+		letters: chatLetters(state),
+	});
+}
+
+/** The chat's paper letters (A, B ... in first-citation order over the
+ * conversation, as the page shows them); the report keeps them. */
+function chatLetters(state: DialogState): Record<string, string> {
+	const out: Record<string, string> = {};
+	let n = 0;
+	for (const message of state.messages) {
+		const answer = message.role === "answer" ? message.answer?.answer : undefined;
+		for (const site of answer?.sites ?? []) {
+			if (site.paper_key in out) continue;
+			out[site.paper_key] = n < 26 ? String.fromCharCode(65 + n) : `${String.fromCharCode(65 + Math.floor(n / 26) - 1)}${String.fromCharCode(65 + (n % 26))}`;
+			n++;
+		}
+	}
+	return out;
+}
+
+/** The chat's answers over the current sources (newest per question): a
+ * report reuses them instead of asking the model again. */
+function chatAnswers(state: DialogState): AnsweredQuestion[] {
+	const key = (value: string[] | "library"): string => value === "library" ? "library" : [...value].sort().join("\n");
+	const scope = key(state.answers.scope);
+	const byQuestion = new Map<string, AnsweredQuestion>();
+	for (const message of state.messages) {
+		const answer = message.role === "answer" ? message.answer?.answer : undefined;
+		if (!answer || !answer.grounded || key(answer.scope) !== scope) continue;
+		byQuestion.set(answer.question.trim(), answer);
+	}
+	return [...byQuestion.values()];
 }
 
 /** The single-choice report question (chips) keeps its bundled kinds:
@@ -1654,7 +1696,7 @@ const LEGACY_REPORT_PARTS: Record<ReportKindId, ReportKindId[]> = {
 
 /** The ticked report parts as one report effect: summaries, answers per
  * paper and / or across papers, a review synthesis. */
-function reportEffect(state: DialogState, kinds: ReportKindId[], questions: string[]): Effect {
+function reportEffect(state: DialogState, kinds: ReportKindId[], questions: string[]): Extract<Effect, { kind: "startReport" }> {
 	// Every question typed so far (report questions and chat questions)
 	// decides the language; a summary-only report without any question
 	// falls back to the search request, then to English.
@@ -1684,7 +1726,9 @@ function onJob(state: DialogState, event: Extract<DialogEvent, { kind: "job" }>,
 		messages: state.messages.map((message) => (message.role === "working" && message.job === job.id ? { ...message, jobState: job.state } : message)),
 	};
 	if (job.state !== "done") {
-		const why = job.state === "cancelled" ? "Stopped." : `Failed: ${job.error ?? "unknown error"}`;
+		// The engine's "(available: a.pdf, b.pdf, ...)" list helps on the
+		// command line; in the chat it buries the reason.
+		const why = job.state === "cancelled" ? "Stopped." : `Failed: ${(job.error ?? "unknown error").replace(/\s*\(available: [\s\S]*\)\s*$/, "")}`;
 		switch (job.kind) {
 			case "search":
 				// A list is already there (add-on, search again, edited blocks):
@@ -1696,6 +1740,7 @@ function onJob(state: DialogState, event: Extract<DialogEvent, { kind: "job" }>,
 			case "chat":
 				// A chat on one PDF stays a plain chat: no scope or report chips.
 				if (onePaper(marked)) return result(ask({ ...marked, pending: null }, "ask", { text: why }));
+				if (marked.answers.reportAfter) return result(askAsk(say(withAnswers(marked, { reportAfter: undefined }), `${why} The report was not written.`), ctx));
 				return result(askAsk(say(marked, `${why}`), ctx));
 			case "report":
 				return result(askAsk(say(withAnswers(marked, { reportRequest: undefined }), `${why} The report was not written.`), ctx));
@@ -1737,27 +1782,29 @@ function onJob(state: DialogState, event: Extract<DialogEvent, { kind: "job" }>,
 		case "chat": {
 			// A purely social message ("danke", "find ich gut"): the model's
 			// short reply, no passages; it is no question for a later report.
+			// A report selected with the question is written right after it.
+			const after = marked.answers.reportAfter;
+			const thenReport = (done: DialogState): ReduceResult => after ? onBuildReport(withAnswers(done, { reportAfter: undefined }), after, ctx) : result(done);
 			if (event.reply) {
 				const asked = marked.answers.lastQuestion;
 				const kept = withAnswers(marked, { questions: marked.answers.questions.filter((question) => question !== asked) });
-				return result(say({ ...kept, step: "ask", pending: null }, event.reply));
+				return thenReport(say({ ...kept, step: "ask", pending: null }, event.reply));
 			}
 			const view = event.answer;
-			if (!view) return result(askAsk(say(marked, "The answer is missing."), ctx));
+			if (!view) return result(askAsk(say(withAnswers(marked, { reportAfter: undefined }), "The answer is missing."), ctx));
 			// No repeated instruction after an answer: the answer itself carries
 			// the action chips, the input box invites the next question.
 			const trail = marked.trail[marked.trail.length - 1] === "ask" ? marked.trail : [...marked.trail, "ask" as StepId];
-			return result(push({ ...spend(marked), step: "ask", trail, pending: null }, { role: "answer", step: "ask", answer: view }));
+			return thenReport(push({ ...spend(marked), step: "ask", trail, pending: null }, { role: "answer", step: "ask", answer: view }));
 		}
 		case "report": {
 			const outcome = event.report;
 			if (!outcome) return result(say(marked, "The report finished, but its result is missing."));
-			// A report button's report opens as a tab on the page and the button
+			// The chat's report opens as a tab on the page and its button
 			// remembers it; nothing is added to the thread.
-			const button = marked.answers.reportRequest;
-			if (button) {
-				const written = button === "both" ? { summary: outcome.htmlUrl, synthesis: outcome.htmlUrl } : { [button]: outcome.htmlUrl };
-				const done = withAnswers(marked, { reportRequest: undefined, reports: { ...(marked.answers.reports ?? {}), ...written } });
+			const parts = marked.answers.reportRequest;
+			if (parts) {
+				const done = withAnswers(marked, { reportRequest: undefined, reports: undefined, report: { url: outcome.htmlUrl, parts, questions: marked.answers.questions.length, job: job.id } });
 				const trail = done.trail[done.trail.length - 1] === "ask" ? done.trail : [...done.trail, "ask" as StepId];
 				return result({ ...spend(done), step: "ask", trail, pending: null });
 			}

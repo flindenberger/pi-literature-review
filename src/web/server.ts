@@ -50,7 +50,7 @@ import { listServerModels } from "../llm.ts";
 import { type AuthorFacts, lookupAuthorFacts, lookupTopWorkDoi, lookupWorkAuthors, lookupWorkFacts, type WorkFacts } from "../sources/openalex.ts";
 import { type Employment, lookupOrcidByDoi, lookupOrcidEmployments, type OrcidPerson } from "../sources/orcid.ts";
 import { EXAMPLES_SYSTEM, type ExamplePaper, examplePaperName, examplesPrompt, parseExamples } from "./examples.ts";
-import { chatPool, ensureLibrary, runChatReport, runReport, runRound, type ChatAnswer, type ChatDeps, type ChatReport, type ChatReportOptions, type ChatOptions, type ReportOptions, type SynthReport } from "../synthesis.ts";
+import { chatPool, ensureLibrary, runChatReport, runReport, runRound, type AnsweredQuestion, type ChatAnswer, type ChatDeps, type ChatReport, type ChatReportOptions, type ChatOptions, type ReportOptions, type SynthReport } from "../synthesis.ts";
 import { ensureIndexed, libraryFiles, type LibraryMatch, type LibraryPaper, matchLibrary, realCorpusDeps } from "../corpus.ts";
 import { inboxDir, pdfBase } from "../library.ts";
 import { checkEmbedModel, type DoctorState, pullEmbedModel } from "../doctor.ts";
@@ -794,7 +794,10 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 	 * German summaries with answers in the question's language). */
 	const WEB_REPORT_LANGUAGE = "English";
 
-	const startReportJob = (body: Record<string, unknown>): JobInfo => {
+	/** `answered`: chat answers for reuse -- only from the conversation's own
+	 * state (the dialog effect), never from a request body, so every
+	 * citation in a report still comes from the engine. */
+	const startReportJob = (body: Record<string, unknown>, answered: AnsweredQuestion[] = [], paperLetters: Record<string, string> = {}): JobInfo => {
 		const papers: string[] | "library" = body.papers === "library"
 			? "library"
 			: Array.isArray(body.papers) ? body.papers.filter((name): name is string => typeof name === "string" && name.trim() !== "") : [];
@@ -807,12 +810,12 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 		const language = typeof body.language === "string" && body.language.trim() ? body.language.trim() : WEB_REPORT_LANGUAGE;
 		const uiLanguage = body.uiLanguage === "de" ? "de" : "en";
 		const session = typeof body.session === "string" && body.session ? body.session : chatSession;
-		return startJob("report", "synthesis report", async ({ signal, log }) => {
+		return startJob("report", "report", async ({ signal, log }) => {
 			await requireEmbedding(signal);
 			const wiring = provider.wiring();
 			const report = await deps.runReport({
 				papers, questions, summary, detailMode, includeReview, language, uiLanguage,
-				session, root,
+				session, root, answered, paperLetters,
 				explainModel: wiring.explainModel, reviewModel: wiring.reviewModel,
 				onWarn: log, onProgress: log, signal,
 			}, { backend: wiring.backend });
@@ -1153,7 +1156,7 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 					started(startReportJob({
 						papers: effect.papers, questions: effect.questions, summary: effect.summary, detailMode: effect.detailMode, includeReview: effect.includeReview,
 						language: effect.language === "de" ? "German" : "English", uiLanguage: effect.language, session: sessionOf(),
-					}));
+					}, effect.answered ?? [], effect.letters ?? {}));
 					return;
 				case "newChatSession":
 					if (owner === currentId) chatSession = webSessionId();

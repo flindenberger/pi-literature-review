@@ -361,7 +361,7 @@ export interface AuthorMetrics {
 	 * shown behind the h-index in the author tab. Plain API display names,
 	 * nothing derived. */
 	topics: string[] | undefined;
-	/** OpenAlex's last known institution (derived from the newest papers). */
+	/** OpenAlex's last known institutions, "; "-joined (derived from the newest papers). */
 	institution?: string;
 }
 
@@ -403,7 +403,8 @@ export async function fetchAuthorMetrics(
 				});
 				const institution = (Array.isArray(author.last_known_institutions) ? author.last_known_institutions : [])
 					.map((entry: Record<string, unknown>) => typeof entry?.display_name === "string" ? entry.display_name : "")
-					.find(Boolean);
+					.filter(Boolean)
+					.join("; ");
 				if (institution) byAuthorId.get(id)!.institution = institution;
 			}
 		} catch (error) {

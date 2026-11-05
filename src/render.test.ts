@@ -15,6 +15,7 @@ import {
 	localPdfHref,
 	renderHtml,
 	renderPaperChatReportHtml,
+	paperLetterMap,
 	renderSynthReportHtml,
 	type RenderPayload,
 } from "./render.ts";
@@ -974,7 +975,7 @@ const baseReport: SynthReport = {
 	assert.ok(html.includes("openTarget"));
 	// Summary/review choices are stated in plain rows.
 	assert.ok(html.includes("Ja, als Bulletpoints"));
-	assert.ok(html.includes("<dt>Review-Synthese</dt><dd>Nein</dd>"));
+	assert.ok(html.includes("<dt>Synthese</dt><dd>Nein</dd>"));
 }
 
 {
@@ -1007,42 +1008,48 @@ const baseReport: SynthReport = {
 	});
 	assert.ok(!html.includes('class="toc"')); // no TOC anywhere (layout without TOC)
 	assert.ok(html.includes('<hr class="paper">'));
-	assert.ok(html.includes("Detailfragen (paperübergreifend)"));
-	assert.ok(html.includes("Stand der Literatur"));
+	assert.ok(html.includes("Fragen · über alle Dokumente beantwortet"));
+	assert.ok(html.includes("Synthese · alle Dokumente zusammen"));
+	// Reading order: questions, synthesis, then the papers (with summaries
+	// under "Zusammenfassung · jedes Dokument für sich").
+	assert.ok(html.indexOf('id="cross-questions"') < html.indexOf('id="review"'));
+	assert.ok(html.indexOf('id="review"') < html.indexOf('id="papers"'));
+	assert.ok(html.includes("<h2>Zusammenfassung · jedes Dokument für sich</h2>"));
 	assert.ok(html.includes('class="reviewnote"'));
 	assert.ok(html.includes('id="paper-a"') && html.includes('id="paper-b"'));
 	const paperA = html.slice(html.indexOf('id="paper-a"'), html.indexOf('id="paper-b"'));
-	const paperB = html.slice(html.indexOf('id="paper-b"'), html.indexOf('id="cross-questions"'));
+	const paperB = html.slice(html.indexOf('id="paper-b"'));
 	const cross = html.slice(html.indexOf('id="cross-questions"'), html.indexOf('id="review"'));
-	const review = html.slice(html.indexOf('id="review"'));
-	// Each paper block lists ITS cited passages with report-global numbers
-	// (explicit <li value>), no reference table -- the block head is the
-	// paper's identity.
+	const review = html.slice(html.indexOf('id="review"'), html.indexOf('id="papers"'));
+	// Several papers: every paper has a letter (scope order here), passages
+	// read letter + number within the paper as in the chat (A1, B1). Each
+	// paper block lists ITS cited passages, no reference table -- the block
+	// head (with the letter) is the paper's identity.
+	assert.ok(paperA.includes('<span class="pletter">A</span> Paper One') || paperA.includes('<span class="pletter">A</span>'));
 	assert.ok(paperA.includes('<summary>Belegstellen</summary>') && !paperA.includes("<summary>Referenzen</summary>"));
-	assert.ok(paperA.includes('<li id="site-1" value="1">') && !paperA.includes('value="2"'));
-	assert.ok(paperB.includes('<li id="site-2" value="2">') && !paperB.includes('value="1"'));
-	// Superscripts show passage numbers: paper A's marker 1, paper B's 2.
-	assert.ok(paperA.includes('rel="noopener">1</a>') && !paperA.includes('rel="noopener">2</a>'));
-	assert.ok(paperB.includes('rel="noopener">2</a>'));
+	assert.ok(paperA.includes('<li id="site-A1"><span class="plabel">A1</span>') && !paperA.includes("B1"));
+	assert.ok(paperB.includes('<li id="site-B1"><span class="plabel">B1</span>') && !paperB.includes('plabel">A1'));
+	// Superscripts show the same labels.
+	assert.ok(paperA.includes('rel="noopener">A1</a>') && !paperA.includes('rel="noopener">B1</a>'));
+	assert.ok(paperB.includes('rel="noopener">B1</a>'));
 	// The cross section cites paper A's chunk again -> the SAME passage
 	// number 1; its line names the paper (author, year) linked to the
 	// block, carries no duplicate anchor id, and the paper-level reference
 	// table follows with the cited paper only.
-	assert.ok(cross.includes('<li value="1"><details class="passage"><summary><a href="#paper-a">B 2021</a>, '));
-	assert.ok(!cross.includes('id="site-1"'));
-	assert.ok(cross.includes("<summary>Referenzen</summary>") && cross.includes('<tr id="ref-1">'));
+	assert.ok(cross.includes('<li><span class="plabel">A1</span> <details class="passage"><summary><a href="#paper-a">B 2021</a>, '));
+	assert.ok(!cross.includes('id="site-A1"'));
+	assert.ok(cross.includes("<summary>Referenzen</summary>") && cross.includes('<tr id="ref-1"><td>A</td>'));
 	assert.ok(!html.includes('id="ref-2"')); // nobody cites paper B across papers
-	assert.ok(review.includes('<li value="1">') && review.includes("<summary>Referenzen</summary>"));
+	assert.ok(review.includes('<span class="plabel">A1</span>') && review.includes("<summary>Referenzen</summary>"));
 	// The uncited evidence trail nests at the end of every passages block.
 	assert.ok(!html.includes('<details class="block"><summary>Quell-Textstellen'));
 }
 
 /* ---------------- passage numbers run paper by paper ---------------- */
 {
-	// A cross-paper section citing a NEW passage of the FIRST paper must not
-	// push that passage behind the second paper's numbers: every paper's
-	// block keeps one contiguous range (paper A 1-2, paper B 3), whatever
-	// the order in which the model cited them.
+	// A cross-paper section citing a NEW passage of the FIRST paper: every
+	// paper keeps its own letter and range (A1-A2, B1), whatever the order
+	// in which the model cited them.
 	const unitA = reportUnit({});
 	const unitB = reportUnit({
 		paper_base: "b",
@@ -1067,16 +1074,33 @@ const baseReport: SynthReport = {
 		references: [...unitA.references, ...unitB.references],
 	});
 	const paperA = html.slice(html.indexOf('id="paper-a"'), html.indexOf('id="paper-b"'));
-	const paperB = html.slice(html.indexOf('id="paper-b"'), html.indexOf('id="cross-questions"'));
-	const cross = html.slice(html.indexOf('id="cross-questions"'));
+	const paperB = html.slice(html.indexOf('id="paper-b"'));
+	const cross = html.slice(html.indexOf('id="cross-questions"'), html.indexOf('id="papers"'));
 	// Paper A owns numbers 1 and 2 (2 = the passage only the cross section
 	// cites, listed there), paper B starts at 3 -- in pure citation order
 	// paper A's late passage would have become 3, behind paper B.
-	assert.ok(paperA.includes('<li id="site-1" value="1">') && !paperA.includes('value="2"'));
-	assert.ok(paperB.includes('<li id="site-3" value="3">') && !paperB.includes('value="2"'));
-	assert.ok(cross.includes('<li id="site-2" value="2">'));
-	// The cross section's marker shows paper A's second passage as 2.
-	assert.ok(cross.includes('rel="noopener">2</a>'));
+	// Numbering follows the reading order: the question (cross section)
+	// comes first, so its passage of paper A is A1, the summary's A2.
+	assert.ok(paperA.includes('<li id="site-A2">') && !paperA.includes('plabel">A1'));
+	assert.ok(paperB.includes('<li id="site-B1">'));
+	assert.ok(cross.includes('<li id="site-A1"><span class="plabel">A1</span>'));
+	assert.ok(cross.includes('rel="noopener">A1</a>'));
+}
+
+{
+	// Letters given by the chat win (paper B was cited first there -> A);
+	// the other papers take the next free letters in scope order.
+	const map = paperLetterMap({ papers: [paperOne, paperTwo], paper_letters: { [paperTwo.key]: "A", "doi:unknown": "C" } });
+	assert.equal(map.get(paperTwo.key), "A");
+	assert.equal(map.get(paperOne.key), "B");
+	assert.equal(map.size, 2);
+	// Without chat letters the first paper CITED gets A, not the first in scope.
+	const cited = paperLetterMap({
+		papers: [paperOne, paperTwo], paper_letters: {},
+		units: [reportUnit({ sites: [{ paper_key: paperTwo.key, page: 1, chunk_id: 1 } as never] })],
+	});
+	assert.equal(cited.get(paperTwo.key), "A");
+	assert.equal(cited.get(paperOne.key), "B");
 }
 
 {

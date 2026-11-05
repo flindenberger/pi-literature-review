@@ -207,6 +207,10 @@ export function enforceCitations(raw: string, chunkCount: number): CitationScan 
  * excerpts actually shown to the model, so the caller's trail and
  * references stay exact.
  */
+/** Appended to the user prompt on the second pass after an unmarked answer. */
+export const CITE_REMINDER = "\n\nIMPORTANT: put the excerpt number in brackets after EVERY claim, e.g. [2] or [1][4]."
+	+ " An answer without these numbers cannot be used.";
+
 async function generateGrounded(args: {
 	retrieved: RetrievedChunk[];
 	promptOf: (chunks: RetrievedChunk[]) => { system: string; user: string };
@@ -234,9 +238,21 @@ async function generateGrounded(args: {
 	if (args.progress) args.onWarn(args.progress(retrieved.length));
 	// Thinking on/off comes from the package setting (the backend applies it).
 	const generateOptions: GenerateOptions = { model: args.model, numCtx: NUM_CTX, temperature: TEMPERATURE, ...(args.role ? { role: args.role } : {}) };
-	const rawOutput = await args.backend.generate(prompt.system, prompt.user, generateOptions, args.signal);
+	let rawOutput = await args.backend.generate(prompt.system, prompt.user, generateOptions, args.signal);
 	requireOutput(rawOutput);
-	const scan = enforceCitations(rawOutput, retrieved.length);
+	let scan = enforceCitations(rawOutput, retrieved.length);
+	// Small models sometimes answer from the excerpts without a single
+	// marker. One second pass with the rule repeated; the gate still checks
+	// every marker, and an answer that stays unmarked stays ungrounded.
+	if (!scan.citedChunkIds.length && !args.signal?.aborted) {
+		args.onWarn("the answer cited no excerpt -- asking the model once more");
+		const retry = await args.backend.generate(prompt.system, prompt.user + CITE_REMINDER, generateOptions, args.signal);
+		const retryScan = retry.trim() ? enforceCitations(retry, retrieved.length) : null;
+		if (retryScan && retryScan.citedChunkIds.length) {
+			rawOutput = retry;
+			scan = retryScan;
+		}
+	}
 	if (scan.invalidMarkers.length) {
 		args.onWarn(`stripped ${scan.invalidMarkers.length} invalid citation marker(s): ${scan.invalidMarkers.join(" ")}`);
 	}
@@ -584,10 +600,14 @@ export function scopeProtocolId(
  * lists what IS available -- it is relayed verbatim by the CLI and the
  * tool, so the user can correct the name without another lookup. */
 export function selectPaper(matched: LibraryPaper[], wanted: string): LibraryPaper {
-	const base = wanted.trim().replace(/\.pdf$/i, "");
+	const raw = wanted.trim();
+	const base = raw.replace(/\.pdf$/i, "");
 	if (!base) {
 		throw new Error(`no paper selected -- pass the PDF filename (papers in the library: ${availablePapers(matched)})`);
 	}
+	// A base may itself end in ".pdf" (file "x.pdf.pdf"): the name as given wins.
+	const asGiven = matched.find((paper) => paper.base === raw);
+	if (asGiven) return asGiven;
 	const exact = matched.find((paper) => paper.base === base);
 	if (exact) return exact;
 	const relaxed = matched.filter((paper) => paper.base.toLowerCase() === base.toLowerCase());
@@ -631,7 +651,8 @@ export async function ensureLibrary(
 	let match = libraryFn(root, onWarn);
 	const adopted: string[] = [];
 	const adoptionFailures: Array<{ file: string; reason: string }> = [];
-	const wanted = options.only ? new Set(options.only.map((name) => name.replace(/\.pdf$/i, "").toLowerCase())) : null;
+	// Names with and without ".pdf" (a base may end in ".pdf" itself).
+	const wanted = options.only ? new Set(options.only.flatMap((name) => [name.toLowerCase(), name.replace(/\.pdf$/i, "").toLowerCase()])) : null;
 	const inScope = (file: string) => !wanted || wanted.has(file.replace(/\.pdf$/i, "").toLowerCase());
 	const toAdopt = unmatchedGroups(match).map((group) => ({ dir: group.dir, files: group.files.filter(inScope) })).filter((group) => group.files.length);
 	if (toAdopt.length) {
@@ -1253,6 +1274,14 @@ export interface ReportOptions {
 	detailMode?: "per-paper" | "cross-paper" | "both";
 	/** Append a review synthesis over the whole scope. */
 	includeReview?: boolean;
+	/** Questions already answered in the chat over the same scope: a
+	 * cross-paper unit for such a question takes this answer as it stands
+	 * (prose, citations, excerpts -- already through the citation gate)
+	 * instead of a new retrieval and generation. Matched by exact text. */
+	answered?: AnsweredQuestion[];
+	/** Paper letters by paper key (the chat's A, B ...), kept in the
+	 * report so a paper reads with the same letter there. */
+	paperLetters?: Record<string, string>;
 	/** Focus of the review synthesis; default DEFAULT_REVIEW_QUESTION. */
 	reviewQuestion?: string;
 	session?: string;
@@ -1277,6 +1306,47 @@ export interface ReportOptions {
 	 * message). Defaults to onWarn. */
 	onProgress?: (message: string) => void;
 	signal?: AbortSignal;
+}
+
+/** A chat answer handed to runReport for reuse (the fields of ChatAnswer
+ * a report unit needs). */
+export type AnsweredQuestion = Pick<ChatAnswer,
+	"question" | "model" | "prose" | "references" | "sites" | "chunks" | "query_variants" | "lexical_terms"
+	| "lexical_added" | "invalid_markers" | "unmarked_sentences" | "stripped_reference_section" | "trimmed_chunks"
+> & { paper?: { key: string } };
+
+/** A chat answer as a cross-paper report unit. Excerpts of multi-paper
+ * rounds carry their paper; a one-paper round's excerpts belong to its
+ * paper; otherwise the citing reference names it. Pure. */
+export function unitFromAnswer(answer: AnsweredQuestion): ReportUnit {
+	const keyOfChunk = new Map<number, string>();
+	for (const reference of answer.references) for (const id of reference.chunk_ids) keyOfChunk.set(id, reference.key);
+	const chunks = answer.chunks
+		.map((chunk) => {
+			const own = (chunk as { paper_key?: unknown }).paper_key;
+			const paper_key = typeof own === "string" && own ? own : keyOfChunk.get(chunk.id) ?? answer.paper?.key ?? "";
+			return { ...chunk, paper_key };
+		})
+		.filter((chunk) => chunk.paper_key);
+	return {
+		kind: "detail-cross",
+		paper_base: null,
+		question: answer.question,
+		model: answer.model,
+		grounded: answer.references.length > 0,
+		prose: answer.prose,
+		references: answer.references,
+		sites: answer.sites,
+		chunks,
+		query_variants: answer.query_variants ?? [],
+		lexical_terms: answer.lexical_terms ?? [],
+		lexical_added: answer.lexical_added ?? 0,
+		invalid_markers: answer.invalid_markers ?? [],
+		unmarked_sentences: answer.unmarked_sentences ?? 0,
+		stripped_reference_section: answer.stripped_reference_section ?? false,
+		trimmed_chunks: answer.trimmed_chunks ?? 0,
+		raw_output: "",
+	};
 }
 
 export interface ReportUnit {
@@ -1320,6 +1390,8 @@ export interface SynthReport {
 	summary: "bullets" | "prose" | null;
 	detail_mode: "per-paper" | "cross-paper" | "both" | null;
 	include_review: boolean;
+	/** Paper letters given by the caller (the chat's); the renderer adds the rest. */
+	paper_letters?: Record<string, string>;
 	/** Resolved scope papers (identity + local path, verified flag). */
 	papers: ChatPaper[];
 	units: ReportUnit[];
@@ -1373,9 +1445,18 @@ export async function runReport(options: ReportOptions, deps?: ChatDeps): Promis
 	if (!pool.length) {
 		throw new Error("no PDFs in the library -- run a search and fetch first, or start pi in the folder holding the PDFs");
 	}
+	// A named paper the library no longer holds (moved, renamed) is skipped
+	// with a warning; the report covers the rest. None left is an error.
+	const missing: string[] = [];
 	const scopePapers = options.papers === "library"
 		? pool
-		: options.papers.map((name) => selectPaper(pool, name));
+		: options.papers.flatMap((name) => {
+			try { return [selectPaper(pool, name)]; } catch { missing.push(name); return []; }
+		});
+	if (missing.length) {
+		if (!scopePapers.length) selectPaper(pool, missing[0]); // throws the full message
+		onWarn(`not in the library any more, skipped: ${missing.map((name) => `${name.replace(/\.pdf$/i, "")}.pdf`).join(", ")}`);
+	}
 	if (!scopePapers.length) throw new Error("empty scope -- select at least one document");
 	for (const paper of scopePapers) {
 		if (paper.key.startsWith(FILE_KEY_PREFIX)) {
@@ -1416,7 +1497,10 @@ export async function runReport(options: ReportOptions, deps?: ChatDeps): Promis
 		paper?: LibraryPaper;
 		question?: string;
 		label: string;
+		/** A chat answer taken as it stands (cross-paper questions). */
+		prior?: AnsweredQuestion;
 	}
+	const answeredByQuestion = new Map((options.answered ?? []).map((answer) => [answer.question.trim(), answer]));
 	const planned: PlannedUnit[] = [];
 	if (summaryFormat) {
 		for (const paper of indexedPapers) {
@@ -1432,11 +1516,12 @@ export async function runReport(options: ReportOptions, deps?: ChatDeps): Promis
 	}
 	if (questions.length && detailMode !== "per-paper") {
 		for (const question of questions) {
-			planned.push({ kind: "detail-cross", question, label: `Question to all documents: ${question}` });
+			const prior = answeredByQuestion.get(question);
+			planned.push({ kind: "detail-cross", question, label: `Question to all documents: ${question}${prior ? " (answer from the chat)" : ""}`, ...(prior ? { prior } : {}) });
 		}
 	}
 	if (includeReview) {
-		planned.push({ kind: "review", question: options.reviewQuestion?.trim() || DEFAULT_REVIEW_QUESTION, label: "Review synthesis" });
+		planned.push({ kind: "review", question: options.reviewQuestion?.trim() || DEFAULT_REVIEW_QUESTION, label: "Synthesis (all papers together)" });
 	}
 
 	// 4. One retrieval + generation + citation gate per unit.
@@ -1444,6 +1529,10 @@ export async function runReport(options: ReportOptions, deps?: ChatDeps): Promis
 	for (const [unitIndex, plan] of planned.entries()) {
 		if (options.signal?.aborted) throw new Error("report aborted by the user");
 		onProgress(`Unit ${unitIndex + 1}/${planned.length}: ${plan.label}`);
+		if (plan.prior) {
+			units.push(unitFromAnswer(plan.prior));
+			continue;
+		}
 		const unitIndexes = plan.paper ? [indexByKey.get(plan.paper.key)!] : indexes;
 		const model = plan.kind === "summary" || plan.kind === "detail-per-paper" ? explainModel : reviewModel;
 		const translate = deps?.translate !== undefined ? deps.translate : translateViaBackend(backend, model);
@@ -1547,6 +1636,7 @@ export async function runReport(options: ReportOptions, deps?: ChatDeps): Promis
 		summary: summaryFormat,
 		detail_mode: detailMode,
 		include_review: includeReview,
+		...(options.paperLetters && Object.keys(options.paperLetters).length ? { paper_letters: options.paperLetters } : {}),
 		papers: reportPapers,
 		units: assembledUnits,
 		references: assembled.references,

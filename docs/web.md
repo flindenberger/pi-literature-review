@@ -88,7 +88,15 @@ withhold abstracts from the open sources). With ticked authors a second choice
 first (pill ", first author"). Author names match by surname and first
 initial ("Carl Legleiter" = "Carl J. Legleiter" = "Legleiter, C."), so a
 namesake with another initial is filtered out; the report reads "works by ... (no query)" and the file is
-named after the authors. Pills under the box
+named after the authors. **"@" in the request box** is the short way to
+the same ticks: typing `@` and a name opens a list of OpenAlex authors
+under the box (arrow keys, Enter or Tab picks, Esc closes); the pick
+removes "@name" from the text and ticks the author as the menu does
+(same pill), so the box keeps only the request. "Soil degradation
+@Xabier Blanch" searches his papers on that topic, "@Xabier Blanch" alone
+lists all his work. A name left unpicked is resolved on Search: one
+match is taken, several (or none) open the list; a name followed by
+request words is tried as its first two words. Pills under the box
 show what is set (the period always); a pill opens the menu, its x
 resets that option; the number on the **+** counts the options that
 differ from the defaults. A click anywhere on a row switches it or opens
@@ -126,7 +134,9 @@ marks it: its **+** (New search, New paper chat: a new conversation that
 starts at that stage; the current one stays in History) and its
 **History** (search conversations under stage 1, chats and reports under
 stage 2; a search shows its request without a "Search:" prefix, the
-tooltip the whole request). Hovering an entry shows its own files next to
+tooltip the whole request; no count next to "History"; the newest ten
+show, the rest behind "Show all n" / "Show fewer", the open or a running
+conversation always in view). Hovering an entry shows its own files next to
 its trash: a search
 its **HTML report** and **PRISMA diagram** (the run unfiltered; a faint
 icon means not written yet, the click writes it), a chat or synthesis its
@@ -285,9 +295,13 @@ with years, works, citations with h-index and citations per year, three
 topics, and links to ORCID and OpenAlex. Everything comes from the two
 APIs as delivered; answers are kept for six hours. A card shows three
 authors; "and n more" lists the rest. The author lists in the "+" menu
-show OpenAlex's last known institution next to each name (taken from the
-author metrics lookup the list already makes, no extra request); a click
-on a name opens the same author window (the box ticks). Opened from a
+show OpenAlex's last known institutions next to each name, all of them
+(taken from the author metrics lookup the list already makes, no extra
+request; cut with an ellipsis, the full text as tooltip); once the author
+window has loaded an ORCID employment, the row shows that place instead.
+The window lists OpenAlex's other last known institutions beside the
+ORCID employment as "Also". A click on a name opens the same author
+window (the box ticks). Opened from a
 list, without a card, the ORCID fallback uses the author's most cited
 work with a DOI. A card's **Graph** (left out when OpenAlex lists neither
 references nor citing works for the paper; the access lookup carries
@@ -411,9 +425,10 @@ under the blocks.
 
 The paper chat chooses its sources in ONE place, the library of the rail;
 its question box has no **+** menu, only the upload button, and the
-question and the answers carry no buttons. A tick on the **Library** row
-takes the whole library; ticks on folders (a ticked folder includes its
-subfolders) and papers add up. A find box over the tree keeps the papers
+question and the answers carry no buttons. Ticks on folders (a ticked
+folder includes its subfolders) and papers add up; every top folder
+ticked is the whole library (the pill says so). Folder rows carry no
+folder icon, only the tick. A find box under the tree keeps the papers
 whose title, authors, year, file name or keywords hold every typed word,
 with their folders opened (Esc or an empty box restores the tree). A
 click on the source pill under the box opens the library and lets it
@@ -442,23 +457,32 @@ place). The chosen PDFs become the sources. Without a desktop window
 (SSH) the browser's own file chooser copies them. A pill under the box
 always names the sources ("No sources chosen", "Whole library · 87 PDFs",
 "01_Water_Body_Mapping_HQ · 30 PDFs", "2 folders, 1 paper · 19 PDFs"; the
-× clears them); right of it sit two report switches, once per chat:
-**Summary report** (every paper summarized, plus the chat's questions
-answered paper by paper when there are any) and **Synthesis report** (the
-chat's questions answered across the papers plus a literature review;
-needs a question). A switch only selects: Send then reads **Build
-report** and builds the switched-on report (both on: one report with all
-parts), the typed text adding questions. It runs over the chosen sources
-and every question of the chat; the written report opens as a tab on the
-right and adds nothing to the thread; a small button beside the switch
-opens it again. The sources may change during a
+× clears them); right of it sits the **Report** button. Send always
+answers in the chat; the report is its own action. Each chat has ONE
+report: it always holds the chat's questions, answered across the chosen
+papers -- the answers given in the chat over the same sources are taken
+as they stand (prose, citations, passages; no new model call), a
+question asked over other sources is answered anew. The Report window only
+selects (button **Select**); the button then reads "Report · Summary +
+Synthesis" (× drops it), and Send writes it: a typed question is
+answered first, then the report follows with that question in it; Send
+with an empty box writes the report at once. The window offers two
+optional parts: **Summary · each paper on its own** (aim,
+methods, study area, results, discussion, outlook) and **Synthesis · all
+papers together** (where they agree, differ, what remains open; needs at
+least two papers). The written report opens as one tab "Report" on the
+right and adds nothing to the thread; afterwards the button opens it and
+a small arrow beside it updates it (darker when newer questions are not
+in it yet; the window opens with the earlier parts ticked).
+Conversations from before keep their report (the newest of the two old
+buttons). The sources may change during a
 chat (ticks, "+"): the next answer and the reports use the new choice,
 and a thin line in the thread ("now 3 PDFs") marks from where. In a chat
 over several papers the citation marks carry the paper's letter, fixed
 for the conversation, plus the passage number within that paper (A1, A2,
 B1); hovering a mark shows the paper, page, passage and DOI ("Show in the
 PDF"); the panel shows one tab per cited paper (same letter) and the
-chat's reports, each tab keeping its own page and marks. Answers show
+chat's report, each tab keeping its own page and marks. Answers show
 the prose with the marks only (no passage list, paper list or provenance
 line; the HTML reports keep them). The page sends the sources as
 basenames (`chat.scope`, `chat.scopeLabel`; a report button adds

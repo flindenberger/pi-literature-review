@@ -8,6 +8,7 @@
 
 import assert from "node:assert/strict";
 import {
+	CITE_REMINDER,
 	type ChatDeps,
 	buildChatPrompt,
 	chatPool,
@@ -198,6 +199,9 @@ function makeRound(question: string, session: string | null = null): Round {
 		return true;
 	});
 	assert.throws(() => selectPaper(library.matched, "  "), /no paper selected/);
+	// A file saved as "x.pdf.pdf" has the base "x.pdf": the name as given wins.
+	const doubled = [{ file: "/p/x.pdf.pdf", base: "x.pdf", key: "file:x.pdf", entry: { title: "", pdf_url: "", doi: "", arxiv_id: "", authors: [], year: null } }];
+	assert.equal(selectPaper(doubled, "x.pdf").base, "x.pdf");
 	assert.throws(() => selectPaper([], "x"), /available: \(none\)/);
 }
 
@@ -252,13 +256,35 @@ function makeRound(question: string, session: string | null = null): Round {
 
 /* ---------------- runRound: ungrounded answer ---------------- */
 {
-	const { deps } = makeDeps("Eine fluessige Antwort ohne einen einzigen Beleg.");
+	const { deps, generateCalls } = makeDeps("Eine fluessige Antwort ohne einen einzigen Beleg.");
 	const result = await runRound({
 		question: "Wie funktioniert die Methode?",
 		paper: "a", root: "/", model: "fake-gen", embedModel: "fake-embed",
 	}, deps);
 	assert.equal(result.grounded, false);
 	assert.deepEqual(result.references, []);
+	// One second pass with the citation rule repeated, then it stays ungrounded.
+	assert.equal(generateCalls.length, 2);
+	assert.ok(generateCalls[1].user.endsWith(CITE_REMINDER));
+}
+
+/* ---------------- runRound: unmarked first answer, marked second ---------------- */
+{
+	const { deps, generateCalls } = makeDeps("unused");
+	const outputs = ["Sentinel-2 wird genutzt.", "Sentinel-2 wird genutzt [1]."];
+	deps.backend!.generate = async (system, user, opts) => {
+		generateCalls.push({ system, user, opts });
+		return outputs[generateCalls.length - 1];
+	};
+	const warnings: string[] = [];
+	const result = await runRound({
+		question: "Welche Daten?", paper: "a", root: "/", model: "fake-gen", embedModel: "fake-embed",
+		onWarn: (m) => warnings.push(m),
+	}, deps);
+	assert.equal(generateCalls.length, 2);
+	assert.equal(result.grounded, true);
+	assert.equal(result.prose, "Sentinel-2 wird genutzt [1].");
+	assert.ok(warnings.some((m) => m.includes("cited no excerpt")));
 }
 
 /* ---------------- runRound: honest errors ---------------- */
@@ -670,7 +696,7 @@ function makeRound(question: string, session: string | null = null): Round {
 	// Ticker: one progress line per unit, numbered.
 	assert.equal(progress.length, 7);
 	assert.ok(progress[0].startsWith("Unit 1/7: Summary"));
-	assert.ok(progress[6].includes("Review synthesis"));
+	assert.ok(progress[6].includes("Synthesis (all papers together)"));
 	// Scope + sticky: the library scope was remembered for the session.
 	assert.deepEqual(report.scope, { papers: ["a", "b"], library: true });
 	assert.deepEqual(JSON.parse(files.get("/lit-synthesis/protocols/current-scope.json")!), { papers: "library", session: "s1" });
@@ -710,6 +736,33 @@ function makeRound(question: string, session: string | null = null): Round {
 	assert.deepEqual(report.units.map((unit) => unit.kind), ["detail-per-paper", "detail-per-paper", "detail-cross"]);
 	assert.equal(report.detail_mode, "both");
 	assert.equal(new Set(report.units[2].chunks.map((chunk) => chunk.paper_key)).size, 2);
+}
+
+{
+	// A question already answered in the chat is taken as it stands: no
+	// new retrieval or generation for it, the answer's prose and citations
+	// renumbered into the report; an unanswered question is generated.
+	const { deps, generateCalls } = makeDeps("Antwort [1][2].");
+	const chat = await runRound({
+		question: "Welche Daten?", papers: ["a", "b"], session: "s1",
+		root: "/", model: "fake-gen", embedModel: "fake-embed",
+	}, deps);
+	const before = generateCalls.length;
+	const report = await runReport({
+		papers: ["a", "b"],
+		questions: ["Welche Daten?", "Welche Methoden?"],
+		detailMode: "cross-paper",
+		answered: [chat],
+		root: "/", model: "fake-gen", embedModel: "fake-embed",
+	}, deps);
+	assert.equal(generateCalls.length - before, 1); // only "Welche Methoden?"
+	assert.deepEqual(report.units.map((unit) => unit.kind), ["detail-cross", "detail-cross"]);
+	assert.equal(report.units[0].question, "Welche Daten?");
+	assert.equal(report.units[0].model, chat.model);
+	assert.equal(report.units[0].sites.length, chat.sites.length);
+	// Every excerpt keeps its paper (multi-paper round chunks carry it).
+	assert.ok(report.units[0].chunks.length > 0 && report.units[0].chunks.every((chunk) => chunk.paper_key));
+	assert.ok(report.grounded);
 }
 
 {

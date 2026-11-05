@@ -1405,6 +1405,47 @@ interface CiteContext {
  * sites are still consumed in the model's marker order, so every number
  * keeps its own passage link). Fallback markers keep their brackets,
  * which separate them by themselves. */
+/** A, B, ... Z, AA, AB ... */
+function letterName(n: number): string {
+	return n < 26 ? String.fromCharCode(65 + n) : `${String.fromCharCode(65 + Math.floor(n / 26) - 1)}${String.fromCharCode(65 + (n % 26))}`;
+}
+
+/** Paper letters of a multi-paper report: the given letters first (the
+ * chat's, so a paper keeps its letter), the other papers in scope order
+ * with the next free letters. Pure. */
+export function paperLetterMap(
+	report: Pick<SynthReport, "papers" | "paper_letters"> & { units?: ReportUnit[] },
+): Map<string, string> {
+	const out = new Map<string, string>();
+	const used = new Set<string>();
+	for (const [key, letter] of Object.entries(report.paper_letters ?? {})) {
+		if (!/^[A-Z]{1,2}$/.test(letter) || used.has(letter) || !report.papers.some((paper) => paper.key === key)) continue;
+		out.set(key, letter);
+		used.add(letter);
+	}
+	// Papers without a chat letter: first citation in reading order
+	// (questions, synthesis, papers), then the uncited ones in scope order.
+	const known = new Set(report.papers.map((paper) => paper.key));
+	const citedOrder = readingOrder(report.units ?? []).flatMap((unit) => unit.sites.map((site) => site.paper_key));
+	const order = [...citedOrder.filter((key) => known.has(key)), ...report.papers.map((paper) => paper.key)];
+	let next = 0;
+	for (const key of order) {
+		if (out.has(key)) continue;
+		while (used.has(letterName(next))) next++;
+		out.set(key, letterName(next));
+		used.add(letterName(next));
+	}
+	return out;
+}
+
+/** Report units in reading order: questions, synthesis, then the papers' own units. */
+function readingOrder(units: ReportUnit[]): ReportUnit[] {
+	const rank = (unit: ReportUnit): number => unit.kind === "detail-cross" ? 0 : unit.kind === "review" ? 1 : 2;
+	return units.map((unit, index) => ({ unit, index }))
+		.sort((a, b) => rank(a.unit) - rank(b.unit) || a.index - b.index)
+		.map((entry) => entry.unit);
+}
+
 function makeMarkerRenderer(cite?: CiteContext): (escaped: string) => string {
 	let markerIndex = 0;
 	const render = (digits: string): { label: string; html: string; sup: boolean } => {
@@ -1428,6 +1469,9 @@ function makeMarkerRenderer(cite?: CiteContext): (escaped: string) => string {
 		// return anything); otherwise the marker order stands.
 		if (parts.every((part) => /^\d+$/.test(part.label))) {
 			parts.sort((a, b) => Number(a.label) - Number(b.label));
+		} else if (parts.every((part) => /^[A-Z]+\d+$/.test(part.label))) {
+			const key = (label: string) => { const m = /^([A-Z]+)(\d+)$/.exec(label)!; return [m[1].length, m[1], Number(m[2])] as const; };
+			parts.sort((a, b) => { const x = key(a.label), y = key(b.label); return x[0] - y[0] || x[1].localeCompare(y[1]) || x[2] - y[2]; });
 		}
 		const shown: typeof parts = [];
 		for (const part of parts) {
@@ -1768,7 +1812,7 @@ const REPORT_LABELS = {
 		no: "Nein",
 		asBullets: "als Bulletpoints",
 		asProse: "als Fließtext",
-		reviewRow: "Review-Synthese",
+		reviewRow: "Synthese",
 		technical: "Technische Details (einfach erklärt)",
 		retrieval: "Textstellen-Suche",
 		retrievalPlain: "Jede Frage wird mit allen Textabschnitten der PDFs verglichen (Ähnlichkeitssuche); "
@@ -1791,9 +1835,11 @@ const REPORT_LABELS = {
 		integrityRefSection: "vom Modell geschriebene Literaturverzeichnisse entfernt",
 		integrityTrimmed: (n: number) => `${n} Auszug/Auszüge aus Platzgründen weggelassen`,
 		summary: "Zusammenfassung",
-		crossQuestions: "Detailfragen (paperübergreifend)",
-		review: "Stand der Literatur",
-		reviewNote: "Review-Synthese über die gewählten Dokumente -- bei kleiner Auswahl mit Vorsicht zu lesen.",
+		summaryPart: "Zusammenfassung · jedes Dokument für sich",
+		papersPart: "Dokumente",
+		crossQuestions: "Fragen · über alle Dokumente beantwortet",
+		review: "Synthese · alle Dokumente zusammen",
+		reviewNote: "Wo die gewählten Dokumente übereinstimmen, wo sie sich unterscheiden und was offen bleibt -- bei kleiner Auswahl mit Vorsicht zu lesen.",
 		references: "Referenzen",
 		passages: "Belegstellen",
 		passagesNote: "Hochgestellte Zahlen öffnen die zitierte Seite des Quell-PDFs in einem neuen Tab; "
@@ -1837,7 +1883,7 @@ const REPORT_LABELS = {
 		no: "No",
 		asBullets: "as bullet points",
 		asProse: "as prose",
-		reviewRow: "Review synthesis",
+		reviewRow: "Synthesis",
 		technical: "Technical details (in plain language)",
 		retrieval: "Passage search",
 		retrievalPlain: "Each question is compared against every text chunk of the PDFs (similarity "
@@ -1860,9 +1906,11 @@ const REPORT_LABELS = {
 		integrityRefSection: "model-written reference section(s) cut",
 		integrityTrimmed: (n: number) => `${n} excerpt(s) dropped by the context budget`,
 		summary: "Summary",
-		crossQuestions: "Detail questions (cross-paper)",
-		review: "State of the literature",
-		reviewNote: "Review synthesis over the selected documents -- read with care on small selections.",
+		summaryPart: "Summary · each paper on its own",
+		papersPart: "Papers",
+		crossQuestions: "Questions · answered across all papers",
+		review: "Synthesis · all papers together",
+		reviewNote: "Where the selected papers agree, where they differ, and what remains open -- read with care on small selections.",
 		references: "References",
 		passages: "Cited passages",
 		passagesNote: "Superscript numbers open the cited page of the source PDF in a new tab; "
@@ -1910,6 +1958,10 @@ function unitLabel(unit: ReportUnit, labels: (typeof REPORT_LABELS)["de" | "en"]
 
 const REPORT_STYLE = `
 	section.paper { margin: 1.4rem 0; }
+	section.paper h3.papertitle { font-size: 1.08rem; margin: 1.2rem 0 0.4rem; }
+	.pletter { display: inline-block; min-width: 1.4em; padding: 0 0.3em; border-radius: 4px; background: #2a2a2a; color: #fff; font-size: 0.8em; text-align: center; }
+	ol.passages.lettered { list-style: none; padding-left: 0.4rem; }
+	ol.passages.lettered .plabel { display: inline-block; min-width: 2.2em; font-weight: 600; font-variant-numeric: tabular-nums; }
 	hr.paper { border: none; border-top: 2px solid #d0d0ca; margin: 1.6rem 0; }
 	.reviewnote { background: #f1f1ec; border-left: 4px solid #5a5a5a; padding: 0.5rem 0.9rem;
 		font-size: 0.86rem; color: #3d3d3d; margin: 0.6rem 0; }
@@ -1965,10 +2017,18 @@ export function renderSynthReportHtml(report: SynthReport, options: { pdfHref?: 
 	// the id IS the rank.
 	interface Passage {
 		n: number; page: number; text: string; snippet: string | null; paper_key: string;
+		/** What the superscript shows: the number, or (several papers) the
+		 * paper's letter plus the passage's number within that paper. */
+		label: string;
 		origins: Array<{ unit: string; rank: number; of: number; score: number; lexical: boolean }>;
 	}
 	const passageOfSite = new Map<CitationSite, number>();
+	const labelOfSite = new Map<CitationSite, string>();
 	const passages: Passage[] = [];
+	// Several papers: every paper gets a letter -- the chat's letters when
+	// the report came from a chat (same paper, same letter), the rest in
+	// scope order -- and passages read A1, A2, B1 as in the chat.
+	const letterOf: Map<string, string> | null = report.papers.length > 1 ? paperLetterMap(report) : null;
 	// Identity keys of all CITED chunks -- the advanced rest block below
 	// shows only what was retrieved and NOT cited.
 	const citedChunkKeys = new Set<string>();
@@ -1976,7 +2036,9 @@ export function renderSynthReportHtml(report: SynthReport, options: { pdfHref?: 
 		const byKey = new Map<string, Passage>();
 		const found: Passage[] = []; // first-citation order, numbered below
 		const siteOf = new Map<CitationSite, Passage>();
-		for (const unit of report.units) {
+		// Reading order: questions, synthesis, then the papers' own units --
+		// so a question's passages are numbered first, as in the chat.
+		for (const unit of readingOrder(report.units)) {
 			for (const site of unit.sites) {
 				const chunk = unit.chunks.find((entry) => entry.id === site.chunk_id);
 				const key = `${site.paper_key}\u0000${site.page}\u0000${chunk?.text ?? site.snippet ?? ""}`;
@@ -1985,7 +2047,7 @@ export function renderSynthReportHtml(report: SynthReport, options: { pdfHref?: 
 				if (!passage) {
 					passage = {
 						n: 0, page: site.page, text: chunk?.text ?? "", snippet: site.snippet,
-						paper_key: site.paper_key, origins: [],
+						paper_key: site.paper_key, origins: [], label: "",
 					};
 					byKey.set(key, passage);
 					found.push(passage);
@@ -2016,7 +2078,13 @@ export function renderSynthReportHtml(report: SynthReport, options: { pdfHref?: 
 			paperRank(a.paper_key) - paperRank(b.paper_key)
 			|| (foundAt.get(a) ?? 0) - (foundAt.get(b) ?? 0)));
 		passages.forEach((passage, index) => { passage.n = index + 1; });
-		for (const [site, passage] of siteOf) passageOfSite.set(site, passage.n);
+		const within = new Map<string, number>();
+		for (const passage of passages) {
+			const k = (within.get(passage.paper_key) ?? 0) + 1;
+			within.set(passage.paper_key, k);
+			passage.label = letterOf ? `${letterOf.get(passage.paper_key) ?? "?"}${k}` : String(passage.n);
+		}
+		for (const [site, passage] of siteOf) { passageOfSite.set(site, passage.n); labelOfSite.set(site, passage.label); }
 	}
 
 	const citeOf = (unit: ReportUnit): CiteContext | undefined => (unit.sites.length
@@ -2026,7 +2094,7 @@ export function renderSynthReportHtml(report: SynthReport, options: { pdfHref?: 
 				const path = pdfPathByKey.get(site.paper_key);
 				return path ? pdfLink(path, site.page, site.snippet) : null;
 			},
-			labelFor: (site: CitationSite, digits: string) => String(passageOfSite.get(site) ?? digits),
+			labelFor: (site: CitationSite, digits: string) => labelOfSite.get(site) ?? digits,
 			anchorPrefix: "site",
 		}
 		: undefined);
@@ -2117,7 +2185,7 @@ ${technicalBlock}
 			const pdfCell = reference.pdf_path ? pdfAnchor(pdfLink(reference.pdf_path), "PDF") : "&mdash;";
 			const anchor = usedRefIds.has(reference.n) ? "" : ` id="ref-${reference.n}"`;
 			usedRefIds.add(reference.n);
-			return `<tr${anchor}><td>[${reference.n}]</td>
+			return `<tr${anchor}><td>${letterOf ? esc(letterOf.get(reference.key) ?? "") : `[${reference.n}]`}</td>
 <td>${esc(reference.title || id)}<br><span class="authors">${esc(reference.authors.join("; "))}</span></td>
 <td>${esc(reference.year ?? "n.d.")}</td>
 <td>${link(referenceHref(reference), id)}</td>
@@ -2203,9 +2271,9 @@ ${inner}
 			const originLines = passage.origins
 				.map((origin) => `<br>${esc(labels.retrievedAs(origin.unit, origin.rank, origin.of, origin.score.toFixed(3), origin.lexical))}`)
 				.join("");
-			const id = usedSiteIds.has(passage.n) ? "" : ` id="site-${passage.n}"`;
+			const id = usedSiteIds.has(passage.n) ? "" : ` id="site-${passage.label}"`;
 			usedSiteIds.add(passage.n);
-			const item = `<li${id} value="${passage.n}">`;
+			const item = letterOf ? `<li${id}><span class="plabel">${esc(passage.label)}</span> ` : `<li${id} value="${passage.n}">`;
 			if (!passage.origins.length && !passage.text) {
 				return `${item}${source}${pageLink} -- ${esc(excerpt)}</li>`;
 			}
@@ -2215,13 +2283,15 @@ ${inner}
 		}).join("\n");
 		return `<details class="block"><summary>${labels.passages}</summary>
 <p class="meta">${esc(labels.passagesNote)}</p>
-<ol class="passages">
+<ol class="passages${letterOf ? " lettered" : ""}">
 ${items}
 </ol>${trail ? `\n${trail}` : ""}
 </details>`;
 	};
 
-	// One block per document.
+	// One block per document; they follow the questions and the synthesis
+	// (the reader's answers first, the per-paper reference part after).
+	const paperBlocks: string[] = [];
 	for (const paper of report.papers) {
 		const paperTitle = paper.title || `${paper.base}.pdf`;
 		const identifier = paper.doi || (paper.arxiv_id ? `arXiv:${paper.arxiv_id}` : paper.verified ? paper.key : "");
@@ -2248,9 +2318,11 @@ ${items}
 		const block = passagesBlock(citedBy(paperUnits), false, trail);
 		if (block) parts.push(block);
 		else if (trail) parts.push(`<details class="block">${trail.slice("<details>".length)}`);
-		const content = parts.length ? parts.join("\n") : `<p class="meta">${esc(labels.noUnits)}</p>`;
-		blocks.push(`<section class="paper" id="paper-${esc(paper.base)}">
-<h2>${esc(paperTitle)}</h2>
+		// "No text" only where a summary was asked and none came; a report of
+		// questions alone lists the paper's identity without a note.
+		const content = parts.length ? parts.join("\n") : report.summary && !summaryUnit ? `<p class="meta">${esc(labels.noUnits)}</p>` : "";
+		paperBlocks.push(`<section class="paper" id="paper-${esc(paper.base)}">
+<h3 class="papertitle">${letterOf ? `<span class="pletter">${esc(letterOf.get(paper.key) ?? "")}</span> ` : ""}${esc(paperTitle)}</h3>
 <dl class="meta">${authorsRow}
 <dt>${labels.year}</dt><dd>${esc(paper.year ?? "n.d.")}</dd>${identifierRow}
 <dt>${labels.localPdf}</dt><dd>${pdfAnchor(pdfLink(paper.pdf_path), `${paper.base}.pdf`)}</dd>
@@ -2294,6 +2366,13 @@ ${parts.join("\n")}
 <h2>${labels.review}</h2>
 <div class="reviewnote">${esc(labels.reviewNote)}</div>
 ${parts.join("\n")}
+</section>`);
+	}
+
+	if (paperBlocks.length) {
+		blocks.push(`<section id="papers">
+<h2>${esc(report.summary ? labels.summaryPart : labels.papersPart)}</h2>
+${paperBlocks.join("\n<hr class=\"paper\">\n")}
 </section>`);
 	}
 

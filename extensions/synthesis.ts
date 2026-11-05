@@ -196,7 +196,7 @@ function formatReportText(report: SynthReport, htmlPath: string | null, withPage
 	const german = report.ui_language !== "en";
 	const parts = report.units.map((unit) => {
 		const heading = unit.kind === "summary" ? `${german ? "Zusammenfassung" : "Summary"} ${unit.paper_base}.pdf`
-			: unit.kind === "review" ? (german ? "Review-Synthese" : "Review synthesis")
+			: unit.kind === "review" ? (german ? "Synthese · alle Dokumente zusammen" : "Synthesis · all papers together")
 			: unit.paper_base ? `${unit.question} -- ${unit.paper_base}.pdf`
 			: unit.question ?? "";
 		return `${heading}\n\n${unit.prose}`;
@@ -429,11 +429,6 @@ const SYNTH_TEXT: Record<DialogLang, {
 	optionYes: string;
 	summaryBullets: string;
 	summaryProse: string;
-	detailTab: string;
-	detailTitle: string;
-	detailPerPaper: string;
-	detailCross: string;
-	detailDisabled: string;
 	reviewTab: string;
 	reviewTitle: string;
 	reviewDisabled: string;
@@ -460,24 +455,19 @@ const SYNTH_TEXT: Record<DialogLang, {
 		questionsTitle: "Welche Frage(n) interessieren dich? (eine je Zeile -- Enter beginnt die nächste; leer lassen zum Chatten oder für nur Zusammenfassung)",
 		questionsPlaceholder: "leer = chatten oder nur Zusammenfassung",
 		summaryTab: "Zusammenfassung",
-		summaryTitle: "Strukturierte Zusammenfassung je Dokument?",
+		summaryTitle: "Zusammenfassung · jedes Dokument für sich (Ziel, Methoden, Untersuchungsgebiet, Ergebnisse, Diskussion, Ausblick)?",
 		optionNo: "Nein",
 		optionYes: "Ja",
 		summaryBullets: "Ja, als Bulletpoints",
 		summaryProse: "Ja, als Fließtext",
-		detailTab: "Fragen-Modus",
-		detailTitle: "Detailfragen: pro Dokument einzeln oder übergreifend?",
-		detailPerPaper: "Pro Dokument einzeln (Modus A -- deckt jedes Dokument ab, mehr Modellaufrufe)",
-		detailCross: "Übergreifend zusammengeführt (Modus B -- ein Aufruf je Frage)",
-		detailDisabled: "Braucht mehrere Dokumente und mindestens eine Frage.",
-		reviewTab: "Review",
-		reviewTitle: "Review-Synthese (Stand der Literatur) anhängen? (Empfohlen bei ganzer Bibliothek; bei kleiner Auswahl oft schwach.)",
+		reviewTab: "Synthese",
+		reviewTitle: "Synthese · alle Dokumente zusammen (wo sie übereinstimmen, wo sie sich unterscheiden, was offen bleibt)? Bei kleiner Auswahl oft schwach.",
 		reviewDisabled: "Braucht mindestens zwei Dokumente (über EINEM Artikel wäre das nur eine schwächere Zusammenfassung).",
 		htmlTab: "HTML",
 		htmlTitle: "Als HTML speichern?",
 		htmlYes: "Ja, HTML-Bericht schreiben",
 		htmlNo: "Nein, nur Antwort im Chat",
-		htmlDisabled: "Nichts zu speichern -- erst eine Frage, Zusammenfassung oder Review wählen.",
+		htmlDisabled: "Nichts zu speichern -- erst eine Frage, Zusammenfassung oder Synthese wählen.",
 		nothingNote: "Nichts zu generieren -- das wird ein Chat.",
 		unitNote: (n) => `~${n} Modellaufruf(e), je etwa eine Minute lokal`,
 		unitWarn: (n) => `Dieser Report braucht ${n} Modellaufrufe (je etwa eine Minute lokal). Fortfahren?`,
@@ -496,24 +486,19 @@ const SYNTH_TEXT: Record<DialogLang, {
 		questionsTitle: "Which question(s) interest you? (one per line -- Enter starts the next; leave empty to chat or for a summary only)",
 		questionsPlaceholder: "empty = chat or summary only",
 		summaryTab: "Summary",
-		summaryTitle: "Structured summary per document?",
+		summaryTitle: "Summary · each paper on its own (aim, methods, study area, results, discussion, outlook)?",
 		optionNo: "No",
 		optionYes: "Yes",
 		summaryBullets: "Yes, as bullet points",
 		summaryProse: "Yes, as prose",
-		detailTab: "Question mode",
-		detailTitle: "Detail questions: per document or merged across documents?",
-		detailPerPaper: "Per document (mode A -- covers every document, more model calls)",
-		detailCross: "Merged across documents (mode B -- one call per question)",
-		detailDisabled: "Needs several documents and at least one question.",
-		reviewTab: "Review",
-		reviewTitle: "Append a review synthesis (state of the literature)? (Recommended on the whole library; often weak on a small selection.)",
+		reviewTab: "Synthesis",
+		reviewTitle: "Synthesis · all papers together (where they agree, where they differ, what remains open)? Often weak on a small selection.",
 		reviewDisabled: "Needs at least two documents (over ONE paper it would just be a weaker summary).",
 		htmlTab: "HTML",
 		htmlTitle: "Save as HTML?",
 		htmlYes: "Yes, write the HTML report",
 		htmlNo: "No, answer in the chat only",
-		htmlDisabled: "Nothing to save -- pick a question, summary or review first.",
+		htmlDisabled: "Nothing to save -- pick a question, summary or synthesis first.",
 		nothingNote: "Nothing to generate -- this will be a chat.",
 		unitNote: (n) => `~${n} model call(s), about a minute each locally`,
 		unitWarn: (n) => `This report needs ${n} model calls (about a minute each locally). Continue?`,
@@ -728,8 +713,9 @@ function questionsStep(initial: string | undefined, lang: DialogLang = "de"): Wi
 }
 
 /**
- * The report-menu steps of the ONE wizard: summary format, detail mode
- * (appears only with >= 2 documents AND >= 1 question), review synthesis,
+ * The report-menu steps of the ONE wizard: summary format (each paper on
+ * its own), synthesis (all papers together; questions are always answered
+ * across the chosen papers),
  * HTML (appears only when anything would be generated). scopeSizeOf reads
  * the LIVE answers, so the same steps work with the scope step in the same
  * wizard (bare /lit-synthesis) and with a scope settled beforehand (tool path).
@@ -750,17 +736,6 @@ function reportSteps(
 				{ value: "prose", label: text.summaryProse },
 			],
 			initial: defaults.summary ?? "bullets",
-		},
-		{
-			kind: "choice", id: "detail", tab: text.detailTab,
-			title: text.detailTitle,
-			options: [
-				{ value: "per-paper", label: text.detailPerPaper },
-				{ value: "cross-paper", label: text.detailCross },
-			],
-			initial: defaults.detailMode ?? "per-paper",
-			enabledIf: (answers) => scopeSizeOf(answers) > 1 && questionsOf(answers).length > 0,
-			disabledNote: text.detailDisabled,
 		},
 		{
 			kind: "choice", id: "review", tab: text.reviewTab,
@@ -816,7 +791,8 @@ function sessionSeedQuestions(root: string, scope: string[] | "library", session
 function choicesOf(result: WizardResult, defaults: Partial<ReportChoices>): ReportChoices {
 	return {
 		summary: (result.summary as ReportChoices["summary"] | undefined) ?? defaults.summary ?? "bullets",
-		detailMode: (result.detail as ReportChoices["detailMode"] | undefined) ?? defaults.detailMode ?? "per-paper",
+		// Questions are answered across the chosen papers (one answer each).
+		detailMode: "cross-paper",
 		includeReview: result.review !== undefined ? result.review === "yes" : defaults.includeReview ?? false,
 		saveHtml: result.html !== undefined ? result.html === "yes" : defaults.saveHtml ?? true,
 	};
@@ -852,7 +828,7 @@ function reportSubmitNote(
 		}
 		const units = reportUnitCount(scopeSize, questionCount, {
 			summary: answers.summary as ReportChoices["summary"],
-			detailMode: (answers.detail as ReportChoices["detailMode"] | null) ?? "per-paper",
+			detailMode: "cross-paper",
 			includeReview: review === "yes",
 		});
 		return text.unitNote(units);

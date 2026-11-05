@@ -85,6 +85,8 @@ button.primary:hover { background: #000000; }
 .rail-list details.other { margin: 0.2rem 0 0 0.4rem; font-size: 0.78rem; }
 .rail-list details.other summary { font-weight: 400; color: var(--muted); }
 .rail-list .sub { padding: 0.35rem 0.3rem 0.1rem 0.9rem; color: var(--muted); font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.rail-list .hist-more { display: block; width: 100%; text-align: left; background: none; border: 0; padding: 0.3rem 0.3rem 0.3rem 0.9rem; font-size: 0.76rem; color: var(--muted); cursor: pointer; border-radius: 3px; }
+.rail-list .hist-more:hover { color: var(--ink); background: #ecece6; }
 .rail-note { font-size: 0.72rem; color: var(--muted); padding: 0.15rem 0.3rem 0 0.9rem; }
 .rail .spacer { flex: 1; }
 .rail .status { font-size: 0.76rem; color: #3d3d3d; border-top: 1px solid var(--line); padding-top: 0.7rem; }
@@ -251,6 +253,15 @@ button.primary:hover { background: #000000; }
 .plusbtn .badge:empty { display: none; }
 .plusmenu { position: absolute; right: 0; bottom: calc(100% + 0.5rem); z-index: 30; width: 30rem; max-width: calc(100vw - 2rem); max-height: min(70vh, 34rem); overflow: auto; background: #fff; border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 8px 28px rgba(0,0,0,0.14); padding: 0.35rem; text-align: left; }
 .plusmenu[hidden] { display: none; }
+.composer { position: relative; }
+.mention { position: absolute; left: 0.6rem; bottom: calc(100% + 0.4rem); z-index: 31; width: 26rem; max-width: calc(100% - 1.2rem); max-height: 18rem; overflow: auto; background: #fff; border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,0.14); padding: 0.3rem; text-align: left; }
+.mention[hidden] { display: none; }
+.chat.entry .mention { bottom: auto; top: calc(100% + 0.4rem); }
+.mention .mrow { display: flex; align-items: baseline; gap: 0.5rem; padding: 0.3rem 0.5rem; border-radius: 6px; cursor: pointer; font-size: 0.86rem; }
+.mention .mrow.on, .mention .mrow:hover { background: var(--accent-soft); }
+.mention .mname { flex-shrink: 0; white-space: nowrap; }
+.mention small { color: var(--muted); margin-left: auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mention .wait { font-size: 0.82rem; color: var(--muted); display: flex; gap: 0.4rem; align-items: center; padding: 0.3rem 0.5rem; }
 .chat.entry .plusmenu { bottom: auto; top: calc(100% + 0.5rem); max-height: min(44vh, 34rem); }
 .plusmenu input { flex: none; }
 .plusmenu button { border-radius: 6px; }
@@ -281,7 +292,8 @@ button.primary:hover { background: #000000; }
 .plusmenu .sub .wait { font-size: 0.82rem; color: var(--muted); display: flex; gap: 0.4rem; align-items: center; padding: 0.2rem 0; }
 .plusmenu .sub label { display: flex; align-items: baseline; gap: 0.45rem; font-size: 0.84rem; padding: 0.18rem 0; cursor: pointer; }
 .plusmenu .sub label span { min-width: 0; }
-.plusmenu .sub label small { color: var(--muted); margin-left: auto; white-space: nowrap; padding-left: 0.5rem; }
+.plusmenu .sub label .au { flex-shrink: 0; white-space: nowrap; }
+.plusmenu .sub label small { color: var(--muted); margin-left: auto; white-space: nowrap; padding-left: 0.5rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .plusmenu .sub .lookup { width: 100%; font: inherit; font-size: 0.82rem; padding: 0.3rem 0.5rem; border: 1px solid #d6d6d0; border-radius: 6px; margin: 0.15rem 0 0.35rem; }
 .plusmenu .sub .scope { margin-top: 0.4rem; }
 .plusmenu .sub.syn { padding-left: 0.9rem; }
@@ -587,11 +599,12 @@ dialog.modal .dlfolder input { flex: 1; min-width: 0; font: inherit; border: 0; 
 .pills .rbtn button:hover:not(:disabled) { background: #f1f1ec; }
 .pills .rbtn button svg { width: 0.95rem; height: 0.95rem; flex: none; }
 .pills .rbtn .again { border-left: 1px solid #d9d9d4; padding: 0.18rem 0.4rem; color: var(--muted); }
+.pills .rbtn .again.stale { color: var(--ink); }
+.pills .rbtn .again.stale svg { stroke-width: 2.4; }
 .pills .rbtn.busy button.main { color: var(--muted); }
 
 /* The library of the rail is where the paper chat's sources are chosen:
    a tick for the whole library on its row, a find box over the tree. */
-.rail #rail-library > summary .tickhit.whole { margin-right: 0.15rem; }
 .rail #rail-library.flash > summary { animation: rowflash 2s ease-out; }
 .rail .lib-find { display: block; width: calc(100% - 0.6rem); margin: 0.45rem 0.3rem 0.35rem; padding: 0.22rem 0.5rem; font: inherit; font-size: 0.78rem; border: 1px solid #d6d6d0; border-radius: 6px; background: #fff; color: var(--ink); }
 .rail .lib-find:focus { outline: none; border-color: #9a9a94; }
@@ -618,9 +631,6 @@ dialog.paperinfo details.abstract { margin-top: 0.7rem; font-size: 0.84rem; }
 dialog.paperinfo details.abstract summary { cursor: pointer; font-weight: 600; }
 dialog.paperinfo details.abstract p { margin: 0.4rem 0 0; line-height: 1.5; }
 .rail-list a.item.paper .newchat.info + .newchat { margin-left: 0; }
-.rail #tick-whole { appearance: none; -webkit-appearance: none; width: 0.72rem; height: 0.72rem; margin: 0; border: 1px solid #bdbdb6; border-radius: 3px; background: #fff; flex: none; cursor: pointer; }
-.rail #tick-whole:checked { background: #2a2a2a url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.6 6.2 5 8.5l4.4-5' fill='none' stroke='white' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center/100% no-repeat; border-color: #2a2a2a; }
-.rail #tick-whole:hover { border-color: #6b6b66; }
 .rail #rail-library > summary .tickhit { display: inline-flex; align-items: center; padding: 0.3rem; margin: -0.3rem 0 -0.3rem -0.3rem; cursor: pointer; }
 .pills .rbtn.on { background: var(--accent); border-color: var(--accent); }
 .pills .rbtn.on button { color: #fff; }
@@ -686,3 +696,7 @@ dialog.paperinfo details.abstract p { margin: 0.4rem 0 0; line-height: 1.5; }
 #settings .pick .other input { flex: 1; min-width: 0; }
 #settings .pick .back { flex: none; border: 1px solid var(--line); background: #fff; border-radius: 3px; padding: 0 0.55rem; cursor: pointer; font-size: 0.9rem; }
 #settings #set-browser-model { margin: 0; }
+
+/* The stage name above a stage's start question. */
+.stagehead { display: flex; align-items: center; justify-content: center; gap: 0.45rem; margin: 0 auto 0.9rem; color: var(--muted); font-size: 0.78rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
+.stagehead svg { width: 1.15rem; height: 1.15rem; flex: none; }

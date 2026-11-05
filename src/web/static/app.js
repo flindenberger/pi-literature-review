@@ -977,6 +977,13 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 			const answered = (message, index) => (message.step === "topic" || message.step === "start") && message.role === "assistant" && view.messages.slice(index + 1).some((later) => later.role === "user");
 			parts = view.messages.filter((message, index) => !message.quiet && !answered(message, index)).map(messageHtml);
 		}
+		// A stage's start page names its stage above the question (the same
+		// icon and name as in the rail).
+		if ((entry || dropMode) && view.stage) {
+			const n = view.stage.stage === 2 ? 2 : 1;
+			const icon = document.querySelector(`#stage-${n} svg`);
+			parts.unshift(`<div class="stagehead">${icon ? icon.outerHTML : ""}<span>${n === 2 ? "Summarize &amp; synthesize" : "Search &amp; select"}</span></div>`);
+		}
 		if (view.pending && !dropMode) parts[resultsView ? "unshift" : "push"](`<div class="msg pending"><span class="dot busy"></span>${esc(view.pending)} ...</div>`);
 		const keepTop = thread.scrollTop;
 		thread.innerHTML = parts.join("");
@@ -1025,10 +1032,17 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		// A chat on one PDF stays a plain box.
 		// It stays while an answer or report is written (the report buttons show it).
 		const chatMenu = !request && ["ask", "finished", "answering", "reporting"].includes(view.step) && !onePdfChat(view);
-		if (chatMenu !== Boolean(state.chatMenu)) { setMenu(false); state.chatMenu = chatMenu; }
+		if (chatMenu !== Boolean(state.chatMenu)) {
+			setMenu(false);
+			state.chatMenu = chatMenu;
+			// Leaving the paper chat: the pills under the box are the search's
+			// again (the chat's source pill and Report button must not stay).
+			if (!chatMenu) { $("pills").innerHTML = ""; renderOptions(false); }
+		}
 		// The paper chat chooses its sources in the library of the rail (one
 		// place, with the folders); its box keeps the upload button only.
 		$("plus-anchor").hidden = !request;
+		$("input").title = request ? "Type @ and a name to add an author" : "";
 		$("btn-upload").hidden = !chatMenu;
 		$("btn-upload").disabled = busy;
 		$("pills").hidden = !request && !chatMenu;
@@ -1050,19 +1064,15 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		// The report buttons follow the dialog (written, writing, busy); a
 		// report that just got written opens as a tab.
 		if (chatMenu) $("pills").innerHTML = chatPillsHtml();
-		const reports = (view.answers && view.answers.reports) || {};
+		const reportUrl = chatReportUrl(view.answers);
 		const seen = state.seenReports && state.seenReports.session === view.chatSession ? state.seenReports : null;
-		if (seen) {
-			// One report holding both parts opens once.
-			const opened = new Set();
-			for (const name of ["synthesis", "summary"]) {
-				if (!reports[name] || seen[name] === reports[name] || opened.has(reports[name])) continue;
-				opened.add(reports[name]);
-				state.panelClosedByUser = false;
-				openReportTab(name, reports[name]);
-			}
+		// A report written (or updated) just now opens as a tab.
+		const reportJob = view.answers && view.answers.report ? view.answers.report.job || "" : "";
+		if (seen && reportUrl && (seen.url !== reportUrl || seen.job !== reportJob)) {
+			state.panelClosedByUser = false;
+			openReportTab(reportUrl, seen.url === reportUrl);
 		}
-		state.seenReports = { session: view.chatSession, ...reports };
+		state.seenReports = { session: view.chatSession, url: reportUrl, job: reportJob };
 		// Another conversation: the tabs of the last one go.
 		if (state.tabsSession !== view.chatSession) { clearTabs(); state.tabsSession = view.chatSession; }
 		// The entry question follows the ticks (one paper, several PDFs).
@@ -1426,7 +1436,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		let body;
 		if (facet.loading) body = `<div class="wait"><span class="dot busy"></span>${kind === "journals" ? "Journals" : "Authors"} for your keywords ...</div>`;
 		else if (facet.error) body = `<div class="wait bad">${esc(facet.error)}</div>`;
-		else body = (facet.rows || []).map((row) => `<label><input type="checkbox" data-pick="${kind}" value="${esc(row.id)}" ${facet.on.has(row.id) ? "checked" : ""}>${kind === "authors" ? authorNameHtml(row) : `<span>${esc(row.name)}</span>`}<small>${kind === "authors" && row.institution ? `${esc(row.institution)} · ` : ""}${row.works} paper${row.works === 1 ? "" : "s"}</small></label>`).join("");
+		else body = (facet.rows || []).map((row) => `<label><input type="checkbox" data-pick="${kind}" value="${esc(row.id)}" ${facet.on.has(row.id) ? "checked" : ""}>${kind === "authors" ? authorNameHtml(row) : `<span>${esc(row.name)}</span>`}<small${kind === "authors" && authorPlace(row) ? ` title="${esc(authorPlace(row))}"` : ""}>${kind === "authors" && authorPlace(row) ? `${esc(authorPlace(row))} · ` : ""}${row.works} paper${row.works === 1 ? "" : "s"}</small></label>`).join("");
 		if (kind === "authors") {
 			const o = state.options.authors;
 			// One scope for every ticked author (found by name or in the
@@ -1444,7 +1454,14 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		const o = state.options.authors;
 		// Ticked name finds stay listed (untick to drop them), new finds below.
 		const shown = [...o.picked.values(), ...o.matches.filter((match) => !o.picked.has(match.id))];
-		return shown.map((match) => `<label><input type="checkbox" data-match="${esc(match.id)}" ${o.picked.has(match.id) ? "checked" : ""}>${authorNameHtml(match)}<small>${esc(match.hint || match.institution || "")}</small></label>`).join("");
+		return shown.map((match) => `<label><input type="checkbox" data-match="${esc(match.id)}" ${o.picked.has(match.id) ? "checked" : ""}>${authorNameHtml(match)}<small title="${esc(authorPlace(match) || match.hint || "")}">${esc(authorPlace(match) || match.hint || "")}</small></label>`).join("");
+	}
+	/** Place of work shown in the "+" menu lists: the ORCID employment once
+	 * the author window has loaded it, else OpenAlex's last known
+	 * institutions (all of them, not only the first). */
+	const authorPlaces = new Map();
+	function authorPlace(author) {
+		return authorPlaces.get(author.id) || author.institution || "";
 	}
 	/** An author's name in the "+" menu lists: opens the author window. */
 	function authorNameHtml(author) {
@@ -1660,6 +1677,8 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		lookupTimer = setTimeout(async () => {
 			if (prefix.length < 3) { state.options.authors.matches = []; }
 			else {
+				const waiting = document.getElementById("author-matches");
+				if (waiting) waiting.innerHTML = `${matchesHtml()}<div class="wait"><span class="dot busy"></span>Looking up ...</div>`;
 				try { state.options.authors.matches = (await post("/api/search/author-lookup", { q: prefix })).matches || []; } catch { state.options.authors.matches = []; }
 			}
 			const box = document.getElementById("author-matches");
@@ -1676,17 +1695,19 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		const open = event.target.closest("[data-report-open]");
 		if (open) {
 			event.stopPropagation();
-			const url = (state.dialog.answers.reports || {})[open.dataset.reportOpen];
-			if (url) { state.panelClosedByUser = false; openReportTab(open.dataset.reportOpen, url); }
+			const url = chatReportUrl(state.dialog.answers);
+			if (url) { state.panelClosedByUser = false; openReportTab(url); }
 			return;
 		}
-		const report = event.target.closest("[data-report]");
-		if (report) {
+		if (event.target.closest("[data-report-unpick]")) {
 			event.stopPropagation();
-			const on = state.chat.reportOn;
-			on.has(report.dataset.report) ? on.delete(report.dataset.report) : on.add(report.dataset.report);
+			state.chat.reportPick = null;
 			$("pills").innerHTML = chatPillsHtml();
-			chatSendLabel();
+			return;
+		}
+		if (event.target.closest("[data-report-build]")) {
+			event.stopPropagation();
+			buildReport();
 			return;
 		}
 		const o = state.options;
@@ -1694,7 +1715,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		if (state.chatMenu) {
 			if (clear) {
 				if (clear.dataset.clear === "scope") {
-					Object.assign(state.chat, { whole: false, open: "", label: "" });
+					Object.assign(state.chat, { whole: false, open: "", label: "", reportPick: null });
 					state.chat.folders.clear();
 					state.chat.papers.clear();
 					chatTicksChanged();
@@ -1730,6 +1751,149 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	document.addEventListener("keydown", (event) => { if (event.key === "Escape" && menuOpen() && !document.querySelector("dialog[open]")) setMenu(false); });
 	renderOptions(false);
 
+	/* ---------------- "@" author mentions in the request box ---------------- */
+	// Typing "@" plus a name in the request box opens a list of OpenAlex
+	// authors under the box. A pick removes "@name" from the text and ticks
+	// the author exactly as the "+" menu does (same picked set, same pill),
+	// so the box keeps only the request. A name typed without a pick is
+	// resolved on Search: one match is taken, several open the list.
+	const mention = { open: false, token: null, matches: [], active: 0, loading: false, timer: null, seq: 0, note: "" };
+	function mentionAllowed() {
+		return !state.chatMenu && !state.dropMode && state.dialog && (state.dialog.step === "start" || state.dialog.step === "topic");
+	}
+	/** The "@..." token ending at the caret: { start, end, name } or null. */
+	function mentionToken() {
+		const input = $("input");
+		const caret = input.selectionStart ?? input.value.length;
+		const before = input.value.slice(0, caret);
+		const m = /(?:^|\s)@([^@]*)$/.exec(before);
+		if (!m) return null;
+		return { start: caret - m[1].length - 1, end: caret, name: m[1] };
+	}
+	/** Every "@..." token in the text (to the next "@" or the end). */
+	function mentionTokens(text) {
+		const out = [];
+		const re = /(?:^|\s)@([^@]+)/g;
+		let m;
+		while ((m = re.exec(text))) out.push({ start: m.index + m[0].indexOf("@"), end: m.index + m[0].length, name: m[1].trim() });
+		return out.filter((t) => t.name);
+	}
+	function mentionHtml() {
+		const rows = mention.matches.map((match, i) => `<div class="mrow${i === mention.active ? " on" : ""}" role="option" data-mention="${i}" aria-selected="${i === mention.active}"><span class="mname">${esc(match.name)}</span><small title="${esc(authorPlace(match) || match.hint || "")}">${esc(authorPlace(match) || match.hint || "")}</small></div>`).join("");
+		const wait = mention.loading ? '<div class="wait"><span class="dot busy"></span>Looking up ...</div>' : "";
+		const empty = !mention.loading && !mention.matches.length ? `<div class="wait">${esc(mention.note || "No author found")}</div>` : "";
+		return rows + wait + empty;
+	}
+	function showMention() {
+		const box = $("mention");
+		box.innerHTML = mentionHtml();
+		box.hidden = false;
+		mention.open = true;
+	}
+	function closeMention() {
+		clearTimeout(mention.timer);
+		mention.seq++;
+		Object.assign(mention, { open: false, token: null, matches: [], active: 0, loading: false, note: "" });
+		$("mention").hidden = true;
+	}
+	async function lookupMention(name) {
+		const seq = ++mention.seq;
+		mention.loading = true;
+		showMention();
+		let matches = [];
+		try { matches = (await post("/api/search/author-lookup", { q: name })).matches || []; } catch { matches = []; }
+		if (seq !== mention.seq) return null;
+		Object.assign(mention, { matches, active: 0, loading: false, note: "" });
+		showMention();
+		return matches;
+	}
+	function pickMention(match, token) {
+		const input = $("input");
+		const t = token || mention.token || mentionToken();
+		if (t) {
+			const text = input.value;
+			const joined = (text.slice(0, t.start).replace(/\s+$/, "") + " " + text.slice(t.end).replace(/^\s+/, "")).trim();
+			input.value = joined ? `${joined} ` : "";
+			input.setSelectionRange(input.value.length, input.value.length);
+		}
+		state.options.authors.picked.set(match.id, { id: match.id, name: match.name, hint: match.hint || "", ...(match.institution ? { institution: match.institution } : {}), ...(match.works !== undefined ? { works: match.works } : {}) });
+		closeMention();
+		staleFacets();
+		renderOptions(true);
+		input.focus();
+	}
+	$("input").addEventListener("input", () => {
+		if (!mentionAllowed()) { if (mention.open) closeMention(); return; }
+		const token = mentionToken();
+		if (!token) { if (mention.open) closeMention(); return; }
+		mention.token = token;
+		clearTimeout(mention.timer);
+		const name = token.name.trim();
+		if (name.length < 3) {
+			mention.seq++;
+			Object.assign(mention, { matches: [], loading: false, note: "" });
+			$("mention").hidden = true;
+			return;
+		}
+		mention.loading = true;
+		showMention();
+		mention.timer = setTimeout(() => lookupMention(name), 300);
+	});
+	$("input").addEventListener("keydown", (event) => {
+		if (!mention.open) return;
+		if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+			if (!mention.matches.length) return;
+			event.preventDefault();
+			const n = mention.matches.length;
+			mention.active = (mention.active + (event.key === "ArrowDown" ? 1 : n - 1)) % n;
+			showMention();
+		} else if ((event.key === "Enter" || event.key === "Tab") && mention.matches.length && !mention.loading) {
+			event.preventDefault();
+			event.stopPropagation();
+			pickMention(mention.matches[mention.active]);
+		} else if (event.key === "Enter" && mention.loading) {
+			event.preventDefault();
+		} else if (event.key === "Escape") {
+			event.preventDefault();
+			event.stopPropagation();
+			closeMention();
+		}
+	});
+	$("mention").addEventListener("pointerdown", (event) => {
+		// pointerdown, not click: the box keeps its focus and caret.
+		const row = event.target.closest("[data-mention]");
+		if (!row) return;
+		event.preventDefault();
+		pickMention(mention.matches[Number(row.dataset.mention)]);
+	});
+	document.addEventListener("click", (event) => { if (mention.open && !event.target.closest("#mention") && event.target !== $("input")) closeMention(); });
+	/** On Search: resolve "@name" left in the text. Returns true when the
+	 * text is clean (nothing to resolve or all resolved). A name with
+	 * several matches opens the list; with none, a two-word name followed
+	 * by request words is tried as name + request. */
+	async function resolveMentions() {
+		if (!mentionAllowed()) return true;
+		for (const token of mentionTokens($("input").value).reverse()) {
+			let matches = await lookupMention(token.name);
+			if (matches === null) return false;
+			let used = token;
+			const words = token.name.split(/\s+/);
+			if (!matches.length && words.length > 2) {
+				const name = words.slice(0, 2).join(" ");
+				matches = await lookupMention(name);
+				if (matches === null) return false;
+				used = { start: token.start, end: token.start + 1 + token.name.indexOf(words[1]) + words[1].length, name };
+			}
+			if (matches.length === 1) { pickMention(matches[0], used); continue; }
+			mention.token = used;
+			if (!matches.length) mention.note = `No author found for “${token.name}”`;
+			showMention();
+			$("input").focus();
+			return false;
+		}
+		return true;
+	}
+
 	/* ---------------- the "+" menu of the paper chat ---------------- */
 	// Which PDFs the question or report covers and whether Send writes a
 	// report instead of answering in the chat. The sources are ticked in the
@@ -1737,7 +1901,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	// their subfolders) and single papers together, or the whole library as
 	// its own choice. Nothing is chosen at first; Send then asks. One pill
 	// under the box names the sources.
-	const freshChat = () => ({ whole: false, folders: new Set(), papers: new Set(), open: "", find: "", label: "", reportOn: new Set() });
+	const freshChat = () => ({ whole: false, folders: new Set(), papers: new Set(), open: "", find: "", label: "" });
 	state.chat = freshChat();
 	const CHAT_ICON = {
 		library: '<path d="M4 4.5h3.5v15H4zM9.5 4.5H13v15H9.5zM15 5.2l3.3-.9 3.2 14.5-3.3.9z"/>',
@@ -1747,42 +1911,75 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		report: '<path d="M6 2.8h8l4 4v14.4H6z"/><path d="M14 2.8v4h4M9 17v-3M12 17v-6M15 17v-4"/>',
 	};
 	const chatIcon = (key) => `<svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${CHAT_ICON[key]}</svg>`;
-	// Report kinds in two groups: Summarize (paper by paper) and
-	// Synthesize (across the papers). LABEL in the menu, TEXT on the pill.
-	/* The paper chat's two reports, from the buttons under the question
-	   box. Summary: every paper summarized (plus the chat's questions
-	   answered paper by paper); Synthesis: the questions answered across
-	   the papers plus a literature review. */
-	const REPORT_BUTTONS = {
-		summary: { label: "Summary report", title: "Each paper summarized, and the questions of this chat answered paper by paper", icon: '<path d="M6 3h9l5 5v13H6z"/><path d="M14 3v6h6M9 13h6M9 17h6"/>' },
-		synthesis: { label: "Synthesis report", title: "The questions of this chat answered across all papers, plus a literature review", icon: '<path d="M4 7l8-4 8 4-8 4z"/><path d="M4 12l8 4 8-4M4 17l8 4 8-4"/>' },
+	/* The paper chat's ONE report. It always holds the chat's questions,
+	   answered across the papers (the chat's own answers, taken as they
+	   stand); the Report window adds the optional parts. */
+	const REPORT_PARTS = {
+		summary: { label: "Summary · each paper on its own", title: "Every paper summarized on its own: aim, methods, study area, results, discussion, outlook" },
+		synthesis: { label: "Synthesis · all papers together", title: "One text over all papers: where they agree, where they differ, what remains open" },
 	};
-	/** The two report switches right of the source pill: switched on, Send
-	 * builds the report (the typed text adds questions); a written report
-	 * gets a small button that opens it again. */
+	const REPORT_ICON = '<path d="M6 3h9l5 5v13H6z"/><path d="M14 3v6h6M9 13h6M9 17h6"/>';
+	/** The report button right of the source pill: "Report" opens the
+	 * window; once written it opens the report, and a small arrow updates it. */
 	function reportButtonsHtml() {
 		const view = state.dialog;
 		if (!view || !view.answers) return "";
-		const reports = view.answers.reports || {};
-		const writing = view.activeJob && view.step === "reporting" ? view.answers.reportRequest : null;
+		const a = view.answers;
+		const written = a.report || (a.reports && (a.reports.synthesis || a.reports.summary) ? { url: a.reports.synthesis || a.reports.summary, parts: { summary: Boolean(a.reports.summary), synthesis: Boolean(a.reports.synthesis) }, questions: 0 } : null);
+		const writing = view.activeJob && view.step === "reporting" && a.reportRequest;
 		const busy = Boolean(view.activeJob || view.pending);
-		const on = state.chat.reportOn || new Set();
-		return `<span class="rbtns">${Object.entries(REPORT_BUTTONS).map(([name, b]) => {
-			const isWriting = writing === name || writing === "both";
-			const written = reports[name];
-			return `<span class="rbtn ${on.has(name) ? "on" : ""} ${isWriting ? "busy" : ""}"><button type="button" class="main" data-report="${name}" role="switch" aria-checked="${on.has(name)}" ${busy ? "disabled" : ""} title="${esc(`${b.title}. Switch on, then Send builds it (your text adds questions)`)}">${isWriting ? '<span class="dot busy"></span>' : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${b.icon}</svg>`}${isWriting ? "Writing ..." : b.label}</button>${written && !isWriting ? `<button type="button" class="again" data-report-open="${name}" title="Open the written ${esc(b.label.toLowerCase())}" aria-label="Open the written report">${OPEN_ICON}</button>` : ""}</span>`;
-		}).join("")}</span>`;
+		const icon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${REPORT_ICON}</svg>`;
+		if (writing) return `<span class="rbtns"><span class="rbtn busy"><button type="button" class="main" disabled><span class="dot busy"></span>Writing report ...</button></span></span>`;
+		// Selected in the window: Send writes it (after the answer, when a
+		// question is typed); × drops the selection.
+		const pick = state.chat.reportPick;
+		if (pick) {
+			const what = [pick.summary ? "Summary" : "", pick.synthesis ? "Synthesis" : ""].filter(Boolean).join(" + ") || "Questions";
+			return `<span class="rbtns"><span class="rbtn on"><button type="button" class="main" data-report-build ${busy ? "disabled" : ""} title="Send writes this report (after the answer, when you typed a question). Click to change.">${icon}Report · ${esc(what)}</button><button type="button" class="again" data-report-unpick title="Do not write a report" aria-label="Do not write a report">×</button></span></span>`;
+		}
+		if (!written) return `<span class="rbtns"><span class="rbtn"><button type="button" class="main" data-report-build ${busy ? "disabled" : ""} title="Write this chat up as one report: your questions with their answers, a summary of each paper, a synthesis of all">${icon}Report</button></span></span>`;
+		const stale = (a.questions || []).length > written.questions;
+		return `<span class="rbtns"><span class="rbtn"><button type="button" class="main" data-report-open title="Open the report">${icon}Report</button><button type="button" class="again ${stale ? "stale" : ""}" data-report-build ${busy ? "disabled" : ""} title="${stale ? "Update the report: newer questions are not in it yet" : "Update the report (other parts)"}" aria-label="Update the report">${ICON_RELOAD}</button></span></span>`;
 	}
-	const OPEN_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M20 4l-8 8M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>';
-	/** The parts of the switched-on reports, as one report request. */
-	function reportRequestBody(text) {
-		const on = state.chat.reportOn;
-		const questions = (state.dialog.answers.questions || []).length + (text ? 1 : 0);
-		const kinds = [];
-		if (on.has("summary")) kinds.push("bullets", ...(questions ? ["perPaper"] : []));
-		if (on.has("synthesis")) kinds.push("crossPaper", "review");
-		const name = on.size === 2 ? "both" : [...on][0];
-		return { text, chat: { ...chatPayload().chat, report: kinds, reportName: name } };
+	/** The Report window: the parts to write. Resolves { summary, synthesis } or null. */
+	function reportPartsBox() {
+		return new Promise((resolve) => {
+			const a = state.dialog.answers;
+			const before = state.chat.reportPick || (a.report && a.report.parts) || { summary: false, synthesis: false };
+			const asked = (a.questions || []).length;
+			const { label, count } = chatScope();
+			let box = document.getElementById("reportbox");
+			if (!box) { box = document.createElement("dialog"); box.id = "reportbox"; box.className = "modal"; document.body.appendChild(box); }
+			const row = (key, part, on, disabled, title) => `<label class="askrow" title="${esc(title)}"><input type="checkbox" data-part="${key}" ${on ? "checked" : ""} ${disabled ? "disabled" : ""}><span>${esc(part)}</span></label>`;
+			const rows = [
+				asked || $("input").value.trim() ? row("questions", `Questions · answered across all papers (${asked + ($("input").value.trim() ? 1 : 0)})`, true, true, "The questions of this chat with their answers, as given in the chat") : "",
+				row("summary", REPORT_PARTS.summary.label, before.summary, false, REPORT_PARTS.summary.title),
+				row("synthesis", REPORT_PARTS.synthesis.label, before.synthesis && count > 1, count < 2, count < 2 ? "Needs at least two papers" : REPORT_PARTS.synthesis.title),
+			].join("");
+			box.innerHTML = `<h3>Report on ${esc(label || "the whole library")} · ${pdfCount(count)}</h3><div class="askrows">${rows}</div><div class="modal-actions"><button type="button" class="primary" data-ok="1">Select</button><button type="button" data-ok="0">Cancel</button></div>`;
+			const ok = box.querySelector("[data-ok=\"1\"]");
+			const parts = () => ({ summary: box.querySelector("[data-part=summary]").checked, synthesis: box.querySelector("[data-part=synthesis]").checked });
+			// A question typed in the box counts: Send answers it first.
+			const typed = $("input").value.trim().length > 0;
+			const sync = () => { const p = parts(); ok.disabled = !asked && !typed && !p.summary && !p.synthesis; };
+			sync();
+			box.onchange = sync;
+			const done = (value) => { box.close(); resolve(value); };
+			box.onclick = (event) => { const button = event.target.closest("[data-ok]"); if (button && !button.disabled) done(button.dataset.ok === "1" ? parts() : null); };
+			box.oncancel = (event) => { event.preventDefault(); done(null); };
+			box.showModal();
+			ok.focus();
+		});
+	}
+	/** The Report window only selects; Send then answers the typed question
+	 * (if any) and writes the report. */
+	async function buildReport() {
+		if (!state.dialog || state.dialog.activeJob || state.dialog.pending) return;
+		const parts = await reportPartsBox();
+		if (!parts) return;
+		state.chat.reportPick = parts;
+		$("pills").innerHTML = chatPillsHtml();
+		$("input").focus();
 	}
 	const isInside = (path, parent) => path.startsWith(parent + "/") || path.startsWith(parent + "\\");
 	function chatLib() {
@@ -1825,6 +2022,10 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		const loose = [...c.papers].filter((base) => !inFolders.has(base) && (known.has(base) || !lib.papers.length));
 		const bases = [...inFolders, ...loose];
 		if (!bases.length) return { scope: null, label: "", count: 0, chosen: false, bases: [] };
+		// Every top folder ticked: that is the whole library.
+		if (!c.label && lib.papers.length && lib.papers.every((paper) => inFolders.has(paper.base))) {
+			return { scope: "library", label: "", count: lib.papers.length, chosen: true, bases: lib.papers.map((paper) => paper.base) };
+		}
 		const top = nodes.filter((entry) => !nodes.some((other) => other !== entry && isInside(entry.node.path, other.node.path)));
 		const plural = (n, noun) => `${n} ${noun}${n === 1 ? "" : "s"}`;
 		const label = c.label
@@ -1919,19 +2120,9 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	function chatBadge() {
 		return chatScope().chosen ? 1 : 0;
 	}
-	/** Send names what it does: with a report switched on it builds it. */
+	/** Send always answers in the chat (the report has its own button). */
 	function chatSendLabel() {
-		const on = state.chatMenu && state.chat.reportOn && state.chat.reportOn.size;
-		$("btn-send").textContent = on ? "Build report" : "Send";
-		const input = $("input");
-		if (on && !input.disabled) {
-			stopEntryTyping();
-			input.placeholder = state.chat.reportOn.has("synthesis") ? "Questions for the report ..." : "Questions for the report (optional) ...";
-			state.chatReportHint = true;
-		} else if (state.chatReportHint) {
-			input.placeholder = "";
-			state.chatReportHint = false;
-		}
+		if (state.chatMenu) $("btn-send").textContent = "Send";
 	}
 	function chatMenuClick(event) {
 		const c = state.chat;
@@ -2139,21 +2330,24 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 
 	$("composer").addEventListener("submit", async (event) => {
 		event.preventDefault();
-		const text = $("input").value.trim();
+		let text = $("input").value.trim();
 		// The paper chat needs its sources first (a "?" help question does not).
-		const reportOn = state.chatMenu && state.chat.reportOn && state.chat.reportOn.size > 0;
-		if (state.chatMenu && !text.startsWith("?") && (text || reportOn) && state.dialog && !state.dialog.activeJob && !state.dialog.pending) {
+		const pick = state.chatMenu && !text.startsWith("?") ? state.chat.reportPick : null;
+		if (state.chatMenu && !text.startsWith("?") && (text || pick) && state.dialog && !state.dialog.activeJob && !state.dialog.pending) {
 			if (!(await ensureSources())) return;
 		}
-		// A switched-on report: Send builds it (without a question too).
-		if (reportOn && !text.startsWith("?") && state.dialog && !state.dialog.activeJob && !state.dialog.pending) {
-			const body = reportRequestBody(text);
+		// A selected report: Send answers the question (if any), then writes it.
+		if (pick && state.dialog && !state.dialog.activeJob && !state.dialog.pending) {
 			$("input").value = "";
-			state.chat.reportOn.clear();
-			chatSendLabel();
-			answer(body);
+			state.chat.reportPick = null;
+			setMenu(false);
+			answer({ text, chat: { ...chatPayload().chat, build: pick } });
 			return;
 		}
+		// "@name" left in a request is resolved first (or the list opens).
+		if (mention.open) closeMention();
+		if (!(await resolveMentions())) return;
+		text = $("input").value.trim();
 		// An empty request box with ticked authors searches all their work.
 		const authorsAlone = !text && !state.chatMenu && state.dialog && (state.dialog.step === "start" || state.dialog.step === "topic") && authorCount(state.options) > 0;
 		if (authorsAlone) {
@@ -2430,10 +2624,17 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		tab.url = target;
 		activateTab(tab.id);
 	}
-	function openReportTab(name, url) {
-		const b = REPORT_BUTTONS[name];
-		const tab = ensureTab({ id: `report:${name}`, label: b.label, title: b.label, icon: b.icon, closable: true });
-		if (tab.url !== url) { tab.frame.src = url; tab.url = url; }
+	/** The chat's report url (older conversations: one per button). */
+	function chatReportUrl(answers) {
+		if (!answers) return "";
+		if (answers.report) return answers.report.url;
+		const old = answers.reports || {};
+		return old.synthesis || old.summary || "";
+	}
+	/** The report as a tab; `reload` loads the same file anew (updated). */
+	function openReportTab(url, reload = false) {
+		const tab = ensureTab({ id: "report", label: "Report", title: "The report of this chat", icon: REPORT_ICON, closable: true });
+		if (tab.url !== url || reload) { tab.frame.src = reload ? `${url}${url.includes("?") ? "&" : "?"}v=${Date.now()}` : url; tab.url = url; }
 		activateTab(tab.id);
 	}
 	$("tabs").addEventListener("click", (event) => {
@@ -2494,7 +2695,6 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		$("status").innerHTML = p.model
 			? `${dot(p.modelReachable)}model <b>${esc(p.model)}</b> ${esc(p.via)}${p.remote ? " (remote service)" : p.remote === false ? ", local" : ""} · thinking: ${esc(p.thinking || "off")}${p.generateThinking && p.generateThinking !== (p.thinking || "off") ? `, synthesis ${esc(p.generateThinking)}` : ""}${down(p.modelReachable, "the model server")}<br>${dot(p.embeddingsReachable)}embeddings <b>${esc(p.embeddings)}</b>, ${esc(p.embeddingsVia)}${down(p.embeddingsReachable, "the embedding server")}`
 			: `<span class="dot bad"></span>no model selected ${p.kind === "pi" ? "(choose one with /model in pi)" : "(set the generation model in Settings)"}<br>${dot(p.embeddingsReachable)}embeddings <b>${esc(p.embeddings)}</b>${down(p.embeddingsReachable, "the embedding server")}`;
-		$("cnt-pdfs").textContent = info.counts.pdfs ? String(info.counts.pdfs) : "";
 	}
 
 	const historyOpen = () => $("hist-1").open || $("hist-2").open;
@@ -2553,7 +2753,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		};
 		const node = (entry, name, depth) => {
 			const children = [...entry.children.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([part, child]) => node(child, part, depth + 1)).join("");
-			return `<details class="lfolder" ${depth === 0 && dirs.length === 1 ? "open" : ""}><summary title="${esc(entry.path)}"><label class="tickhit"><input type="checkbox" class="tick" data-tick-folder="${esc(entry.path)}" aria-label="Use as a source"></label>${ICON_FOLDER_SMALL}<span class="lname">${esc(name)}</span><span class="cnt">${count(entry)}</span><button type="button" class="reveal" data-reveal="${esc(entry.path)}" title="Show in the file manager" aria-label="Show in the file manager">${ICON_REVEAL}</button>${depth === 0 && !isInbox(entry.path) ? `<button type="button" class="reveal" data-unlink="${esc(entry.path)}" title="Remove from the library (the files stay where they are)" aria-label="Remove from the library">${ICON_TRASH}</button>` : ""}</summary>${children}${entry.papers.map(item).join("")}</details>`;
+			return `<details class="lfolder" ${depth === 0 && dirs.length === 1 ? "open" : ""}><summary title="${esc(entry.path)}"><label class="tickhit"><input type="checkbox" class="tick" data-tick-folder="${esc(entry.path)}" aria-label="Use as a source"></label><span class="lname">${esc(name)}</span><span class="cnt">${count(entry)}</span><button type="button" class="reveal" data-reveal="${esc(entry.path)}" title="Show in the file manager" aria-label="Show in the file manager">${ICON_REVEAL}</button>${depth === 0 && !isInbox(entry.path) ? `<button type="button" class="reveal" data-unlink="${esc(entry.path)}" title="Remove from the library (the files stay where they are)" aria-label="Remove from the library">${ICON_TRASH}</button>` : ""}</summary>${children}${entry.papers.map(item).join("")}</details>`;
 		};
 		return order.map((dir) => node(tree.get(dir), nameOf(dir), 0)).join("");
 	}
@@ -2566,7 +2766,6 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 			const opened = new Set([...box.querySelectorAll("details.lfolder[open] > summary")].map((summary) => summary.title));
 			const fresh = !box.querySelector("details.lfolder");
 			box.innerHTML = data.papers.length ? libraryTreeHtml(data.papers, data.dirs || [], data.store || "", data.folders || []) : "";
-			$("cnt-pdfs").textContent = data.papers.length ? String(data.papers.length) : "";
 			if (!fresh) for (const details of box.querySelectorAll("details.lfolder")) details.open = opened.has(details.querySelector(":scope > summary").title);
 			if (state.flash && Date.now() < state.flash.until) {
 				for (const row of box.querySelectorAll("a.item.paper[data-base]")) {
@@ -2613,21 +2812,6 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		void box.offsetWidth;
 		box.classList.add("flash");
 	}
-	/** The whole library as the sources: its own tick on the Library row. */
-	$("tick-whole").addEventListener("click", (event) => event.stopPropagation());
-	$("tick-whole").addEventListener("change", async () => {
-		const c = state.chat;
-		c.whole = $("tick-whole").checked;
-		if (c.whole) { c.folders.clear(); c.papers.clear(); }
-		if (!state.chatMenu) {
-			if (!tickChat) {
-				state.keepChat = true;
-				tickChat = startNew("synthesis").finally(() => { tickChat = null; });
-			}
-			await tickChat;
-		}
-		chatTicksChanged();
-	});
 	/** Find in the library: papers whose title, authors, year or file name
 	 * hold every typed word stay, with the folders around them (opened);
 	 * an empty box restores the tree as it was. */
@@ -2733,6 +2917,19 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		} else if (a.last_known.length) {
 			row("Works at", `${a.last_known.map((i) => esc(i.name)).join("; ")} <span class="muted" title="OpenAlex derives this from the affiliations in the newest papers">(per OpenAlex)</span>`);
 		}
+		// OpenAlex places beside the ORCID employment stay visible: a second
+		// affiliation on recent papers (guest stay, joint post) is real too.
+		const also = job ? a.last_known.filter((i) => i.name !== job.organization) : [];
+		if (also.length) row("Also", `${also.map((i) => esc(i.name)).join("; ")} <span class="muted" title="OpenAlex derives this from the affiliations in the newest papers">(per OpenAlex)</span>`);
+		if (a.id && job) {
+			authorPlaces.set(a.id, job.organization);
+			if (menuOpen()) for (const el of document.querySelectorAll(`#plus-menu [data-author-id="${CSS.escape(a.id)}"] + small`)) {
+				// List rows end in "n papers"; name finds show the place alone.
+				const facetRow = el.closest("label")?.querySelector("[data-pick]");
+				el.textContent = facetRow ? `${job.organization} · ${el.textContent.split(" · ").pop()}` : job.organization;
+				el.title = job.organization;
+			}
+		}
 		const past = a.affiliations.filter((entry) => !(job && entry.name === job.organization) && !a.last_known.some((i) => i.name === entry.name));
 		if (past.length) row("Earlier", past.slice(0, 3).map((entry) => `${esc(entry.name)}${entry.years.length ? ` <span class="muted">${entry.years[entry.years.length - 1]}${entry.years[0] !== entry.years[entry.years.length - 1] ? `–${entry.years[0]}` : ""}</span>` : ""}`).join("<br>"));
 		row("Works", a.works !== null ? String(a.works) : "");
@@ -2780,7 +2977,6 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	 * (and locks) everything under it. */
 	function syncLibraryTicks() {
 		const c = state.chat;
-		$("tick-whole").checked = c.whole;
 		const box = $("rail-library-list");
 		const ticked = (path) => !c.whole && [...c.folders].some((folder) => path === folder || isInside(path, folder));
 		box.classList.toggle("has-ticks", c.whole || c.folders.size > 0 || c.papers.size > 0);
@@ -2788,7 +2984,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 			const path = input.dataset.tickFolder;
 			const under = !c.whole && [...c.folders].some((folder) => isInside(path, folder));
 			input.checked = c.whole || ticked(path);
-			input.disabled = c.whole || under;
+			input.disabled = under;
 		}
 		for (const input of box.querySelectorAll("input[data-tick-paper]")) {
 			const folder = input.closest("details.lfolder");
@@ -2817,7 +3013,12 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		const input = event.target.closest("input.tick");
 		if (!input) return;
 		const c = state.chat;
-		c.whole = false;
+		// The whole library is every top folder ticked: unticking one keeps the rest.
+		if (c.whole) {
+			c.whole = false;
+			c.folders = new Set(folderNodes().filter((entry) => entry.depth === 0).map((entry) => entry.node.path));
+			c.papers.clear();
+		}
 		if (input.dataset.tickFolder) {
 			const path = input.dataset.tickFolder;
 			if (input.checked) {
@@ -2868,6 +3069,9 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		if (entry.report) return `<button type="button" class="rep" data-rep-url="${esc(entry.report.url)}" data-rep-name="${esc(entry.report.name)}" title="HTML report" aria-label="HTML report">${icon("html")}</button>`;
 		return "";
 	}
+	/** History lists show the newest HISTORY_SHORT entries until "Show all". */
+	const HISTORY_SHORT = 10;
+	const historyAll = new Set();
 	async function loadHistory() {
 		try {
 			const data = await get("/api/history");
@@ -2882,9 +3086,15 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 				// One list, newest first (older conversations from a working
 				// folder included: their files are still found there).
 				const mine = data.history.filter((entry) => entry.kind === kind);
-				$(`hist-${n}-list`).innerHTML = mine.map(item).join("")
+				// The newest few, the rest behind "Show all" (the open or a
+				// running conversation always stays in view).
+				const all = historyAll.has(n) || mine.length <= HISTORY_SHORT + 2;
+				const list = all ? mine : mine.filter((entry, i) => i < HISTORY_SHORT || entry.current || entry.running);
+				const more = mine.length > HISTORY_SHORT + 2
+					? `<button type="button" class="hist-more" data-hist-more="${n}">${all ? "Show fewer" : `Show all ${mine.length}`}</button>`
+					: "";
+				$(`hist-${n}-list`).innerHTML = list.map(item).join("") + more
 					+ (n === 1 && data.skipped ? `<div class="rail-note">${data.skipped} unreadable file${data.skipped === 1 ? "" : "s"} skipped in ${esc(data.dir)}</div>` : "");
-				$(`cnt-hist-${n}`).textContent = mine.length ? String(mine.length) : "";
 			}
 		} catch (error) {
 			$("hist-1-list").innerHTML = $("hist-2-list").innerHTML = `<div class="rail-note">${esc(error.message)}</div>`;
@@ -2893,6 +3103,13 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	for (const id of ["hist-1", "hist-2"]) $(id).addEventListener("toggle", () => { if ($(id).open) loadHistory(); });
 	$("rail-library").addEventListener("toggle", () => { if ($("rail-library").open) loadLibrary(); });
 	document.querySelector(".rail").addEventListener("click", async (event) => {
+		const more = event.target.closest("[data-hist-more]");
+		if (more) {
+			const n = Number(more.dataset.histMore);
+			if (historyAll.has(n)) historyAll.delete(n); else historyAll.add(n);
+			loadHistory();
+			return;
+		}
 		// A conversation's report or diagram: open it as a window; a search's
 		// missing file is written first (the run unfiltered).
 		const rep = event.target.closest("button.rep");

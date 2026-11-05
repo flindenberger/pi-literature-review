@@ -31,7 +31,10 @@ content hash, embedding model or chunking.
 The generator sees only NUMBERED text excerpts and may cite only by
 excerpt number. Fixed code validates every marker, strips fabricated ones
 -- reported, not hidden -- and inserts the references from the verified
-records. An answer without a valid citation is flagged `grounded: false`
+records. An answer without a single valid marker is asked for once more,
+with the citation rule repeated at the end of the prompt (small models
+sometimes answer from the excerpts but drop the numbers); if the second
+answer is unmarked too, the first stays and is flagged `grounded: false`
 with a warning.
 
 Retrieval is the question plus a disclosed English translation variant
@@ -71,12 +74,21 @@ Reports cost many model calls, so the wizard is the consent: a
 report-flavoured chat request is handed back to `/lit-synthesis`, with the
 questions tab prefilled from the session's chat questions.
 
-Three building blocks:
+Three building blocks, the same in the wizard and in the browser:
 
-- per-paper structured summaries along a fixed rubric -- goal, method,
-  site, results, discussion, outlook
-- detail questions, answered per paper or merged across the scope
-- an optional review synthesis (several documents only)
+- **Questions**, each answered across the chosen papers (one answer per
+  question; the browser takes the chat's own answers as they stand)
+- **Summary · each paper on its own**: a structured summary per paper
+  along a fixed rubric -- aim, method, study area, results, discussion,
+  outlook
+- **Synthesis · all papers together**: where the papers agree, where they
+  differ, what remains open (several documents only)
+
+The page reads top-down in that order of interest: metadata, the
+questions, the synthesis, then the papers (each with its identity, its
+summary when asked, and its cited passages). The engine still knows
+questions answered paper by paper (`detailMode` per-paper / both, the CLI
+`--detail-mode`); the wizard and the browser no longer offer it.
 
 The HTML report is named after its papers:
 `lit-synthesis/<date>_synthesis_report_<first authors>.html`, e.g.
@@ -86,18 +98,20 @@ data the scope label is used).
 
 The page follows the chat language and carries a collapsed technical
 block that explains the retrieval in plain language. Every cited passage
-gets one number, and that number is what the superscripts show: one
-number stands for one page and one excerpt, never for a paper (a paper
-number would repeat on every marker of that paper's summary). The
-numbering runs paper by paper in scope order, so every paper owns one
-contiguous range -- citation order would scatter a paper's numbers over
-the whole report, because the cross-paper and review sections cite all
-papers again at the end. Several passages cited at the same spot share
-ONE superscript and are separated by commas (`1, 6, 26`), ascending, each
-number with its own page link. Each paper's block lists its cited
-passages with page link, excerpt and the retrieval rank per citing
+gets one label, and that label is what the superscripts show: one label
+stands for one page and one excerpt, never for a paper (a paper number
+would repeat on every marker of that paper's summary). Over several
+papers the label is the paper's letter plus the passage's number within
+that paper (A1, A2, B1), as in the browser chat; a report written from a
+chat keeps the chat's letters, the other papers take the next letters in
+order of their first citation (uncited papers last), and the numbers count in reading order (questions first), so
+the first question reads exactly as in the chat. A report over one paper
+keeps plain numbers. Several passages cited at the same spot share ONE
+superscript and are separated by commas (`A1, B3`), sorted, each with its
+own page link. Each paper's block (its letter before the title) lists its
+cited passages with page link, excerpt and the retrieval rank per citing
 question; cross-paper sections name the paper on every passage line and
-add a paper-level reference table.
+add a paper-level reference table (letter, title, pages).
 
 ### Highlighted passages
 
