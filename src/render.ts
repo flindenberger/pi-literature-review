@@ -1478,7 +1478,7 @@ function makeMarkerRenderer(cite?: CiteContext): (escaped: string) => string {
 			if (!shown.some((kept) => kept.label === part.label)) shown.push(part);
 		}
 		if (shown.every((part) => part.sup)) {
-			return `<sup>${shown.map((part) => part.html).join(", ")}</sup>`;
+			return `<sup>${shown.map((part) => part.html).join('<span class="csep">, </span>')}</sup>`;
 		}
 		return shown.map((part) => (part.sup ? `<sup>${part.html}</sup>` : part.html)).join("");
 	});
@@ -1537,6 +1537,80 @@ function bulletsHtml(prose: string, cite?: CiteContext): string {
 	flushList();
 	flushParagraph();
 	return parts.join("\n");
+}
+
+/** Items per compare-table cell before "more". */
+const COMPARE_SHOWN = 2;
+
+/** One headed part of a summary: its heading (null = none), the rendered
+ * body and its number of bullet points. */
+interface ProseSection { head: string | null; html: string; items: number }
+
+/** A heading line of a summary: "## Methods", "**Methods**", "Methods:"
+ * or a short line without markers followed by bullet points. */
+function headingOf(line: string, next: string | undefined): string | null {
+	const hashes = /^#{1,4}\s+(.+?)\s*#*$/.exec(line);
+	if (hashes) return hashes[1].replace(/\*\*/g, "").replace(/:$/, "").trim();
+	const bold = /^\*\*([^*]+?)\*\*:?$/.exec(line);
+	if (bold) return bold[1].replace(/:$/, "").trim();
+	if (/^[-*]\s/.test(line) || /\[\d+\]/.test(line) || line.length > 60 || /[.;,]$/.test(line)) return null;
+	if (next !== undefined && /^[-*]\s/.test(next)) return line.replace(/:$/, "").trim();
+	return null;
+}
+
+/**
+ * A summary split at its headings, every part rendered like bulletsHtml.
+ * ONE marker renderer runs over the whole prose, so the units' sites are
+ * consumed in document order as in bulletsHtml. Prose with fewer than two
+ * headings comes back as one part without a heading.
+ */
+function sectionedHtml(prose: string, cite?: CiteContext): ProseSection[] {
+	const lines = prose.split("\n").map((line) => line.trim());
+	const nextFilled = (index: number): string | undefined => lines.slice(index + 1).find(Boolean);
+	const heads = lines.filter((line, index) => line && headingOf(line, nextFilled(index)) !== null).length;
+	if (heads < 2) return [{ head: null, html: bulletsHtml(prose, cite), items: (prose.match(/^\s*[-*]\s/gm) ?? []).length }];
+	const renderMarkers = makeMarkerRenderer(cite);
+	const sections: ProseSection[] = [];
+	let head: string | null = null;
+	let parts: string[] = [];
+	let list: string[] = [];
+	let paragraph: string[] = [];
+	let items = 0;
+	const flushList = (): void => {
+		if (list.length) parts.push(`<ul>\n${list.map((item) => `<li>${item}</li>`).join("\n")}\n</ul>`);
+		list = [];
+	};
+	const flushParagraph = (): void => {
+		if (paragraph.length) parts.push(`<p>${paragraph.join("<br>")}</p>`);
+		paragraph = [];
+	};
+	const flushSection = (): void => {
+		flushList();
+		flushParagraph();
+		if (parts.length || head !== null) sections.push({ head, html: parts.join("\n"), items });
+		parts = [];
+		items = 0;
+	};
+	lines.forEach((line, index) => {
+		const heading = line ? headingOf(line, nextFilled(index)) : null;
+		const bullet = /^[-*]\s+(.*)$/.exec(line);
+		if (heading !== null) {
+			flushSection();
+			head = heading;
+		} else if (bullet) {
+			flushParagraph();
+			list.push(renderMarkers(strongHtml(esc(bullet[1]))));
+			items++;
+		} else if (!line) {
+			flushList();
+			flushParagraph();
+		} else {
+			flushList();
+			paragraph.push(renderMarkers(strongHtml(esc(line))));
+		}
+	});
+	flushSection();
+	return sections;
 }
 
 /** Honest footnote under superscript-cited prose (Chromium ignores the
@@ -1800,7 +1874,23 @@ from model output. No language model produced or modified any citation data.</fo
 /** Page chrome per uiLanguage; "de" is the default. */
 const REPORT_LABELS = {
 	de: {
-		pageTitle: "Literaturbericht",
+		pageTitle: "Paper-Bericht",
+		about: "Über diesen Bericht",
+		overview: "Übersicht",
+		paperCount: (n: number) => `${n} ${n === 1 ? "Dokument" : "Dokumente"}`,
+		questionCount: (n: number) => `${n} ${n === 1 ? "Frage" : "Fragen"}`,
+		writtenOn: "erstellt",
+		layoutLabel: "Layout",
+		layoutColumn: "Spalte",
+		layoutColumnTitle: "Alles in einer Spalte, Abschnitte als Zeilen",
+		layoutContents: "Inhalt",
+		layoutContentsTitle: "Mit Inhaltsverzeichnis links",
+		layoutCompare: "Vergleich",
+		layoutCompareTitle: "Die Zusammenfassungen nebeneinander, Dokument für Dokument",
+		comparePart: "Dokumente nebeneinander",
+		more: (n: number) => `+ ${n} weitere`,
+		less: "weniger",
+		openPdf: "Klick öffnet die Seite im PDF",
 		generated: "Erstellt",
 		scopeLibrary: "gesamte Bibliothek",
 		questionsLabel: "Fragen",
@@ -1842,7 +1932,7 @@ const REPORT_LABELS = {
 		reviewNote: "Wo die gewählten Dokumente übereinstimmen, wo sie sich unterscheiden und was offen bleibt -- bei kleiner Auswahl mit Vorsicht zu lesen.",
 		references: "Referenzen",
 		passages: "Belegstellen",
-		passagesNote: "Hochgestellte Zahlen öffnen die zitierte Seite des Quell-PDFs in einem neuen Tab; "
+		passagesNote: "Die Belegmarken öffnen die zitierte Seite des Quell-PDFs in einem neuen Tab; "
 			+ "Firefox markiert zusätzlich die Passage (Chromium öffnet nur die Seite).",
 		excerpts: "Quell-Textstellen (für Fortgeschrittene)",
 		excerptsNote: "Die vollständige Beweisspur: nur diese Auszüge hat das Modell gesehen. "
@@ -1871,7 +1961,23 @@ const REPORT_LABELS = {
 			+ "Marker wurden entfernt und ausgewiesen. Kein Sprachmodell hat Zitatdaten erzeugt oder verändert.",
 	},
 	en: {
-		pageTitle: "Literature report",
+		pageTitle: "Paper report",
+		about: "About this report",
+		overview: "Overview",
+		paperCount: (n: number) => `${n} ${n === 1 ? "paper" : "papers"}`,
+		questionCount: (n: number) => `${n} ${n === 1 ? "question" : "questions"}`,
+		writtenOn: "written",
+		layoutLabel: "Layout",
+		layoutColumn: "Column",
+		layoutColumnTitle: "Everything in one column, sections as rows",
+		layoutContents: "Contents",
+		layoutContentsTitle: "With a table of contents on the left",
+		layoutCompare: "Compare",
+		layoutCompareTitle: "The summaries side by side, paper by paper",
+		comparePart: "Papers side by side",
+		more: (n: number) => `+ ${n} more`,
+		less: "less",
+		openPdf: "Click opens the page in the PDF",
 		generated: "Generated",
 		scopeLibrary: "whole library",
 		questionsLabel: "Questions",
@@ -1913,7 +2019,7 @@ const REPORT_LABELS = {
 		reviewNote: "Where the selected papers agree, where they differ, and what remains open -- read with care on small selections.",
 		references: "References",
 		passages: "Cited passages",
-		passagesNote: "Superscript numbers open the cited page of the source PDF in a new tab; "
+		passagesNote: "Citation marks open the cited page of the source PDF in a new tab; "
 			+ "Firefox also highlights the passage (Chromium opens the page only).",
 		excerpts: "Source passages (advanced)",
 		excerptsNote: "The complete evidence trail: these are the only excerpts the model saw. "
@@ -1957,12 +2063,115 @@ function unitLabel(unit: ReportUnit, labels: (typeof REPORT_LABELS)["de" | "en"]
 }
 
 const REPORT_STYLE = `
-	section.paper { margin: 1.4rem 0; }
-	section.paper h3.papertitle { font-size: 1.08rem; margin: 1.2rem 0 0.4rem; }
-	.pletter { display: inline-block; min-width: 1.4em; padding: 0 0.3em; border-radius: 4px; background: #2a2a2a; color: #fff; font-size: 0.8em; text-align: center; }
+	/* Page frame: one calm column; "contents" adds a sidebar, "compare"
+	   widens the page for the side-by-side table. */
+	body.synth { max-width: none; margin: 0; padding: 0; }
+	.frame { max-width: 52rem; margin: 0 auto; padding: 2rem 1.5rem 3rem; }
+	body[data-layout="contents"] .frame { max-width: 70rem; display: grid; grid-template-columns: 13rem minmax(0, 1fr); gap: 2.2rem; }
+	body[data-layout="compare"] .frame { max-width: 82rem; }
+	nav.toc { display: none; }
+	body[data-layout="contents"] nav.toc { display: block; }
+	nav.toc .tocin { position: sticky; top: 1.5rem; display: flex; flex-direction: column; gap: 0.1rem; font-size: 0.86rem; border-right: 1px solid #d9d9d4; padding-right: 0.8rem; }
+	nav.toc a { display: flex; gap: 0.5rem; align-items: center; padding: 0.3rem 0.45rem; border-radius: 4px; text-decoration: none; color: #333; }
+	nav.toc a:hover { background: #f1f1ec; }
+	nav.toc .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+	header.rhead { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+	header.rhead h1 { font-size: 1.5rem; margin: 0 0 0.2rem; letter-spacing: -0.01em; }
+	.subline { color: #6b6b6b; font-size: 0.84rem; }
+	.layoutbox { display: flex; flex-direction: column; align-items: flex-end; gap: 0.2rem; }
+	html.embedded .layoutbox { display: none; }
+	.layoutlbl { font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.06em; color: #8a8a8a; }
+	.layouts { display: inline-flex; gap: 0.2rem; }
+	.layouts button { display: inline-flex; align-items: center; justify-content: center; width: 2.1rem; height: 1.8rem; padding: 0; border: 1px solid transparent; border-radius: 4px; background: transparent; color: #8a8a8a; cursor: pointer; }
+	.layouts button svg { width: 1.25rem; height: 1.25rem; }
+	.layouts button:hover { background: #f1f1ec; color: #1c1c1c; }
+	.layouts button.on { border-color: #2a2a2a; color: #1c1c1c; background: #fff; }
+	main h2 { font-size: 0.74rem; text-transform: uppercase; letter-spacing: 0.06em; color: #6b6b6b; font-weight: 650; margin: 2.2rem 0 0.8rem; padding-bottom: 0.35rem; border-bottom: 1px solid #d9d9d4; }
+	main h4 { font-size: 0.98rem; margin: 0 0 0.3rem; }
+
+	/* Letters A, B, C */
+	.pletter { display: inline-flex; align-items: center; justify-content: center; min-width: 1.35rem; height: 1.35rem; padding: 0 0.3rem; border-radius: 4px; background: #2a2a2a; color: #fff; font-size: 0.74rem; font-weight: 700; flex: none; }
+	.pletter.big { min-width: 1.85rem; height: 1.85rem; font-size: 0.95rem; border-radius: 5px; }
+
+	/* Papers at a glance */
+	table.pv { margin: 0; font-size: 0.88rem; }
+	table.pv td { border: 0; border-top: 1px solid #ecece6; padding: 0.55rem 0.5rem; }
+	table.pv tr:first-child td { border-top: 0; }
+	table.pv tbody tr:hover td, table.pv tr:hover td { background: transparent; }
+	table.pv td.pvl { width: 2.6rem; }
+	table.pv a.pvt { font-weight: 600; text-decoration: none; }
+	table.pv a.pvt:hover { text-decoration: underline; }
+	table.pv .pva { color: #6b6b6b; font-size: 0.8rem; }
+	table.pv td.pvx { white-space: nowrap; text-align: right; font-size: 0.8rem; color: #6b6b6b; }
+
+	/* Questions */
+	.qcard { border: 1px solid #d9d9d4; border-radius: 6px; padding: 0.9rem 1.1rem 0.5rem; background: #fff; margin: 0 0 0.8rem; }
+	.qcard h4 { display: flex; gap: 0.5rem; }
+	.qcard .qn { color: #6b6b6b; font-weight: 500; }
+	.prose { max-width: none; }
+	.prose ul, .sbody ul { margin: 0.2rem 0 0.4rem; padding-left: 1.1rem; }
+	.prose li, .sbody li { margin: 0.18rem 0; }
+
+	/* Citation marks as small boxes, as in the chat */
+	.prose sup, .srows sup, table.cmp sup { vertical-align: 0.1em; font-size: inherit; line-height: 1; }
+	.csep { display: none; }
+	a.cite { display: inline-block; font-size: 0.68rem; font-weight: 650; line-height: 1; padding: 0.13rem 0.25rem; margin-left: 0.14rem; border: 1px solid #b9b9b2; border-radius: 3px; color: #333; background: #fff; text-decoration: none; }
+	a.cite:hover { background: #2a2a2a; border-color: #2a2a2a; color: #fff; }
+	.citecard { position: fixed; z-index: 50; display: none; max-width: 26rem; background: #fff; border: 1px solid #d9d9d4; border-radius: 6px; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.14); padding: 0.65rem 0.8rem; font-size: 0.82rem; pointer-events: none; }
+	.citecard .cch { font-weight: 600; margin-bottom: 0.25rem; }
+	.citecard .cct { color: #333; max-height: 10rem; overflow: hidden; }
+	.citecard .ccl { color: #6b6b6b; font-size: 0.76rem; margin-top: 0.35rem; }
+
+	/* One paper */
+	section.paper { margin: 0; padding: 1.3rem 0 0.4rem; border-top: 1px solid #d9d9d4; }
+	section.paper:first-of-type { border-top: 0; padding-top: 0.2rem; }
+	.phead { display: flex; gap: 0.75rem; align-items: flex-start; margin-bottom: 0.7rem; }
+	h3.papertitle { font-size: 1.04rem; margin: 0 0 0.15rem; line-height: 1.35; }
+	.pmeta { color: #6b6b6b; font-size: 0.82rem; }
+	.srow { display: grid; grid-template-columns: 8.5rem minmax(0, 1fr); gap: 0.8rem; padding: 0.45rem 0; border-top: 1px dashed #e4e4de; }
+	.srow:first-child { border-top: 0; }
+	.slbl { font-size: 0.74rem; font-weight: 650; color: #6b6b6b; text-transform: uppercase; letter-spacing: 0.04em; padding-top: 0.15rem; }
+	.sbody ul { margin: 0; }
+	.sbody p { margin: 0 0 0.3rem; }
+	.pq { margin-top: 0.8rem; }
+
+	/* Contents layout: papers as cards, sections in two columns */
+	body[data-layout="contents"] section.paper { border: 1px solid #d9d9d4; border-radius: 6px; background: #fff; padding: 0; margin: 0 0 1.2rem; }
+	body[data-layout="contents"] .phead { background: #f6f6f2; border-bottom: 1px solid #d9d9d4; border-radius: 6px 6px 0 0; padding: 0.85rem 1.1rem; margin: 0; }
+	body[data-layout="contents"] section.paper > :not(.phead) { margin-left: 1.1rem; margin-right: 1.1rem; }
+	body[data-layout="contents"] .srows { columns: 2 19rem; column-gap: 1.8rem; padding-top: 0.5rem; }
+	body[data-layout="contents"] .srow { display: block; break-inside: avoid; border: 0; padding: 0.3rem 0 0.5rem; }
+	body[data-layout="contents"] .slbl { text-transform: none; letter-spacing: 0; font-size: 0.86rem; color: #1c1c1c; }
+
+	/* Compare layout: the table replaces the summaries; papers keep heads + passages */
+	section#compare { display: none; }
+	body[data-layout="compare"] main { display: flex; flex-direction: column; }
+	body[data-layout="compare"] main > header, body[data-layout="compare"] main > .warnbanner, body[data-layout="compare"] #overview { order: -2; }
+	body[data-layout="compare"] #compare { order: -1; }
+	.hcmp { display: none; }
+	body[data-layout="compare"] .hcmp { display: inline; }
+	body[data-layout="compare"] .hnorm { display: none; }
+	body[data-layout="compare"] section#compare { display: block; }
+	body[data-layout="compare"] .psum { display: none; }
+	.cmpwrap { overflow-x: auto; }
+	table.cmp { table-layout: fixed; border-collapse: separate; border-spacing: 0; font-size: 0.82rem; margin: 0; min-width: 40rem; }
+	table.cmp th, table.cmp td { border: 0; border-bottom: 1px solid #d9d9d4; padding: 0.55rem 0.6rem; text-transform: none; letter-spacing: 0; cursor: default; white-space: normal; background: transparent; }
+	table.cmp thead th { position: sticky; top: 0; background: #fdfdfc; border-bottom: 2px solid #2a2a2a; font-size: 0.8rem; font-weight: 600; vertical-align: bottom; }
+	table.cmp th.rowh { width: 8rem; font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; color: #6b6b6b; font-weight: 650; background: #f6f6f2; vertical-align: top; }
+	table.cmp .ch { display: flex; gap: 0.5rem; align-items: flex-start; }
+	table.cmp .cht { line-height: 1.3; }
+	table.cmp .cha { color: #6b6b6b; font-weight: 400; font-size: 0.75rem; }
+	table.cmp td ul { padding-left: 0.95rem; margin: 0; }
+	table.cmp td li { margin: 0.12rem 0; }
+	table.cmp td.empty { color: #8a8a8a; }
+	table.cmp tbody tr:hover td { background: #fbfbf8; }
+	table.cmp td.clamp:not(.open) li:nth-child(n+${COMPARE_SHOWN + 1}) { display: none; }
+	table.cmp button.more { font: inherit; font-size: 0.74rem; color: #6b6b6b; background: none; border: 0; padding: 0.1rem 0; text-decoration: underline; cursor: pointer; }
+
+	/* Passages and other collapsed blocks */
+	.pletter + div { min-width: 0; }
 	ol.passages.lettered { list-style: none; padding-left: 0.4rem; }
 	ol.passages.lettered .plabel { display: inline-block; min-width: 2.2em; font-weight: 600; font-variant-numeric: tabular-nums; }
-	hr.paper { border: none; border-top: 2px solid #d0d0ca; margin: 1.6rem 0; }
 	.reviewnote { background: #f1f1ec; border-left: 4px solid #5a5a5a; padding: 0.5rem 0.9rem;
 		font-size: 0.86rem; color: #3d3d3d; margin: 0.6rem 0; }
 	ol.passages li { margin: 0.25rem 0; }
@@ -1971,8 +2180,6 @@ const REPORT_STYLE = `
 	 * truncated span disappears (the full excerpt below replaces it instead
 	 * of repeating it). */
 	ol.passages details.passage { display: inline; }
-	/* The preview text matches the EXPANDED excerpt (same grey, same size)
-	 * -- only the more/less hint keeps the accent color. */
 	ol.passages details.passage summary { cursor: pointer; list-style: none; display: inline;
 		color: #2c2c2c; font-size: 0.84rem; }
 	ol.passages details.passage summary::-webkit-details-marker { display: none; }
@@ -1982,9 +2189,19 @@ const REPORT_STYLE = `
 	ol.passages details.passage:not([open]) summary .hint-less { display: none; }
 	details.technical { margin: 0.6rem 0; }
 	details.technical > summary { cursor: pointer; color: #5a5a5a; font-size: 0.9rem; }
-	details.block { margin: 0.8rem 0; }
-	details.block > summary { cursor: pointer; font-size: 1.05rem; font-weight: 600; color: #2a2a2a; padding: 0.15rem 0; }
+	details.block { margin: 0.5rem 0; }
+	details.block > summary { cursor: pointer; font-size: 0.8rem; font-weight: 400; color: #6b6b6b; padding: 0.15rem 0; }
 	details.block[open] > summary { margin-bottom: 0.4rem; }
+	details.about { margin-top: 2.6rem; border-top: 1px solid #d9d9d4; padding-top: 0.8rem; }
+	details.about > summary { cursor: pointer; color: #6b6b6b; font-size: 0.84rem; }
+	@media (max-width: 760px) {
+		body[data-layout="contents"] .frame { display: block; }
+		body[data-layout="contents"] nav.toc { position: sticky; top: 0; z-index: 3; background: #fdfdfc; margin: 0 -1rem 1rem; padding: 0.4rem 1rem; border-bottom: 1px solid #d9d9d4; }
+		body[data-layout="contents"] nav.toc .tocin { position: static; flex-direction: row; flex-wrap: wrap; gap: 0.2rem 0.4rem; border-right: 0; padding-right: 0; }
+		body[data-layout="contents"] nav.toc a { padding: 0.2rem 0.4rem; }
+		.srow { grid-template-columns: 1fr; gap: 0.15rem; }
+		.frame { padding: 1.2rem 1rem 2rem; }
+	}
 `;
 
 /**
@@ -2148,15 +2365,9 @@ export function renderSynthReportHtml(report: SynthReport, options: { pdfHref?: 
 <dt>${labels.integrity}</dt><dd>${esc(integrity.join("; "))}<br><span class="authors">${esc(labels.integrityPlain)}</span></dd>
 </dl></details>`;
 
-	// ---- Layout: no table of contents, no section numbers. One block per
-	// document -- title + metadata open, Summary / Questions /
-	// References|Passages / Source excerpts each COLLAPSED -- then cross
-	// questions and State of the literature; horizontal rules separate the
-	// blocks. References live WITH their paper, not at the page bottom.
-	const blocks: string[] = [];
-
-	blocks.push(`<section id="metadata">
-<h2>${esc(labels.metadataTitle)}</h2>
+	// The query metadata and the technical notes close the page in one
+	// collapsed "About this report" block.
+	const aboutBlock = `<details class="about" id="about"><summary>${esc(labels.about)}</summary>
 <dl class="meta">
 <dt>${labels.generated}</dt><dd>${esc(report.generated)} (UTC)</dd>
 <dt>${labels.documents}</dt><dd>${esc(scopeValue)}</dd>
@@ -2166,7 +2377,8 @@ export function renderSynthReportHtml(report: SynthReport, options: { pdfHref?: 
 <dt>${labels.reviewRow}</dt><dd>${reviewValue}</dd>
 </dl>
 ${technicalBlock}
-</section>`);
+<p class="meta">${esc(labels.footer)}</p>
+</details>`;
 
 	// Paper-level reference table of a CROSS section (cross questions, the
 	// review): only the papers the given units cite, with their GLOBAL [n]
@@ -2289,26 +2501,47 @@ ${items}
 </details>`;
 	};
 
-	// One block per document; they follow the questions and the synthesis
-	// (the reader's answers first, the per-paper reference part after).
+	// One block per document, after the questions and the synthesis. With
+	// letters they follow A, B, C (A ... Z, then AA, AB ...).
+	const letterRank = (key: string): string => {
+		const letter = letterOf?.get(key) ?? "";
+		return `${String(letter.length).padStart(2, "0")}${letter}`;
+	};
+	const papersInOrder = letterOf
+		? [...report.papers].sort((a, b) => letterRank(a.key).localeCompare(letterRank(b.key)))
+		: report.papers;
+	const letterChip = (paper: SynthReport["papers"][number], big = false): string =>
+		letterOf ? `<span class="pletter${big ? " big" : ""}">${esc(letterOf.get(paper.key) ?? "")}</span>` : "";
+	const paperTitleOf = (paper: SynthReport["papers"][number]): string => paper.title || `${paper.base}.pdf`;
+	// Identifier + PDF links of a paper, one short line.
+	const paperLinks = (paper: SynthReport["papers"][number]): string => {
+		const identifier = paper.doi ? "DOI" : paper.arxiv_id ? "arXiv" : "";
+		const idLink = paper.verified
+			? (identifier ? link(referenceHref(paper), identifier) : "")
+			: `<span class="unverified">${esc(labels.unverified.split(" -- ")[0])}</span>`;
+		const pdf = pdfAnchor(pdfLink(paper.pdf_path), "PDF");
+		return [idLink, pdf].filter(Boolean).join(" · ");
+	};
+	const summaryOf = (paper: SynthReport["papers"][number]): ReportUnit | undefined =>
+		report.units.find((unit) => unit.kind === "summary" && unit.paper_base === paper.base);
+	// A summary in label rows ("Methods" left, its points right); prose
+	// without headings stays one block.
+	const rowsHtml = (unit: ReportUnit): string => {
+		const sections = sectionedHtml(unit.prose, citeOf(unit));
+		if (sections.length === 1 && sections[0].head === null) return `<div class="prose">\n${sections[0].html}\n</div>`;
+		return `<div class="srows">\n${sections.map((section) => `<div class="srow"><div class="slbl">${section.head === null ? "" : esc(section.head)}</div><div class="sbody">${section.html}</div></div>`).join("\n")}\n</div>`;
+	};
+
 	const paperBlocks: string[] = [];
-	for (const paper of report.papers) {
-		const paperTitle = paper.title || `${paper.base}.pdf`;
-		const identifier = paper.doi || (paper.arxiv_id ? `arXiv:${paper.arxiv_id}` : paper.verified ? paper.key : "");
-		const identifierRow = paper.verified
-			? `\n<dt>${labels.identifier}</dt><dd>${link(referenceHref(paper), identifier || "&mdash;")}</dd>`
-			: `\n<dt>${labels.identifier}</dt><dd>${esc(labels.unverified)}</dd>`;
-		const authorsRow = paper.authors.length ? `\n<dt>${labels.authors}</dt><dd>${esc(paper.authors.join("; "))}</dd>` : "";
-		const summaryUnit = report.units.find((unit) => unit.kind === "summary" && unit.paper_base === paper.base);
+	for (const paper of papersInOrder) {
+		const summaryUnit = summaryOf(paper);
 		const questionUnits = report.units.filter((unit) => unit.kind === "detail-per-paper" && unit.paper_base === paper.base);
 		const paperUnits = [...(summaryUnit ? [summaryUnit] : []), ...questionUnits];
 		const parts: string[] = [];
-		if (summaryUnit) {
-			parts.push(`<details class="block"><summary>${labels.summary}</summary>\n${unitHtml(summaryUnit)}\n</details>`);
-		}
+		if (summaryUnit) parts.push(`<div class="psum">\n${rowsHtml(summaryUnit)}\n</div>`);
 		if (questionUnits.length) {
-			parts.push(`<details class="block"><summary>${labels.questionsLabel}</summary>\n${questionUnits
-				.map((unit) => `<h4>${esc(unit.question ?? "")}</h4>\n${unitHtml(unit)}`).join("\n")}\n</details>`);
+			parts.push(`<div class="pq">\n${questionUnits
+				.map((unit) => `<h4>${esc(unit.question ?? "")}</h4>\n${unitHtml(unit)}`).join("\n")}\n</div>`);
 		}
 		// Cited chunks explain themselves at the passage, so the trail
 		// carries only the uncited leftovers. No cited passages at all (e.g.
@@ -2321,12 +2554,10 @@ ${items}
 		// "No text" only where a summary was asked and none came; a report of
 		// questions alone lists the paper's identity without a note.
 		const content = parts.length ? parts.join("\n") : report.summary && !summaryUnit ? `<p class="meta">${esc(labels.noUnits)}</p>` : "";
+		const authors = paper.authors.length ? `${esc(paper.authors.join(", "))} · ` : "";
 		paperBlocks.push(`<section class="paper" id="paper-${esc(paper.base)}">
-<h3 class="papertitle">${letterOf ? `<span class="pletter">${esc(letterOf.get(paper.key) ?? "")}</span> ` : ""}${esc(paperTitle)}</h3>
-<dl class="meta">${authorsRow}
-<dt>${labels.year}</dt><dd>${esc(paper.year ?? "n.d.")}</dd>${identifierRow}
-<dt>${labels.localPdf}</dt><dd>${pdfAnchor(pdfLink(paper.pdf_path), `${paper.base}.pdf`)}</dd>
-</dl>
+<div class="phead">${letterChip(paper, true)}<div><h3 class="papertitle">${esc(paperTitleOf(paper))}</h3>
+<div class="pmeta">${authors}${esc(paper.year ?? "n.d.")} · ${paperLinks(paper)}</div></div></div>
 ${content}
 </section>`);
 	}
@@ -2345,17 +2576,29 @@ ${content}
 		return parts;
 	};
 
-	// Cross-paper detail questions (mode B), with their own passages and
+	const blocks: string[] = [];
+	const nav: Array<{ href: string; html: string }> = [];
+
+	// The papers at a glance (several papers): letter, title, authors, links.
+	if (letterOf) {
+		blocks.push(`<section id="overview">
+<h2>${esc(labels.papersPart)}</h2>
+<table class="pv">
+${papersInOrder.map((paper) => `<tr><td class="pvl">${letterChip(paper, true)}</td><td><a class="pvt" href="#paper-${esc(paper.base)}">${esc(paperTitleOf(paper))}</a><div class="pva">${esc(paper.authors.join(", "))}${paper.authors.length ? " · " : ""}${esc(paper.year ?? "n.d.")}</div></td><td class="pvx">${paperLinks(paper)}</td></tr>`).join("\n")}
+</table>
+</section>`);
+		nav.push({ href: "#overview", html: esc(labels.overview) });
+	}
+
+	// Cross-paper questions, one card each, with their own passages and
 	// references.
 	if (crossUnits.length) {
-		const parts = [
-			...crossUnits.map((unit) => `<h4>${esc(unit.question ?? "")}</h4>\n${unitHtml(unit)}`),
-			...crossParts(crossUnits),
-		];
+		const cards = crossUnits.map((unit, index) => `<div class="qcard"><h4><span class="qn">Q${index + 1}</span>${esc(unit.question ?? "")}</h4>\n${unitHtml(unit)}</div>`);
 		blocks.push(`<section id="cross-questions">
 <h2>${labels.crossQuestions}</h2>
-${parts.join("\n")}
+${[...cards, ...crossParts(crossUnits)].join("\n")}
 </section>`);
+		nav.push({ href: "#cross-questions", html: esc(labels.questionsLabel) });
 	}
 
 	// State of the literature (review synthesis), with its own passages and
@@ -2367,21 +2610,101 @@ ${parts.join("\n")}
 <div class="reviewnote">${esc(labels.reviewNote)}</div>
 ${parts.join("\n")}
 </section>`);
+		nav.push({ href: "#review", html: esc(labels.reviewRow) });
+	}
+
+	// The summaries side by side (layout "compare"): one column per paper,
+	// one row per section heading, in first-seen order.
+	const summarized = papersInOrder.filter((paper) => summaryOf(paper));
+	let compareBlock = "";
+	if (letterOf && summarized.length > 1) {
+		const norm = (head: string): string => head.toLowerCase().replace(/[^\p{L}\p{N} ]/gu, "").trim();
+		const rows: Array<{ key: string; head: string }> = [];
+		const cells = new Map<string, Map<string, { html: string; items: number }>>();
+		for (const paper of summarized) {
+			const byHead = new Map<string, { html: string; items: number }>();
+			for (const section of sectionedHtml(summaryOf(paper)!.prose, citeOf(summaryOf(paper)!))) {
+				const head = section.head ?? labels.summary;
+				const key = norm(head) || "-";
+				if (!rows.some((row) => row.key === key)) rows.push({ key, head });
+				const seen = byHead.get(key);
+				byHead.set(key, seen ? { html: `${seen.html}\n${section.html}`, items: seen.items + section.items } : { html: section.html, items: section.items });
+			}
+			cells.set(paper.key, byHead);
+		}
+		const head = summarized.map((paper) => `<th><div class="ch">${letterChip(paper)}<div><div class="cht">${esc(paperTitleOf(paper))}</div><div class="cha">${esc(paperLabel(paper))}</div></div></div></th>`).join("");
+		const body = rows.map((row) => `<tr><th class="rowh">${esc(row.head)}</th>${summarized.map((paper) => {
+			const cell = cells.get(paper.key)?.get(row.key);
+			if (!cell) return `<td class="empty">&ndash;</td>`;
+			const more = cell.items > COMPARE_SHOWN ? `<button type="button" class="more" data-less="${esc(labels.less)}">${esc(labels.more(cell.items - COMPARE_SHOWN))}</button>` : "";
+			return `<td class="${cell.items > COMPARE_SHOWN ? "clamp" : ""}">${cell.html}${more}</td>`;
+		}).join("")}</tr>`).join("\n");
+		compareBlock = `<section id="compare">
+<h2>${esc(labels.comparePart)}</h2>
+<div class="cmpwrap"><table class="cmp"><thead><tr><th class="rowh"></th>${head}</tr></thead>
+<tbody>
+${body}
+</tbody></table></div>
+</section>`;
+		blocks.push(compareBlock);
 	}
 
 	if (paperBlocks.length) {
 		blocks.push(`<section id="papers">
-<h2>${esc(report.summary ? labels.summaryPart : labels.papersPart)}</h2>
-${paperBlocks.join("\n<hr class=\"paper\">\n")}
+<h2><span class="hnorm">${esc(report.summary ? labels.summaryPart : labels.papersPart)}</span>${compareBlock ? `<span class="hcmp">${esc(labels.passages)}</span>` : ""}</h2>
+${paperBlocks.join("\n")}
 </section>`);
+		for (const paper of papersInOrder) {
+			nav.push({ href: `#paper-${esc(paper.base)}`, html: `${letterChip(paper)}<span class="nm">${esc(paperLabel(paper))}</span>` });
+		}
 	}
 
 	const banner = report.grounded ? "" : `\n<div class="warnbanner">${esc(labels.ungrounded)}</div>`;
 
+	// One line under the title: papers, questions, when written.
+	const written = report.generated.replace("T", " ").slice(0, 16);
+	const subline = [
+		labels.paperCount(report.papers.length),
+		report.questions.length ? labels.questionCount(report.questions.length) : "",
+		`${labels.writtenOn} ${written} UTC`,
+	].filter(Boolean).join(" · ");
+
+	// Layout switch (several papers only): column (default), contents
+	// sidebar, summaries side by side.
+	// Each button draws its layout: one column, contents + column, columns side by side.
+	const layoutIcon = (inner: string): string => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/>${inner}</svg>`;
+	const layoutButton = (name: string, label: string, title: string, inner: string): string =>
+		`<button type="button" data-layout="${name}" title="${esc(label)}: ${esc(title)}" aria-label="${esc(label)}">${layoutIcon(inner)}</button>`;
+	const layouts = letterOf
+		? `<div class="layoutbox"><span class="layoutlbl">${esc(labels.layoutLabel)}</span><div class="layouts" role="group" aria-label="${esc(labels.layoutLabel)}">
+${layoutButton("column", labels.layoutColumn, labels.layoutColumnTitle, '<path d="M7 8.5h10M7 12h10M7 15.5h7"/>')}
+${layoutButton("contents", labels.layoutContents, labels.layoutContentsTitle, '<path d="M9 4v16M5 8.5h2M5 11.5h2M12 8.5h6M12 12h6M12 15.5h4"/>')}${compareBlock ? `\n${layoutButton("compare", labels.layoutCompare, labels.layoutCompareTitle, '<path d="M9 4v16M15 4v16"/>')}` : ""}
+</div></div>`
+		: "";
+	const navHtml = letterOf
+		? `<nav class="toc"><div class="tocin">${nav.map((entry) => `<a href="${entry.href}">${entry.html}</a>`).join("\n")}</div></nav>`
+		: "";
+
+	// Hover card per citation mark: paper, page, the passage text. Read by
+	// the script from a JSON island; all of it comes from the payload.
+	const cardData: Record<string, { p: string; pg: number; t: string }> = {};
+	for (const passage of passages) {
+		const paper = paperByKey.get(passage.paper_key);
+		cardData[passage.label] = {
+			p: paper ? `${letterOf ? `${letterOf.get(paper.key) ?? ""} · ` : ""}${paperLabel(paper)}` : "",
+			pg: passage.page,
+			t: (passage.text || passage.snippet || "").slice(0, 600),
+		};
+	}
+	const cardJson = JSON.stringify({ cards: cardData, page: labels.page, open: labels.openPdf })
+		.replace(/</g, "\\u003c").replace(/>/g, "\\u003e").replace(/&/g, "\\u0026");
+
 	// Anchor targets (reference rows, passage items) may live inside
 	// COLLAPSED details -- open every <details> ancestor when a fragment is
-	// navigated, so citation superscripts always land on visible content.
-	const anchorScript = `<script>
+	// navigated, so citation marks always land on visible content. The
+	// layout choice is kept per browser (localStorage, optional).
+	const pageScript = `<script id="cards" type="application/json">${cardJson}</script>
+<script>
 (function () {
 	function openTarget() {
 		var id = location.hash.slice(1);
@@ -2395,22 +2718,111 @@ ${paperBlocks.join("\n<hr class=\"paper\">\n")}
 	}
 	addEventListener("hashchange", openTarget);
 	openTarget();
+
+	var body = document.body;
+	function setLayout(name, keep) {
+		if (!document.querySelector('[data-layout="' + name + '"]')) name = "column";
+		body.setAttribute("data-layout", name);
+		var buttons = document.querySelectorAll("[data-layout]");
+		for (var i = 0; i < buttons.length; i++) buttons[i].classList.toggle("on", buttons[i].getAttribute("data-layout") === name);
+		if (keep) { try { localStorage.setItem("plr-report-layout", name); } catch (e) {} }
+	}
+	var saved = "column";
+	try { saved = localStorage.getItem("plr-report-layout") || "column"; } catch (e) {}
+	if (document.querySelector(".layouts")) setLayout(saved, false);
+	// Inside the browser app's panel the switch lives in the panel head
+	// (it reads plrLayouts); the page hides its own buttons there.
+	var embedded = false;
+	try { embedded = window.top !== window; } catch (e) { embedded = true; }
+	if (embedded) document.documentElement.classList.add("embedded");
+	var layoutButtons = document.querySelectorAll(".layouts button[data-layout]");
+	if (layoutButtons.length) {
+		window.plrLayouts = {
+			list: Array.prototype.map.call(layoutButtons, function (button) {
+				return { name: button.getAttribute("data-layout"), label: button.getAttribute("aria-label"), title: button.getAttribute("title"), icon: button.innerHTML };
+			}),
+			label: document.querySelector(".layoutlbl").textContent,
+			current: function () { return body.getAttribute("data-layout"); },
+			set: function (name) { setLayout(name, true); },
+		};
+	}
+
+	document.addEventListener("click", function (event) {
+		var choice = event.target.closest("[data-layout]");
+		if (choice && choice.tagName === "BUTTON") { setLayout(choice.getAttribute("data-layout"), true); return; }
+		var more = event.target.closest("button.more");
+		if (more) {
+			var cell = more.parentElement;
+			cell.classList.toggle("open");
+			more.textContent = cell.classList.contains("open") ? more.getAttribute("data-less") || "less" : more.getAttribute("data-label");
+		}
+	});
+	var mores = document.querySelectorAll("button.more");
+	for (var m = 0; m < mores.length; m++) mores[m].setAttribute("data-label", mores[m].textContent);
+
+	var data = {};
+	try { data = JSON.parse(document.getElementById("cards").textContent); } catch (e) {}
+	var cards = data.cards || {};
+	var pop = document.createElement("div");
+	pop.className = "citecard";
+	body.appendChild(pop);
+	var hideTimer = null;
+	function hide() { pop.style.display = "none"; }
+	document.addEventListener("mouseover", function (event) {
+		var mark = event.target.closest && event.target.closest("a.cite");
+		if (mark) {
+			var card = cards[mark.textContent.replace(/[\\[\\]]/g, "")];
+			if (!card) return;
+			clearTimeout(hideTimer);
+			pop.textContent = "";
+			var head = document.createElement("div");
+			head.className = "cch";
+			head.textContent = (card.p ? card.p + ", " : "") + data.page + " " + card.pg;
+			var text = document.createElement("div");
+			text.className = "cct";
+			text.textContent = card.t + (card.t.length >= 600 ? " ..." : "");
+			pop.appendChild(head);
+			pop.appendChild(text);
+			if (mark.getAttribute("target") === "_blank") {
+				var hint = document.createElement("div");
+				hint.className = "ccl";
+				hint.textContent = data.open;
+				pop.appendChild(hint);
+			}
+			pop.style.display = "block";
+			var r = mark.getBoundingClientRect();
+			var left = Math.max(8, Math.min(r.left, innerWidth - pop.offsetWidth - 8));
+			var top = r.bottom + 6 + pop.offsetHeight > innerHeight ? r.top - pop.offsetHeight - 6 : r.bottom + 6;
+			pop.style.left = left + "px";
+			pop.style.top = Math.max(8, top) + "px";
+		} else if (!pop.contains(event.target)) {
+			clearTimeout(hideTimer);
+			hideTimer = setTimeout(hide, 120);
+		}
+	});
+	addEventListener("scroll", hide, true);
 })();
 </script>`;
 
+	const title = esc(labels.pageTitle);
 	return `<!doctype html>
 <html lang="${esc(report.ui_language === "en" ? "en" : "de")}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${esc(labels.pageTitle)}: ${esc(report.question)}</title>
+<title>${title}: ${esc(report.question)}</title>
 <style>${STYLE}${REVIEW_STYLE}${REPORT_STYLE}</style>
 </head>
-<body>
-<h1>${esc(labels.pageTitle)}</h1>${banner}
-${blocks.join('\n<hr class="paper">\n')}
-<footer>${esc(labels.footer)}</footer>
-${anchorScript}
+<body class="synth" data-layout="column">
+<div class="frame">
+${navHtml}
+<main>
+<header class="rhead"><div><h1>${title}</h1><div class="subline">${esc(subline)}</div></div>${layouts}</header>${banner}
+${blocks.join("\n")}
+${aboutBlock}
+</main>
+</div>
+${pageScript}
 </body>
 </html>
 `;

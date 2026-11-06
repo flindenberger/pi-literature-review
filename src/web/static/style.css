@@ -77,6 +77,8 @@ button.primary:hover { background: #000000; }
 .rail-list a.item.past .rep { padding: 0.1rem; border: 0; background: transparent; color: var(--muted); display: inline-flex; border-radius: 4px; cursor: pointer; }
 .rail-list a.item.past .rep svg { width: 0.95rem; height: 0.95rem; }
 .rail-list a.item.past .rep.new { opacity: 0.55; }
+.rail-list a.item.past .rep.stale { position: relative; }
+.rail-list a.item.past .rep.stale::after { content: ""; position: absolute; right: 0; top: 0; width: 5px; height: 5px; border-radius: 50%; background: var(--amber); }
 .rail-list a.item.past .rep:hover { color: var(--ink); background: #f1f1ec; opacity: 1; }
 .rail-list a.item.past .trash { padding: 0.1rem; border: 0; background: transparent; color: var(--muted); display: inline-flex; border-radius: 4px; }
 .rail-list a.item.past .trash svg { width: 0.95rem; height: 0.95rem; }
@@ -576,6 +578,14 @@ dialog.modal .dlfolder input { flex: 1; min-width: 0; font: inherit; border: 0; 
 .citecard .badge, .report .tabs .badge { display: inline-flex; align-items: center; justify-content: center; min-width: 1.15rem; height: 1.15rem; padding: 0 0.2rem; border-radius: 3px; background: var(--accent); color: #fff; font-size: 0.7rem; font-weight: 700; flex: none; }
 
 /* Tabs in the panel: the cited papers of a chat, then its reports. */
+/* Layout switch of a paper report, under the panel head (fixed in place). */
+.report .layoutbar { display: flex; align-items: center; justify-content: flex-end; gap: 0.15rem; padding: 0.2rem 0.9rem; border-bottom: 1px solid var(--line); background: #fbfbf8; }
+.report .layoutbar[hidden] { display: none; }
+.report .layoutbar .lbl { font-size: 0.66rem; text-transform: uppercase; letter-spacing: 0.06em; color: #8a8a8a; margin-right: 0.35rem; }
+.report .layoutbar button { display: inline-flex; align-items: center; justify-content: center; width: 1.9rem; height: 1.6rem; padding: 0; border: 1px solid transparent; border-radius: 4px; background: transparent; color: #8a8a8a; }
+.report .layoutbar button svg { width: 1.15rem; height: 1.15rem; }
+.report .layoutbar button:hover { background: #f1f1ec; color: var(--ink); }
+.report .layoutbar button.on { border-color: var(--accent); color: var(--ink); background: #fff; }
 .report .head .tabs { flex: 1; min-width: 0; display: flex; gap: 0.25rem; overflow-x: auto; scrollbar-width: thin; }
 .report .head .tabs[hidden] { display: none; }
 .report .tabs .tab { display: inline-flex; align-items: center; gap: 0.4rem; border: 1px solid transparent; border-radius: 6px; padding: 0.22rem 0.55rem; color: #444; cursor: pointer; white-space: nowrap; max-width: 14rem; flex: none; }
@@ -602,6 +612,13 @@ dialog.modal .dlfolder input { flex: 1; min-width: 0; font: inherit; border: 0; 
 .pills .rbtn .again.stale { color: var(--ink); }
 .pills .rbtn .again.stale svg { stroke-width: 2.4; }
 .pills .rbtn.busy button.main { color: var(--muted); }
+/* Report state: dashed = none yet; written = dark border + dot (green up to date, amber newer questions missing). */
+.pills .rbtn.none { border-style: dashed; background: transparent; }
+.pills .rbtn.done { border-color: var(--accent); }
+.pills .rbtn.done .again { border-left-color: var(--accent); }
+.rdot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.rdot.ok { background: var(--green); }
+.rdot.old { background: var(--amber); }
 
 /* The library of the rail is where the paper chat's sources are chosen:
    a tick for the whole library on its row, a find box over the tree. */

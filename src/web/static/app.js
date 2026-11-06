@@ -291,7 +291,7 @@
 	/** Reports written on click from the (filtered) list; further add-ons
 	 * are one more entry here (the server route decides what it writes). */
 	const REPORT_ACTIONS = [
-		{ kind: "html", label: "HTML report", title: "The documented HTML report of this list (PRISMA-style flow, tables, BibTeX)", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h9l5 5v13H6z"/><path d="M14 3v6h6M9 13h6M9 17h6"/></svg>' },
+		{ kind: "html", label: "Search report", title: "The documented HTML report of this list (PRISMA-style flow, tables, BibTeX)", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h9l5 5v13H6z"/><path d="M14 3v6h6M9 13h6M9 17h6"/></svg>' },
 		{ kind: "prisma", label: "PRISMA diagram", title: "The screening-flow diagram of this list as an SVG file", icon: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="8" height="5"/><rect x="13" y="10" width="8" height="5"/><rect x="3" y="17" width="8" height="4"/><path d="M7 8v9M11 5.5h5v4.5M11 12.5h2"/></svg>' },
 	];
 
@@ -1937,9 +1937,18 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 			const what = [pick.summary ? "Summary" : "", pick.synthesis ? "Synthesis" : ""].filter(Boolean).join(" + ") || "Questions";
 			return `<span class="rbtns"><span class="rbtn on"><button type="button" class="main" data-report-build ${busy ? "disabled" : ""} title="Send writes this report (after the answer, when you typed a question). Click to change.">${icon}Report · ${esc(what)}</button><button type="button" class="again" data-report-unpick title="Do not write a report" aria-label="Do not write a report">×</button></span></span>`;
 		}
-		if (!written) return `<span class="rbtns"><span class="rbtn"><button type="button" class="main" data-report-build ${busy ? "disabled" : ""} title="Write this chat up as one report: your questions with their answers, a summary of each paper, a synthesis of all">${icon}Report</button></span></span>`;
+		if (!written) return `<span class="rbtns"><span class="rbtn none"><button type="button" class="main" data-report-build ${busy ? "disabled" : ""} title="No report yet. Write this chat up as one report: your questions with their answers, a summary of each paper, a synthesis of all">${icon}Report</button></span></span>`;
 		const stale = (a.questions || []).length > written.questions;
-		return `<span class="rbtns"><span class="rbtn"><button type="button" class="main" data-report-open title="Open the report">${icon}Report</button><button type="button" class="again ${stale ? "stale" : ""}" data-report-build ${busy ? "disabled" : ""} title="${stale ? "Update the report: newer questions are not in it yet" : "Update the report (other parts)"}" aria-label="Update the report">${ICON_RELOAD}</button></span></span>`;
+		const time = a.report && a.report.at ? reportTime(a.report.at) : "";
+		const status = stale ? "Report written; newer questions are not in it yet" : "Report written, up to date";
+		return `<span class="rbtns"><span class="rbtn done"><button type="button" class="main" data-report-open title="${status}. Click to open it.">${`<i class="rdot ${stale ? "old" : "ok"}"></i>`}${icon}Report${time ? ` · ${esc(time)}` : ""}</button><button type="button" class="again ${stale ? "stale" : ""}" data-report-build ${busy ? "disabled" : ""} title="${stale ? "Update the report: newer questions are not in it yet" : "Update the report (other parts)"}" aria-label="Update the report">${ICON_RELOAD}</button></span></span>`;
+	}
+	/** When a report was written: the time today, else day and time. */
+	function reportTime(iso) {
+		const when = new Date(iso);
+		if (Number.isNaN(when.getTime())) return "";
+		const hm = when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+		return when.toDateString() === new Date().toDateString() ? hm : `${when.toLocaleDateString([], { day: "numeric", month: "short" })} ${hm}`;
 	}
 	/** The Report window: the parts to write. Resolves { summary, synthesis } or null. */
 	function reportPartsBox() {
@@ -1956,7 +1965,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 				row("summary", REPORT_PARTS.summary.label, before.summary, false, REPORT_PARTS.summary.title),
 				row("synthesis", REPORT_PARTS.synthesis.label, before.synthesis && count > 1, count < 2, count < 2 ? "Needs at least two papers" : REPORT_PARTS.synthesis.title),
 			].join("");
-			box.innerHTML = `<h3>Report on ${esc(label || "the whole library")} · ${pdfCount(count)}</h3><div class="askrows">${rows}</div><div class="modal-actions"><button type="button" class="primary" data-ok="1">Select</button><button type="button" data-ok="0">Cancel</button></div>`;
+			box.innerHTML = `<h3>Report on ${esc(label || "the whole library")} · ${pdfCount(count)}</h3><div class="askrows">${rows}</div><div class="modal-actions"><button type="button" class="primary" data-ok="1">${asked ? "Write report" : "Select"}</button><button type="button" data-ok="0">Cancel</button></div>`;
 			const ok = box.querySelector("[data-ok=\"1\"]");
 			const parts = () => ({ summary: box.querySelector("[data-part=summary]").checked, synthesis: box.querySelector("[data-part=synthesis]").checked });
 			// A question typed in the box counts: Send answers it first.
@@ -1971,13 +1980,19 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 			ok.focus();
 		});
 	}
-	/** The Report window only selects; Send then answers the typed question
-	 * (if any) and writes the report. */
+	/** The Report window. A chat without answers yet only selects (Send
+	 * answers the first question, then writes the report); once the chat
+	 * has answers the report is written at once -- a question typed in the
+	 * box is answered first and goes into it. */
 	async function buildReport() {
 		if (!state.dialog || state.dialog.activeJob || state.dialog.pending) return;
 		const parts = await reportPartsBox();
 		if (!parts) return;
 		state.chat.reportPick = parts;
+		if ((state.dialog.answers.questions || []).length) {
+			$("composer").requestSubmit();
+			return;
+		}
 		$("pills").innerHTML = chatPillsHtml();
 		$("input").focus();
 	}
@@ -2468,6 +2483,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		$("report-name").textContent = name || url;
 		$("report-kind").textContent = /\.svg$/i.test(name || url) ? "Diagram" : "Report";
 		syncPaperInfoButton();
+		syncLayoutBar();
 		$("ticked").textContent = "";
 		if (!state.panelClosedByUser) shell.classList.remove("no-report");
 	}
@@ -2502,6 +2518,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		$("report-empty").hidden = true;
 		$("report-name").textContent = name;
 		$("report-kind").textContent = "PDF";
+		$("layoutbar").hidden = true;
 		$("ticked").textContent = "";
 		navigateFrame(frame, href, fresh);
 		syncPaperInfoButton();
@@ -2586,6 +2603,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 			view.className = "tabframe";
 			view.title = spec.label;
 			view.hidden = true;
+			view.addEventListener("load", syncLayoutBar);
 			reportBox.appendChild(view);
 			tab = { ...spec, frame: view, url: "" };
 			// Papers in letter order, reports after them.
@@ -2606,6 +2624,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		state.report = { url: tab.url, name: tab.label };
 		renderTabs();
 		syncPaperInfoButton();
+		syncLayoutBar();
 		if (!state.panelClosedByUser) shell.classList.remove("no-report");
 	}
 	/** The tab of a cited paper (created when missing), from the letters of
@@ -2669,7 +2688,44 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		if ($("modal").open || document.querySelector("dialog[open]")) return;
 		if (state.dialog && state.dialog.activeJob) { event.preventDefault(); post(`/api/jobs/${encodeURIComponent(state.dialog.activeJob)}/cancel`).catch(() => {}); toast("Stopping the job ..."); }
 	});
+	/** The layout switch of the report shown (a paper report over several
+	 * papers offers one): a row under the panel head that stays in place
+	 * whatever the layout. Reads window.plrLayouts of the same-origin frame. */
+	function shownFrame() {
+		const tab = state.activeTab && state.tabs.find((entry) => entry.id === state.activeTab);
+		return tab ? tab.frame : frame;
+	}
+	function syncLayoutBar() {
+		const bar = $("layoutbar");
+		let api = null;
+		try { api = shownFrame().contentWindow.plrLayouts || null; } catch { api = null; }
+		if (!api || !api.list || !api.list.length) { bar.hidden = true; bar.innerHTML = ""; return; }
+		const now = api.current();
+		bar.innerHTML = `<span class="lbl">${esc(api.label || "Layout")}</span>${api.list.map((entry) => `<button type="button" class="${entry.name === now ? "on" : ""}" data-set-layout="${esc(entry.name)}" title="${esc(entry.title)}" aria-label="${esc(entry.label)}">${entry.icon}</button>`).join("")}`;
+		bar.hidden = false;
+	}
+	$("layoutbar").addEventListener("click", (event) => {
+		const button = event.target.closest("[data-set-layout]");
+		if (!button) return;
+		try { shownFrame().contentWindow.plrLayouts.set(button.dataset.setLayout); } catch { return; }
+		syncLayoutBar();
+	});
+	frame.addEventListener("load", syncLayoutBar);
 	$("btn-newtab").addEventListener("click", () => { if (state.report.url) window.open(state.report.url, "_blank"); });
+	/** The file behind the panel (a diagram's SVG, not its viewer page), saved under its own name. */
+	$("btn-download").addEventListener("click", () => {
+		let url = state.report && state.report.url;
+		if (!url) return;
+		const viewer = /^\/static\/prisma\.html\?file=([^&#]+)/.exec(url);
+		if (viewer) url = decodeURIComponent(viewer[1]);
+		url = url.replace(/[?#].*$/, "");
+		const link = document.createElement("a");
+		link.href = url;
+		link.download = decodeURIComponent(url.split("/").pop() || "report.html");
+		document.body.appendChild(link);
+		link.click();
+		link.remove();
+	});
 	$("btn-close-panel").addEventListener("click", () => { setPopup(false); state.panelClosedByUser = true; shell.classList.add("no-report"); });
 	frame.addEventListener("load", () => {
 		const update = () => { const n = tickedInReport().length; $("ticked").textContent = n ? `${n} ticked` : ""; };
@@ -3066,7 +3122,10 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		if (entry.run) {
 			return REPORT_ACTIONS.map((action) => `<button type="button" class="rep ${entry.written && entry.written[action.kind] ? "" : "new"}" data-rep-run="${esc(entry.run)}" data-rep-kind="${action.kind}" title="${esc(action.label)}${entry.written && entry.written[action.kind] ? "" : " (written on this click)"}" aria-label="${esc(action.label)}">${action.icon}</button>`).join("");
 		}
-		if (entry.report) return `<button type="button" class="rep" data-rep-url="${esc(entry.report.url)}" data-rep-name="${esc(entry.report.name)}" title="HTML report" aria-label="HTML report">${icon("html")}</button>`;
+		if (entry.report) {
+			const tip = entry.report.stale ? "Paper report (newer questions are not in it yet)" : "Paper report";
+			return `<button type="button" class="rep ${entry.report.stale ? "stale" : ""}" data-rep-url="${esc(entry.report.url)}" data-rep-name="${esc(entry.report.name)}" title="${tip}" aria-label="${tip}">${icon("html")}</button>`;
+		}
 		return "";
 	}
 	/** History lists show the newest HISTORY_SHORT entries until "Show all". */

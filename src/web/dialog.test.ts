@@ -1046,7 +1046,7 @@ console.log("dialog add-on tests ok");
 	const before = rs.messages.length;
 	rs = step(rs, { kind: "job", job: job("report", "report-9", "done"), report: { name: "r", htmlUrl: "/files/lit-synthesis/r.html", grounded: true, units: 2 } }, ctx).state;
 	assert.equal(rs.step, "ask");
-	assert.deepEqual(rs.answers.report, { url: "/files/lit-synthesis/r.html", parts: { summary: false, synthesis: true }, questions: 1, job: "report-9" });
+	assert.deepEqual(rs.answers.report, { url: "/files/lit-synthesis/r.html", parts: { summary: false, synthesis: true }, questions: 1, job: "report-9", at: "2026-10-19T10:00:00Z" });
 	assert.equal(rs.answers.reportRequest, undefined);
 	assert.equal(rs.messages.length, before, "no card, no message");
 

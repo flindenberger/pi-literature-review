@@ -54,15 +54,15 @@ export interface ConversationSummary {
 	/** The newest search run of the conversation (its result list), if any. */
 	run?: string;
 	/** The newest synthesis or chat report written in it, if any. */
-	report?: { name: string; url: string };
+	report?: { name: string; url: string; stale?: boolean };
 	/** A chat on one PDF: that PDF's base name. */
 	paper?: string;
 }
 
 /** What a conversation produced: its newest result list and its newest
  * synthesis/chat report (file cards of the lit-synthesis stage). Pure. */
-export function conversationFiles(dialog: DialogState): { run?: string; report?: { name: string; url: string }; paper?: string } {
-	const out: { run?: string; report?: { name: string; url: string }; paper?: string } = {};
+export function conversationFiles(dialog: DialogState): { run?: string; report?: { name: string; url: string; stale?: boolean }; paper?: string } {
+	const out: { run?: string; report?: { name: string; url: string; stale?: boolean }; paper?: string } = {};
 	const scope = dialog.answers?.scope;
 	if (Array.isArray(scope) && scope.length === 1) out.paper = scope[0];
 	for (const message of dialog.messages) {
@@ -75,6 +75,9 @@ export function conversationFiles(dialog: DialogState): { run?: string; report?:
 	const buttons = dialog.answers?.reports;
 	const url = dialog.answers?.report?.url ?? buttons?.synthesis ?? buttons?.summary;
 	if (!out.report && url) out.report = { name: decodeURIComponent(url.replace(/[?#].*$/, "").split("/").pop() ?? url), url };
+	// The chat asked more questions than its report holds: out of date.
+	const written = dialog.answers?.report;
+	if (out.report && written && out.report.url === written.url && (dialog.answers.questions ?? []).length > written.questions) out.report.stale = true;
 	return out;
 }
 

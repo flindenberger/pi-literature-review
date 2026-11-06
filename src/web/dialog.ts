@@ -246,7 +246,7 @@ export interface DialogAnswers {
 	reportAfter?: ReportParts;
 	/** The chat's ONE report: its HTML url, the parts it holds and how many
 	 * questions it answers (a newer question or other parts = "Update"). */
-	report?: { url: string; parts: ReportParts; questions: number; job?: string };
+	report?: { url: string; parts: ReportParts; questions: number; job?: string; at?: string };
 	/** Older pages: the newest report of each button, as its HTML url. */
 	reports?: Partial<Record<"summary" | "synthesis", string>>;
 	/** The "+" menu's name for the scope ("01_Waterline", "3 papers"). */
@@ -1804,12 +1804,12 @@ function onJob(state: DialogState, event: Extract<DialogEvent, { kind: "job" }>,
 			// remembers it; nothing is added to the thread.
 			const parts = marked.answers.reportRequest;
 			if (parts) {
-				const done = withAnswers(marked, { reportRequest: undefined, reports: undefined, report: { url: outcome.htmlUrl, parts, questions: marked.answers.questions.length, job: job.id } });
+				const done = withAnswers(marked, { reportRequest: undefined, reports: undefined, report: { url: outcome.htmlUrl, parts, questions: marked.answers.questions.length, job: job.id, at: job.finished ?? job.started } });
 				const trail = done.trail[done.trail.length - 1] === "ask" ? done.trail : [...done.trail, "ask" as StepId];
 				return result({ ...spend(done), step: "ask", trail, pending: null });
 			}
 			const told = say(marked, `**Report written** (${outcome.units} unit${outcome.units === 1 ? "" : "s"}${outcome.grounded ? ", every statement carries a page citation" : "; NOT grounded -- check the report"}).`);
-			const withCard = card(told, { kind: "file", name: `${outcome.name}.html`, label: "Synthesis report, HTML · lit-synthesis/", stage: "lit-synthesis", url: outcome.htmlUrl });
+			const withCard = card(told, { kind: "file", name: `${outcome.name}.html`, label: "Paper report, HTML · lit-synthesis/", stage: "lit-synthesis", url: outcome.htmlUrl });
 			// Back to the question box: the next question or report comes from there.
 			const trail = withCard.trail[withCard.trail.length - 1] === "ask" ? withCard.trail : [...withCard.trail, "ask" as StepId];
 			return result({ ...spend(withCard), step: "ask", trail, pending: null });

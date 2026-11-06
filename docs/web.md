@@ -138,9 +138,9 @@ tooltip the whole request; no count next to "History"; the newest ten
 show, the rest behind "Show all n" / "Show fewer", the open or a running
 conversation always in view). Hovering an entry shows its own files next to
 its trash: a search
-its **HTML report** and **PRISMA diagram** (the run unfiltered; a faint
+its **Search report** (the HTML report) and **PRISMA diagram** (the run unfiltered; a faint
 icon means not written yet, the click writes it), a chat or synthesis its
-newest report; a click opens the file as a window. One search, one
+newest **Paper report** (a small amber dot: newer questions are not in it yet); a click opens the file as a window. One search, one
 report, one diagram, all in one place. The block of the stage a
 conversation is in opens by itself. Empty lists show nothing (no dash, no 0). Stage 2
 holds the **Library** right under **+ New paper chat**: **+ Add folder**
@@ -234,7 +234,11 @@ green dot) and the list, no chat under it, the input box away until a new
 conversation starts. On the right, the report panel: it opens when
 a report was written on click, a synthesis has written an HTML file, or a
 card's **Graph** link is opened; **Enlarge** shows it large over the page
-(Esc closes), **New tab** opens the file on its own, **Close** hides the
+(Esc closes); a paper report over several papers adds a row "Layout"
+under the head (Column, Contents, Compare -- it stays in place whatever
+the layout); **Download** saves the file shown (search report, paper
+report, the diagram's SVG or the PDF) under its own name, **New tab** opens
+the file on its own, **Close** hides the
 panel (any file card in the chat brings it back).
 
 ### The result list
@@ -270,7 +274,7 @@ cited, newest. Ticks on the cards select papers; **Download n ticked PDFs**
 starts the download. **Add papers with code** runs the same blocks again
 with the four code sources on (their awesome-list topics are taken from
 the model's suggestion without a question, three at most). **Reports from
-this list** are written on click only: the **HTML report** and the
+this list** are written on click only: the **Search report** (HTML) and the
 **PRISMA diagram** (SVG) of the list as filtered, with the filters
 documented as a screening step (the removed records stand in the dropped
 table with their reason, the flow counts them). In the browser a search
@@ -462,11 +466,16 @@ answers in the chat; the report is its own action. Each chat has ONE
 report: it always holds the chat's questions, answered across the chosen
 papers -- the answers given in the chat over the same sources are taken
 as they stand (prose, citations, passages; no new model call), a
-question asked over other sources is answered anew. The Report window only
-selects (button **Select**); the button then reads "Report · Summary +
-Synthesis" (× drops it), and Send writes it: a typed question is
-answered first, then the report follows with that question in it; Send
-with an empty box writes the report at once. The window offers two
+question asked over other sources is answered anew. In a chat without
+answers yet the Report window only selects (button **Select**); the button
+then reads "Report · Summary + Synthesis" (× drops it), and Send writes it:
+a typed question is answered first, then the report follows with that
+question in it; Send with an empty box writes the report at once. Once
+the chat has answers the window's button reads **Write report** and starts
+at once (a question still in the box is answered first and goes in). The
+button shows the state: dashed while there is no report; once written a
+dark border, a dot (green up to date, amber when newer questions are not
+in it) and the time it was written. The window offers two
 optional parts: **Summary · each paper on its own** (aim,
 methods, study area, results, discussion, outlook) and **Synthesis · all
 papers together** (where they agree, differ, what remains open; needs at

@@ -84,9 +84,22 @@ Three building blocks, the same in the wizard and in the browser:
 - **Synthesis · all papers together**: where the papers agree, where they
   differ, what remains open (several documents only)
 
-The page reads top-down in that order of interest: metadata, the
-questions, the synthesis, then the papers (each with its identity, its
-summary when asked, and its cited passages). The engine still knows
+The page ("Paper report") reads top-down in that order of interest:
+over several papers a table of the papers A, B, C (title, authors, year,
+DOI, PDF), the questions (one card each), the synthesis, then the papers
+in letter order, each with its identity, its summary in label rows
+("Methods" left, its points right) and its cited passages (collapsed).
+The metadata and the technical notes close the page in a collapsed
+"About this report" block. Over several papers three small buttons
+under "Layout" in the head (each draws its layout; in the browser app's
+panel they sit in a fixed row under the panel head instead, through the
+page's `window.plrLayouts`) switch the view, kept per browser: **Column** (default), **Contents** (a table of contents on
+the left -- a bar on top in a narrow window -- the papers as cards with
+the summary in two columns) and **Compare** (right after the paper list,
+the summaries side by side: one column per paper, one row per heading,
+two points per cell and "+ n more").
+Citation marks are small boxes as in the browser chat; hovering one
+shows the paper, the page and the passage text. The engine still knows
 questions answered paper by paper (`detailMode` per-paper / both, the CLI
 `--detail-mode`); the wizard and the browser no longer offer it.
 
@@ -106,9 +119,9 @@ that paper (A1, A2, B1), as in the browser chat; a report written from a
 chat keeps the chat's letters, the other papers take the next letters in
 order of their first citation (uncited papers last), and the numbers count in reading order (questions first), so
 the first question reads exactly as in the chat. A report over one paper
-keeps plain numbers. Several passages cited at the same spot share ONE
-superscript and are separated by commas (`A1, B3`), sorted, each with its
-own page link. Each paper's block (its letter before the title) lists its
+keeps plain numbers. Several passages cited at the same spot stand side
+by side, sorted (`A1` `B3`), each with its own page link. Each paper's
+block (its letter before the title) lists its
 cited passages with page link, excerpt and the retrieval rank per citing
 question; cross-paper sections name the paper on every passage line and
 add a paper-level reference table (letter, title, pages).

@@ -927,9 +927,10 @@ const baseReport: SynthReport = {
 	// Bullets became a real list; German chrome.
 	assert.ok(html.includes("<ul>"));
 	assert.ok(html.includes("<li>Ziel: Wasserstand"));
-	// v27 layout (second iteration): metadata first, NO numbers, NO TOC;
+	// Metadata in the closing "About this report" block, NO numbers;
 	// technical details collapsed and explained in plain language.
-	assert.ok(html.includes("<h2>Abfrage-Metadaten</h2>"));
+	assert.ok(html.includes('<details class="about" id="about"><summary>Über diesen Bericht</summary>'));
+	assert.ok(html.includes("<h1>Paper-Bericht</h1>"));
 	assert.ok(!/<h2>\d+\./.test(html)); // no numbered headings
 	assert.ok(html.includes("Technische Details (einfach erklärt)"));
 	assert.ok(html.includes("Textstellen-Suche"));
@@ -960,12 +961,13 @@ const baseReport: SynthReport = {
 	assert.ok(html.includes('<li id="site-1" value="1">'));
 	assert.ok(html.includes('<li id="site-2" value="2">'));
 	assert.ok(!html.includes('id="site-3"'));
-	// Metadata sits BEFORE the paper section; NO table of contents; the
-	// answers live in COLLAPSED blocks under the paper.
-	assert.ok(html.indexOf("Abfrage-Metadaten") < html.indexOf('id="paper-a"'));
+	// The metadata closes the page; one paper: no contents sidebar, no
+	// layout switch; summary and questions OPEN, passages collapsed.
+	assert.ok(html.indexOf("Über diesen Bericht") > html.indexOf('id="paper-a"'));
 	assert.ok(!html.includes('class="toc"'));
-	assert.ok(html.includes('<details class="block"><summary>Zusammenfassung</summary>'));
-	assert.ok(html.includes('<details class="block"><summary>Fragen</summary>'));
+	assert.ok(!html.includes('class="layouts"'));
+	assert.ok(html.includes('<div class="psum">'));
+	assert.ok(html.includes('<div class="pq">\n<h4>Welche Kamera?</h4>'));
 	assert.ok(html.includes('<details class="block"><summary>Belegstellen</summary>'));
 	// v31.5/.6: no top-level excerpts block anymore -- the uncited REST
 	// nests at the END of the cited-passages block (after the list).
@@ -1006,15 +1008,20 @@ const baseReport: SynthReport = {
 		references: [...unitA.references, ...unitB.references],
 		include_review: true,
 	});
-	assert.ok(!html.includes('class="toc"')); // no TOC anywhere (layout without TOC)
-	assert.ok(html.includes('<hr class="paper">'));
+	// Several papers: the overview table, the layout switch (column,
+	// contents, compare) and the contents sidebar (hidden until chosen).
+	assert.ok(html.includes('<section id="overview">'));
+	assert.ok(html.includes('data-layout="column"') && html.includes('data-layout="contents"'));
+	assert.ok(html.includes('<nav class="toc">'));
+	assert.ok(html.indexOf('id="overview"') < html.indexOf('id="cross-questions"'));
+	assert.ok(html.includes('<h4><span class="qn">Q1</span>Welche Methoden?</h4>'));
 	assert.ok(html.includes("Fragen · über alle Dokumente beantwortet"));
 	assert.ok(html.includes("Synthese · alle Dokumente zusammen"));
 	// Reading order: questions, synthesis, then the papers (with summaries
 	// under "Zusammenfassung · jedes Dokument für sich").
 	assert.ok(html.indexOf('id="cross-questions"') < html.indexOf('id="review"'));
 	assert.ok(html.indexOf('id="review"') < html.indexOf('id="papers"'));
-	assert.ok(html.includes("<h2>Zusammenfassung · jedes Dokument für sich</h2>"));
+	assert.ok(html.includes('<span class="hnorm">Zusammenfassung · jedes Dokument für sich</span>'));
 	assert.ok(html.includes('class="reviewnote"'));
 	assert.ok(html.includes('id="paper-a"') && html.includes('id="paper-b"'));
 	const paperA = html.slice(html.indexOf('id="paper-a"'), html.indexOf('id="paper-b"'));
@@ -1025,7 +1032,7 @@ const baseReport: SynthReport = {
 	// read letter + number within the paper as in the chat (A1, B1). Each
 	// paper block lists ITS cited passages, no reference table -- the block
 	// head (with the letter) is the paper's identity.
-	assert.ok(paperA.includes('<span class="pletter">A</span> Paper One') || paperA.includes('<span class="pletter">A</span>'));
+	assert.ok(paperA.includes('<div class="phead"><span class="pletter big">A</span>'));
 	assert.ok(paperA.includes('<summary>Belegstellen</summary>') && !paperA.includes("<summary>Referenzen</summary>"));
 	assert.ok(paperA.includes('<li id="site-A1"><span class="plabel">A1</span>') && !paperA.includes("B1"));
 	assert.ok(paperB.includes('<li id="site-B1"><span class="plabel">B1</span>') && !paperB.includes('plabel">A1'));
@@ -1104,6 +1111,20 @@ const baseReport: SynthReport = {
 }
 
 {
+	// The paper blocks follow the letters A, B, C, not the scope order.
+	const html = renderSynthReportHtml({
+		...baseReport,
+		question: "Report: 2 documents",
+		scope: { papers: ["a", "b"], library: false },
+		papers: [paperOne, paperTwo],
+		paper_letters: { [paperTwo.key]: "A", [paperOne.key]: "B" },
+		units: [],
+		references: [],
+	});
+	assert.ok(html.indexOf('id="paper-b"') < html.indexOf('id="paper-a"'));
+}
+
+{
 	// uiLanguage "en" switches the chrome; an ungrounded report banners.
 	const html = renderSynthReportHtml({
 		...baseReport,
@@ -1111,7 +1132,7 @@ const baseReport: SynthReport = {
 		units: [reportUnit({ grounded: false })],
 		grounded: false,
 	});
-	assert.ok(html.includes("Query metadata"));
+	assert.ok(html.includes("About this report") && html.includes("<h1>Paper report</h1>"));
 	assert.ok(html.includes("Technical details (in plain language)"));
 	assert.ok(html.includes("Cited passages"));
 	assert.ok(html.includes("UNGROUNDED DRAFT"));
@@ -1346,3 +1367,43 @@ const baseReport: SynthReport = {
 }
 
 console.log("render.test.ts: all assertions passed");
+
+{
+	// Summaries with headings: label rows per paper, and the compare table
+	// (one row per heading, one column per paper) for several papers. The
+	// markers keep their sites in document order across the sections.
+	const site = (page: number) => ({ ref: 1, chunk_id: page, paper_key: "doi:10.1/x", page, snippet: null });
+	const chunk = (page: number) => ({ id: page, paper_key: "doi:10.1/x", page, score: 0.9, text: `Text on page ${page}.` });
+	const unitA = reportUnit({
+		prose: "## Methods\n- Radar [1].\n- Optical [1].\n- Lidar [1].\n\n**Results**\n- Works [1].",
+		sites: [site(2), site(3), site(4), site(5)], chunks: [chunk(2), chunk(3), chunk(4), chunk(5)],
+	});
+	const unitB = reportUnit({
+		paper_base: "b", prose: "Methods\n- Index [2].\nOutlook\n- More data [2].",
+		references: [{ n: 2, key: "arxiv:2401.16393", title: "Paper Two", authors: [], year: "2024",
+			doi: "", arxiv_id: "2401.16393", pages: [1], chunk_ids: [1], pdf_path: "/papers/b.pdf" }],
+		sites: [{ ref: 2, chunk_id: 1, paper_key: "arxiv:2401.16393", page: 1, snippet: null }, { ref: 2, chunk_id: 1, paper_key: "arxiv:2401.16393", page: 1, snippet: null }],
+		chunks: [{ id: 1, paper_key: "arxiv:2401.16393", page: 1, score: 0.7, text: "B text." }],
+	});
+	const html = renderSynthReportHtml({
+		...baseReport,
+		ui_language: "en",
+		scope: { papers: ["a", "b"], library: false },
+		papers: [paperOne, paperTwo],
+		units: [unitA, unitB],
+		references: [...unitA.references, ...unitB.references],
+	});
+	assert.ok(html.includes('<div class="srow"><div class="slbl">Methods</div>'));
+	assert.ok(html.includes('<div class="srow"><div class="slbl">Results</div>'));
+	const compare = html.slice(html.indexOf('<section id="compare">'), html.indexOf('id="papers"'));
+	assert.ok(compare.includes('<th class="rowh">Methods</th>'));
+	assert.ok(compare.includes('<th class="rowh">Results</th>') && compare.includes('<th class="rowh">Outlook</th>'));
+	// Paper B has no "Results": an empty cell; paper A's Methods hold 3 points -> "+ 1 more".
+	assert.ok(compare.includes('<td class="empty">&ndash;</td>'));
+	assert.ok(compare.includes(">+ 1 more</button>"));
+	// Lidar is the third marker of unit A -> page 4 = passage A3, in both views.
+	assert.ok(compare.includes('#page=4" target="_blank" rel="noopener">A3</a>'));
+	assert.ok(html.includes('data-layout="compare"'));
+	// The hover cards carry every passage label.
+	assert.ok(/"A4":\{"p":"A · B 2021","pg":5/.test(html));
+}
