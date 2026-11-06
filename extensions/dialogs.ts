@@ -461,10 +461,12 @@ async function wizardOverlay(
 				},
 			};
 		},
-		{
-			overlay: true,
-			overlayOptions: { anchor: "bottom-center", width: "100%", maxHeight: "100%", margin: { left: 0, right: 0, bottom: 0 } },
-		},
+		options?.inline
+			? {}
+			: {
+				overlay: true,
+				overlayOptions: { anchor: "bottom-center", width: "100%", maxHeight: "100%", margin: { left: 0, right: 0, bottom: 0 } },
+			},
 	);
 }
 

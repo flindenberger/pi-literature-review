@@ -437,7 +437,7 @@ function makeDeps(overrides: Partial<FetchDeps> = {}): {
 	);
 	const report = renderFetchReport([downloaded, notFree, restricted], "/papers");
 	assert.ok(report.includes("1 restricted (browser, e.g. in your university network)"));
-	assert.ok(report.includes("Open in your browser (2): save each PDF into /papers"));
+	assert.ok(report.includes("Open in your browser (2): save each PDF you can reach") && report.includes("into /papers or any of your PDF folders"));
 	assert.ok(report.includes("- [restricted] https://doi.org/10.1016/closed | Closed paper"));
 	assert.ok(report.includes("- [not freely available] https://doi.org/10.5555/paywalled"));
 	assert.ok(report.includes("Fetch complete: 1 downloaded"));

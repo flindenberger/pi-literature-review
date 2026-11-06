@@ -479,8 +479,9 @@ export function renderFetchReport(results: FetchResult[], papersDir: string): st
 	];
 	if (toOpen.length) {
 		lines.push("");
-		lines.push(`Open in your browser (${toOpen.length}): save each PDF into ${papersDir} -- `
-			+ "/lit-synthesis recognises it by the DOI or arXiv ID printed in the PDF.");
+		lines.push(`Open in your browser (${toOpen.length}): save each PDF you can reach (e.g. through your `
+			+ `university) into ${papersDir} or any of your PDF folders -- it is recognised by the DOI or `
+			+ "arXiv ID printed in the PDF and joins the library with its verified record.");
 		for (const result of toOpen) {
 			const title = result.title ? ` | ${result.title}` : "";
 			lines.push(`- [${STATUS_LABEL[result.status]}] ${result.browserUrl}${title}`);

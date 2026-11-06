@@ -63,6 +63,8 @@ import { writeNetworkPage } from "../src/network.ts";
 import { type AuthorMetrics, fetchAuthorMetrics, fetchJournalScores } from "../src/enrich.ts";
 import { authorFacets, type FacetScope, journalFacets } from "../src/sources/openalex.ts";
 import { chatLangDefault, installChatLangObserver, runWizard } from "./dialogs.ts";
+import { gatedSelection, showSelectionReport } from "./selection.ts";
+import { type Candidate, type CandidateRecord, candidatesFromRecords, parsePickAnswer, pickedIds } from "../src/pick.ts";
 import { completeWithPiModel } from "./pi-model.ts";
 
 const THOROUGH_PER_SOURCE = 15;
@@ -175,6 +177,68 @@ function searchTurnNote(): string {
 		+ "sources, filters or dropped records -- drawn ONLY from the digest below, no other knowledge, no "
 		+ "tools. Do NOT list, re-type or complete titles, authors or identifiers; do NOT mention any file "
 		+ "path or URL. Reply in the language of the user's conversation.]";
+}
+
+/** The download question after the results (second part of stage 1,
+ * "Search and selection"), per dialog language. */
+const PICK_TEXT = {
+	de: {
+		header: "/lit-search -- Paper herunterladen (Esc oder leere Eingabe: später)",
+		tab: "Download",
+		title: "Welche Paper als PDF herunterladen? Die im Bericht kopierte Zeile \"Download these papers: ...\" einfügen, "
+			+ "Zeilennummern (1 3 7), DOIs / arXiv-IDs, all (alle on-target) oder code (mit Code/Daten). "
+			+ "Leer lassen oder Esc: später (/lit-selection geht jederzeit).",
+		placeholder: "z. B. Download these papers: 10.3390/rs13081505 ... | 1 3 7 | all | code",
+		unclear: (typed: string) => `"${typed}" ergibt keine Paper: Zeile aus dem Bericht, Zeilennummern, DOIs, all oder code.`,
+		empty: "Diese Auswahl ist leer (alle passenden Paper sind schon in der Bibliothek).",
+	},
+	en: {
+		header: "/lit-search -- download papers (Esc or empty: later)",
+		tab: "Download",
+		title: "Which papers do you want as PDFs? Paste the line \"Download these papers: ...\" copied in the report, "
+			+ "row numbers (1 3 7), DOIs / arXiv IDs, all (every on-target paper) or code (papers with code/data). "
+			+ "Leave empty or press Esc: later (/lit-selection works any time).",
+		placeholder: "e.g. Download these papers: 10.3390/rs13081505 ... | 1 3 7 | all | code",
+		unclear: (typed: string) => `"${typed}" names no papers: the line from the report, row numbers, DOIs, all or code.`,
+		empty: "That selection is empty (every matching paper is already in the library).",
+	},
+} as const;
+
+/** The download question; asked again on an answer that names no paper.
+ * Null = later (Esc or an empty answer). */
+async function pickDialog(
+	ctx: ExtensionContext,
+	candidates: Candidate[],
+	diagnostics: string[],
+	signal: AbortSignal | undefined,
+): Promise<string[] | null> {
+	const lang = chatLangDefault();
+	const text = PICK_TEXT[lang];
+	let typed = "";
+	for (;;) {
+		const result = await runWizard(ctx, [{
+			kind: "text", id: "pick", tab: text.tab, title: text.title, placeholder: text.placeholder,
+			...(typed ? { initial: typed } : {}),
+			plain: true,
+		}], signal, { lang, header: text.header, skipSubmit: true, inline: true });
+		typed = result && typeof result.pick === "string" ? result.pick.trim() : "";
+		if (!typed) {
+			diagnostics.push("download question: later");
+			return null;
+		}
+		const answer = parsePickAnswer(typed, candidates);
+		if (answer.kind === "none") {
+			ctx.ui.notify(text.unclear(typed.length > 60 ? `${typed.slice(0, 57)}...` : typed), "warning");
+			continue;
+		}
+		const ids = pickedIds(answer, candidates);
+		if (!ids.length) {
+			ctx.ui.notify(text.empty, "warning");
+			continue;
+		}
+		diagnostics.push(`download question: ${ids.length} paper(s)`);
+		return ids;
+	}
 }
 
 /** The user-adjustable subset of a discovery call. */
@@ -1394,7 +1458,9 @@ export default function literatureSearch(pi: ExtensionAPI) {
 			"This tool DISCOVERS NEW papers in online databases. It is NOT for papers already on disk: when the " +
 			"user wants to chat about, ask about or understand ONE local PDF ('zu einem Paper chatten', 'Frage zum " +
 			"Paper'), use pi-literature-synthesis (chat mode); for a summary or review across the local PDF library, use " +
-			"pi-literature-synthesis; for downloading found papers, use pi-literature-selection. " +
+			"pi-literature-synthesis. Downloading found papers is the second part of the same stage (\"Search and " +
+			"selection\"): when the user picks papers from the results (identifiers, the pasted \"Download these " +
+			"papers: ...\" line), call pi-literature-selection with them. " +
 			"Call this tool DIRECTLY; do NOT ask intake or clarification questions in chat first. On every call the " +
 			"tool itself shows the user a terminal wizard summarizing the proposed query (editable there -- the " +
 			"user's wording wins), query variants, year range, result count and optional filters (min citations, " +
@@ -1603,7 +1669,7 @@ export default function literatureSearch(pi: ExtensionAPI) {
 	// whether or how to search; a passed query is prefill on the query tab.
 	pi.registerCommand("lit-search", {
 		// Palette one-liner (user wording 2026-09-02); details live in docs/search.md.
-		description: "Search for academic literature and generate an HTML report of the query results.",
+		description: "Search for academic literature, review the HTML report, then download the papers you pick as PDFs.",
 		handler: async (args, ctx) => {
 			if (!ctx.hasUI) return;
 			const query = (args ?? "").trim();
@@ -1692,7 +1758,11 @@ export default function literatureSearch(pi: ExtensionAPI) {
 				// details), verbatim LLM context and /resume persistence at
 				// once; triggerTurn prompts ONE brief agent summary under the
 				// card (the note forbids re-typing identifiers/paths).
-				if (digestEntryReady && ctx.mode === "tui") {
+				// The card shows now; the agent's short summary waits until the
+				// download part of the stage is answered (a streaming reply
+				// would run into the question).
+				const tuiCard = digestEntryReady && ctx.mode === "tui";
+				if (tuiCard) {
 					pi.sendMessage({
 						customType: DIGEST_ENTRY,
 						content: `${searchTurnNote()}\n\n${digest}`,
@@ -1701,12 +1771,48 @@ export default function literatureSearch(pi: ExtensionAPI) {
 							heading: `Literature search -- ${confirmed.query}`,
 							text: digest,
 						},
-					}, { triggerTurn: true });
+					}, { triggerTurn: false });
 				} else {
 					const digestLines = digest.split("\n");
 					ctx.ui.setWidget(INTAKE_WIDGET, digestLines.length > 16
 						? [...digestLines.slice(0, 15), `... (${digestLines.length - 15} more lines -- full results in the HTML)`]
 						: digestLines);
+				}
+
+				// Second part of stage 1: which papers as PDFs (or later).
+				const candidates = candidatesFromRecords(
+					payload.results as unknown as CandidateRecord[],
+					payload.dropped as unknown as Array<{ record: CandidateRecord }>,
+				);
+				let downloadNote = "The user chose to download papers later (nothing was downloaded).";
+				if (candidates.length && !ctx.signal?.aborted) {
+					const ids = await pickDialog(ctx, candidates, diagnostics, ctx.signal);
+					if (ids) {
+						const outcome = await gatedSelection(ctx, ids, diagnostics, ctx.signal, progress);
+						if (outcome.status === "done") {
+							showSelectionReport(ctx, outcome.report);
+							downloadNote = "The user then downloaded papers in the same dialog. Download report "
+								+ "(the user sees it as a widget):\n\n" + outcome.report;
+						} else if (outcome.status === "cancelled") {
+							ctx.ui.notify("Download cancelled -- nothing was downloaded.", "info");
+							downloadNote = "The user cancelled the download (nothing was downloaded).";
+						} else {
+							downloadNote = "The download was aborted before it started.";
+						}
+					}
+				}
+				if (ctx.signal?.aborted) return;
+				const downloadTurnNote = "[Download part of the same /lit-search run -- deterministic. In 1-2 more "
+					+ "sentences say how many PDFs were downloaded and, if any are restricted, that the user can "
+					+ "save those PDFs by hand into a PDF folder where they are recognised by their DOI. Do NOT "
+					+ "list, re-type or complete titles or identifiers; no paths or URLs.]";
+				if (tuiCard) {
+					pi.sendMessage({
+						customType: "pi-literature-search-download-result",
+						content: `${downloadTurnNote}\n\n${downloadNote}`,
+						display: false,
+					}, { triggerTurn: true });
+				} else {
 					// Web/RPC clients render neither widgets nor entry cards,
 					// and their notify toasts vanish after seconds -- but an
 					// AGENT answer is a real session message every client
@@ -1721,7 +1827,8 @@ export default function literatureSearch(pi: ExtensionAPI) {
 							+ "confirmed every parameter in the dialog). Present this digest to the user as "
 							+ "your answer NOW. Copy the reference lines EXACTLY as written -- never re-type, "
 							+ "complete, reorder or invent titles, years or identifiers -- and tell the user "
-							+ "the HTML path for review. Do not call any tools.\n\n" + digest,
+							+ "the HTML path for review. Do not call any tools.\n\n" + digest
+							+ `\n\n${downloadTurnNote}\n\n${downloadNote}`,
 						display: false,
 					}, { triggerTurn: true });
 				}

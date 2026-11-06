@@ -83,6 +83,7 @@ import { sameAuthorName, sanitizeTermGroups } from "../pipeline.ts";
 import type { ModelProvider, ProviderStatus } from "../provider.ts";
 import { type BlockMode, blockCachePath, blockCacheSize, cachedBlocks, clearBlockCache, saveBlocks } from "./blockcache.ts";
 import { clearConversations, conversationFiles, deleteConversation, historyDir, listConversations, loadConversation, newConversationId, saveConversation } from "./history.ts";
+import { candidatesFromRecords, type CandidateRecord } from "../pick.ts";
 import { parseSocialReply, SOCIAL_SYSTEM, socialCandidate, STEP_ACCEPTS } from "./help.ts";
 import { describeFilters, prismaSvgFor, renderHtml, searchLabel, renderPaperChatReportHtml, renderSynthReportHtml, webPdfHref } from "../render.ts";
 import { keyRequirement, runSearch, SEARCHERS, type SearchOptions, type SearchPayload } from "../search.ts";
@@ -671,40 +672,8 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 
 	/** The records of a finished search as pick candidates for the dialog
 	 * (results first, dropped table after; code = repository or data link). */
-	interface CandidateRecord {
-		doi: string;
-		arxiv_id: string;
-		title: string;
-		year: string;
-		access?: { level: string };
-		group?: string;
-		code_url?: string;
-		data_links?: unknown[];
-	}
-	const candidatesOf = (payload: SearchPayload): Candidate[] => {
-		const keys = listLibrary(root, cwd, deps.matchLibrary(root)).keys;
-		const rows: Array<{ record: CandidateRecord; dropped: boolean }> = [
-			...(payload.results as CandidateRecord[]).map((record) => ({ record, dropped: false })),
-			...(payload.dropped as Array<{ record: CandidateRecord }>).map((entry) => ({ record: entry.record, dropped: true })),
-		];
-		const out: Candidate[] = [];
-		for (const { record, dropped } of rows) {
-			const id = record.doi || (record.arxiv_id ? `arXiv:${record.arxiv_id}` : "");
-			if (!id) continue;
-			const key = record.doi ? `doi:${record.doi.toLowerCase()}` : `arxiv:${record.arxiv_id.replace(/v\d+$/i, "").toLowerCase()}`;
-			out.push({
-				id,
-				title: record.title,
-				year: record.year || null,
-				access: record.access?.level ?? null,
-				group: record.group ?? null,
-				dropped,
-				inLibrary: keys.has(key),
-				code: Boolean(record.code_url || record.data_links?.length),
-			});
-		}
-		return out;
-	};
+	const candidatesOf = (payload: SearchPayload): Candidate[] =>
+		candidatesFromRecords(payload.results as CandidateRecord[], payload.dropped as Array<{ record: CandidateRecord }>, listLibrary(root, cwd, deps.matchLibrary(root)).keys);
 
 	/** "Search again with these filters" from the result list: the period and
 	 * citation parts, read defensively. */

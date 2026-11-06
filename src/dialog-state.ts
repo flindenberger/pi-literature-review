@@ -553,6 +553,10 @@ export interface WizardOptions {
 	 * extensions/dialogs.ts fetches and dispatches setItems. a LIST
 	 * -- the search wizard lazily loads journals AND authors. */
 	itemLoaders?: WizardItemLoader[];
+	/** TUI: show the dialog in place of the input box instead of as an
+	 * overlay, so the end of the chat above (e.g. a result card with its
+	 * report link) stays visible. Short dialogs only. */
+	inline?: boolean;
 }
 
 export interface WizardItemLoader {

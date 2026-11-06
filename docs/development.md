@@ -113,7 +113,7 @@ Where each stage lives; the adapter/engine pair shares its basename.
 
 | File | Holds |
 |---|---|
-| `extensions/search.ts` | the `pi-literature-search` tool + `/lit-search` command: intake wizard (tabs, variant suggestions via the Pi model, journal/author loaders), digest card |
+| `extensions/search.ts` | the `pi-literature-search` tool + `/lit-search` command: intake wizard (tabs, variant suggestions via the Pi model, journal/author loaders), digest card, then the download question (second part of the stage) |
 | `src/search.ts` | run orchestration: per source and query fetch, pipeline steps in order, payload assembly, source failures |
 | `src/sources/arxiv.ts`, `crossref.ts`, `openalex.ts`, `semanticscholar.ts` | one client per source: query building (booleans, author scope), record normalization; OpenAlex also holds the facet queries, the abstract reconstruction and the access classification (`accessFromWork`, `lookupAccessByDoi`); CrossRef also the data-link lookup (`lookupDataLinksByDoi`, archive list `DATA_ARCHIVES`); OpenAlex also the author window's lookups (`lookupWorkAuthors`, `lookupAuthorFacts`) |
 | `src/sources/datacite.ts` | DataCite related identifiers for repository DOIs (`lookupDataciteLinks`, pure `dataLinksFromRelated`) and the combined CrossRef + DataCite lookup (`lookupAllDataLinks`) |
@@ -139,7 +139,8 @@ Where each stage lives; the adapter/engine pair shares its basename.
 
 | File | Holds |
 |---|---|
-| `extensions/selection.ts` | the `pi-literature-selection` tool + `/lit-selection` command: identifier dialog, Unpaywall-email dialog, consent dialog, per-paper report widget |
+| `extensions/selection.ts` | the `pi-literature-selection` tool + `/lit-selection` command: identifier dialog, Unpaywall-email dialog, folder and consent dialogs, per-paper report widget (`gatedSelection`, `showSelectionReport` also serve the download part of `/lit-search`) |
+| `src/pick.ts` | the paper pick after a search, shared by `/lit-search` and the browser: candidates from a payload, the typed answer (report line, row numbers, identifiers, `all`, `code`) |
 | `src/selection.ts` | identifier parsing, access gate (restricted / abstract only are reported, not tried), resolver chain (record link -> OpenAlex locations -> Unpaywall -> article page `citation_pdf_url` behind a robots.txt check -> arXiv), `%PDF` check, library naming, the report with the browser list |
 
 </details>

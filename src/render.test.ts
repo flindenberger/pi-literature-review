@@ -577,7 +577,7 @@ const html = renderHtml(payload);
 	assert.ok(html.includes('<div class="selectsteps"'));
 	assert.ok(html.includes("Copy download request"));
 	// the three steps, in order, and the state the script switches to
-	const steps = ["Tick papers to download", "Copy the request", "Paste it into the Pi chat"].map((t) => html.indexOf(t));
+	const steps = ["Tick papers to download", "Copy the request", "Paste it into Pi"].map((t) => html.indexOf(t));
 	assert.ok(steps.every((i, k) => i > 0 && (k === 0 || i > steps[k - 1])));
 	assert.ok(html.includes("Copied &mdash; now paste in Pi"));
 	assert.ok(html.includes('<svg width="15" height="15"')); // inline icon, no asset

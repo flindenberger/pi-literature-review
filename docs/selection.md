@@ -3,8 +3,15 @@
 Deterministic PDF retrieval for the records you selected on a search
 page. Legal open access only; no model anywhere in the download path.
 
-## Two ways in
+The download is the second part of stage 1, "Search and selection":
+`/lit-search` asks for the papers right after its results (see
+[search.md](search.md#download-the-second-part-of-the-stage)) and runs the
+same steps as below. `/lit-selection` is the side entrance -- for a later
+download, for identifier lists from elsewhere, and for the agent.
 
+## Ways in
+
+- Answer the download question of `/lit-search`.
 - Paste the sentence the results page copied for you
   (`Download these papers: 10.3390/rs13081505, arXiv:2401.16393`).
 - Or ask in plain words ("download the three on_target papers"). The agent

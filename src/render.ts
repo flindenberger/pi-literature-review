@@ -1252,7 +1252,7 @@ export function renderHtml(payload: RenderPayload, options?: { network?: boolean
 		? `<div class="selectsteps" title="The selection tool downloads the open-access PDFs into the folder you choose in the terminal dialog.">
 <span class="step step1"><b>1</b>Tick papers to download <span class="selectcount"></span></span><span class="sep">&rarr;</span>
 <span class="step step2"><b>2</b>Copy the request</span><span class="sep">&rarr;</span>
-<span class="step step3"><b>3</b>Paste it into the Pi chat</span>
+<span class="step step3" title="Into the open /lit-search download question, or into the Pi chat (/lit-selection takes it any time)"><b>3</b>Paste it into Pi</span>
 <span class="actions"><button type="button" class="select-all">Select all</button>
 <button type="button" class="select-clear">Clear</button>
 <button type="button" class="copy-selection" disabled>${DOWNLOAD_ICON}Copy download request</button></span>

@@ -28,7 +28,7 @@ import {
 	type VariantSuggestion,
 } from "../intake.ts";
 import { MAX_AUTHOR_WORKS_PER_SOURCE, MAX_PER_SOURCE } from "../search.ts";
-import { parseIdentifier } from "../selection.ts";
+import { type Candidate, parsePickAnswer, pickedIds } from "../pick.ts";
 import type { AuthorMatch } from "../sources/openalex.ts";
 import type { AnsweredQuestion, ChatAnswer } from "../synthesis.ts";
 import type { Stage } from "./files.ts";
@@ -152,17 +152,7 @@ export interface LibraryItem {
 	authors: string[];
 }
 
-export interface Candidate {
-	id: string;
-	title: string;
-	year: string | null;
-	access: string | null;
-	group: string | null;
-	dropped: boolean;
-	inLibrary: boolean;
-	/** The record carries a code repository or a publisher data link. */
-	code: boolean;
-}
+export type { Candidate } from "../pick.ts";
 
 export interface SearchOutcome {
 	name: string;
@@ -451,29 +441,7 @@ export function parseBlockLines(text: string): string[] {
 	return source.map((line) => line.replace(/^\(|\)$/g, "").trim()).filter(Boolean);
 }
 
-export type PickAnswer = { kind: "all" } | { kind: "code" } | { kind: "ids"; ids: string[] } | { kind: "none" };
-
-/** The paper-pick answer: "all" (on-target rows), "code" (rows with a
- * code or data link), row numbers of the results table, or identifiers. */
-export function parsePickAnswer(text: string, candidates: Candidate[]): PickAnswer {
-	const t = text.trim();
-	if (!t) return { kind: "none" };
-	const lower = t.toLowerCase();
-	if (/^(all|all on-target|everything)$/.test(lower)) return { kind: "all" };
-	if (/^(code|with code|papers with code)$/.test(lower)) return { kind: "code" };
-	const results = candidates.filter((candidate) => !candidate.dropped);
-	if (/^\d+(\s*[,;\s]\s*\d+)*$/.test(t)) {
-		const ids = [...new Set(t.split(/[^\d]+/).filter(Boolean).map(Number))]
-			.filter((n) => n >= 1 && n <= results.length)
-			.map((n) => results[n - 1].id);
-		return ids.length ? { kind: "ids", ids } : { kind: "none" };
-	}
-	const ids = t.replace(/^\s*download\s+these\s+papers\s*:?\s*/i, "").split(/[\s,;]+/).map((part) => part.trim()).filter(Boolean)
-		.map((part) => parseIdentifier(part))
-		.filter((target) => target.kind !== "unknown")
-		.map((target) => (target.kind === "arxiv" ? `arXiv:${target.id}` : target.id));
-	return ids.length ? { kind: "ids", ids: [...new Set(ids)] } : { kind: "none" };
-}
+export { parsePickAnswer, type PickAnswer } from "../pick.ts";
 
 export type Tweak = { kind: "count"; value: number } | { kind: "cites"; value: number } | { kind: "code"; on: boolean } | null;
 
@@ -1580,9 +1548,7 @@ function onPick(state: DialogState, event: Extract<DialogEvent, { kind: "answer"
 			// Ticks sent along with free text count too.
 			ids = (event.ids ?? []).map((id) => id.trim()).filter(Boolean);
 			if (!ids.length) return unclear(state, text, TEXT.pickUnclear, ctx, () => askPick(state, ctx, TEXT.pickUnclear));
-		} else if (parsed.kind === "all") ids = candidates.filter((candidate) => candidate.group === "on_target" && !candidate.inLibrary).map((candidate) => candidate.id);
-		else if (parsed.kind === "code") ids = candidates.filter((candidate) => candidate.code && !candidate.inLibrary).map((candidate) => candidate.id);
-		else ids = parsed.ids;
+		} else ids = pickedIds(parsed, candidates);
 	}
 	if (!ids.length) return result(askPick(state, ctx, "That selection is empty (every matching paper is already in the library)."));
 	const next = withAnswers(state, { pickIds: ids });

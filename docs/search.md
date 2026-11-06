@@ -242,6 +242,29 @@ Nothing disappears silently: every removed record sits in the dropped
 table with its reason, and a failed source is shown while the run
 continues.
 
+## Download: the second part of the stage
+
+Search and selection are one stage ("Search and selection"): after the
+results card, `/lit-search` asks **Which papers do you want as PDFs?** in
+the same dialog. Answers:
+
+- the line copied in the report (`Download these papers: ...`),
+- row numbers of the results table (`1 3 7`),
+- DOIs or arXiv IDs,
+- `all` (every on-target paper not yet in the library) or `code` (papers
+  with a code or data link).
+
+An answer that names no paper is asked again. An empty answer or Esc
+means *later*: the run ends as before, and `/lit-selection` takes the same
+input any time. A pick goes through the same steps as `/lit-selection`
+(Unpaywall email while none is configured, download folder, confirmation;
+see [selection.md](selection.md)), and the per-paper report shows as a
+widget, the papers to open in the browser (restricted, or free but
+blocked for automatic download) first. A PDF saved by hand into a PDF
+folder is recognised by the DOI or arXiv ID printed in it. The agent's
+short summary comes once, after this question, covering search and
+download.
+
 ## The results page
 
 `lit-search/<date>_<query>.html` plus a JSON sidecar of the same basename,
@@ -287,9 +310,11 @@ else the link the source delivered; restricted rows and image files
 tables sums the markers of the results table. Every row stays tickable.
 
 **Download steps**: a strip above the results table, sticky while
-scrolling, walks through the handover to `/lit-selection` in three steps:
+scrolling, walks through the handover to the download in three steps:
 tick rows in either table (ticked rows stay tinted), press "Copy download
-request", paste `Download these papers: <id>, ...` into the Pi chat. The
+request", paste `Download these papers: <id>, ...` into Pi -- into the
+open download question of `/lit-search` (see below), or later into
+`/lit-selection` or the chat. The
 step markers fill as each step is done. When ticked rows are restricted
 or abstract only, a note under the steps says how many and what that
 means for the download.

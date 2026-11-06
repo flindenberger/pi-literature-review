@@ -56,6 +56,14 @@ All notable changes to this package are listed here. The format follows
 
 ### Changed
 
+- Two stages instead of three: "Search and selection" and "Summary and
+  synthesis". `/lit-search` asks after its results which papers to
+  download (the copied report line, row numbers, identifiers, `all`,
+  `code`; empty or Esc = later) and runs the download in the same dialog;
+  the per-paper report lists the papers to open in the browser first, and
+  says that a PDF saved by hand into a PDF folder is recognised by its
+  DOI. `/lit-selection` stays as the side entrance. The report's step 3
+  reads "Paste it into Pi".
 - Model calls on the Pi model go through Pi's model registry
   (`streamSimple`) instead of the deprecated `pi-ai/compat` entry, so
   request-time credentials, base URL and provider environment apply.

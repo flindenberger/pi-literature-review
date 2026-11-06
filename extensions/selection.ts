@@ -297,19 +297,19 @@ async function folderDialog(
 	}
 }
 
-/** Outcome of the gated run shared by the tool and the command. */
-type SelectionOutcome =
+/** Outcome of the gated run shared by the tool and the commands. */
+export type SelectionOutcome =
 	| { status: "cancelled"; where: "Unpaywall email" | "folder" | "confirmation" }
 	| { status: "aborted" }
 	| { status: "done"; report: string };
 
 /**
- * The gates and the download, shared by the tool and the /lit-selection
- * command: Unpaywall email (while none is configured), consent dialog,
+ * The gates and the download, shared by the tool, the /lit-selection
+ * command and the download part of /lit-search: Unpaywall email (while none is configured), consent dialog,
  * abort check, then runSelection. Headless callers (no UI) skip the
  * dialogs. The caller turns the outcome into its own wording.
  */
-async function gatedSelection(
+export async function gatedSelection(
 	ctx: ExtensionContext,
 	identifiers: string[],
 	diagnostics: string[],
@@ -341,6 +341,18 @@ async function gatedSelection(
 	const { results, papersDir } = await runSelection({ identifiers, mailto: runMailto, onWarn, signal, ...(folder ? { dir: folder } : {}) });
 	if (folder) rememberDownloadDir(folder);
 	return { status: "done", report: renderFetchReport(results, papersDir) };
+}
+
+/** The per-paper report in the widget, capped (widgets do not scroll):
+ * the summary line and the "Open in your browser" list come first, the
+ * per-paper lines after. */
+export function showSelectionReport(ctx: ExtensionContext, report: string): void {
+	const lines = report.split("\n");
+	const browserAt = lines.findIndex((line) => line.startsWith("Open in your browser ("));
+	const ordered = browserAt > 0 ? [...lines.slice(0, 3), ...lines.slice(browserAt), "", ...lines.slice(3, browserAt)] : lines;
+	ctx.ui.setWidget(SELECTION_WIDGET, ordered.length > 18
+		? [...ordered.slice(0, 17), `... (${ordered.length - 17} more lines)`]
+		: ordered);
 }
 
 export default function literatureSelection(pi: ExtensionAPI) {
@@ -452,12 +464,7 @@ export default function literatureSelection(pi: ExtensionAPI) {
 					return;
 				}
 				if (outcome.status === "aborted") return;
-				// Show the per-paper report in the widget (capped; the full
-				// report is what the widget lines are cut from).
-				const reportLines = outcome.report.split("\n");
-				ctx.ui.setWidget(SELECTION_WIDGET, reportLines.length > 16
-					? [...reportLines.slice(0, 15), `... (${reportLines.length - 15} more lines)`]
-					: reportLines);
+				showSelectionReport(ctx, outcome.report);
 			} catch (error) {
 				ctx.ui.notify(`Download failed: ${error instanceof Error ? error.message : error}`, "error");
 			}
