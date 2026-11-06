@@ -134,8 +134,13 @@ Citation superscripts open the PDF at the page and highlight the WHOLE
 cited passage. At index time the code measures how much of each chunk the
 PDF viewer can actually find -- `src/pdfjs-find.ts` reproduces pdf.js's
 own text matching -- and offers only that much. In Firefox 90-99 % of
-excerpts highlight in full; Chromium opens the page but ignores the
-passage search.
+excerpts highlight in full. A report opened as a file in Chromium-based
+browsers (Chrome, Edge, Brave ...) opens the page but not the highlight:
+their built-in viewer ignores the passage search. In the browser
+interface every PDF opens in the interface's own viewer instead
+(`static/pdfview.html`, the pdf.js build unpdf ships), which highlights
+the passage in every browser with the same matching rules
+(`pdfjsNormalizeMapped` puts a match back onto the text layer).
 
 ### HTML-write gate
 

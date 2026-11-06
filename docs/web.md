@@ -491,7 +491,12 @@ over several papers the citation marks carry the paper's letter, fixed
 for the conversation, plus the passage number within that paper (A1, A2,
 B1); hovering a mark shows the paper, page, passage and DOI ("Show in the
 PDF"); the panel shows one tab per cited paper (same letter) and the
-chat's report, each tab keeping its own page and marks. Answers show
+chat's report, each tab keeping its own page and marks. Every PDF opens
+in the interface's own viewer (`static/pdfview.html`: pages and text
+layer with the pdf.js build unpdf ships; zoom, fit width, page number),
+which jumps to the cited page and highlights the passage in every
+browser -- Chromium's built-in viewer ignores the passage search; the
+reports served to the browser link their marks to it too. Answers show
 the prose with the marks only (no passage list, paper list or provenance
 line; the HTML reports keep them). The page sends the sources as
 basenames (`chat.scope`, `chat.scopeLabel`; a report button adds
@@ -550,7 +555,10 @@ its `file://` links for use outside the server.
 The server binds to the loopback address only. Every request needs the
 random token the start command printed: the first visit carries it in the
 address, the answer sets an `HttpOnly`, `SameSite=Strict` cookie and
-redirects to the clean address. The `Host` header must name the loopback
+redirects to the clean address. That clean address alone does not open
+the page in a second browser (no cookie there): a page request without
+the key gets a short page saying to use the full address printed by
+`/pi-literature-review` or the standalone command. The `Host` header must name the loopback
 address (DNS rebinding), API answers are `Cache-Control: no-store`, and
 files are served only from the stage folders of the store and from the
 PDF library (found by scanning, never built from the request). Folders

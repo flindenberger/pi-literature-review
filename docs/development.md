@@ -184,7 +184,7 @@ Where each stage lives; the adapter/engine pair shares its basename.
 | `src/web/open.ts` | open the browser or a folder without a shell |
 | `src/web/history.ts` | the conversation history: one JSON snapshot per conversation in the history folder (next to the configuration file, `PI_LITERATURE_REVIEW_HISTORY` overrides), atomic save, listing, load, delete, clear; ids are file names, never paths |
 | `src/web/blockcache.ts` | the saved keyword blocks: the model's proposal per request text and mode (`own` = the request's own words, `synonyms`), one JSON file next to the configuration (`PI_LITERATURE_REVIEW_BLOCK_CACHE` overrides), atomic save, clear; same request, same blocks |
-| `src/web/static/` | the page: `index.html`, `app.js` (plain JavaScript: renders the dialog state, sends answers, SSE client, report panel, rail lists, Settings dialog), `style.css` (the report look) |
+| `src/web/static/` | the page: `index.html`, `app.js` (plain JavaScript: renders the dialog state, sends answers, SSE client, report panel, rail lists, Settings dialog), `style.css` (the report look); `pdfview.html` + `pdfview.js` (the PDF viewer: pages and text layer with unpdf's pdf.js, served as `/static/pdfjs.mjs`; highlights the cited passage from `#page=..&search=..`), `pdfjs-find.mjs` (GENERATED from `src/pdfjs-find.ts` by `src/web/static-gen.ts`; web.test fails when stale) |
 | `src/provider.ts` | the model provider interface (`status`, `generate`, `wiring`) and the endpoint provider for standalone use |
 
 </details>

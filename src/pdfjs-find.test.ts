@@ -99,4 +99,20 @@ import { NFKC_NORMALIZE_CHARS, PDFJS_OPTIONS, pdfjsNormalize, pdfjsQueryRegExp, 
 // print into pi's TUI (field case: "Warning: TT: undefined function: 3").
 assert.equal(PDFJS_OPTIONS.verbosity, 0);
 
+{
+	// The mapped normalization gives the same text, and every output
+	// character points at the input character it came from.
+	const { pdfjsNormalizeMapped } = await import("./pdfjs-find.ts");
+	for (const input of ["of\uFB01-\ncial data", "classi\uFB01cation", "na\u00EFve \u201Cquoted\u201D", "broken-\nword and line\nend", "Caf\u00E9 \u00BD", "\uD835\uDC00 math"]) {
+		const mapped = pdfjsNormalizeMapped(input);
+		assert.equal(mapped.text, pdfjsNormalize(input), input);
+		assert.equal(mapped.source.length, mapped.text.length);
+		assert.ok(mapped.source.every((index, k) => index >= 0 && index < input.length && (k === 0 || index >= mapped.source[k - 1])), input);
+	}
+	// "broken-\nword": the joined word maps back to both halves.
+	const broken = pdfjsNormalizeMapped("broken-\nword");
+	assert.equal(broken.text, "brokenword");
+	assert.equal(broken.source[broken.text.indexOf("w")], "broken-\n".length);
+}
+
 console.log("pdfjs-find.test.ts: all assertions passed");

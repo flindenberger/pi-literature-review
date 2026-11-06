@@ -2494,19 +2494,27 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	 * parameter ignore it. */
 	const withPagemode = (href) => /pagemode=/.test(href) ? href : `${href}${href.includes("#") ? "&" : "#"}pagemode=none`;
 	const pathOf = (url) => url.replace(/[?#].*$/, "");
+	/** A library PDF opens in the interface's own viewer (pdfview.html),
+	 * which highlights the cited passage in every browser; other
+	 * addresses stay as they are. The fragment (#page, &search) carries over. */
+	function viewerHref(href) {
+		if (!/^\/pdf\//.test(href)) return href;
+		const hash = href.includes("#") ? href.slice(href.indexOf("#")) : "";
+		return `/static/pdfview.html?file=${encodeURIComponent(pathOf(href))}${hash}`;
+	}
 	/** Point a viewer frame at a PDF passage: a new document loads, the
 	 * same document only moves its fragment (page, marked passage). */
 	function navigateFrame(target, href, fresh = false) {
-		const hash = href.includes("#") ? href.slice(href.indexOf("#")) : "";
+		const view = viewerHref(href);
+		const hash = view.includes("#") ? view.slice(view.indexOf("#")) : "";
 		const loaded = target.getAttribute("src") || "";
-		if (fresh) {
-			// A new chat: the document loads anew, without the marks of the last one.
-			target.src = `${pathOf(href)}?view=${Date.now()}${hash}`;
-		} else if (loaded && pathOf(loaded) === pathOf(href)) {
+		const same = loaded && loaded.replace(/#.*$/, "") === view.replace(/#.*$/, "");
+		if (same && !fresh) {
 			const next = `${loaded.replace(/#.*$/, "")}${hash}`;
 			try { target.contentWindow.location.replace(next); } catch { target.src = next; }
 		} else {
-			target.src = href;
+			// A new chat loads the document anew, without the last marks.
+			target.src = fresh ? view.replace("?file=", `?v=${Date.now()}&file=`) : view;
 		}
 	}
 	function showPdf(rawHref, fresh = false) {
@@ -2615,7 +2623,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	function activateTab(id) {
 		const tab = state.tabs.find((entry) => entry.id === id);
 		if (!tab) return;
-		if (!tab.url && tab.home) { tab.url = tab.home; tab.frame.src = tab.home; }
+		if (!tab.url && tab.home) { tab.url = tab.home; tab.frame.src = viewerHref(tab.home); }
 		state.activeTab = id;
 		for (const entry of state.tabs) entry.frame.hidden = entry.id !== id;
 		frame.hidden = true;
@@ -2711,7 +2719,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		syncLayoutBar();
 	});
 	frame.addEventListener("load", syncLayoutBar);
-	$("btn-newtab").addEventListener("click", () => { if (state.report.url) window.open(state.report.url, "_blank"); });
+	$("btn-newtab").addEventListener("click", () => { if (state.report.url) window.open(viewerHref(state.report.url), "_blank"); });
 	/** The file behind the panel (a diagram's SVG, not its viewer page), saved under its own name. */
 	$("btn-download").addEventListener("click", () => {
 		let url = state.report && state.report.url;
@@ -3341,10 +3349,21 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		if (!pop.hidden) { pop.hidden = true; return; }
 		const p = state.info && state.info.provider;
 		const model = p && p.model ? `${esc(p.model)}${p.remote ? " (a remote service: the passages you ask about go there)" : " (local)"}` : "none selected yet";
-		pop.innerHTML = `<p><b>Where your data goes.</b> Search queries go to arXiv, Crossref and OpenAlex (open, no account; Semantic Scholar only with a free key). Your PDFs stay on this machine. LLM: ${model}. Embeddings: ${esc(p ? p.embeddings : "")}, local.</p><p><b>Citations</b> are inserted and checked by code, never written by the model.</p><p><b>Downloads</b> are legal open access only; restricted papers are listed with a browser link.</p><p><b>License.</b> Free and open source under the MIT License: use, change and share it, also commercially, as long as the copyright notice stays. <a href="https://github.com/flindenberger/pi-literature-review/blob/main/LICENSE" target="_blank" rel="noopener">LICENSE</a></p><p class="cite"><b>How to cite.</b> If this tool supports your academic work, please cite it:<span class="ref" id="cite-text">${esc(CITE_TEXT)}</span><button type="button" class="ibtn" id="btn-cite-copy" title="Copy the citation">Copy</button></p>`;
+		pop.innerHTML = `<p><b>Where your data goes.</b> Search queries go to arXiv, Crossref and OpenAlex (open, no account; Semantic Scholar only with a free key). Your PDFs stay on this machine. LLM: ${model}. Embeddings: ${esc(p ? p.embeddings : "")}, local.</p><p><b>Citations</b> are inserted and checked by code, never written by the model.</p><p><b>Downloads</b> are legal open access only; restricted papers are listed with a browser link.</p><p><b>License.</b> Free and open source under the MIT License: use, change and share it, also commercially, as long as the copyright notice stays. <a href="https://github.com/flindenberger/pi-literature-review/blob/main/LICENSE" target="_blank" rel="noopener">LICENSE</a></p><p class="cite"><b>Another browser.</b> This page opens only through its full address with the access key; copy it into any other browser.<button type="button" class="ibtn" id="btn-link-copy" title="Copy the full address with its access key">Copy link</button></p><p class="cite"><b>How to cite.</b> If this tool supports your academic work, please cite it:<span class="ref" id="cite-text">${esc(CITE_TEXT)}</span><button type="button" class="ibtn" id="btn-cite-copy" title="Copy the citation">Copy</button></p>`;
 		pop.hidden = false;
+		// Fetched now, so the copy click itself writes at once.
+		state.fullAddress = "";
+		get("/api/address").then((data) => { state.fullAddress = data.url || ""; }).catch(() => {});
 	});
 	$("info-pop").addEventListener("click", async (event) => {
+		if (event.target.closest("#btn-link-copy")) {
+			try {
+				const url = state.fullAddress || (await get("/api/address")).url;
+				await navigator.clipboard.writeText(url);
+				toast("Link copied. Paste it into the other browser; it changes when Pi or the server restarts.");
+			} catch { toast("Copying is blocked here; the full address is printed in Pi."); }
+			return;
+		}
 		if (!event.target.closest("#btn-cite-copy")) return;
 		try { await navigator.clipboard.writeText(CITE_TEXT); toast("Citation copied."); }
 		catch { toast("Copying is blocked here; select the text instead."); }

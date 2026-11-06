@@ -84,18 +84,58 @@ const NORMALIZATION_REGEXP = new RegExp([
  * the broken-word repair, which is exactly the ligature case above.
  */
 export function pdfjsNormalize(text: string): string {
-	return text.normalize("NFD").replace(NORMALIZATION_REGEXP,
-		(match, p1: string, p2: string, p3: string, p4: string, p5: string, p6: string, p7: string, p8: string) => {
-			if (p1) return CHARACTERS_TO_NORMALIZE[p1];
-			if (p2) return p2.normalize("NFKC");
-			if (p3) return p3.charAt(0);
-			if (p4) return p4.endsWith("\n") ? p4.slice(0, p4.length - 2) : p4;
-			if (p5) return p5.slice(0, -2); // broken word: hyphen and EOL drop out
-			if (p6) return p6.slice(0, -1); // other dash before EOL: dash stays
-			if (p7) return p7.slice(0, -1);
-			if (p8) return " "; // end of line reads as a space
-			return match;
-		});
+	return text.normalize("NFD").replace(NORMALIZATION_REGEXP, replacement);
+}
+
+/** One normalize() replacement, as the viewer applies it. */
+function replacement(match: string, p1: string, p2: string, p3: string, p4: string, p5: string, p6: string, p7: string, p8: string): string {
+	if (p1) return CHARACTERS_TO_NORMALIZE[p1];
+	if (p2) return p2.normalize("NFKC");
+	if (p3) return p3.charAt(0);
+	if (p4) return p4.endsWith("\n") ? p4.slice(0, p4.length - 2) : p4;
+	if (p5) return p5.slice(0, -2); // broken word: hyphen and EOL drop out
+	if (p6) return p6.slice(0, -1); // other dash before EOL: dash stays
+	if (p7) return p7.slice(0, -1);
+	if (p8) return " "; // end of line reads as a space
+	return match;
+}
+
+/**
+ * pdfjsNormalize() plus, for every character of the result, the index of
+ * the input character it came from -- what a viewer needs to put a match
+ * found in the normalized text back onto the text layer. Same text as
+ * pdfjsNormalize (tested).
+ */
+export function pdfjsNormalizeMapped(text: string): { text: string; source: number[] } {
+	// NFD per input character, remembering where each unit came from.
+	let decomposed = "";
+	const fromInput: number[] = [];
+	for (let index = 0; index < text.length;) {
+		const point = text.codePointAt(index) ?? 0;
+		const width = point > 0xffff ? 2 : 1;
+		const units = text.slice(index, index + width).normalize("NFD");
+		decomposed += units;
+		for (let k = 0; k < units.length; k++) fromInput.push(index);
+		index += width;
+	}
+	let out = "";
+	const source: number[] = [];
+	let last = 0;
+	const copy = (from: number, to: number): void => {
+		out += decomposed.slice(from, to);
+		for (let k = from; k < to; k++) source.push(fromInput[k]);
+	};
+	decomposed.replace(NORMALIZATION_REGEXP, (match: string, ...rest: unknown[]) => {
+		const offset = rest[8] as number;
+		copy(last, offset);
+		const piece = replacement(match, ...(rest.slice(0, 8) as [string, string, string, string, string, string, string, string]));
+		out += piece;
+		for (let k = 0; k < piece.length; k++) source.push(fromInput[offset + Math.min(k, match.length - 1)]);
+		last = offset + match.length;
+		return "";
+	});
+	copy(last, decomposed.length);
+	return { text: out, source };
 }
 
 const SPECIAL_CHARS_REGEXP = /([+^$|])|(\p{P}+)|(\s+)|(\p{M})|(\p{L})/gu;

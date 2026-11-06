@@ -211,6 +211,32 @@ const AUTHOR_MATCH_LIMIT = 6;
 const CODE_TOPIC_LIMIT = 5;
 const LOOKUP_TIMEOUT_MS = 8_000;
 const COOKIE = "plr_token";
+/** pdf.js as unpdf bundles it (display layer included), for the viewer page. */
+const PDFJS_BUILD = fileURLToPath(import.meta.resolve("unpdf/pdfjs"));
+
+/** Shown to a browser that opens the interface without its access key. */
+const KEY_NEEDED_PAGE = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pi-literature-review</title>
+<style>
+body { margin: 0; font-family: system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; color: #1c1c1c; background: #fdfdfc; line-height: 1.5; }
+main { max-width: 34rem; margin: 12vh auto; padding: 0 1.5rem; }
+h1 { font-size: 1.3rem; margin: 0 0 0.8rem; }
+p { margin: 0.6rem 0; }
+code { font-family: "DejaVu Sans Mono", Consolas, monospace; font-size: 0.88em; background: #f1f1ec; padding: 0.05em 0.3em; border-radius: 3px; }
+ul { padding-left: 1.2rem; }
+li { margin: 0.35rem 0; }
+</style></head>
+<body><main>
+<h1>This page needs its full address</h1>
+<p>The literature-review interface only opens through the address that carries its access key (<code>...?token=...</code>), so other websites and programs on this computer cannot use it. This browser does not have the key yet.</p>
+<ul>
+<li><b>In Pi:</b> type <code>/pi-literature-review</code> again. It opens your default browser and prints the full address.</li>
+<li><b>Without Pi:</b> the terminal running <code>npx pi-literature-review web</code> shows the full address.</li>
+</ul>
+<p>To use another browser, copy that full address, including <code>?token=...</code>, into it. After a restart of Pi or the server the address changes.</p>
+</main></body></html>
+`;
 /** Hides the terminal hand-off (tick column, copy steps) in search reports
  * opened in the browser; the file on disk keeps it for the terminal. */
 const BROWSER_REPORT_STYLE = `<style>.selectsteps, td.pickcell > *, th[title^="Select rows"] > * { display: none !important; }
@@ -453,6 +479,14 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 	let port = 0;
 
 	const pdfHref = webPdfHref(PDF_ROUTE);
+	/** Report pages served to the browser link their citations to the
+	 * interface's PDF viewer, which highlights the passage in every browser. */
+	const viewerPdfHref: typeof pdfHref = (path, page, snippet) => {
+		const href = pdfHref(path, page, snippet);
+		const cut = href.indexOf("#");
+		const file = cut < 0 ? href : href.slice(0, cut);
+		return `/static/pdfview.html?file=${encodeURIComponent(file)}${cut < 0 ? "" : href.slice(cut)}`;
+	};
 	const fileUrl = (htmlPath: string): string => {
 		const name = htmlPath.split(/[\\/]/).pop() ?? "";
 		const stage = htmlPath.includes(`${join(root, "lit-synthesis")}`) ? "lit-synthesis" : "lit-search";
@@ -1243,11 +1277,21 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 		}
 		const bearer = (req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
 		if (cookieValue(req, COOKIE) !== token && bearer !== token) {
+			// A page opened in a browser without the key (e.g. the short
+			// address copied into a second browser) gets a page that says
+			// what to do; API calls keep the JSON error.
+			if (method === "GET" && /text\/html/.test(req.headers.accept ?? "")) {
+				res.writeHead(401, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+				res.end(KEY_NEEDED_PAGE);
+				return;
+			}
 			throw new HttpError(401, "not authorized -- open the address printed in pi (it carries the token)");
 		}
 
 		// Interface files.
 		if (method === "GET" && (path === "/" || path === "/index.html")) return serveStatic(res, "index.html");
+		// The PDF viewer's pdf.js: the build the package already ships (unpdf).
+		if (method === "GET" && path === "/static/pdfjs.mjs") return serveFile(res, PDFJS_BUILD);
 		if (method === "GET" && path.startsWith("/static/")) return serveStatic(res, path.slice("/static/".length));
 
 		// Output files: reports and sidecars from the three stage folders;
@@ -1298,6 +1342,9 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 		const route = `${method} ${path}`;
 
 		if (route === "GET /api/state") return json(res, 200, await state());
+		// The full address with the key, for opening the page in another
+		// browser (only an authorized page can ask for it).
+		if (route === "GET /api/address") return json(res, 200, { url: `http://127.0.0.1:${port}/?token=${token}` });
 		if (route === "GET /api/events") {
 			const connection = openSse(res);
 			connections.add(connection);
@@ -2023,10 +2070,10 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 		}
 		try {
 			if (Array.isArray(payload?.units) && Array.isArray(payload?.papers)) {
-				return renderSynthReportHtml(payload as SynthReport, { pdfHref });
+				return renderSynthReportHtml(payload as SynthReport, { pdfHref: viewerPdfHref });
 			}
 			if (Array.isArray(payload?.rounds) && payload?.paper?.pdf_path) {
-				return renderPaperChatReportHtml(payload as ChatReport, { pdfHref });
+				return renderPaperChatReportHtml(payload as ChatReport, { pdfHref: viewerPdfHref });
 			}
 		} catch {
 			return null;

@@ -8,6 +8,12 @@ All notable changes to this package are listed here. The format follows
 
 ### Added
 
+- Browser interface: its own PDF viewer (the pdf.js build unpdf already
+  ships) jumps to the cited page and highlights the passage in every
+  browser, Chromium-based ones included; reports served to the browser
+  link their citation marks to it. Info button: "Copy link" copies the
+  full address with its access key for another browser; a page opened
+  without the key explains how to get it instead of a JSON error.
 - Optional OpenAlex API key (`openAlexApiKey`,
   `PI_LITERATURE_REVIEW_OPENALEX_API_KEY`, browser Settings): OpenAlex now
   meters requests, and without a key every machine behind one IP address

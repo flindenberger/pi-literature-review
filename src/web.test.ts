@@ -238,6 +238,13 @@ const auth = { cookie: "plr_token=t0ken" };
 try {
 	// 401 without the token; 403 with a foreign host; cookie after ?token=.
 	assert.equal((await fetch(`${base}/api/state`)).status, 401);
+	// A browser without the key gets an explaining page, not JSON.
+	{
+		const page = await fetch(`${base}/`, { headers: { accept: "text/html,application/xhtml+xml" } });
+		assert.equal(page.status, 401);
+		assert.ok((page.headers.get("content-type") ?? "").startsWith("text/html"));
+		assert.ok((await page.text()).includes("This page needs its full address"));
+	}
 	// fetch() overrides the Host header; a raw request carries the foreign one.
 	const foreignHost = await new Promise<number>((resolve, reject) => {
 		request({ host: "127.0.0.1", port: server.port, path: "/api/state", headers: { host: "evil.example:1", cookie: "plr_token=t0ken" } }, (res) => {
@@ -254,12 +261,26 @@ try {
 	assert.equal(page.status, 200);
 	assert.match(await page.text(), /pi-literature-review/);
 	assert.equal((await fetch(`${base}/static/app.js`, { headers: auth })).status, 200);
+	// The PDF viewer: its page, the shipped pdf.js build and the generated
+	// matching module (must equal src/pdfjs-find.ts minus types).
+	assert.equal((await fetch(`${base}/static/pdfview.html`, { headers: auth })).status, 200);
+	{
+		const pdfjsBuild = await fetch(`${base}/static/pdfjs.mjs`, { headers: auth });
+		assert.equal(pdfjsBuild.status, 200);
+		assert.match(pdfjsBuild.headers.get("content-type") ?? "", /javascript/);
+		await pdfjsBuild.arrayBuffer();
+		const { pdfjsFindModule, PDFJS_FIND_COPY } = await import("./web/static-gen.ts");
+		assert.equal(readFileSync(PDFJS_FIND_COPY, "utf8"), pdfjsFindModule(), "static/pdfjs-find.mjs is stale: run node src/web/static-gen.ts");
+	}
 	// Bearer header works too (curl, tests).
 	const state = await (await fetch(`${base}/api/state`, { headers: { authorization: "Bearer t0ken" } })).json();
 	assert.equal(state.provider.model, "stub-model");
 	assert.equal(state.provider.modelReachable, false);
 	assert.equal(state.provider.embeddingsReachable, true);
 	assert.equal(state.counts.runs, 1);
+	// The full address for another browser: authorized pages only.
+	assert.match((await (await fetch(`${base}/api/address`, { headers: auth })).json()).url, /^http:\/\/127\.0\.0\.1:\d+\/\?token=t0ken$/);
+	assert.equal((await fetch(`${base}/api/address`)).status, 401);
 	// Example questions: no chosen paper of the library -> null (templates stay).
 	for (const body of [{ bases: [] }, { bases: ["no-such-paper"] }]) {
 		const reply = await (await fetch(`${base}/api/chat/examples`, { method: "POST", headers: { authorization: "Bearer t0ken", "content-type": "application/json" }, body: JSON.stringify(body) })).json();

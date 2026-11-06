@@ -91,7 +91,9 @@ button.primary:hover { background: #000000; }
 .rail-list .hist-more:hover { color: var(--ink); background: #ecece6; }
 .rail-note { font-size: 0.72rem; color: var(--muted); padding: 0.15rem 0.3rem 0 0.9rem; }
 .rail .spacer { flex: 1; }
-.rail .status { font-size: 0.76rem; color: #3d3d3d; border-top: 1px solid var(--line); padding-top: 0.7rem; }
+/* Status line and icons stay at the bottom of the rail however long its lists get (bottom -1rem = the rail's padding: flush with its edge). */
+.rail .railfoot { position: sticky; bottom: -1rem; z-index: 4; margin: 0 -0.9rem -1rem; padding: 0.7rem 0.9rem 1rem; background: #f6f6f2; border-top: 1px solid var(--line); }
+.rail .status { font-size: 0.76rem; color: #3d3d3d; }
 .rail .links { display: flex; gap: 0.4rem; margin-top: 0.6rem; flex-wrap: wrap; }
 .rail .rail-icon { padding: 0.3rem; border: 1px solid transparent; background: transparent; color: #3d3d3d; display: inline-flex; align-items: center; gap: 0.4rem; border-radius: 6px; font-size: 0.84rem; }
 .rail .rail-icon svg { width: 1.15rem; height: 1.15rem; flex: none; }
