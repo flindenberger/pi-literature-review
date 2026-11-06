@@ -1983,7 +1983,7 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 			const body = (await readBody(req)) as Record<string, unknown>;
 			const value = typeof body.value === "string" ? body.value.trim() : "";
 			if (/\s/.test(value)) throw new HttpError(400, "a key has no spaces");
-			if (body.name === "s2ApiKey" || body.name === "githubToken") {
+			if (body.name === "s2ApiKey" || body.name === "openAlexApiKey" || body.name === "githubToken") {
 				updateStoredConfig({ [body.name]: value || undefined });
 			} else if (body.name === "llmApiKey") {
 				const llm: Record<string, unknown> = { ...storedConfigView().llm };

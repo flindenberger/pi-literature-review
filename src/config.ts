@@ -49,6 +49,10 @@ export interface StoredConfig {
 	/** Optional Semantic Scholar API key: the anonymous shared pool is
 	 * heavily contended; a free key gives a dedicated 1 request/second. */
 	s2ApiKey?: string;
+	/** Optional OpenAlex API key (free at openalex.org/settings/api-key):
+	 * an own daily budget instead of the one shared by every machine
+	 * behind the same IP address. Sent as a bearer header, never in a URL. */
+	openAlexApiKey?: string;
 	/** GitHub topics whose awesome lists the code-first "awesome-lists"
 	 * source reads (default: remote-sensing, satellite-imagery,
 	 * earth-observation -- the tool is otherwise domain-neutral). */
@@ -162,7 +166,7 @@ export function storedConfigView(): {
 	generateThinking: ThinkingSetting;
 	browserModel: string;
 	llm: Partial<LlmConfig> & { chatModel?: string };
-	keys: { s2ApiKey: boolean; githubToken: boolean; llmApiKey: boolean };
+	keys: { s2ApiKey: boolean; openAlexApiKey: boolean; githubToken: boolean; llmApiKey: boolean };
 } {
 	const stored = loadStoredConfig();
 	const { apiKey, ...llm } = stored.llm ?? {};
@@ -173,7 +177,7 @@ export function storedConfigView(): {
 		generateThinking: thinkingFor("generation", {}, stored),
 		browserModel: browserModel(stored),
 		llm,
-		keys: { s2ApiKey: Boolean(stored.s2ApiKey), githubToken: Boolean(stored.githubToken), llmApiKey: Boolean(apiKey) },
+		keys: { s2ApiKey: Boolean(stored.s2ApiKey), openAlexApiKey: Boolean(stored.openAlexApiKey), githubToken: Boolean(stored.githubToken), llmApiKey: Boolean(apiKey) },
 	};
 }
 
@@ -209,6 +213,13 @@ export function codeListTopics(
 	if (fromEnv.length) return fromEnv;
 	const fromConfig = (stored.codeListTopics ?? []).map((t) => String(t).trim()).filter(Boolean);
 	return fromConfig.length ? fromConfig : [...DEFAULT_CODE_LIST_TOPICS];
+}
+
+export function openAlexApiKey(
+	env: Record<string, string | undefined> = process.env,
+	stored: StoredConfig = loadStoredConfig(),
+): string {
+	return pick(env.PI_LITERATURE_REVIEW_OPENALEX_API_KEY, stored.openAlexApiKey);
 }
 
 export function s2ApiKey(

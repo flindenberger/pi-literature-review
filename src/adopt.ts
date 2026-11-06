@@ -25,6 +25,7 @@ import { join } from "node:path";
 import { buildPaperMeta, parseIdentifier, type PaperMeta, type SidecarEntry } from "./selection.ts";
 import { extractPdfPages } from "./extract.ts";
 import { lookupArxivIds } from "./sources/arxiv.ts";
+import { openAlexHeaders, openAlexStatusHint } from "./sources/openalex.ts";
 import { contactMailto, userAgent } from "./types.ts";
 import { twinSaver } from "./library.ts";
 
@@ -149,12 +150,12 @@ export async function lookupDoiOpenAlex(doi: string, signal?: AbortSignal): Prom
 	const response = await fetch(
 		`https://api.openalex.org/works/doi:${encodeURIComponent(doi)}${query}`,
 		{
-			headers: { "User-Agent": userAgent() },
+			headers: openAlexHeaders(),
 			signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(LOOKUP_TIMEOUT_MS)]) : AbortSignal.timeout(LOOKUP_TIMEOUT_MS),
 		},
 	);
 	if (response.status === 404) return null;
-	if (!response.ok) throw new Error(`OpenAlex answered HTTP ${response.status}`);
+	if (!response.ok) throw new Error(`OpenAlex answered HTTP ${response.status}${openAlexStatusHint(response.status) ? ` -- ${openAlexStatusHint(response.status)}` : ""}`);
 	const work = await response.json() as {
 		display_name?: string;
 		publication_year?: number;

@@ -9,7 +9,9 @@
 The package itself requires no accounts, API keys, or paid services. A free
 Semantic Scholar key adds it as a fourth search source (without one it is
 not queried: its anonymous access is almost always overloaded); a GitHub
-token raises the code-search rate limits. Both go into `config.json` — see
+token raises the code-search rate limits; a free OpenAlex key gives you your
+own daily OpenAlex budget instead of the one shared by everyone on your
+network. They go into `config.json` — see
 [Configuration](configuration.md).
 
 

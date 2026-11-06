@@ -87,6 +87,8 @@ export interface RenderPayload {
 	abstract_lookup_failures?: Array<{ source: string; error: string; records: number }> | null;
 	/** Sources deliberately not queried (an optional API key missing). */
 	sources_skipped?: Array<{ source: string; reason: string }> | null;
+	/** OpenAlex ran with an own API key (false: the shared budget; null/absent: unused or older run). */
+	openalex_keyed?: boolean | null;
 	/** Boolean expression actually sent to arXiv per query (null: arXiv unused). */
 	arxiv_queries?: string[] | null;
 	/** Authors picked in the wizard's lookup (null: none): names, OpenAlex
@@ -1227,7 +1229,10 @@ export function renderHtml(payload: RenderPayload, options?: { network?: boolean
 	// note on the Sources row, never a failure.
 	const skippedNote = (payload.sources_skipped ?? [])
 		.map((s) => `<span class="note"> -- ${esc(s.source)} ${esc(s.reason)}</span>`)
-		.join("");
+		.join("")
+		+ (payload.openalex_keyed === false
+			? `<span class="note"> -- openalex without an API key: one small daily budget shared by everyone on this network; a free key gives your own (see docs/configuration.md)</span>`
+			: "");
 	const sourceFailures = payload.source_failures ?? [];
 	const sourceFailureRows = sourceFailures.length
 		? `\n<dt>Failed sources</dt>${sourceFailures

@@ -7,6 +7,7 @@
  * doi field -- never scraped out of text; the venue is plain API metadata.
  */
 
+import { openAlexApiKey } from "../config.ts";
 import { contactMailto, type SourceRecord, type SourceScope, userAgent } from "../types.ts";
 import { pacedClient } from "./polite.ts";
 
@@ -15,9 +16,19 @@ const AUTOCOMPLETE_URL = "https://api.openalex.org/autocomplete/authors";
 /** OpenAlex accepts up to 50 pipe-joined values in one filter. */
 const DOI_BATCH_SIZE = 50;
 
-/** Appended to a rate-limit failure: OpenAlex names the way out itself. */
-const RATE_LIMIT_HINT = "OpenAlex throttles anonymous search while its search cluster is under"
-	+ " load and names a Retry-After; a FREE API key lifts this (openalex.org/rest-api)";
+/** Appended to a rate-limit failure. Without a key every machine behind
+ * the same IP address shares one small daily budget (a university network
+ * uses it up quickly); a free key gives an own budget. */
+const RATE_LIMIT_HINT = (): string => openAlexApiKey()
+	? "the daily budget of your OpenAlex API key is used up or OpenAlex is busy; it resets daily"
+	: "without an API key OpenAlex shares one small daily budget with everyone on your network; a free key "
+		+ "(openalex.org/settings/api-key) gives you your own -- set openAlexApiKey in the configuration "
+		+ "(browser: Settings, Sources) or PI_LITERATURE_REVIEW_OPENALEX_API_KEY";
+
+/** A refused key (401/403): name the setting to fix. */
+export const openAlexStatusHint = (status: number): string | null => (status === 401 || status === 403) && openAlexApiKey()
+	? "OpenAlex did not accept the API key; check openAlexApiKey in the configuration (or remove it to search without a key)"
+	: null;
 
 /**
  * Three clients, because the endpoints have different needs. All three talk
@@ -27,19 +38,24 @@ const RATE_LIMIT_HINT = "OpenAlex throttles anonymous search while its search cl
  * Search cluster: the works search and the facet pre-queries. This is the
  * endpoint OpenAlex throttles; a 429 here is a wait, not a dead source.
  */
-const fetchSearch = pacedClient({ label: "OpenAlex", spacingMs: 1_000, rateLimitHint: RATE_LIMIT_HINT });
+const fetchSearch = pacedClient({ label: "OpenAlex", spacingMs: 1_000, rateLimitHint: RATE_LIMIT_HINT, statusHint: openAlexStatusHint });
 
 /** Identifier lookups (DOI batches, enrichment). Not throttled, but batched
  * and running alongside the other sources -- a small spacing keeps the burst
  * civil. Shared with enrich.ts so both paths queue in one line. */
-export const fetchLookup = pacedClient({ label: "OpenAlex", spacingMs: 250 });
+export const fetchLookup = pacedClient({ label: "OpenAlex", spacingMs: 250, rateLimitHint: RATE_LIMIT_HINT, statusHint: openAlexStatusHint });
 
 /** The wizard's author typing row. A retry would sleep seconds and freeze
  * the keystroke, so its caller sends a single attempt. */
-const fetchType = pacedClient({ label: "OpenAlex", spacingMs: 100 });
+const fetchType = pacedClient({ label: "OpenAlex", spacingMs: 100, statusHint: openAlexStatusHint });
 
-/** Headers every OpenAlex request carries. */
-const HEADERS = (): Record<string, string> => ({ "User-Agent": userAgent(), Accept: "application/json" });
+/** Headers every OpenAlex request carries; the API key (when configured)
+ * as a bearer header, so it never appears in a URL, a log or an error. */
+export const openAlexHeaders = (): Record<string, string> => {
+	const key = openAlexApiKey();
+	return { "User-Agent": userAgent(), Accept: "application/json", ...(key ? { Authorization: `Bearer ${key}` } : {}) };
+};
+const HEADERS = openAlexHeaders;
 
 /** Query parameters every OpenAlex request carries: the contact address
  * opts into the polite pool whenever one is configured. One place, so no

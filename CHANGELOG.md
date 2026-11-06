@@ -8,6 +8,12 @@ All notable changes to this package are listed here. The format follows
 
 ### Added
 
+- Optional OpenAlex API key (`openAlexApiKey`,
+  `PI_LITERATURE_REVIEW_OPENALEX_API_KEY`, browser Settings): OpenAlex now
+  meters requests, and without a key every machine behind one IP address
+  shares one small daily budget. The key goes as a bearer header (never in
+  a URL); rate-limit errors explain the shared budget, a refused key names
+  the setting, and the results page notes a run made without a key.
 - Web interface: a question channel beside the wizard answers, decided
   by code behind one plain input box: typed text on a chip-only step, a
   question-like text the step's parser does not recognise, or a leading

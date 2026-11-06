@@ -693,6 +693,8 @@ dialog.paperinfo details.abstract p { margin: 0.4rem 0 0; line-height: 1.5; }
 #settings button.key:hover { border-color: #9a9a94; color: var(--ink); }
 #settings button.key.editing { border-color: var(--ink); color: var(--ink); }
 #settings .kv.keyedit[hidden] { display: none; }
+#settings .keyget { font-size: 0.8rem; white-space: nowrap; align-self: center; margin-left: 0.3rem; }
+#settings .keyget[hidden] { display: none; }
 #settings .kv.keyedit > span:first-child { font-weight: 400; color: var(--muted); }
 #settings .keyrow { grid-column: 2 / 4; display: flex; gap: 0.4rem; align-items: center; }
 #settings .keyrow input { flex: 1; min-width: 0; }

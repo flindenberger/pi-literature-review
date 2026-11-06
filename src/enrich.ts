@@ -29,6 +29,7 @@ import {
 	type AccessInfo,
 	type AccessLevel,
 	fetchLookup,
+	openAlexHeaders,
 	lookupAccessByDoi,
 	reconstructAbstract,
 } from "./sources/openalex.ts";
@@ -54,9 +55,7 @@ function apiQuery(params: Record<string, string> = {}): string {
  * queue in one line towards the same server and a rate-limit answer is
  * retried instead of losing the field. */
 async function fetchJson(url: string): Promise<Record<string, any>> {
-	const response = await fetchLookup(url, {
-		headers: { "User-Agent": userAgent(), Accept: "application/json" },
-	});
+	const response = await fetchLookup(url, { headers: openAlexHeaders() });
 	return (await response.json()) as Record<string, any>;
 }
 

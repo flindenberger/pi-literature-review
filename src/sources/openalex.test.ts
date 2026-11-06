@@ -12,6 +12,13 @@ import { authorFacts, workFacts, accessFromWork, buildAuthorSearchFilter, buildB
 	parseAuthorAutocomplete,
 	searchOpenalex,
 } from "./openalex.ts";
+import { mkdtempSync as isolateTmp } from "node:fs";
+import { tmpdir as isolateDir } from "node:os";
+import { join as isolateJoin } from "node:path";
+// Never the user's own configuration: a stored OpenAlex key would change
+// the request headers and the error hints under test.
+process.env.XDG_CONFIG_HOME = isolateJoin(isolateTmp(isolateJoin(isolateDir(), "plr-oa-cfg-")), "cfg");
+delete process.env.PI_LITERATURE_REVIEW_OPENALEX_API_KEY;
 
 /** v30.11: journals and authors share the facet parser. */
 const parseJournalFacets = parseFacets;
@@ -302,7 +309,7 @@ const parseJournalFacetPage = parseFacetPage;
 		// Budget used up -> the error carries the key hint.
 		sentAt.length = 0;
 		answers = [429, 429, 429];
-		await assert.rejects(() => searchOpenalex("x", 5), /OpenAlex answered HTTP 429 .*FREE API key/);
+		await assert.rejects(() => searchOpenalex("x", 5), /OpenAlex answered HTTP 429 .*a free key \(openalex\.org\/settings\/api-key\)/);
 		// Typing row: exactly one request, immediate failure, no sleep.
 		sentAt.length = 0;
 		answers = [429];
@@ -350,6 +357,27 @@ const parseJournalFacetPage = parseFacetPage;
 	assert.equal(facts.access.level, "free");
 	assert.equal(facts.abstract, "Water maps");
 	assert.equal(workFacts({}).cited_by, null);
+}
+
+{
+	// The API key rides as a bearer header (never in a URL); a refused key
+	// names the setting. The config file is isolated from the user's own.
+	const { mkdtempSync } = await import("node:fs");
+	const { tmpdir } = await import("node:os");
+	const { join } = await import("node:path");
+	const { openAlexHeaders, openAlexStatusHint } = await import("./openalex.ts");
+	const savedXdg = process.env.XDG_CONFIG_HOME;
+	const savedKey = process.env.PI_LITERATURE_REVIEW_OPENALEX_API_KEY;
+	process.env.XDG_CONFIG_HOME = join(mkdtempSync(join(tmpdir(), "plr-oa-")), "cfg");
+	delete process.env.PI_LITERATURE_REVIEW_OPENALEX_API_KEY;
+	assert.equal(openAlexHeaders().Authorization, undefined);
+	assert.equal(openAlexStatusHint(401), null);
+	process.env.PI_LITERATURE_REVIEW_OPENALEX_API_KEY = "k123";
+	assert.equal(openAlexHeaders().Authorization, "Bearer k123");
+	assert.ok(/openAlexApiKey/.test(openAlexStatusHint(401) ?? ""));
+	assert.equal(openAlexStatusHint(500), null);
+	if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = savedXdg;
+	if (savedKey === undefined) delete process.env.PI_LITERATURE_REVIEW_OPENALEX_API_KEY; else process.env.PI_LITERATURE_REVIEW_OPENALEX_API_KEY = savedKey;
 }
 
 console.log("openalex.test.ts: all assertions passed");

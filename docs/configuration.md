@@ -22,12 +22,13 @@ alongside version-controlled code.
 | Key in config.json | Environment variable | Meaning |
 |---|---|---|
 | `mailto` | `PI_LITERATURE_REVIEW_MAILTO` | Contact email for Unpaywall (required by their policy) and the CrossRef/OpenAlex polite pools. Once set, it is sent with every API request of the package (User-Agent). |
+| `openAlexApiKey` | `PI_LITERATURE_REVIEW_OPENALEX_API_KEY` | Free OpenAlex key (openalex.org/settings/api-key). Without one, OpenAlex gives every machine behind the same IP address ONE small daily budget together (about 100 searches a day; a university network shares it), and the results page notes that the run used it. With a key you get your own budget (about ten times as much). It is sent as an `Authorization: Bearer` header, never in a URL; a key OpenAlex refuses fails the OpenAlex part of the run with a message naming this setting. The citation graph page (`network.html`) asks OpenAlex from your browser and stays without a key. |
 | `s2ApiKey` | `PI_LITERATURE_REVIEW_S2_API_KEY` | Free Semantic Scholar key (apply at semanticscholar.org/product/api; approval can take a few days). Enables Semantic Scholar as the fourth search source and as a second abstract source. Without a key it is not queried -- its anonymous pool is saturated nearly all the time -- and the results page says so next to the sources. |
 | `githubToken` | `PI_LITERATURE_REVIEW_GITHUB_TOKEN` | Raises the GitHub repository search limit from 10 to 30 per minute for the code-first sources (GitHub README search, Google Earth Engine). |
 | `codeListTopics` | `PI_LITERATURE_REVIEW_CODE_LIST_TOPICS` | GitHub topics of your research field whose awesome lists the `awesome-lists` code source reads (default `remote-sensing`, `satellite-imagery`, `earth-observation`, the package's home field; the env variable is a comma list). In the `/lit-search` wizard these are the first topic rows under "Curated lists", where the model adds the field topics of the current query and every row can be unticked; on the command line and in web clients they are the topics read. Awesome lists are filed by field: `bioinformatics`, `finance`, `robotics`, `nlp`, `neuroscience`, `gis` each carry dozens of lists, query words like `flood` carry none. |
 
-The `githubToken`, `s2ApiKey` and `llm.apiKey` entries are deliberate
-manual entries -- no dialog ever asks for a key, and the package never
+The `githubToken`, `openAlexApiKey`, `s2ApiKey` and `llm.apiKey` entries are
+manual entries or set in the browser's Settings -- no dialog ever asks for a key, and the package never
 copies a provider key from Pi's own configuration.
 
 

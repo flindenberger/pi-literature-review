@@ -45,8 +45,11 @@ export interface PacedClientOptions {
 	/** Statuses returned to the caller instead of thrown (e.g. 404 = "not
 	 * found" for a lookup). */
 	passStatuses?: number[];
-	/** Extra sentence appended to a rate-limit failure (e.g. a get-a-key hint). */
-	rateLimitHint?: string;
+	/** Extra sentence appended to a rate-limit failure (e.g. a get-a-key
+	 * hint); a function when it depends on runtime state. */
+	rateLimitHint?: string | (() => string);
+	/** Extra sentence for other failures by status (e.g. 401 = bad key). */
+	statusHint?: (status: number) => string | null;
 }
 
 export type PacedFetch = (url: string, init?: RequestInit, opts?: { retry?: boolean }) => Promise<Response>;
@@ -83,10 +86,13 @@ export function pacedClient(options: PacedClientOptions): PacedFetch {
 				? retryDelayMs(attempt, response.headers.get("retry-after"))
 				: null;
 			if (delay === null) {
+				const hint = typeof options.rateLimitHint === "function" ? options.rateLimitHint() : options.rateLimitHint;
+				const other = !rateLimited && options.statusHint ? options.statusHint(response.status) : null;
 				throw new Error(
 					`${options.label} answered HTTP ${response.status}`
 					+ (rateLimited && attempt ? ` (rate limited; ${attempt} retr${attempt === 1 ? "y" : "ies"} did not clear it)` : "")
-					+ (rateLimited && options.rateLimitHint ? ` -- ${options.rateLimitHint}` : ""),
+					+ (rateLimited && hint ? ` -- ${hint}` : "")
+					+ (other ? ` -- ${other}` : ""),
 				);
 			}
 			await sleep(delay);

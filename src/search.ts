@@ -24,7 +24,7 @@ import {
 	type TermGroups,
 } from "./pipeline.ts";
 import { blockQuery, CODE_SEARCHERS, searchWords } from "./codesearch.ts";
-import { codeListTopics, s2ApiKey } from "./config.ts";
+import { codeListTopics, openAlexApiKey, s2ApiKey } from "./config.ts";
 import { addAccessStatus, addCodeLinks, addDataLinks, addJournalScores, enrichAll } from "./enrich.ts";
 import { queryBlocks } from "./intake.ts";
 import { buildSearchQuery, searchArxiv } from "./sources/arxiv.ts";
@@ -489,6 +489,9 @@ export async function runSearch(options: SearchOptions) {
 		// invisible in the sidecar and its drops read as "the source has no
 		// abstract". One entry per provider (only S2 looks up abstracts today).
 		sources_skipped: sourcesSkipped.length ? sourcesSkipped : null,
+		// Whether OpenAlex ran on an own API key or on the budget shared by
+		// every machine behind the same IP address (null: OpenAlex unused).
+		openalex_keyed: sourcesUsed.includes("openalex") ? Boolean(openAlexApiKey()) : null,
 		abstract_lookup_failures: s2Failures.size
 			? [{
 				source: "semanticscholar",

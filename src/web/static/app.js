@@ -3483,7 +3483,8 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	/** The optional keys as chips: a click opens one write-only field (the
 	 * page never sees a stored key, only whether it is set). */
 	const KEYS = [
-		{ name: "s2ApiKey", label: "Semantic Scholar", title: "Free API key: Semantic Scholar becomes the fourth search source" },
+		{ name: "openAlexApiKey", label: "OpenAlex", title: "Free API key: your own daily budget instead of the one shared by everyone on your network", signup: "https://openalex.org/settings/api-key" },
+		{ name: "s2ApiKey", label: "Semantic Scholar", title: "Free API key: Semantic Scholar becomes the fourth search source", signup: "https://www.semanticscholar.org/product/api" },
 		{ name: "githubToken", label: "GitHub", title: "Token: GitHub search 30 instead of 10 requests per minute for the code sources" },
 		{ name: "llmApiKey", label: "LLM API", title: "Bearer token for a remote model API" },
 	];
@@ -3505,6 +3506,9 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		$("key-edit-value").value = "";
 		$("key-edit-value").placeholder = set ? "Set; type a new key to replace it" : "Paste the key";
 		$("btn-key-remove").hidden = !set;
+		const get = $("key-edit-get");
+		get.hidden = !spec.signup;
+		if (spec.signup) { get.href = spec.signup; get.title = `Opens ${spec.signup.replace(/^https:\/\/(www\.)?/, "")} in a new tab`; }
 		box.hidden = false;
 		$("key-edit-value").focus();
 	});

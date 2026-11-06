@@ -585,8 +585,9 @@ The Settings dialog writes `~/.config/pi-literature-review/config.json`
   and the shared address (the awesome-list topics stay in config.json,
   `codeListTopics`; the browser picks topics automatically).
 - **Sources**: contact email (empty = asked at each download) and the
-  optional keys (Semantic Scholar, GitHub, LLM API) as chips marked set /
-  not set. A click opens a password field: Save key, Remove, Cancel
+  optional keys (OpenAlex, Semantic Scholar, GitHub, LLM API) as chips marked set /
+  not set. A click opens a password field: Save key, Remove, Cancel, and
+  for OpenAlex and Semantic Scholar a **Get a free key** link to their sign-up page
   (`POST /api/settings/key`, one key per call). The page only writes a
   key; it never reads one back, only whether it is set.
 - **Folders**: **Library** = the PDF folders (show, remove -- removing
