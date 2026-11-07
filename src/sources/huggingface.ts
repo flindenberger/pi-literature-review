@@ -9,7 +9,7 @@
  * measured limit 50 searches per 5 minutes.
  */
 
-import { userAgent } from "../types.ts";
+import { userAgentHeader } from "../types.ts";
 import { flattenBlockTerms } from "./crossref.ts";
 import { pacedClient } from "./polite.ts";
 
@@ -57,7 +57,7 @@ export function parseHfPapers(data: unknown): HfPaper[] {
 export async function searchHfPapers(text: string, limit: number): Promise<HfPaper[]> {
 	const params = new URLSearchParams({ q: text, limit: String(Math.max(1, Math.min(120, limit))) });
 	const response = await fetchPaced(`${SEARCH_URL}?${params}`, {
-		headers: { "User-Agent": userAgent(), Accept: "application/json" },
+		headers: { ...userAgentHeader(), Accept: "application/json" },
 	});
 	return parseHfPapers(await response.json());
 }

@@ -5,7 +5,7 @@
  * the source boundary; no field is ever invented.
  */
 
-import { contactMailto, type DataLink, type SourceRecord, type SourceScope, userAgent } from "../types.ts";
+import { contactMailto, type DataLink, type SourceRecord, type SourceScope, userAgentHeader } from "../types.ts";
 import { pacedClient } from "./polite.ts";
 
 const BASE_URL = "https://api.crossref.org/works";
@@ -16,7 +16,7 @@ const fetchPaced = pacedClient({ label: "CrossRef", spacingMs: 1_000 });
 
 async function fetchWorks(params: URLSearchParams): Promise<Record<string, any>> {
 	const response = await fetchPaced(`${BASE_URL}?${params}`, {
-		headers: { "User-Agent": userAgent(), Accept: "application/json" },
+		headers: { ...userAgentHeader(), Accept: "application/json" },
 	});
 	return (await response.json()) as Record<string, any>;
 }

@@ -25,7 +25,7 @@ import { outputRoot } from "./output.ts";
 import { twinSaver } from "./library.ts";
 import { lastDownloadDir } from "./config.ts";
 import { type AccessInfo, lookupAccessByDoi } from "./sources/openalex.ts";
-import { asciiPart, contactMailto, errorName, firstAuthorLastName, userAgent } from "./types.ts";
+import { asciiPart, contactMailto, errorName, firstAuthorLastName, userAgentHeader } from "./types.ts";
 
 const DOWNLOAD_TIMEOUT_MS = 30_000; // per GET request
 const FETCH_PAUSE_MS = 300; // between papers; stay polite to the free servers
@@ -507,7 +507,7 @@ async function downloadPdfReal(
 ): Promise<{ ok: true; bytes: Uint8Array } | { ok: false; reason: string; status?: number }> {
 	try {
 		const response = await fetch(url, {
-			headers: { "User-Agent": userAgent() },
+			headers: userAgentHeader(),
 			redirect: "follow",
 			signal: requestSignal(signal),
 		});
@@ -610,7 +610,7 @@ function robotsText(origin: string, signal?: AbortSignal): Promise<string | null
 		cached = (async () => {
 			try {
 				const response = await fetch(`${origin}/robots.txt`, {
-					headers: { "User-Agent": userAgent() },
+					headers: userAgentHeader(),
 					redirect: "follow",
 					signal: requestSignal(signal),
 				});
@@ -648,7 +648,7 @@ async function landingPdfUrlReal(
 				return { url: null, note: `article page: robots.txt of ${new URL(url).host} does not allow automated access` };
 			}
 			const response = await fetch(url, {
-				headers: { "User-Agent": userAgent() },
+				headers: userAgentHeader(),
 				redirect: "manual",
 				signal: requestSignal(signal),
 			});
@@ -697,7 +697,7 @@ async function unpaywallPdfUrlReal(
 	try {
 		const response = await fetch(
 			`https://api.unpaywall.org/v2/${encodeURIComponent(doi)}?email=${encodeURIComponent(mailto)}`,
-			{ headers: { "User-Agent": userAgent() }, signal: requestSignal(signal) },
+			{ headers: userAgentHeader(), signal: requestSignal(signal) },
 		);
 		if (response.status === 404) return { url: null, note: "Unpaywall: DOI not indexed" };
 		if (response.status !== 200) return { url: null, note: `Unpaywall answered ${response.status}` };

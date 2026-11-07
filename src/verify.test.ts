@@ -4,7 +4,7 @@
  */
 
 import assert from "node:assert/strict";
-import { verifyAll, verifyRecord, type HeadFn } from "./verify.ts";
+import { handleStatus, verifyAll, verifyRecord, type HeadFn } from "./verify.ts";
 
 const answer = (status: number | null, note = "") => async () => ({ status, note });
 
@@ -78,6 +78,36 @@ const answer = (status: number | null, note = "") => async () => ({ status, note
 	assert.ok(peak > 1 && peak <= 6, `peak concurrency ${peak}`);
 	assert.equal(warnings.length, 1);
 	assert.ok(warnings[0].startsWith('unverified "10.1/3"'));
+}
+
+// The browser check: the DOI handle API's JSON mapped onto HEAD statuses
+// (answers as measured live: responseCode 1, or 100 with HTTP 404).
+{
+	const asked: string[] = [];
+	const fake = (answers: Record<string, [number, unknown]>): typeof fetch => (async (input: string | URL | Request) => {
+		const url = String(input);
+		asked.push(url);
+		const [status, body] = answers[url] ?? [500, {}];
+		return new Response(JSON.stringify(body), { status });
+	}) as typeof fetch;
+	const api = "https://doi.org/api/handles/";
+	const handles = fake({
+		[`${api}10.3390/rs13081505`]: [200, { responseCode: 1, handle: "10.3390/rs13081505" }],
+		[`${api}10.9999/nope`]: [404, { responseCode: 100 }],
+		[`${api}10.36335/vnjhm.2025(23).60-71`]: [200, { responseCode: 1 }],
+		[`${api}10.48550/arXiv.2411.14199`]: [200, { responseCode: 1 }],
+	});
+	const head: HeadFn = (url, signal) => handleStatus(url, signal, handles);
+	assert.deepEqual(await verifyRecord({ doi: "10.3390/rs13081505", arxiv_id: "" }, head), { verified: true, note: "" });
+	assert.equal((await verifyRecord({ doi: "10.9999/nope", arxiv_id: "" }, head)).verified, false);
+	assert.equal((await verifyRecord({ doi: "10.36335/vnjhm.2025(23).60-71", arxiv_id: "" }, head)).verified, true);
+	// arXiv: through the preprint's DataCite DOI, version suffix dropped.
+	assert.deepEqual(await verifyRecord({ doi: "", arxiv_id: "2411.14199v2" }, head), { verified: true, note: "" });
+	assert.ok(asked.includes(`${api}10.48550/arXiv.2411.14199`));
+	// A server error stays unverified with the status in the note.
+	const broken = await verifyRecord({ doi: "10.1/x", arxiv_id: "" }, head);
+	assert.equal(broken.verified, false);
+	assert.match(broken.note, /HTTP 500/);
 }
 
 console.log("verify.test.ts: all assertions passed");

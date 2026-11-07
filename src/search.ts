@@ -9,6 +9,7 @@
  * (query variants, block proposals) arrives upstream as plain input.
  */
 
+import { IN_BROWSER } from "./types.ts";
 import {
 	applyFilters,
 	dedupe,
@@ -50,8 +51,11 @@ export const SEARCHERS: Record<string, Searcher> = {
 /** Why a source is not queried in this configuration, or null when it is.
  * Semantic Scholar needs an API key: its anonymous pool is saturated
  * nearly all the time, so without one it only produced rate-limit
- * failures. Read per call so a config change applies without a restart. */
+ * failures. Read per call so a config change applies without a restart.
+ * In a browser (the browser demo) arXiv is never asked: its API sends no
+ * header that lets a web page read the answer. */
 export function keyRequirement(source: string): string | null {
+	if (source === "arxiv" && IN_BROWSER) return "not queried in the browser demo: arXiv answers no requests from web pages (the installed version queries it)";
 	return source === "semanticscholar" && !s2ApiKey()
 		? "not queried: optional, needs a free API key (s2ApiKey in config.json, see docs/configuration.md)"
 		: null;

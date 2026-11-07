@@ -10,7 +10,7 @@
 
 import { XMLParser } from "fast-xml-parser";
 import { QUERY_STOPWORDS } from "../intake.ts";
-import { type SourceRecord, type SourceScope, userAgent } from "../types.ts";
+import { type SourceRecord, type SourceScope, userAgentHeader } from "../types.ts";
 import { pacedClient } from "./polite.ts";
 
 const BASE_URL = "https://export.arxiv.org/api/query";
@@ -152,7 +152,7 @@ export function parseArxivFeed(xml: string): SourceRecord[] {
 }
 
 async function fetchFeed(params: URLSearchParams): Promise<SourceRecord[]> {
-	const response = await fetchPaced(`${BASE_URL}?${params}`, { headers: { "User-Agent": userAgent() } });
+	const response = await fetchPaced(`${BASE_URL}?${params}`, { headers: userAgentHeader() });
 	return parseArxivFeed(await response.text());
 }
 

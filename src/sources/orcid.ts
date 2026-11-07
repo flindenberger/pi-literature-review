@@ -4,7 +4,7 @@
  * (no end date) as the place of work. Self-maintained data, shown as is.
  */
 
-import { userAgent } from "../types.ts";
+import { userAgentHeader } from "../types.ts";
 
 export interface Employment {
 	organization: string;
@@ -38,7 +38,7 @@ export async function lookupOrcidEmployments(orcid: string, signal?: AbortSignal
 	if (!/^\d{4}-\d{4}-\d{4}-\d{3}[\dX]$/.test(orcid)) return [];
 	const response = await fetch(`https://pub.orcid.org/v3.0/${orcid}/employments`, {
 		// No contact address: it is meant for the bibliographic sources only.
-		headers: { Accept: "application/json", "User-Agent": userAgent().replace(/; mailto:[^)]*/, "") },
+		headers: { Accept: "application/json", ...userAgentHeader(true) },
 		signal,
 	});
 	if (response.status === 404) return [];
@@ -71,7 +71,7 @@ export function orcidPeople(data: unknown): OrcidPerson[] {
 export async function lookupOrcidByDoi(doi: string, signal?: AbortSignal): Promise<OrcidPerson[]> {
 	const query = `doi-self:"${doi.trim().toLowerCase().replace(/"/g, "")}"`;
 	const response = await fetch(`https://pub.orcid.org/v3.0/expanded-search/?q=${encodeURIComponent(query)}&rows=50`, {
-		headers: { Accept: "application/json", "User-Agent": userAgent().replace(/; mailto:[^)]*/, "") },
+		headers: { Accept: "application/json", ...userAgentHeader(true) },
 		signal,
 	});
 	if (!response.ok) throw new Error(`pub.orcid.org answered HTTP ${response.status}`);

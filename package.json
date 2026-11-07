@@ -38,6 +38,8 @@
     "src/",
     "!src/**/*.test.ts",
     "!src/fixtures/",
+    "!src/web/demo/",
+    "!src/web/demo-build.ts",
     "docs/*.md",
     "CITATION.cff",
     "CHANGELOG.md"

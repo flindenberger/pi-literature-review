@@ -1028,6 +1028,17 @@ console.log("dialog add-on tests ok");
 	// Sources changed since the answer: it is not reused (asked anew).
 	const other = step(rs, { kind: "answer", text: "", chat: { scope: ["2016_Legleiter"], build: { summary: false, synthesis: false } } }, ctx);
 	assert.deepEqual((other.effects[0] as typeof effect).answered, []);
+	// The same papers under another name: a library answer counts for a pick
+	// of every library paper (a one-paper library ticked by hand), and back.
+	const allBases = ctx.library.map((paper) => paper.base);
+	const ticked = step(rs, { kind: "answer", text: "", chat: { scope: allBases, build: { summary: true, synthesis: false } } }, ctx);
+	assert.deepEqual((ticked.effects[0] as typeof effect).answered?.map((answer) => answer.question), ["Which sensors?"]);
+	const pickedAnswer = { ...chatAnswer, scope: [...allBases].reverse() } as unknown as AnswerView["answer"];
+	let back = step(state, { kind: "answer", text: "Which sensors?", chat: { scope: "library" } }, ctx).state;
+	back = step(back, { kind: "jobStarted", job: job("chat", "chat-9") }, ctx).state;
+	back = step(back, { kind: "job", job: job("chat", "chat-9", "done"), answer: { answer: pickedAnswer, hrefs: [], pdfUrls: {} } }, ctx).state;
+	const backReport = step(back, { kind: "answer", text: "", chat: { scope: "library", build: { summary: true, synthesis: false } } }, ctx);
+	assert.deepEqual((backReport.effects[0] as typeof effect).answered?.map((answer) => answer.question), ["Which sensors?"]);
 	// A question sent with a selected report: the answer first, then the
 	// report starts on its own and holds the new question.
 	let qa = step(rs, { kind: "answer", text: "Which methods?", chat: { scope: "library", build: { summary: true, synthesis: false } } }, ctx);

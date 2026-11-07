@@ -96,7 +96,7 @@
 		if (!open || loaded) return;
 		loaded = true;
 		details.textContent = "Loading ...";
-		fetch("/api/runs/facts?name=" + encodeURIComponent(run)).then(function (r) {
+		fetch("../api/runs/facts?name=" + encodeURIComponent(run)).then(function (r) {
 			return r.json().then(function (body) { if (!r.ok) throw new Error(body.error || ("HTTP " + r.status)); return body; });
 		}).then(function (facts) {
 			var rows = [];

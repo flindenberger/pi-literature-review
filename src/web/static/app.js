@@ -8,6 +8,12 @@
 	"use strict";
 	const $ = (id) => document.getElementById(id);
 	const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+	/** The interface's mount path: "" when it is served at the root (pi,
+	 * npx), the page's folder when it lives below one (the browser demo).
+	 * Every address the page builds starts with it; route checks read
+	 * addresses without it (unbase). */
+	const BASE = new URL(".", location.href).pathname.replace(/\/$/, "");
+	const unbase = (url) => (BASE && typeof url === "string" && url.startsWith(`${BASE}/`) ? url.slice(BASE.length) : url);
 
 	/** pi.dev's three-colour logo is shown inside pi only once its use is
 	 * confirmed with pi.dev (press kit names no terms); until then the plain
@@ -239,7 +245,7 @@
 	function showConversationPdf() {
 		if (onePdfChat()) {
 			state.panelClosedByUser = false;
-			showPdf(`/pdf/${encodeURIComponent(state.dialog.answers.scope[0])}.pdf`, true);
+			showPdf(`${BASE}/pdf/${encodeURIComponent(state.dialog.answers.scope[0])}.pdf`, true);
 		} else closePanel();
 	}
 	function closePanel() {
@@ -312,7 +318,7 @@
 		if (entry.data || entry.loading) return;
 		entry.loading = true;
 		try {
-			entry.data = await get(`/api/runs/cards?name=${encodeURIComponent(name)}`);
+			entry.data = await get(`${BASE}/api/runs/cards?name=${encodeURIComponent(name)}`);
 			// The period filter starts at the searched window, so the list shows what was searched.
 			if (!entry.defaulted) { entry.filters.yearFrom = entry.data.yearFrom; entry.defaulted = true; }
 		} catch (error) {
@@ -469,7 +475,7 @@
 		const seenArchives = new Set();
 		for (const link of row.dataLinks) { if (seenArchives.has(link.archive)) continue; seenArchives.add(link.archive); links.push(`<a href="${esc(link.url)}" target="_blank" rel="noopener" title="Data archive">${ICON_DATA}Data${link.archive ? ` (${esc(link.archive)})` : ""}</a>`); }
 		const graphHash = [row.doi ? `doi=${encodeURIComponent(row.doi)}` : "", `title=${encodeURIComponent(row.title)}`].filter(Boolean).join("&");
-		if (row.graph !== false) links.push(`<a href="/files/lit-search/network.html#${graphHash}&light=1" class="graph" data-act="graph" data-title="${esc(row.title)}" title="Citation neighbourhood of this paper (fetched live from OpenAlex)">${ICON_GRAPH}Graph</a>`);
+		if (row.graph !== false) links.push(`<a href="${BASE}/files/lit-search/network.html#${graphHash}&light=1" class="graph" data-act="graph" data-title="${esc(row.title)}" title="Citation neighbourhood of this paper (fetched live from OpenAlex)">${ICON_GRAPH}Graph</a>`);
 		const tick = row.id
 			? `<input type="checkbox" data-act="tick" data-id="${esc(row.id)}" ${entry.ticked.has(row.id) ? "checked" : ""} title="Tick for download">`
 			: `<span class="notick" title="No DOI or arXiv id: cannot be downloaded here"></span>`;
@@ -622,7 +628,7 @@ ${latest && !byAuthors ? `<span class="tsep" aria-hidden="true"></span><button t
 			target.disabled = true;
 			// The report opens as a window over the list; closing it leaves the list alone.
 			try {
-				const { card } = await post("/api/runs/report", { name, kind: target.dataset.kind, filters: filterBody(f) });
+				const { card } = await post(BASE + "/api/runs/report", { name, kind: target.dataset.kind, filters: filterBody(f) });
 				state.panelClosedByUser = false;
 				showReport(card.url, card.name);
 				setPopup(true);
@@ -678,7 +684,7 @@ ${latest && !byAuthors ? `<span class="tsep" aria-hidden="true"></span><button t
 			if (state.modal.folderFor !== lastQuestion?.id) {
 				state.modal.folderFor = lastQuestion?.id;
 				state.modal.folder = "";
-				get("/api/folders").then((data) => {
+				get(BASE + "/api/folders").then((data) => {
 					state.modal.canPick = data.canPick;
 					if (!state.modal.folder) state.modal.folder = data.lastDownloadDir || "";
 					renderDownloadWindow(lastQuestion);
@@ -767,7 +773,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		if (what === "choosefolder") {
 			button.disabled = true;
 			try {
-				const picked = await post("/api/folders/pick", { purpose: "download", start: state.modal.folder || "" });
+				const picked = await post(BASE + "/api/folders/pick", { purpose: "download", start: state.modal.folder || "" });
 				if (picked.path) state.modal.folder = picked.path;
 			} catch (error) {
 				state.modal.canPick = false; // no system window here: type the path
@@ -777,7 +783,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 			renderDownloadWindow(question);
 			return;
 		}
-		if (what === "folder") { post("/api/reveal", button.dataset.path ? { path: button.dataset.path } : { stage: "lit-selection" }).then((r) => toast(`Opened ${r.opened} in the file manager.`)).catch((error) => toast(error.message)); return; }
+		if (what === "folder") { post(BASE + "/api/reveal", button.dataset.path ? { path: button.dataset.path } : { stage: "lit-selection" }).then((r) => toast(`Opened ${r.opened} in the file manager.`)).catch((error) => toast(error.message)); return; }
 		if (what === "close") { state.modal.dismissed = Number(button.dataset.id); closeWindow(); return; }
 		if (what === "cancelblocks") { state.modal.blocks = false; closeWindow(); return; }
 		if (what === "synonyms") {
@@ -786,7 +792,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 			if (!topic) return;
 			button.disabled = true;
 			try {
-				const data = await post("/api/search/blocks", { request: topic, mode: "synonyms", fresh: true });
+				const data = await post(BASE + "/api/search/blocks", { request: topic, mode: "synonyms", fresh: true });
 				if (data.blocks && data.blocks.length && $("blocks-edit")) $("blocks-edit").innerHTML = editorHtml({ editor: data.blocks });
 			} catch (error) { toast(error.message); }
 			button.disabled = false;
@@ -906,16 +912,22 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 			hero.querySelector(".tiles").classList.add("in");
 			setTimeout(() => hero.classList.add("settled"), 1600);
 		};
-		// Start typing when the third line has finished sliding in (its
-		// animationend event), never on a fixed clock: browsers start CSS
-		// animations late on a busy first paint, and the fourth line must
-		// not overtake the third. A long fallback covers a missing event.
+		// Start typing when the third line has finished sliding in, never on
+		// a fixed clock: browsers start CSS animations late on a busy first
+		// paint and pause them in a tab that is not visible (a page opened
+		// in the background), while timers keep running -- the fourth line
+		// must not overtake the third. The animation's own `finished`
+		// promise waits for both; a clock only where it is missing.
 		let started = false;
 		const begin = () => { if (started) return; started = true; el.classList.add("caret"); step(); };
 		const lines = hero.querySelectorAll("h1 span.fly");
 		const third = lines[lines.length - 1];
-		if (third) third.addEventListener("animationend", () => setTimeout(begin, 250), { once: true });
-		setTimeout(begin, 6000);
+		const slide = third && typeof third.getAnimations === "function" ? third.getAnimations()[0] : null;
+		if (slide) slide.finished.then(() => setTimeout(begin, 250), begin);
+		else if (third) {
+			third.addEventListener("animationend", () => setTimeout(begin, 250), { once: true });
+			setTimeout(begin, 6000);
+		} else begin();
 	}
 
 	function render() {
@@ -1000,15 +1012,16 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 			const first = hrefs[firstIndex];
 			const fresh = state.autoCited !== undefined; // answers present at page load are not replayed
 			state.autoCited = newest.id;
-			const showingPdf = state.report && /^\/pdf\//.test(state.report.url || "") && !state.panelClosedByUser;
+			const showingPdf = state.report && /^\/pdf\//.test(unbase(state.report.url || "")) && !state.panelClosedByUser;
 			const sites = (newest.answer.answer && newest.answer.answer.sites) || [];
 			if (!onePdfChat(view) && sites.length) {
 				// Several papers: a tab for every paper the answer cites.
 				for (const key of new Set(sites.map((site) => site.paper_key))) paperTab(key);
 				renderTabs();
-				if (fresh && first && (showingPdf || state.tabs.some((tab) => tab.id === state.activeTab))) openPaperTab(sites[firstIndex].paper_key, first);
+				// The demo opens it with every answer: the passage is the point.
+				if (fresh && first && (showingPdf || isDemo() || state.tabs.some((tab) => tab.id === state.activeTab))) openPaperTab(sites[firstIndex].paper_key, first);
 				else if (!state.activeTab && !shell.classList.contains("no-report")) activateTab(state.tabs[0].id);
-			} else if (fresh && first && showingPdf) showPdf(first);
+			} else if (fresh && first && (showingPdf || isDemo())) showPdf(first);
 		} else if (!newest && state.autoCited === undefined) state.autoCited = null;
 		// Every dialog change follows an answer or finishes a wait: show it.
 		// A results page keeps the reader's place; only a new list starts at its top.
@@ -1102,6 +1115,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 			showReport(latest.card.url, latest.card.name);
 			setPopup(true); // a fresh report opens large first; Esc or the shrink icon puts it beside the chat
 		}
+		renderDemoAsks();
 	}
 
 	/* ---------------- entry layout: typed example requests ---------------- */
@@ -1211,7 +1225,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		if (!sel || !state.info || !state.info.provider || !state.info.provider.model) return null;
 		if (state.modelExamples.has(sel.key)) return state.modelExamples.get(sel.key);
 		state.modelExamples.set(sel.key, null);
-		post("/api/chat/examples", { bases: sel.bases, single: sel.single }).then((reply) => {
+		post(BASE + "/api/chat/examples", { bases: sel.bases, single: sel.single }).then((reply) => {
 			state.modelExamples.set(sel.key, reply.examples || null);
 			const now = exampleSelection(single);
 			if (reply.examples && now && now.key === sel.key && entryArgs && entryKey) entryTyping(...entryArgs);
@@ -1221,6 +1235,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	let entryArgs = null;
 	function entryTyping(step, messageId) {
 		entryArgs = [step, messageId];
+		if (demoChatLocked()) { stopEntryTyping(); return; }
 		const single = step === "ask" && onePdfChat();
 		const personal = step === "ask" ? (modelExamples(single) || personalExamples(single)) : null;
 		const examples = personal || ENTRY_EXAMPLES[single ? "ask1" : step];
@@ -1319,7 +1334,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 			// arrived while this request ran is at least as new as its reply
 			// (an instant answer, e.g. saved keyword blocks, overtakes it).
 			const pushes = state.pushes || 0;
-			const reply = await post("/api/dialog/answer", body);
+			const reply = await post(BASE + "/api/dialog/answer", body);
 			if ((state.pushes || 0) === pushes) state.dialog = reply;
 			render();
 		} catch (error) {
@@ -1517,7 +1532,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		Object.assign(syn, { key: text, lines: null, loading: true, error: "" });
 		renderOptions(true);
 		try {
-			const data = await post("/api/search/blocks", { request: text, mode: "synonyms", ...(fresh ? { fresh: true } : {}) });
+			const data = await post(BASE + "/api/search/blocks", { request: text, mode: "synonyms", ...(fresh ? { fresh: true } : {}) });
 			if (syn.key === text) syn.lines = data.blocks;
 		} catch (error) {
 			if (syn.key === text) syn.error = error.message;
@@ -1570,9 +1585,9 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		facet.on.clear();
 		renderOptions(true);
 		try {
-			const blocks = await post("/api/search/blocks", { request: text });
+			const blocks = await post(BASE + "/api/search/blocks", { request: text });
 			const yearFrom = periodYearFrom(state.options.period);
-			const data = await post(`/api/search/${kind}`, { query: blocks.query, ...(yearFrom ? { yearFrom } : {}) });
+			const data = await post(`${BASE}/api/search/${kind}`, { query: blocks.query, ...(yearFrom ? { yearFrom } : {}) });
 			if (facet.key !== key) return;
 			facet.rows = kind === "journals" ? data.journals : data.authors;
 		} catch (error) {
@@ -1679,7 +1694,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 			else {
 				const waiting = document.getElementById("author-matches");
 				if (waiting) waiting.innerHTML = `${matchesHtml()}<div class="wait"><span class="dot busy"></span>Looking up ...</div>`;
-				try { state.options.authors.matches = (await post("/api/search/author-lookup", { q: prefix })).matches || []; } catch { state.options.authors.matches = []; }
+				try { state.options.authors.matches = (await post(BASE + "/api/search/author-lookup", { q: prefix })).matches || []; } catch { state.options.authors.matches = []; }
 			}
 			const box = document.getElementById("author-matches");
 			if (box) box.innerHTML = matchesHtml();
@@ -1801,7 +1816,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		mention.loading = true;
 		showMention();
 		let matches = [];
-		try { matches = (await post("/api/search/author-lookup", { q: name })).matches || []; } catch { matches = []; }
+		try { matches = (await post(BASE + "/api/search/author-lookup", { q: name })).matches || []; } catch { matches = []; }
 		if (seq !== mention.seq) return null;
 		Object.assign(mention, { matches, active: 0, loading: false, note: "" });
 		showMention();
@@ -2001,7 +2016,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		return state.lib && Array.isArray(state.lib.papers) ? state.lib : { papers: [], dirs: [], store: "" };
 	}
 	async function loadChatLib() {
-		try { state.lib = await get("/api/library"); } catch { /* the pill shows what is known */ }
+		try { state.lib = await get(BASE + "/api/library"); } catch { /* the pill shows what is known */ }
 		if (state.chatMenu) renderOptions(true);
 		// The example questions may now name the chosen papers.
 		if (entryArgs && entryKey) entryTyping(...entryArgs);
@@ -2214,7 +2229,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	async function addPdfs() {
 		let picked;
 		try {
-			picked = await post("/api/library/pick-files");
+			picked = await post(BASE + "/api/library/pick-files");
 		} catch (error) {
 			if (error.status === 501) { chatFileInput().click(); return; }
 			toast(error.message);
@@ -2236,7 +2251,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 				});
 				if (!button) return;
 				if (button === "folder") {
-					await post("/api/folders/add", { path: picked.folder });
+					await post(BASE + "/api/folders/add", { path: picked.folder });
 					toast(`Added ${picked.folder}`);
 					bases = picked.files.map((file) => file.base);
 					copy = [];
@@ -2244,7 +2259,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 			}
 			const existing = [...known];
 			if (copy.length) {
-				const result = await post("/api/library/import", { files: copy.map((file) => file.path) });
+				const result = await post(BASE + "/api/library/import", { files: copy.map((file) => file.path) });
 				bases.push(...result.added.map((entry) => entry.base));
 				existing.push(...result.added.filter((entry) => entry.existing).map((entry) => entry.base));
 			}
@@ -2455,7 +2470,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		}
 		const folder = event.target.closest(".folder[data-folder]");
 		if (folder) {
-			post("/api/reveal", folder.dataset.path ? { path: folder.dataset.path } : { stage: folder.dataset.folder }).then((r) => toast(`Opened ${r.opened} in the file manager.`)).catch((error) => toast(error.message));
+			post(BASE + "/api/reveal", folder.dataset.path ? { path: folder.dataset.path } : { stage: folder.dataset.folder }).then((r) => toast(`Opened ${r.opened} in the file manager.`)).catch((error) => toast(error.message));
 			return;
 		}
 		// Stop and Esc reach only the job of this conversation; jobs of other
@@ -2464,7 +2479,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		if (stop) {
 			event.preventDefault();
 			const job = stop.closest(".working").dataset.job;
-			post(`/api/jobs/${encodeURIComponent(job)}/cancel`).catch(() => {});
+			post(`${BASE}/api/jobs/${encodeURIComponent(job)}/cancel`).catch(() => {});
 		}
 	});
 
@@ -2473,7 +2488,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	function showReport(url, name) {
 		// A flow diagram opens in its viewer (export buttons, details).
 		const diagram = /\.prisma\.svg$/i.test(url.replace(/[?#].*$/, ""));
-		if (diagram) url = `/static/prisma.html?file=${encodeURIComponent(url)}`;
+		if (diagram) url = `${BASE}/static/prisma.html?file=${encodeURIComponent(url)}`;
 		clearTabs();
 		reportBox.classList.toggle("compact", diagram);
 		state.report = { url, name };
@@ -2498,9 +2513,9 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	 * which highlights the cited passage in every browser; other
 	 * addresses stay as they are. The fragment (#page, &search) carries over. */
 	function viewerHref(href) {
-		if (!/^\/pdf\//.test(href)) return href;
+		if (!/^\/pdf\//.test(unbase(href))) return href;
 		const hash = href.includes("#") ? href.slice(href.indexOf("#")) : "";
-		return `/static/pdfview.html?file=${encodeURIComponent(pathOf(href))}${hash}`;
+		return `${BASE}/static/pdfview.html?file=${encodeURIComponent(pathOf(href))}${hash}`;
 	}
 	/** Point a viewer frame at a PDF passage: a new document loads, the
 	 * same document only moves its fragment (page, marked passage). */
@@ -2520,7 +2535,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	function showPdf(rawHref, fresh = false) {
 		clearTabs();
 		const href = withPagemode(rawHref);
-		const name = decodeURIComponent(pathOf(href).replace(/^\/pdf\//, ""));
+		const name = decodeURIComponent(unbase(pathOf(href)).replace(/^\/pdf\//, ""));
 		state.report = { url: href, name };
 		frame.hidden = false;
 		$("report-empty").hidden = true;
@@ -2694,7 +2709,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		if (event.key !== "Escape") return;
 		if (reportBox.classList.contains("popup")) { setPopup(false); return; }
 		if ($("modal").open || document.querySelector("dialog[open]")) return;
-		if (state.dialog && state.dialog.activeJob) { event.preventDefault(); post(`/api/jobs/${encodeURIComponent(state.dialog.activeJob)}/cancel`).catch(() => {}); toast("Stopping the job ..."); }
+		if (state.dialog && state.dialog.activeJob) { event.preventDefault(); post(`${BASE}/api/jobs/${encodeURIComponent(state.dialog.activeJob)}/cancel`).catch(() => {}); toast("Stopping the job ..."); }
 	});
 	/** The layout switch of the report shown (a paper report over several
 	 * papers offers one): a row under the panel head that stays in place
@@ -2724,7 +2739,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	$("btn-download").addEventListener("click", () => {
 		let url = state.report && state.report.url;
 		if (!url) return;
-		const viewer = /^\/static\/prisma\.html\?file=([^&#]+)/.exec(url);
+		const viewer = /^\/static\/prisma\.html\?file=([^&#]+)/.exec(unbase(url));
 		if (viewer) url = decodeURIComponent(viewer[1]);
 		url = url.replace(/[?#].*$/, "");
 		const link = document.createElement("a");
@@ -2743,7 +2758,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 
 	/* ---------------- rail ---------------- */
 	async function loadState() {
-		try { state.info = await get("/api/state"); } catch (error) { $("status").innerHTML = `<span class="dot bad"></span>${esc(error.message)}`; return; }
+		try { state.info = await get(BASE + "/api/state"); } catch (error) { $("status").innerHTML = `<span class="dot bad"></span>${esc(error.message)}`; return; }
 		const info = state.info;
 		const p = info.provider;
 		// The brand mark: a plain Greek pi everywhere until pi.dev's permission
@@ -2754,6 +2769,11 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		// A local server that does not answer turns its dot red (the server
 		// probes 127.0.0.1 addresses on every state read); remote services
 		// are not probed.
+		document.body.classList.toggle("demo", Boolean(info.demo));
+		if (info.demo) {
+			$("status").innerHTML = '<span class="dot"></span>Live demo · runs in your browser<br><span class="dot off"></span>AI models: installed version only';
+			return;
+		}
 		const dot = (reachable) => `<span class="dot ${reachable === false ? "bad" : ""}"></span>`;
 		const down = (reachable, what) => (reachable === false ? ` <span class="down">-- not running: start ${what} first</span>` : "");
 		$("status").innerHTML = p.model
@@ -2824,7 +2844,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	async function loadLibrary() {
 		const box = $("rail-library-list");
 		try {
-			const data = await get("/api/library");
+			const data = await get(BASE + "/api/library");
 			state.lib = data;
 			// Folders the reader opened stay open across the rebuild.
 			const opened = new Set([...box.querySelectorAll("details.lfolder[open] > summary")].map((summary) => summary.title));
@@ -2851,7 +2871,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	async function refreshIndexMarks() {
 		const box = $("rail-library-list");
 		let data;
-		try { data = await get("/api/library"); } catch { return; }
+		try { data = await get(BASE + "/api/library"); } catch { return; }
 		const rows = new Map([...box.querySelectorAll("a.item.paper[data-base]")].map((row) => [row.dataset.base, row]));
 		if (rows.size !== data.papers.length || data.papers.some((paper) => !rows.has(paper.base))) { loadLibrary(); return; }
 		state.lib = data;
@@ -2921,13 +2941,13 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 			box.addEventListener("click", (event) => {
 				if (event.target === box || event.target.closest("[data-close-info]")) { box.close(); return; }
 				const reveal = event.target.closest("[data-reveal-path]");
-				if (reveal) post("/api/reveal", { path: reveal.dataset.revealPath }).then((r) => toast(`Opened ${r.opened} in the file manager.`)).catch((error) => toast(error.message));
+				if (reveal) post(BASE + "/api/reveal", { path: reveal.dataset.revealPath }).then((r) => toast(`Opened ${r.opened} in the file manager.`)).catch((error) => toast(error.message));
 			});
 		}
 		box.innerHTML = '<p class="wait"><span class="dot busy"></span>Loading ...</p>';
 		if (!box.open) box.showModal();
 		let data;
-		try { data = await get(`/api/paper?base=${encodeURIComponent(base)}`); } catch (error) { box.innerHTML = `<h3>About this paper</h3><p>${esc(error.message)}</p><div class="modal-actions"><button type="button" class="primary" data-close-info>Close</button></div>`; return; }
+		try { data = await get(`${BASE}/api/paper?base=${encodeURIComponent(base)}`); } catch (error) { box.innerHTML = `<h3>About this paper</h3><p>${esc(error.message)}</p><div class="modal-actions"><button type="button" class="primary" data-close-info>Close</button></div>`; return; }
 		const p = data.paper;
 		const oa = data.openalex;
 		const indexed = p.index && (!data.embeddingModel || p.index.model === data.embeddingModel);
@@ -2971,7 +2991,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		if (!box.open) box.showModal();
 		const params = new URLSearchParams(query.id ? { id: query.id } : { doi: query.doi, name: query.name });
 		let data;
-		try { data = await get(`/api/author?${params}`); } catch (error) { box.innerHTML = `<h3>${esc(query.name)}</h3><p>${esc(error.message)}</p><div class="modal-actions"><button type="button" class="primary" data-close-info>Close</button></div>`; return; }
+		try { data = await get(`${BASE}/api/author?${params}`); } catch (error) { box.innerHTML = `<h3>${esc(query.name)}</h3><p>${esc(error.message)}</p><div class="modal-actions"><button type="button" class="primary" data-close-info>Close</button></div>`; return; }
 		const a = data.author;
 		const rows = [];
 		const row = (label, value) => { if (value) rows.push(`<tr><th>${label}</th><td>${value}</td></tr>`); };
@@ -3011,7 +3031,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	/** The library PDF shown in the panel (single view or active tab), else null. */
 	function panelPaperBase() {
 		const url = state.report && state.report.url;
-		const m = url && /^\/pdf\/([^?#]+)\.pdf/i.exec(url);
+		const m = url && /^\/pdf\/([^?#]+)\.pdf/i.exec(unbase(url));
 		return m ? decodeURIComponent(m[1]) : null;
 	}
 	function syncPaperInfoButton() { $("btn-paper-info").hidden = !panelPaperBase(); }
@@ -3022,11 +3042,11 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		try {
 			let chosen = path;
 			if (!chosen) {
-				const picked = await post("/api/folders/pick", { purpose: "pdf" });
+				const picked = await post(BASE + "/api/folders/pick", { purpose: "pdf" });
 				chosen = picked.path;
 				if (!chosen) return false;
 			}
-			await post("/api/folders/add", { path: chosen });
+			await post(BASE + "/api/folders/add", { path: chosen });
 			toast(`Added ${chosen}`);
 			loadLibrary();
 			return true;
@@ -3109,14 +3129,14 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 			event.stopPropagation();
 			const ok = await confirmBox("Remove from the library?", `${unlink.dataset.unlink} -- the folder and its PDFs stay on your disk; only the library stops reading it.`, "Remove from library");
 			if (!ok) return;
-			try { await post("/api/folders/remove", { path: unlink.dataset.unlink }); loadLibrary(); } catch (error) { toast(error.message); }
+			try { await post(BASE + "/api/folders/remove", { path: unlink.dataset.unlink }); loadLibrary(); } catch (error) { toast(error.message); }
 			return;
 		}
 		const reveal = event.target.closest("button.reveal[data-reveal]");
 		if (!reveal) return;
 		event.preventDefault();
 		event.stopPropagation();
-		post("/api/reveal", { path: reveal.dataset.reveal }).catch((error) => toast(error.message));
+		post(BASE + "/api/reveal", { path: reveal.dataset.reveal }).catch((error) => toast(error.message));
 	});
 	/** Saved conversations (JSON files in the history folder, see
 	 * src/web/history.ts): one list per stage, newest first.
@@ -3141,7 +3161,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	const historyAll = new Set();
 	async function loadHistory() {
 		try {
-			const data = await get("/api/history");
+			const data = await get(BASE + "/api/history");
 			const when = (iso) => { const d = new Date(iso); return Number.isNaN(d.getTime()) ? "" : d.toLocaleString(undefined, { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }); };
 			const trash = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>';
 			// Under SEARCH & SELECT the "Search:" prefix says nothing; the
@@ -3190,10 +3210,10 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 			rep.disabled = true;
 			try {
 				if (rep.classList.contains("new")) {
-					await post("/api/runs/report", { name: run, kind, rail: true });
+					await post(BASE + "/api/runs/report", { name: run, kind, rail: true });
 					rep.classList.remove("new");
 				}
-				showReport(`/files/lit-search/${encodeURIComponent(file)}`, file);
+				showReport(`${BASE}/files/lit-search/${encodeURIComponent(file)}`, file);
 				setPopup(true);
 			} catch (error) { toast(error.message); } finally { rep.disabled = false; }
 			return;
@@ -3204,7 +3224,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 			event.stopPropagation();
 			if (!confirm("Delete this conversation? Its reports and PDFs on disk stay.")) return;
 			try {
-				const result = await post("/api/history/delete", { id: del.dataset.del });
+				const result = await post(BASE + "/api/history/delete", { id: del.dataset.del });
 				state.dialog = result.dialog;
 				render();
 				loadHistory();
@@ -3216,7 +3236,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		if (past) {
 			event.preventDefault();
 			try {
-				const view = await post("/api/history/open", { id: past.dataset.history });
+				const view = await post(BASE + "/api/history/open", { id: past.dataset.history });
 				state.dialog = view;
 				render();
 				loadHistory();
@@ -3234,7 +3254,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		event.preventDefault();
 		state.panelClosedByUser = false;
 		// The "+" (a new chat) loads the PDF anew, without the marks of the last chat.
-		if (/^\/pdf\//.test(item.dataset.url)) showPdf(item.dataset.url, Boolean(event.target.closest("[data-newchat]")));
+		if (/^\/pdf\//.test(unbase(item.dataset.url))) showPdf(item.dataset.url, Boolean(event.target.closest("[data-newchat]")));
 		else showReport(item.dataset.url, item.dataset.name);
 		// A paper of the library: its last chat continues (the newest one in
 		// History); the "+" on the row, or a paper without a chat, starts a new one.
@@ -3243,12 +3263,12 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 			const fresh = Boolean(event.target.closest("[data-newchat]"));
 			(async () => {
 				try {
-					const last = fresh ? null : ((await get("/api/history")).history || []).find((entry) => entry.paper === item.dataset.base && !entry.current);
+					const last = fresh ? null : ((await get(BASE + "/api/history")).history || []).find((entry) => entry.paper === item.dataset.base && !entry.current);
 					const current = !fresh && onePdfChat() && state.dialog.answers.scope[0] === item.dataset.base;
 					if (current) return;
 					state.dialog = last
-						? await post("/api/history/open", { id: last.id })
-						: await post("/api/dialog/new", { start: "synthesis", scope: [item.dataset.base] });
+						? await post(BASE + "/api/history/open", { id: last.id })
+						: await post(BASE + "/api/dialog/new", { start: "synthesis", scope: [item.dataset.base] });
 					render();
 					loadHistory();
 				} catch (error) { toast(error.message); }
@@ -3263,7 +3283,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		entryDismissed = ""; // a new conversation types its examples again
 		// A running job keeps going in its own conversation (History marks it).
 		// A new conversation starts without the PDF or report of the last one.
-		try { state.dialog = await post("/api/dialog/new", { start }); closePanel(); render(); loadHistory(); } catch (error) { toast(error.message); }
+		try { state.dialog = await post(BASE + "/api/dialog/new", { start }); closePanel(); render(); loadHistory(); } catch (error) { toast(error.message); }
 	};
 	/* The rail's width: drag its right edge (10-30 rem); kept per browser. */
 	(() => {
@@ -3301,7 +3321,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		for (const file of files) {
 			toast(`Adding ${file.name} ...`);
 			try {
-				const response = await fetch(`/api/library/upload?name=${encodeURIComponent(file.name)}`, { method: "POST", headers: { "content-type": "application/pdf" }, body: file });
+				const response = await fetch(`${BASE}/api/library/upload?name=${encodeURIComponent(file.name)}`, { method: "POST", headers: { "content-type": "application/pdf" }, body: file });
 				const data = await response.json().catch(() => ({}));
 				if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
 				bases.push(data.base);
@@ -3325,7 +3345,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		if (!bases.length) return;
 		entryDismissed = "";
 		try {
-			state.dialog = await post("/api/dialog/new", { start: "synthesis", scope: bases });
+			state.dialog = await post(BASE + "/api/dialog/new", { start: "synthesis", scope: bases });
 			render();
 			loadHistory();
 			showConversationPdf();
@@ -3347,18 +3367,23 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	$("btn-info").addEventListener("click", () => {
 		const pop = $("info-pop");
 		if (!pop.hidden) { pop.hidden = true; return; }
+		if (state.info && state.info.demo) {
+			pop.innerHTML = demoInfoHtml();
+			pop.hidden = false;
+			return;
+		}
 		const p = state.info && state.info.provider;
 		const model = p && p.model ? `${esc(p.model)}${p.remote ? " (a remote service: the passages you ask about go there)" : " (local)"}` : "none selected yet";
 		pop.innerHTML = `<p><b>Where your data goes.</b> Search queries go to arXiv, Crossref and OpenAlex (open, no account; Semantic Scholar only with a free key). Your PDFs stay on this machine. LLM: ${model}. Embeddings: ${esc(p ? p.embeddings : "")}, local.</p><p><b>Citations</b> are inserted and checked by code, never written by the model.</p><p><b>Downloads</b> are legal open access only; restricted papers are listed with a browser link.</p><p><b>License.</b> Free and open source under the MIT License: use, change and share it, also commercially, as long as the copyright notice stays. <a href="https://github.com/flindenberger/pi-literature-review/blob/main/LICENSE" target="_blank" rel="noopener">LICENSE</a></p><p class="cite"><b>Another browser.</b> This page opens only through its full address with the access key; copy it into any other browser.<button type="button" class="ibtn" id="btn-link-copy" title="Copy the full address with its access key">Copy link</button></p><p class="cite"><b>How to cite.</b> If this tool supports your academic work, please cite it:<span class="ref" id="cite-text">${esc(CITE_TEXT)}</span><button type="button" class="ibtn" id="btn-cite-copy" title="Copy the citation">Copy</button></p>`;
 		pop.hidden = false;
 		// Fetched now, so the copy click itself writes at once.
 		state.fullAddress = "";
-		get("/api/address").then((data) => { state.fullAddress = data.url || ""; }).catch(() => {});
+		get(BASE + "/api/address").then((data) => { state.fullAddress = data.url || ""; }).catch(() => {});
 	});
 	$("info-pop").addEventListener("click", async (event) => {
 		if (event.target.closest("#btn-link-copy")) {
 			try {
-				const url = state.fullAddress || (await get("/api/address")).url;
+				const url = state.fullAddress || (await get(BASE + "/api/address")).url;
 				await navigator.clipboard.writeText(url);
 				toast("Link copied. Paste it into the other browser; it changes when Pi or the server restarts.");
 			} catch { toast("Copying is blocked here; the full address is printed in Pi."); }
@@ -3378,7 +3403,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 
 	/* ---------------- SSE ---------------- */
 	function connectEvents() {
-		const source = new EventSource("/api/events");
+		const source = new EventSource(BASE + "/api/events");
 		source.addEventListener("snapshot", (event) => {
 			const snapshot = JSON.parse(event.data);
 			state.lines = new Map();
@@ -3438,7 +3463,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	}
 	async function loadSettings() {
 		let data;
-		try { data = await get("/api/settings"); } catch (error) { $("set-error").textContent = error.message; return; }
+		try { data = await get(BASE + "/api/settings"); } catch (error) { $("set-error").textContent = error.message; return; }
 		state.settingsConversations = data.conversations || 0;
 		loadFolders();
 		state.settingsBlocks = data.savedBlocks || 0;
@@ -3533,7 +3558,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	});
 	async function saveKey(value) {
 		try {
-			const result = await post("/api/settings/key", { name: $("key-edit").dataset.key, value });
+			const result = await post(BASE + "/api/settings/key", { name: $("key-edit").dataset.key, value });
 			renderKeys(result.keys);
 			toast(value ? "Key saved." : "Key removed.");
 		} catch (error) { $("set-error").textContent = error.message; }
@@ -3552,13 +3577,13 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		const n = state.settingsIndexes || 0;
 		if (!confirm(`Delete all ${n} index${n === 1 ? "" : "es"}? Your PDFs stay. The indexes are rebuilt in the background, about 8 seconds per PDF.`)) return;
 		try {
-			const result = await post("/api/indexes/clear");
+			const result = await post(BASE + "/api/indexes/clear");
 			await loadSettings();
 			toast(`${result.deleted} index${result.deleted === 1 ? "" : "es"} deleted; rebuilding in the background.`);
 		} catch (error) { $("set-error").textContent = error.message; }
 	});
 	for (const id of ["reveal-history", "reveal-blocks", "reveal-indexes"]) {
-		$(id).addEventListener("click", () => post("/api/reveal", { path: $(id).dataset.path }).catch((error) => toast(error.message)));
+		$(id).addEventListener("click", () => post(BASE + "/api/reveal", { path: $(id).dataset.path }).catch((error) => toast(error.message)));
 	}
 	/** The model lists of the Settings: what each server offers (and,
 	 * inside pi, pi's models for the browser's LLM). A list replaces the
@@ -3572,7 +3597,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		const r = data.resolved;
 		const base = $(spec.url).value.trim() || spec.base(r);
 		let list = [];
-		try { list = (await get(`/api/models?base=${encodeURIComponent(base)}&api=${encodeURIComponent(spec.api(r))}`)).models || []; } catch { list = []; }
+		try { list = (await get(`${BASE}/api/models?base=${encodeURIComponent(base)}&api=${encodeURIComponent(spec.api(r))}`)).models || []; } catch { list = []; }
 		const select = $(spec.pick);
 		const input = $(spec.input);
 		if (!list.length) { select.hidden = true; input.hidden = false; $(spec.back).hidden = true; return; }
@@ -3590,7 +3615,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	async function loadModelLists(data, inPi) {
 		const jobs = PICKS.filter((spec) => !(inPi && spec.pick === "pick-chat")).map((spec) => loadPick(spec, data, inPi));
 		if (inPi) {
-			jobs.push(get("/api/models?pi=1").then((reply) => {
+			jobs.push(get(BASE + "/api/models?pi=1").then((reply) => {
 				const select = $("set-browser-model");
 				const current = data.browserModel || "";
 				const p = (state.info && state.info.provider) || {};
@@ -3642,7 +3667,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	/** The PDF folders in Settings: each with its file-manager and remove buttons. */
 	async function loadFolders() {
 		try {
-			const data = await get("/api/folders");
+			const data = await get(BASE + "/api/folders");
 			$("set-folders").innerHTML = data.pdfFolders.length
 				? data.pdfFolders.map((folder) => `<div class="folder"><span title="${esc(folder)}">${esc(folder)}</span><button type="button" class="ibtn" data-reveal-folder="${esc(folder)}" title="Show in the file manager" aria-label="Show in the file manager">${ICON_REVEAL}</button><button type="button" class="ibtn" data-remove-folder="${esc(folder)}" title="Stop reading this folder (its files stay where they are)" aria-label="Remove">×</button></div>`).join("")
 				: "";
@@ -3657,14 +3682,14 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	}
 	$("set-store").addEventListener("click", (event) => {
 		const reveal = event.target.closest("[data-reveal-folder]");
-		if (reveal) post("/api/reveal", { path: reveal.dataset.revealFolder }).catch((error) => toast(error.message));
+		if (reveal) post(BASE + "/api/reveal", { path: reveal.dataset.revealFolder }).catch((error) => toast(error.message));
 	});
 	$("set-folders").addEventListener("click", async (event) => {
 		const reveal = event.target.closest("[data-reveal-folder]");
-		if (reveal) { post("/api/reveal", { path: reveal.dataset.revealFolder }).catch((error) => toast(error.message)); return; }
+		if (reveal) { post(BASE + "/api/reveal", { path: reveal.dataset.revealFolder }).catch((error) => toast(error.message)); return; }
 		const remove = event.target.closest("[data-remove-folder]");
 		if (!remove) return;
-		try { await post("/api/folders/remove", { path: remove.dataset.removeFolder }); } catch (error) { $("set-error").textContent = error.message; }
+		try { await post(BASE + "/api/folders/remove", { path: remove.dataset.removeFolder }); } catch (error) { $("set-error").textContent = error.message; }
 		loadFolders();
 		if ($("rail-library").open) loadLibrary();
 	});
@@ -3686,7 +3711,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		const n = state.settingsConversations || 0;
 		if (!confirm(`Delete all ${n} saved conversation${n === 1 ? "" : "s"}? Reports and PDFs on disk stay.`)) return;
 		try {
-			const result = await post("/api/history/clear");
+			const result = await post(BASE + "/api/history/clear");
 			state.dialog = result.dialog;
 			render();
 			loadHistory();
@@ -3696,7 +3721,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	});
 	$("btn-blocks-clear").addEventListener("click", async () => {
 		try {
-			const result = await post("/api/blocks/clear");
+			const result = await post(BASE + "/api/blocks/clear");
 			await loadSettings();
 			toast(`${result.deleted} saved keyword block set${result.deleted === 1 ? "" : "s"} forgotten.`);
 		} catch (error) { $("set-error").textContent = error.message; }
@@ -3704,7 +3729,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	$("btn-settings-save").addEventListener("click", async () => {
 		$("set-error").textContent = "";
 		try {
-			await post("/api/settings", {
+			await post(BASE + "/api/settings", {
 				mailto: $("set-mailto").value,
 				thinking: $("set-thinking").value,
 				generateThinking: $("set-generate-thinking").value,
@@ -3725,7 +3750,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	});
 	$("btn-pull-embed").addEventListener("click", async () => {
 		$("set-error").textContent = "";
-		try { await post("/api/settings/pull-embed"); } catch (error) { $("set-error").textContent = error.message; }
+		try { await post(BASE + "/api/settings/pull-embed"); } catch (error) { $("set-error").textContent = error.message; }
 	});
 
 	/* ---------------- scripted access (screenshots, tests) ---------------- */
@@ -3736,6 +3761,163 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		options: () => state.options,
 	};
 
+	/* ---------------- browser demo ---------------- */
+	/** The two ways to install, shown wherever the demo cannot act. */
+	const INSTALL_LINES = [
+		{ label: "In Pi", command: "pi install npm:pi-literature-review" },
+		{ label: "Without Pi", command: "npx pi-literature-review web", node: true },
+	];
+	const isDemo = () => Boolean(state.info && state.info.demo);
+	/** The install window: why (title), then the two commands with Copy. */
+	function installBox(title, text = "") {
+		let box = document.getElementById("installbox");
+		if (!box) { box = document.createElement("dialog"); box.id = "installbox"; box.className = "modal"; document.body.appendChild(box); }
+		const rows = INSTALL_LINES.map((line) => `<tr><th>${esc(line.label)}</th><td><code>${esc(line.command)}</code>${line.node ? ' <a href="https://nodejs.org/en/download" target="_blank" rel="noopener" title="The one prerequisite: Node.js 22.19 or newer">Get Node.js</a>' : ""}</td><td><button type="button" class="ibtn" data-copy="${esc(line.command)}">Copy</button></td></tr>`).join("");
+		box.innerHTML = `<h3>${esc(title)}</h3>${text ? `<p>${esc(text)}</p>` : ""}<table class="installrows"><tbody>${rows}</tbody></table><div class="modal-actions"><a class="ibtn" href="https://github.com/flindenberger/pi-literature-review#install" target="_blank" rel="noopener">More on GitHub</a><button type="button" class="primary" data-close="1">Close</button></div>`;
+		box.onclick = async (event) => {
+			const copy = event.target.closest("[data-copy]");
+			if (copy) {
+				try { await navigator.clipboard.writeText(copy.dataset.copy); toast("Copied."); } catch { toast("Copying is blocked here; select the text instead."); }
+				return;
+			}
+			if (event.target.closest("[data-close]")) box.close();
+		};
+		box.showModal();
+	}
+	/** Places the demo hands over to the installed version: a click there
+	 * opens the install window instead (selector -> window title, text). */
+	const DEMO_INSTALL = [
+		["#btn-upload, #btn-add-folder, [data-unlink], [data-reveal]", "Add your own PDFs in the installed version", "There your library is your own folders of PDFs; summaries, answers and reports over them use the AI model you run."],
+		["[data-act=download]", "Download PDFs with the installed version", "It fetches the legal open-access PDFs of the ticked papers into a folder you choose."],
+		["#btn-settings", "Settings belong to the installed version", "There you choose your models, your PDF folders and optional API keys."],
+	];
+	document.addEventListener("click", (event) => {
+		if (!isDemo()) return;
+		for (const [selector, title, text] of DEMO_INSTALL) {
+			if (!event.target.closest(selector)) continue;
+			event.preventDefault();
+			event.stopImmediatePropagation();
+			installBox(title, text);
+			return;
+		}
+	}, true);
+	/** The recorded questions of the demo's example paper (null elsewhere). */
+	function demoQuestions() {
+		return isDemo() && state.info.replay ? state.info.replay.questions : null;
+	}
+	const sameQuestion = (a, b) => {
+		const norm = (text) => String(text).toLowerCase().replace(/\s+/g, " ").replace(/[?.!\s]+$/, "").trim();
+		return norm(a) === norm(b);
+	};
+	/** The demo's paper chat: the recorded questions as buttons under the
+	 * box (asked ones drop out); the tooltip names the recording. */
+	/** The example paper in the rail: library open, the paper ticked as the
+	 * chat's source, its row lit up for a moment. */
+	async function showDemoPaper() {
+		const base = state.info.replay.paper.base;
+		$("block-2").open = true;
+		$("rail-library").open = true;
+		await loadLibrary();
+		const row = $("rail-library-list").querySelector(`a.item.paper[data-base="${CSS.escape(base)}"]`);
+		if (!row) return;
+		for (let folder = row.closest("details.lfolder"); folder; folder = folder.parentElement.closest("details.lfolder")) folder.open = true;
+		const tick = row.querySelector("input[data-tick-paper]");
+		if (tick && !tick.checked) tick.click();
+		const lit = $("rail-library-list").querySelector(`a.item.paper[data-base="${CSS.escape(base)}"]`);
+		if (lit) { lit.classList.remove("flash"); void lit.offsetWidth; lit.classList.add("flash"); }
+		state.flash = { bases: new Set([base]), until: Date.now() + 3000 };
+	}
+	/** The demo's paper chat takes the recorded questions only: the box is
+	 * greyed and read-only, its placeholder points to the installation. */
+	function demoChatLocked() {
+		return Boolean(demoQuestions() && state.chatMenu && state.dialog && state.dialog.stage && state.dialog.stage.stage === 2);
+	}
+	const DEMO_LOCKED_PLACEHOLDER = "Install pi-literature-review to ask your own questions";
+	function lockDemoBox(locked) {
+		const input = $("input");
+		const was = $("composer").classList.contains("demo-locked");
+		$("composer").classList.toggle("demo-locked", locked);
+		input.readOnly = locked;
+		if (locked) input.placeholder = DEMO_LOCKED_PLACEHOLDER;
+		else if (was) input.placeholder = "";
+	}
+	function renderDemoAsks() {
+		let row = document.getElementById("demo-asks");
+		const questions = demoQuestions();
+		lockDemoBox(demoChatLocked());
+		const show = Boolean(questions && state.chatMenu && state.dialog && state.dialog.step === "ask");
+		if (!show) { if (row) row.hidden = true; return; }
+		if (!row) {
+			row = document.createElement("div");
+			row.id = "demo-asks";
+			row.className = "demo-asks";
+			$("composer").insertAdjacentElement("afterend", row);
+			row.addEventListener("click", async (event) => {
+				if (event.target.closest("[data-demo-example]")) {
+					state.demoExample = true;
+					await showDemoPaper();
+					renderDemoAsks();
+					return;
+				}
+				const button = event.target.closest("[data-demo-ask]");
+				if (!button || state.dialog.activeJob || state.dialog.pending) return;
+				$("input").value = button.dataset.demoAsk;
+				$("composer").requestSubmit();
+			});
+		}
+		const asked = state.dialog.answers.questions || [];
+		// First one link to the example paper; its click opens the library at
+		// the paper (ticked) and brings the recorded questions here.
+		if (!state.demoExample && !asked.length) {
+			row.innerHTML = `<button type="button" class="demolink" data-demo-example="1" title="Opens the example paper in the library, with questions answered from a recording">Try it on an example paper (${esc(state.info.replay.paper.label)})</button>`;
+			row.hidden = false;
+			return;
+		}
+		const open = questions.filter((question) => !asked.some((done) => sameQuestion(done, question)));
+		const tip = `A recorded answer: ${state.info.replay.recordedWith}`;
+		row.innerHTML = open.map((question) => `<button type="button" class="chip" data-demo-ask="${esc(question)}" title="${esc(tip)}">${esc(question)}</button>`).join("");
+		row.hidden = !open.length;
+	}
+	// In the demo's paper chat a recorded question runs over the whole
+	// (one-paper) library; any other question opens the install window.
+	$("composer").addEventListener("submit", (event) => {
+		const questions = demoQuestions();
+		if (!questions || !state.chatMenu || !state.dialog || state.dialog.step !== "ask") return;
+		const text = $("input").value.trim();
+		if (!text || text.startsWith("?")) return;
+		if (questions.some((question) => sameQuestion(question, text))) {
+			if (!chatScope().chosen) state.chat.whole = true;
+			return;
+		}
+		event.preventDefault();
+		event.stopImmediatePropagation();
+		// The box is emptied, so the next Send (or Report) does not ask it again.
+		$("input").value = "";
+		installBox("Your own questions need a model", "This demo plays back the recorded questions about its example paper. Installed, pi-literature-review answers any question over your own PDFs, with the AI model you run, every statement cited to the page.");
+	}, true);
+	$("input").addEventListener("click", () => {
+		if (!$("composer").classList.contains("demo-locked")) return;
+		installBox("Ask your own questions in the installed version", "This demo plays back the recorded questions about its example paper. Installed, pi-literature-review answers any question over your own PDFs, with the AI model you run, every statement cited to the page.");
+	});
+	// PDFs dropped on the demo page: the same window.
+	document.addEventListener("drop", (event) => {
+		if (!isDemo() || !event.dataTransfer || !event.dataTransfer.types.includes("Files")) return;
+		event.preventDefault();
+		event.stopImmediatePropagation();
+		const overlay = document.getElementById("dropzone");
+		if (overlay) overlay.hidden = true;
+		installBox("Add your own PDFs in the installed version", "There your library is your own folders of PDFs; summaries, answers and reports over them use the AI model you run.");
+	}, true);
+	/** The info popover of the demo: what runs where, and that nothing is collected. */
+	function demoInfoHtml() {
+		return `<p><b>A live demo.</b> This is the browser interface of pi-literature-review, running entirely in your browser: the search goes from here straight to OpenAlex, Crossref, DataCite and doi.org (and, for papers with code, GitHub, Hugging Face and ecosyste.ms). arXiv allows no requests from web pages; the installed version asks it too.</p><p><b>Nothing is collected.</b> No account, no cookies, no tracking, no server of ours. Your searches and History stay in this browser.</p><p><b>Citations</b> are inserted and checked by code, never written by a model.</p><p><b>Install pi-literature-review</b> to download PDFs, chat with them and write reports, with the AI model you run.<span class="demo-install-row"><button type="button" class="ibtn" id="btn-demo-install">Install</button></span></p><p><b>License.</b> MIT. <a href="https://github.com/flindenberger/pi-literature-review" target="_blank" rel="noopener">Source code on GitHub</a></p><p class="cite"><b>How to cite.</b><span class="ref" id="cite-text">${esc(CITE_TEXT)}</span><button type="button" class="ibtn" id="btn-cite-copy" title="Copy the citation">Copy</button></p>`;
+	}
+	document.addEventListener("click", (event) => {
+		if (!event.target.closest("#btn-demo-install")) return;
+		$("info-pop").hidden = true;
+		installBox("Install pi-literature-review");
+	});
+
 	/* ---------------- start ---------------- */
 	(async () => {
 		await loadState();
@@ -3744,9 +3926,9 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		// conversation so far stays in History. While a job or a model call
 		// is running the server refuses (409) and the live conversation shows.
 		try {
-			state.dialog = await post("/api/dialog/new");
+			state.dialog = await post(BASE + "/api/dialog/new");
 		} catch {
-			try { state.dialog = await get("/api/dialog"); } catch (error) { toast(error.message); }
+			try { state.dialog = await get(BASE + "/api/dialog"); } catch (error) { toast(error.message); }
 		}
 		render();
 		loadHistory();

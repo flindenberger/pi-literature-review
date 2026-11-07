@@ -7,13 +7,14 @@
  * abstract page; 200 (or a redirect) means the preprint exists. Anything
  * else -- wrong status, network failure, no identifier at all -- is the gray
  * zone: verified stays false and verify_note says why. Never silently
- * confirmed. Requests are polite (timeout, User-Agent; doi.org HEADs run a
+ * confirmed. In a browser the DOI handle API stands in for the HEAD (see
+ * handleStatus). Requests are polite (timeout, User-Agent; doi.org HEADs run a
  * few at a time, arxiv.org ones one by one with a pause); the HEAD function
  * is injectable so the decision logic tests offline.
  */
 
 import type { MergedRecord } from "./pipeline.ts";
-import { errorName, userAgent, warn } from "./types.ts";
+import { errorName, IN_BROWSER, userAgentHeader, warn } from "./types.ts";
 
 export interface VerifiedRecord extends MergedRecord {
 	verified: boolean;
@@ -50,7 +51,7 @@ async function headStatus(url: string, signal?: AbortSignal): Promise<HeadStatus
 		const response = await fetch(url, {
 			method: "HEAD",
 			redirect: "manual",
-			headers: { "User-Agent": userAgent() },
+			headers: userAgentHeader(),
 			signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
 		});
 		return { status: response.status, note: "" };
@@ -59,10 +60,38 @@ async function headStatus(url: string, signal?: AbortSignal): Promise<HeadStatus
 	}
 }
 
+/** The same question in a browser (the browser demo), where doi.org's
+ * redirect cannot be read: the DOI handle API answers it as JSON
+ * (responseCode 1 = registered, 100 with HTTP 404 = no such DOI). An
+ * arXiv page is checked through the DOI DataCite registers for every
+ * preprint (10.48550/arXiv.<id>). Answers are mapped onto the statuses
+ * verifyRecord expects: a redirect for a registered DOI, 200 for an
+ * existing preprint, 404 otherwise. */
+export async function handleStatus(url: string, signal?: AbortSignal, fetchFn: typeof fetch = fetch): Promise<HeadStatus> {
+	const arxiv = /^https:\/\/arxiv\.org\/abs\/(.+)$/.exec(url);
+	const doi = arxiv ? `10.48550/arXiv.${arxiv[1].replace(/v\d+$/i, "")}` : url.replace(/^https:\/\/doi\.org\//, "");
+	const timeout = AbortSignal.timeout(VERIFY_TIMEOUT_MS);
+	try {
+		const response = await fetchFn(`https://doi.org/api/handles/${doi.split("/").map(encodeURIComponent).join("/")}`, {
+			signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+		});
+		if (response.status === 404) return { status: 404, note: "" };
+		if (!response.ok) return { status: response.status, note: "" };
+		const body = (await response.json()) as { responseCode?: number };
+		if (body.responseCode === 1) return { status: arxiv ? 200 : 302, note: "" };
+		return { status: 404, note: "" };
+	} catch (error) {
+		return { status: null, note: `network error: ${errorName(error)}` };
+	}
+}
+
+/** The check this environment can make: HEAD in Node, the handle API in a browser. */
+const defaultHead: HeadFn = IN_BROWSER ? handleStatus : headStatus;
+
 /** Verify ONE record's identifier (DOI first, else arXiv ID). */
 export async function verifyRecord(
 	record: Pick<MergedRecord, "doi" | "arxiv_id">,
-	head: HeadFn = headStatus,
+	head: HeadFn = defaultHead,
 	signal?: AbortSignal,
 ): Promise<{ verified: boolean; note: string }> {
 	if (record.doi) {
@@ -97,7 +126,7 @@ export async function verifyAll(
 	records: MergedRecord[],
 	onWarn: (message: string) => void = warn,
 	signal?: AbortSignal,
-	head: HeadFn = headStatus,
+	head: HeadFn = defaultHead,
 ): Promise<VerifiedRecord[]> {
 	const results: Array<{ verified: boolean; note: string }> = new Array(records.length);
 	const check = async (index: number) => {

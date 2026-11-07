@@ -14,7 +14,7 @@
  *    the shape measured on 2026-09-03.
  */
 
-import { userAgent } from "../types.ts";
+import { userAgentHeader } from "../types.ts";
 import { pacedClient } from "./polite.ts";
 
 const REPOS_URL = "https://repos.ecosyste.ms/api/v1/hosts/GitHub/repositories";
@@ -26,7 +26,7 @@ export const MAX_LIST_PAGES = 30;
 const fetchPaced = pacedClient({ label: "ecosyste.ms", spacingMs: 250, passStatuses: [404] });
 
 function headers(): Record<string, string> {
-	return { "User-Agent": userAgent(), Accept: "application/json" };
+	return { ...userAgentHeader(), Accept: "application/json" };
 }
 
 export interface RepoMeta {
@@ -47,8 +47,8 @@ export function parseRepoMeta(data: unknown): RepoMeta | null {
 }
 
 /** Repository metadata, or null when the service does not know the repo. */
-export async function fetchRepoMeta(owner: string, repo: string): Promise<RepoMeta | null> {
-	const response = await fetchPaced(`${REPOS_URL}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`, { headers: headers() });
+export async function fetchRepoMeta(owner: string, repo: string, signal?: AbortSignal): Promise<RepoMeta | null> {
+	const response = await fetchPaced(`${REPOS_URL}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`, { headers: headers(), ...(signal ? { signal } : {}) });
 	if (response.status === 404) return null;
 	return parseRepoMeta(await response.json());
 }

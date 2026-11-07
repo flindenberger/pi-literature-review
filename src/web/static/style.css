@@ -721,3 +721,24 @@ dialog.paperinfo details.abstract p { margin: 0.4rem 0 0; line-height: 1.5; }
 /* The stage name above a stage's start question. */
 .stagehead { display: flex; align-items: center; justify-content: center; gap: 0.45rem; margin: 0 auto 0.9rem; color: var(--muted); font-size: 0.78rem; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; }
 .stagehead svg { width: 1.15rem; height: 1.15rem; flex: none; }
+
+/* Browser demo: the install window. */
+dialog.modal table.installrows { border-collapse: collapse; width: 100%; margin: 0.4rem 0 0.2rem; font-size: 0.9rem; }
+dialog.modal table.installrows th { text-align: left; font-weight: 600; padding: 0.45rem 0.6rem 0.45rem 0; white-space: nowrap; }
+dialog.modal table.installrows td { padding: 0.45rem 0.3rem; border-top: 1px solid var(--line); }
+dialog.modal table.installrows tr:first-child td, dialog.modal table.installrows tr:first-child th { border-top: 0; }
+dialog.modal table.installrows code { background: #f1f1ec; padding: 0.15rem 0.4rem; border-radius: 4px; font-size: 0.86rem; white-space: nowrap; }
+dialog.modal table.installrows a { display: block; font-size: 0.78rem; margin-top: 0.25rem; white-space: nowrap; }
+#installbox .modal-actions a { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 8px; padding: 0.35rem 0.8rem; color: var(--ink); text-decoration: none; font-size: 0.88rem; }
+#installbox .modal-actions a:hover { background: var(--accent-soft); }
+/* Browser demo: the recorded questions under the paper chat's box. */
+.demo-asks { display: flex; flex-wrap: wrap; gap: 0.4rem; width: 100%; max-width: 44rem; margin-top: 0.5rem; }
+.demo-asks .chip { text-align: left; }
+/* Browser demo: the paper chat's box takes no typed questions. */
+.composer.demo-locked { background: #f1f1ec; border-color: var(--line); box-shadow: none; }
+.composer.demo-locked input { background: transparent; cursor: pointer; }
+.composer.demo-locked input::placeholder { color: #6b6b66; }
+.dot.off { background: transparent; border: 1px solid #b9b9b3; }
+.demo-asks .demolink { border: 0; background: none; padding: 0.2rem 0.1rem; font: inherit; font-size: 0.9rem; color: var(--ink); text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
+.demo-asks .demolink:hover { text-decoration-thickness: 2px; }
+.info-pop .demo-install-row { display: block; margin-top: 0.45rem; }

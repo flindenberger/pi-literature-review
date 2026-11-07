@@ -213,6 +213,22 @@ const scope = { blocks: [["water", "flood"], ["mapping", "segmentation"]] };
 	], "s", 5, { deps: failing }, fails);
 	assert.equal(partial.length, 1);
 	assert.deepEqual(fails, [{ step: "resolve at arXiv", error: "arXiv answered HTTP 429" }]);
+	// A metadata service that fails once is not asked again in this run:
+	// the remaining pairs pass with the gate unchecked, without waiting.
+	const metaCalls: string[] = [];
+	const metaDown = { ...stubDeps, repoMeta: async (owner: string, repo: string) => { metaCalls.push(`${owner}/${repo}`); throw new Error("signal timed out"); } };
+	const unchecked = await resolvePairs([
+		{ repoUrl: "https://github.com/microsoft/ai4g-flood", id: { kind: "arxiv", value: "2411.01411" } },
+		{ repoUrl: "https://github.com/ecohydro/CropMask_RCNN", id: { kind: "arxiv", value: "1703.06870" } },
+		{ repoUrl: "https://github.com/unknown/meta", id: { kind: "doi", value: "10.3390/rs12152469" } },
+	], "s", 5, { deps: metaDown }, []);
+	assert.deepEqual(metaCalls, ["microsoft/ai4g-flood"]);
+	assert.deepEqual(unchecked.map((r) => r.code_gate), ["unchecked", "unchecked", "unchecked"]);
+	// A resolver that names its own route (the browser's OpenAlex lookup of
+	// arXiv ids) keeps it as resolved_via.
+	const viaOpenalex = { ...stubDeps, lookupArxiv: async (ids: string[]) => ids.map((id) => ({ ...papers[id], resolved_via: "openalex" })).filter((r) => r.arxiv_id) };
+	const routed = await resolvePairs([{ repoUrl: null, id: { kind: "arxiv", value: "2411.01411" } }], "s", 5, { deps: viaOpenalex }, []);
+	assert.equal(routed[0].resolved_via, "openalex");
 	// Abort between steps throws.
 	const controller = new AbortController();
 	controller.abort();
@@ -295,6 +311,16 @@ const scope = { blocks: [["water", "flood"], ["mapping", "segmentation"]] };
 	const skipped = await CODE_SEARCHERS["awesome-lists"]('"exact phrase"', 5, undefined, { deps: stubDeps, warn: (m) => warnings.push(m) });
 	assert.equal(skipped.candidates, 0);
 	assert.match(warnings[0], /no concept blocks/);
+	clearListCache();
+	// A list service that does not answer is asked once, not once per topic.
+	calls.length = 0;
+	const down = await CODE_SEARCHERS["awesome-lists"]("ignored", 5, scope, {
+		deps: { ...stubDeps, listsForTopic: async (topic: string) => { calls.push(`lists:${topic}`); throw new Error("signal timed out"); } },
+		listTopics: ["remote-sensing", "satellite-imagery", "earth-observation"],
+	});
+	assert.deepEqual(calls.filter((c) => c.startsWith("lists:")), ["lists:remote-sensing"]);
+	assert.deepEqual(down.failures.map((f) => f.step), ["lists for topic remote-sensing", "lists for topic satellite-imagery, earth-observation"]);
+	assert.match(down.failures[1].error, /not asked/);
 	clearListCache();
 }
 

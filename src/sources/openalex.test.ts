@@ -5,7 +5,7 @@
  */
 
 import assert from "node:assert/strict";
-import { authorFacts, workFacts, accessFromWork, buildAuthorSearchFilter, buildBlockSearch, buildFacetFilter, buildFacetParams, lookupOpenalexDois, parseFacetPage, parseFacets, toSourceRecord,
+import { arxivIdOfWork, authorFacts, workFacts, accessFromWork, buildAuthorSearchFilter, buildBlockSearch, buildFacetFilter, buildFacetParams, lookupOpenalexDois, parseFacetPage, parseFacets, toSourceRecord,
 	autocompleteAuthors,
 	buildAuthorIdFilter,
 	buildWorksParams,
@@ -379,5 +379,17 @@ const parseJournalFacetPage = parseFacetPage;
 	if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME; else process.env.XDG_CONFIG_HOME = savedXdg;
 	if (savedKey === undefined) delete process.env.PI_LITERATURE_REVIEW_OPENALEX_API_KEY; else process.env.PI_LITERATURE_REVIEW_OPENALEX_API_KEY = savedKey;
 }
+
+// The arXiv id of a work, from its locations (measured live: a preprint
+// merged into its Nature version lists both arxiv.org/abs/<id> and the
+// DataCite DOI), never from the work's DOI.
+assert.equal(arxivIdOfWork({ doi: "https://doi.org/10.1038/s41586-025-10072-4", locations: [
+	{ landing_page_url: "https://doi.org/10.1038/s41586-025-10072-4" },
+	{ landing_page_url: "http://arxiv.org/abs/2411.14199" },
+	{ landing_page_url: "https://doi.org/10.48550/arxiv.2411.14199" },
+] }), "2411.14199");
+assert.equal(arxivIdOfWork({ locations: [{ landing_page_url: "https://doi.org/10.48550/arxiv.2303.08774" }] }), "2303.08774");
+assert.equal(arxivIdOfWork({ locations: [{ landing_page_url: null, pdf_url: "https://arxiv.org/pdf/2101.00001v3" }] }), "2101.00001");
+assert.equal(arxivIdOfWork({ locations: [{ landing_page_url: "https://www.mdpi.com/x" }] }), "");
 
 console.log("openalex.test.ts: all assertions passed");

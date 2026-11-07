@@ -17,6 +17,8 @@ if (typeof Math.sumPrecise !== "function") Math.sumPrecise = sumPrecise;
 const $ = (id) => document.getElementById(id);
 const scroller = $("scroller"), pagesBox = $("pages");
 const file = new URLSearchParams(location.search).get("file") || "";
+/** The interface's mount path ("" at the root, the demo's folder below one). */
+const BASE = location.pathname.replace(/\/static\/[^/]*$/, "");
 const ZOOMS = [0.5, 0.67, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3];
 
 const state = { doc: null, pages: [], fit: true, zoom: 1, base: 1, marked: [] };
@@ -179,7 +181,7 @@ function rescale(apply) {
 }
 
 async function open() {
-	if (!/^\/pdf\//.test(file)) { message("No PDF given."); return; }
+	if (!/^\/pdf\//.test(BASE && file.startsWith(`${BASE}/`) ? file.slice(BASE.length) : file)) { message("No PDF given."); return; }
 	try {
 		state.doc = await pdfjs.getDocument({ url: file, verbosity: 0 }).promise;
 	} catch (error) {

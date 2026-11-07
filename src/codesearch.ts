@@ -33,8 +33,8 @@ import { flattenBlockTerms } from "./sources/crossref.ts";
 import { fetchRepoMeta, listEntries, listsForTopic, type ListEntry, type RepoMeta } from "./sources/ecosystems.ts";
 import { fetchReadme, LIST_REPO_NAME, parseRepoUrl, repoUrl, searchRepositories } from "./sources/github.ts";
 import { searchHfPapers, buildHfQuery, type HfPaper } from "./sources/huggingface.ts";
-import { lookupOpenalexDois } from "./sources/openalex.ts";
-import type { SourceRecord, SourceScope } from "./types.ts";
+import { lookupArxivViaOpenalex, lookupOpenalexDois } from "./sources/openalex.ts";
+import { IN_BROWSER, type SourceRecord, type SourceScope } from "./types.ts";
 
 /* ---------------- 1. Types and registry ---------------- */
 
@@ -78,14 +78,22 @@ export interface CodeSearchContext {
 
 export type CodeSearcher = (query: string, perSource: number, scope: SourceScope | undefined, ctx: CodeSearchContext) => Promise<CodeSearchResult>;
 
+/** Wait limit for one ecosyste.ms request (list index, repository
+ * metadata): it answers in a second or two when it is up. */
+const LIST_INDEX_TIMEOUT_MS = 12_000;
+
 const REAL_DEPS: CodeSearchDeps = {
 	hfSearch: searchHfPapers,
 	githubSearch: (query, perPage) => searchRepositories(query, perPage),
 	readme: fetchReadme,
-	repoMeta: fetchRepoMeta,
-	listsForTopic,
+	repoMeta: (owner, repo) => fetchRepoMeta(owner, repo, AbortSignal.timeout(LIST_INDEX_TIMEOUT_MS)),
+	// ecosyste.ms answers in a second or two; a service that hangs should
+	// not hold the search for the client's full 30 s.
+	listsForTopic: (topic) => listsForTopic(topic, AbortSignal.timeout(LIST_INDEX_TIMEOUT_MS)),
 	listEntries,
-	lookupArxiv: lookupArxivIds,
+	// arXiv allows no requests from web pages: in a browser (the demo) the
+	// ids resolve through OpenAlex instead.
+	lookupArxiv: IN_BROWSER ? lookupArxivViaOpenalex : lookupArxivIds,
 	lookupDois: lookupOpenalexDois,
 };
 
@@ -351,10 +359,10 @@ export async function resolvePairs(
 		aborted(ctx);
 		try {
 			for (const record of await d.lookupArxiv(arxivIds.slice(i, i + ARXIV_BATCH))) {
-				if (record.arxiv_id) resolved.set(paperIdKey({ kind: "arxiv", value: record.arxiv_id }), { ...record, resolved_via: "arxiv" });
+				if (record.arxiv_id) resolved.set(paperIdKey({ kind: "arxiv", value: record.arxiv_id }), { ...record, resolved_via: record.resolved_via ?? "arxiv" });
 			}
 		} catch (error) {
-			failures.push({ step: "resolve at arXiv", error: errorText(error) });
+			failures.push({ step: IN_BROWSER ? "resolve at OpenAlex (arXiv ids)" : "resolve at arXiv", error: errorText(error) });
 		}
 	}
 	if (dois.length) {
@@ -372,6 +380,10 @@ export async function resolvePairs(
 	const late: SourceRecord[] = [];
 	let discarded = 0;
 	const metaCache = new Map<string, RepoMeta | null>();
+	// After the first failed metadata request the service counts as
+	// unreachable for this run: the remaining gates are skipped at once
+	// instead of each waiting for the same timeout.
+	let metaDown = false;
 	for (const [key, pair] of byKey) {
 		const record = resolved.get(key);
 		if (!record) continue;
@@ -395,12 +407,14 @@ export async function resolvePairs(
 			const parsed = parseRepoUrl(chosenUrl);
 			if (parsed) {
 				const cacheKey = `${parsed.owner}/${parsed.repo}`.toLowerCase();
+				if (!metaCache.has(cacheKey) && metaDown) metaCache.set(cacheKey, null);
 				if (!metaCache.has(cacheKey)) {
 					try {
 						metaCache.set(cacheKey, await d.repoMeta(parsed.owner, parsed.repo));
 					} catch (error) {
-						ctx.warn?.(`${source}: repository metadata for ${cacheKey} unavailable (${errorText(error)}); date gate skipped`);
+						ctx.warn?.(`${source}: repository metadata for ${cacheKey} unavailable (${errorText(error)}); date gate skipped${byKey.size > 1 ? " (also for the remaining repositories of this source)" : ""}`);
 						metaCache.set(cacheKey, null);
+						metaDown = true;
 					}
 				}
 				createdAt = metaCache.get(cacheKey)?.createdAt ?? null;
@@ -497,6 +511,11 @@ export const searchAwesomeLists: CodeSearcher = async (query, perSource, scope, 
 			}
 		} catch (error) {
 			failures.push({ step: `lists for topic ${topic}`, error: errorText(error) });
+			// The list service did not answer: the other topics would wait
+			// for the same service in vain.
+			const rest = (ctx.listTopics ?? DEFAULT_LIST_TOPICS).slice((ctx.listTopics ?? DEFAULT_LIST_TOPICS).indexOf(topic) + 1);
+			if (rest.length) failures.push({ step: `lists for topic ${rest.join(", ")}`, error: "not asked: the list service did not answer the first topic" });
+			break;
 		}
 	}
 	const slugs = [...lists.entries()].sort((a, b) => b[1] - a[1]).slice(0, MAX_LISTS).map(([slug]) => slug);

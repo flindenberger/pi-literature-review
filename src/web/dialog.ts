@@ -326,7 +326,14 @@ export interface DialogContext {
 	/** Sources that need a key the user has not set. */
 	sourcesSkipped: string[];
 	storedTopics: string[];
+	/** The browser demo: paper-chat answers are played back from a
+	 * recording, so the chat works without a model (search stays modelless). */
+	chatReplay?: boolean;
 }
+
+/** Whether paper-chat questions and reports can be answered: a model, or
+ * the demo's recording. */
+const canAnswer = (ctx: DialogContext): boolean => ctx.hasModel || ctx.chatReplay === true;
 
 export interface ReduceResult {
 	state: DialogState;
@@ -860,10 +867,10 @@ function onePaper(state: DialogState): boolean {
 /** `about`: the paper's own words (title, first author, year from its
  * metadata) for a chat opened on one PDF: the question names it. */
 function askAsk(state: DialogState, ctx: DialogContext, intro?: string, about?: string): DialogState {
-	if (about && ctx.hasModel) return ask(state, "ask", { text: `What would you like to know about ${about}?` });
+	if (about && canAnswer(ctx)) return ask(state, "ask", { text: `What would you like to know about ${about}?` });
 	// Scope and reports live in the page's "+" menu: the question stands alone.
-	const text = intro ? `${intro}\n${ctx.hasModel ? TEXT.ask : TEXT.askNoModel}` : ctx.hasModel ? TEXT.ask : TEXT.askNoModel;
-	return ask(state, "ask", { text, ...(ctx.hasModel ? {} : { note: ctx.noModelHint }) });
+	const text = intro ? `${intro}\n${canAnswer(ctx) ? TEXT.ask : TEXT.askNoModel}` : canAnswer(ctx) ? TEXT.ask : TEXT.askNoModel;
+	return ask(state, "ask", { text, ...(canAnswer(ctx) ? {} : { note: ctx.noModelHint }) });
 }
 
 function askReportKind(state: DialogState): DialogState {
@@ -1569,7 +1576,7 @@ function onAsk(input: DialogState, text: string, chip: string, ctx: DialogContex
 	if (chip === "scopeLibrary") return result(askAsk(withAnswers(state, { scope: "library" }), ctx));
 	if (chip === "newSearch") return result(askTopic(state));
 	if (!text) return result(askAsk(state, ctx));
-	if (!ctx.hasModel) return result(askAsk(say(state, TEXT.askNoModel), ctx));
+	if (!canAnswer(ctx)) return result(askAsk(say(state, TEXT.askNoModel), ctx));
 	const next = withAnswers(state, { lastQuestion: text, questions: [...new Set([...state.answers.questions, text])], reportAfter: chat?.build });
 	return result(pending(next, "retrieving passages and asking the model"), { kind: "startChat", question: text, papers: next.answers.scope });
 }
@@ -1580,7 +1587,7 @@ function onReportKind(state: DialogState, chip: string, text: string, ctx: Dialo
 			: /^review|literature review/i.test(text) ? "review"
 				: /^(per|summaries \+)|paper by paper/i.test(text) ? "perPaper" : "");
 	if (!choice) return result(askReportKind(say(state, "Pick one of the report kinds.")));
-	if (!ctx.hasModel) return result(askReportKind(say(state, TEXT.askNoModel)));
+	if (!canAnswer(ctx)) return result(askReportKind(say(state, TEXT.askNoModel)));
 	const effect = reportEffect(state, LEGACY_REPORT_PARTS[choice as ReportKindId], state.answers.questions);
 	if (effect.kind === "startReport" && effect.summary === "none" && !effect.questions.length) {
 		return result(askQuestions(say(state, "Cross-paper answers need at least one question.")));
@@ -1608,7 +1615,7 @@ function withChatScope(state: DialogState, chat: ChatOptionsAnswer, ctx: DialogC
  * sources are taken as they stand -- plus the ticked parts. One report per
  * chat; building again updates it. */
 function onBuildReport(state: DialogState, parts: ReportParts, ctx: DialogContext): ReduceResult {
-	if (!ctx.hasModel) return result(askAsk(say(state, TEXT.askNoModel), ctx));
+	if (!canAnswer(ctx)) return result(askAsk(say(state, TEXT.askNoModel), ctx));
 	const questions = state.answers.questions;
 	if (!questions.length && !parts.summary && !parts.synthesis) {
 		return result(askAsk(say(state, "Nothing to write yet: ask a question, or tick Summary or Synthesis."), ctx));
@@ -1616,7 +1623,7 @@ function onBuildReport(state: DialogState, parts: ReportParts, ctx: DialogContex
 	const next = withAnswers(state, { reportRequest: parts });
 	return result(pending(next, "starting the report"), {
 		...reportEffect(next, [...(parts.summary ? ["bullets" as const] : []), ...(questions.length ? ["crossPaper" as const] : []), ...(parts.synthesis ? ["review" as const] : [])], questions),
-		answered: chatAnswers(state),
+		answered: chatAnswers(state, ctx),
 		letters: chatLetters(state),
 	});
 }
@@ -1638,9 +1645,15 @@ function chatLetters(state: DialogState): Record<string, string> {
 }
 
 /** The chat's answers over the current sources (newest per question): a
- * report reuses them instead of asking the model again. */
-function chatAnswers(state: DialogState): AnsweredQuestion[] {
-	const key = (value: string[] | "library"): string => value === "library" ? "library" : [...value].sort().join("\n");
+ * report reuses them instead of asking the model again. Sources compare by
+ * the papers they stand for: "library" means every paper of the library,
+ * so a library answer counts for a pick of all those papers and back. */
+function chatAnswers(state: DialogState, ctx: DialogContext): AnsweredQuestion[] {
+	const libraryBases = ctx.library.map((paper) => paper.base);
+	const key = (value: string[] | "library"): string => {
+		const bases = value === "library" ? libraryBases : value;
+		return value === "library" && !bases.length ? "library" : [...new Set(bases)].sort().join("\n");
+	};
 	const scope = key(state.answers.scope);
 	const byQuestion = new Map<string, AnsweredQuestion>();
 	for (const message of state.messages) {

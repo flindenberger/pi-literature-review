@@ -98,6 +98,20 @@ export function userAgent(): string {
 	return `pi-literature-review/${VERSION} (deterministic literature discovery${contact})`;
 }
 
+/** True inside a browser (the browser demo, a page or a Web Worker). */
+export const IN_BROWSER = typeof (globalThis as { document?: unknown }).document !== "undefined"
+	|| typeof (globalThis as { WorkerGlobalScope?: unknown }).WorkerGlobalScope !== "undefined";
+
+/** The User-Agent request header, or none in a browser: a browser asks
+ * the server first whether a custom User-Agent is allowed, and OpenAlex
+ * and CrossRef say no. `withoutContact` drops the mailto part (services
+ * that need no contact address). */
+export function userAgentHeader(withoutContact = false): Record<string, string> {
+	if (IN_BROWSER) return {};
+	const agent = userAgent();
+	return { "User-Agent": withoutContact ? agent.replace(/; mailto:[^)]*/, "") : agent };
+}
+
 export function warn(message: string): void {
 	process.stderr.write(`pi-literature-review: ${message}\n`);
 }

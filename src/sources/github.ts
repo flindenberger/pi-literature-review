@@ -9,7 +9,7 @@
  */
 
 import { githubToken } from "../config.ts";
-import { userAgent } from "../types.ts";
+import { userAgentHeader } from "../types.ts";
 import { pacedClient } from "./polite.ts";
 
 export const GITHUB_SEARCH_URL = "https://api.github.com/search/repositories";
@@ -39,7 +39,7 @@ export const LIST_REPO_NAME = /awesome|daily|weekly|digest|arxiv|papers?([_-]|\b
 /** Request headers for the REST API; the optional token raises the limit. */
 export function githubHeaders(token: string = githubToken()): Record<string, string> {
 	return {
-		"User-Agent": userAgent(),
+		...userAgentHeader(),
 		Accept: "application/vnd.github+json",
 		...(token ? { Authorization: `Bearer ${token}` } : {}),
 	};
@@ -76,7 +76,7 @@ export async function searchRepositories(query: string, perPage: number, sort?: 
  * over recall, documented. */
 export async function fetchReadme(owner: string, repo: string): Promise<string | null> {
 	const response = await fetchRaw(`${RAW_URL}/${owner}/${repo}/HEAD/README.md`, {
-		headers: { "User-Agent": userAgent() },
+		headers: userAgentHeader(),
 	});
 	if (response.status === 404) return null;
 	return response.text();

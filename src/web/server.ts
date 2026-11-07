@@ -189,6 +189,17 @@ export interface WebServerOptions {
 	 * added, upload, download). Off by default (tests); the CLI and the pi
 	 * command turn it on. */
 	backgroundIndex?: boolean;
+	/** Mount path in front of every address the server hands out ("" =
+	 * the root; the browser demo lives below a folder). Requests arrive
+	 * with or without it. */
+	basePath?: string;
+	/** The browser demo: /api/state says so, and the page offers the
+	 * installation where the demo cannot act (no model, no disk). */
+	demo?: boolean;
+	/** The browser demo's recorded paper chat: these questions are answered
+	 * (from the recording the injected runRound / runReport play back) and
+	 * offered as the chat box's examples. */
+	chatReplay?: { questions: string[]; recordedWith: string; paper: { base: string; label: string } };
 }
 
 export interface WebServer {
@@ -478,19 +489,20 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 	let server: Server;
 	let port = 0;
 
-	const pdfHref = webPdfHref(PDF_ROUTE);
+	const basePath = (options.basePath ?? "").replace(/\/+$/, "");
+	const pdfHref = webPdfHref(`${basePath}${PDF_ROUTE}`);
 	/** Report pages served to the browser link their citations to the
 	 * interface's PDF viewer, which highlights the passage in every browser. */
 	const viewerPdfHref: typeof pdfHref = (path, page, snippet) => {
 		const href = pdfHref(path, page, snippet);
 		const cut = href.indexOf("#");
 		const file = cut < 0 ? href : href.slice(0, cut);
-		return `/static/pdfview.html?file=${encodeURIComponent(file)}${cut < 0 ? "" : href.slice(cut)}`;
+		return `${basePath}/static/pdfview.html?file=${encodeURIComponent(file)}${cut < 0 ? "" : href.slice(cut)}`;
 	};
 	const fileUrl = (htmlPath: string): string => {
 		const name = htmlPath.split(/[\\/]/).pop() ?? "";
 		const stage = htmlPath.includes(`${join(root, "lit-synthesis")}`) ? "lit-synthesis" : "lit-search";
-		return `/files/${stage}/${encodeURIComponent(name)}`;
+		return `${basePath}/files/${stage}/${encodeURIComponent(name)}`;
 	};
 
 	/** Conversation id per job the dialog started: the outcome goes to that
@@ -893,6 +905,7 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 			sources: ids.filter((id) => !keyRequirement(id)).map((id) => SOURCE_LABELS[id] ?? id),
 			sourcesSkipped: ids.filter((id) => keyRequirement(id)).map((id) => SOURCE_LABELS[id] ?? id),
 			storedTopics: storedConfigView().codeListTopics ?? [],
+			...(options.chatReplay ? { chatReplay: true } : {}),
 		};
 	};
 
@@ -1218,6 +1231,8 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 		const view = storedConfigView();
 		const cfg = llmConfig();
 		return {
+			...(options.demo ? { demo: true } : {}),
+			...(options.chatReplay ? { replay: options.chatReplay } : {}),
 			root,
 			cwd,
 			url: `http://127.0.0.1:${port}/`,
@@ -1232,8 +1247,8 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 				sessions: sessions.length,
 			},
 			recent: [
-				...runs.slice(0, 6).map((run) => ({ kind: "search", name: run.name, label: run.query, date: run.generated.slice(0, 10), url: run.html ? `/files/lit-search/${encodeURIComponent(run.name)}.html` : null })),
-				...reports.slice(0, 6).map((report) => ({ kind: report.kind === "chat" ? "chat report" : "report", name: report.name, label: report.name.replace(/^\d{4}-\d{2}-\d{2}_/, ""), date: report.generated.slice(0, 10), url: report.html ? `/files/lit-synthesis/${encodeURIComponent(report.name)}.html` : null })),
+				...runs.slice(0, 6).map((run) => ({ kind: "search", name: run.name, label: run.query, date: run.generated.slice(0, 10), url: run.html ? `${basePath}/files/lit-search/${encodeURIComponent(run.name)}.html` : null })),
+				...reports.slice(0, 6).map((report) => ({ kind: report.kind === "chat" ? "chat report" : "report", name: report.name, label: report.name.replace(/^\d{4}-\d{2}-\d{2}_/, ""), date: report.generated.slice(0, 10), url: report.html ? `${basePath}/files/lit-synthesis/${encodeURIComponent(report.name)}.html` : null })),
 				...sessions.slice(0, 3).map((session) => ({ kind: "chat", name: session.session, label: `${session.session} · ${session.rounds.length} round${session.rounds.length === 1 ? "" : "s"}`, date: session.last.slice(0, 10), url: null })),
 			].sort((a, b) => b.date.localeCompare(a.date)).slice(0, 8),
 			library: library.papers.slice(0, 8).map((paper) => ({ base: paper.base, year: paper.year, title: paper.title, authors: paper.authors })),
@@ -1257,7 +1272,7 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 
 	const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
 		const url = new URL(req.url ?? "/", `http://127.0.0.1:${port}`);
-		const path = url.pathname;
+		const path = basePath && url.pathname.startsWith(`${basePath}/`) ? url.pathname.slice(basePath.length) : url.pathname;
 		const method = req.method ?? "GET";
 
 		if (!hostAllowed(req.headers.host, port)) throw new HttpError(403, "unexpected Host header");
@@ -1368,13 +1383,13 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 			return json(res, 200, {
 				runs: listSearchRuns(root).map((run) => ({
 					...run,
-					htmlUrl: run.html ? `/files/lit-search/${encodeURIComponent(run.name)}.html` : null,
-					jsonUrl: `/files/lit-search/${encodeURIComponent(run.name)}.json`,
+					htmlUrl: run.html ? `${basePath}/files/lit-search/${encodeURIComponent(run.name)}.html` : null,
+					jsonUrl: `${basePath}/files/lit-search/${encodeURIComponent(run.name)}.json`,
 				})),
 				reports: listReports(root).map((report) => ({
 					...report,
-					htmlUrl: report.html ? `/files/lit-synthesis/${encodeURIComponent(report.name)}.html` : null,
-					jsonUrl: `/files/lit-synthesis/${encodeURIComponent(report.name)}.json`,
+					htmlUrl: report.html ? `${basePath}/files/lit-synthesis/${encodeURIComponent(report.name)}.html` : null,
+					jsonUrl: `${basePath}/files/lit-synthesis/${encodeURIComponent(report.name)}.json`,
 				})),
 				sessions: listSessions(root).map((session) => ({
 					session: session.session,
@@ -1466,6 +1481,7 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 			const body = (await readBody(req)) as Record<string, unknown>;
 			const wanted = Array.isArray(body.bases) ? body.bases.filter((base): base is string => typeof base === "string").slice(0, 5000) : [];
 			const single = body.single === true;
+			if (options.chatReplay && wanted.length) return json(res, 200, { examples: options.chatReplay.questions });
 			if (!wanted.length || !provider.hasModel()) return json(res, 200, { examples: null });
 			const key = `${single ? 1 : 0}:${[...wanted].sort().join("\n")}`;
 			if (exampleCache.has(key)) return json(res, 200, { examples: exampleCache.get(key) });
@@ -1650,14 +1666,14 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 				const file = `${base}.prisma.svg`;
 				mkdirSync(dir, { recursive: true });
 				writeFileSync(join(dir, file), svg, "utf8");
-				card = { kind: "file", name: file, label: `PRISMA-style flow diagram, SVG · lit-search/${filterLabel}`, stage: "lit-search", url: `/files/lit-search/${encodeURIComponent(file)}` };
+				card = { kind: "file", name: file, label: `PRISMA-style flow diagram, SVG · lit-search/${filterLabel}`, stage: "lit-search", url: `${basePath}/files/lit-search/${encodeURIComponent(file)}` };
 			} else {
 				const htmlPath = join(dir, `${base}.html`);
 				const html = renderHtml(filtered, { network: true });
 				if (active) writeRunOutputs(html, filtered, htmlPath, "lit-search");
 				else { mkdirSync(dir, { recursive: true }); writeFileSync(htmlPath, html, "utf8"); }
 				writeNetworkPage(htmlPath);
-				card = { kind: "file", name: `${base}.html`, label: `Search report, HTML · lit-search/${filterLabel}`, stage: "lit-search", url: `/files/lit-search/${encodeURIComponent(base)}.html` };
+				card = { kind: "file", name: `${base}.html`, label: `Search report, HTML · lit-search/${filterLabel}`, stage: "lit-search", url: `${basePath}/files/lit-search/${encodeURIComponent(base)}.html` };
 			}
 			// From the rail (History) the report belongs to that conversation's
 			// run, not to the open one: no card in the open conversation.

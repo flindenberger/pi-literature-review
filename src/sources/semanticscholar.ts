@@ -20,7 +20,7 @@
  */
 
 import { s2ApiKey } from "../config.ts";
-import { type SourceRecord, type SourceScope, userAgent } from "../types.ts";
+import { type SourceRecord, type SourceScope, userAgentHeader } from "../types.ts";
 import { pacedClient } from "./polite.ts";
 
 const GRAPH_URL = "https://api.semanticscholar.org/graph/v1/paper";
@@ -109,7 +109,7 @@ export async function fetchAbstractByDoi(doi: string, opts: { retry?: boolean } 
 async function fetchS2(url: string, apiKey: string, opts: { retry?: boolean } = {}): Promise<Record<string, any> | null> {
 	const response = await fetchPaced(url, {
 		headers: {
-			"User-Agent": userAgent(),
+			...userAgentHeader(),
 			Accept: "application/json",
 			...(apiKey ? { "x-api-key": apiKey } : {}),
 		},

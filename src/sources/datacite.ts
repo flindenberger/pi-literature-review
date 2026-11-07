@@ -7,7 +7,7 @@
  * (dataLinkFor, the same list as for CrossRef).
  */
 
-import { type DataLink, userAgent } from "../types.ts";
+import { type DataLink, userAgentHeader } from "../types.ts";
 import { dataLinkFor, lookupCrossrefRelations } from "./crossref.ts";
 import { pacedClient } from "./polite.ts";
 
@@ -51,7 +51,7 @@ export async function lookupDataciteLinks(dois: string[]): Promise<Map<string, D
 		});
 		// No contact address: it is meant for the bibliographic sources.
 		const response = await fetchPaced(`https://api.datacite.org/dois?${params}`, {
-			headers: { Accept: "application/vnd.api+json", "User-Agent": userAgent().replace(/; mailto:[^)]*/, "") },
+			headers: { Accept: "application/vnd.api+json", ...userAgentHeader(true) },
 		});
 		const data = (await response.json()) as Record<string, any>;
 		for (const item of (data?.data ?? []) as Array<Record<string, any>>) {

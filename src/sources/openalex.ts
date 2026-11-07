@@ -8,7 +8,7 @@
  */
 
 import { openAlexApiKey } from "../config.ts";
-import { contactMailto, type SourceRecord, type SourceScope, userAgent } from "../types.ts";
+import { contactMailto, type SourceRecord, type SourceScope, userAgentHeader } from "../types.ts";
 import { pacedClient } from "./polite.ts";
 
 const BASE_URL = "https://api.openalex.org/works";
@@ -53,7 +53,7 @@ const fetchType = pacedClient({ label: "OpenAlex", spacingMs: 100, statusHint: o
  * as a bearer header, so it never appears in a URL, a log or an error. */
 export const openAlexHeaders = (): Record<string, string> => {
 	const key = openAlexApiKey();
-	return { "User-Agent": userAgent(), Accept: "application/json", ...(key ? { Authorization: `Bearer ${key}` } : {}) };
+	return { ...userAgentHeader(), Accept: "application/json", ...(key ? { Authorization: `Bearer ${key}` } : {}) };
 };
 const HEADERS = openAlexHeaders;
 
@@ -280,6 +280,42 @@ export async function lookupOpenalexDois(dois: string[]): Promise<SourceRecord[]
 		const response = await fetchLookup(`${BASE_URL}?${params}`, { headers: HEADERS() });
 		const data = (await response.json()) as Record<string, any>;
 		records.push(...((data?.results ?? []) as Array<Record<string, any>>).map(toSourceRecord));
+	}
+	return records;
+}
+
+/** Pure: the arXiv id a work names among its locations (an arxiv.org
+ * page or the preprint's DataCite DOI), version suffix dropped; "" if none. */
+export function arxivIdOfWork(item: Record<string, any>): string {
+	for (const location of (item?.locations as Array<Record<string, any>>) ?? []) {
+		const url = String(location?.landing_page_url ?? location?.pdf_url ?? "");
+		const match = /arxiv\.org\/(?:abs|pdf)\/([^?#\s]+?)(?:\.pdf)?$/i.exec(url) ?? /10\.48550\/arxiv\.(.+)$/i.exec(url);
+		if (match) return match[1].replace(/v\d+$/i, "");
+	}
+	return "";
+}
+
+/**
+ * arXiv ids resolved through OpenAlex (for the browser demo, where the
+ * arXiv API allows no requests from web pages): looked up by the DOI
+ * DataCite registers for every preprint (10.48550/arXiv.<id>). OpenAlex
+ * may answer with the journal version the preprint was merged into; the
+ * id is matched back through the work's locations, never through its DOI.
+ * Ids OpenAlex does not know are absent from the result.
+ */
+export async function lookupArxivViaOpenalex(ids: string[]): Promise<SourceRecord[]> {
+	const wanted = new Set(ids.map((id) => id.trim().replace(/v\d+$/i, "").toLowerCase()).filter(Boolean));
+	const records: SourceRecord[] = [];
+	const unique = [...wanted];
+	for (let i = 0; i < unique.length; i += DOI_BATCH_SIZE) {
+		const batch = unique.slice(i, i + DOI_BATCH_SIZE).map((id) => `10.48550/arxiv.${id}`);
+		const params = withContact(new URLSearchParams({ filter: `doi:${batch.join("|")}`, "per-page": String(DOI_BATCH_SIZE) }));
+		const response = await fetchLookup(`${BASE_URL}?${params}`, { headers: HEADERS() });
+		const data = (await response.json()) as Record<string, any>;
+		for (const item of (data?.results ?? []) as Array<Record<string, any>>) {
+			const arxivId = arxivIdOfWork(item);
+			if (arxivId && wanted.has(arxivId.toLowerCase())) records.push({ ...toSourceRecord(item), arxiv_id: arxivId, resolved_via: "openalex" });
+		}
 	}
 	return records;
 }
