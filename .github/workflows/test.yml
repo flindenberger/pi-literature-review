@@ -24,7 +24,7 @@ jobs:
       - name: Tests
         run: |
           status=0
-          for f in src/*.test.ts src/sources/*.test.ts; do
+          for f in src/*.test.ts src/sources/*.test.ts src/web/*.test.ts; do
             node "$f" > /dev/null || { echo "FAIL $f"; status=1; }
           done
           exit $status

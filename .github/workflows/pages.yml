@@ -1,0 +1,59 @@
+# Builds the browser demo (src/web/demo-build.ts) and publishes it on
+# GitHub Pages on every push to main. The demo runs entirely in the
+# visitor's browser: no server, no tracking, nothing collected. The build
+# output is never committed; each push replaces the published copy.
+name: pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# The build only reads the repository; only the deploy job may publish.
+permissions:
+  contents: read
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Privacy check (only known web addresses in the demo)
+        run: node src/web/demo-hosts.test.ts
+      - name: Playback check (the recorded example paper chat)
+        run: node src/web/demo-replay.test.ts
+      # The example paper's PDF (CC BY 4.0) is fetched from the publisher
+      # and checked against the SHA-256 in the recording; kept between runs.
+      - name: Example PDF cache
+        uses: actions/cache@v4
+        with:
+          path: .demo-pdf-cache
+          key: demo-pdf-${{ hashFiles('src/web/demo/example/*.json') }}
+      - name: Build the demo
+        run: node src/web/demo-build.ts _site --pdf-cache .demo-pdf-cache
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
