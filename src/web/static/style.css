@@ -25,7 +25,7 @@ button.primary:hover { background: #000000; }
 .hint.error { color: var(--red); }
 
 /* Shell: rail | chat | report panel */
-.shell { --rail-w: 14.5rem; flex: 1; display: grid; grid-template-columns: var(--rail-w) minmax(24rem, 1fr) minmax(0, 1.15fr); min-height: 0; height: 100vh; }
+.shell { --rail-w: 16rem; flex: 1; display: grid; grid-template-columns: var(--rail-w) minmax(24rem, 1fr) minmax(0, 1.15fr); min-height: 0; height: 100vh; }
 .shell.no-report { grid-template-columns: var(--rail-w) minmax(24rem, 1fr) 0; }
 .shell.no-report .report { display: none; }
 
@@ -48,7 +48,7 @@ button.primary:hover { background: #000000; }
 .stage::-webkit-details-marker { display: none; }
 .rail details.block { margin-top: 0.35rem; }
 .rail details.block > summary::before { display: none; }
-.rail details.block > summary .name { display: block; text-transform: uppercase; letter-spacing: 0.03em; font-size: 0.74rem; font-weight: 600; white-space: nowrap; }
+.rail details.block > summary .name { display: block; text-transform: uppercase; letter-spacing: 0.03em; font-size: 0.74rem; font-weight: 600; line-height: 1.25; }
 .rail .block-body { padding: 0.1rem 0 0.2rem 0.4rem; }
 .rail .block-body details.sub { margin-top: 0.15rem; margin-left: 1.2rem; }
 .stage svg.ico { width: 1.75rem; height: 1.75rem; flex: none; color: #8a8a8a; }
