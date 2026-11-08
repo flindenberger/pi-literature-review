@@ -1,120 +1,112 @@
 # Selection (`/lit-selection`, tool `pi-literature-selection`)
 
-Deterministic PDF retrieval for the records you selected on a search
-page. Legal open access only; no model anywhere in the download path.
+Downloads the papers you picked as PDFs. Legal open access only; no model in the download path.
 
-The download is the second part of stage 1, "Search and selection":
-`/lit-search` asks for the papers right after its results (see
-[search.md](search.md#download-the-second-part-of-the-stage)) and runs the
-same steps as below. `/lit-selection` is the side entrance -- for a later
-download, for identifier lists from elsewhere, and for the agent.
+The download is the second part of the stage "Search & select": `/lit-search` asks for the papers right after its results ([Search](search.md#download-the-second-part-of-the-stage)). `/lit-selection` is the side entrance: a later download, identifier lists from elsewhere, the agent.
 
 ## Ways in
 
-- Answer the download question of `/lit-search`.
-- Paste the sentence the results page copied for you
-  (`Download these papers: 10.3390/rs13081505, arXiv:2401.16393`).
-- Or ask in plain words ("download the three on_target papers"). The agent
-  only transports DOIs / arXiv IDs to the tool.
+| Way | Input |
+|---|---|
+| Download question of `/lit-search` | Copied line, row numbers, identifiers, `all`, `code` |
+| `/lit-selection` | Identifiers or the copied line `Download these papers: 10.3390/rs13081505, arXiv:2401.16393` |
+| Agent (tool) | Plain words ("download the three on_target papers"); the agent only passes DOIs and arXiv IDs |
 
-Either way the tool shows two dialogs before anything is fetched. First
-the identifiers in an editable one-step dialog: passed identifiers are
-only the prefill, whitespace, comma and semicolon separate them, and the
-"Download these papers:" prefix is stripped. Then, BEFORE any network
-request, a consent dialog listing every identifier with its title from the
-saved searches -- titles never come from the model.
+## Dialogs
 
-Escape cancels the whole run; Escape during a running download aborts it.
+Before any network request, in this order:
+
+1. **Identifiers** (`/lit-selection` and the tool, not the `/lit-search` question): editable; passed identifiers are only the prefill. Separated by whitespace, comma or semicolon; the prefix `Download these papers:` is stripped.
+2. **Unpaywall email**, only while none is configured (see [Contact email](#contact-email)).
+3. **Download folder** (see [Download folder](#download-folder)).
+4. **Consent:** every identifier with its title from the saved searches (never from the model), the folder and the sources.
+
+- Esc cancels the run. Esc during a download stops it; saved PDFs stay.
+- Headless tool calls skip the dialogs.
 
 ## Resolution
 
-First the access level: taken from the saved search (the search stamps
-every record with its OpenAlex open-access status), else asked live from
-OpenAlex for identifiers outside every saved search. Records from the
-dropped table count as saved too. Two levels are reported without trying
-anything:
+Access level first: from the saved search (results and dropped table), else looked up live at OpenAlex. Without an arXiv ID, two levels are reported without a download attempt:
 
-- `restricted` (not open access) -- listed with the DOI link to open in the
-  browser, e.g. in a university network whose subscription covers it
-- `abstract only` (OpenAlex type `conference-abstract`) -- no paper PDF
-  exists
+- `restricted` (not open access): DOI link to open in the browser
+- `abstract only` (OpenAlex type `conference-abstract`): no paper PDF exists
 
-Every other identifier runs a fixed chain; the first source with real PDF
-bytes wins, and a later step is only asked when the earlier ones failed:
+Every other identifier runs a fixed chain. Each step is asked only when the earlier ones failed; the first real PDF wins.
 
-1. the record's own `pdf_url` from the saved search
-2. every open-access PDF location OpenAlex lists (publisher, university
-   repositories, preprint servers), in OpenAlex's order
-3. Unpaywall (`api.unpaywall.org`, the legal open-access index by the
-   non-profit OurResearch; needs a contact email)
-4. the article page: the DOI is resolved hop by hop and the page's
-   `citation_pdf_url` meta tag (the tag publishers set for Google Scholar)
-   is read -- only where the site's `robots.txt` allows this tool
-   (RFC 9309: product token `pi-literature-review`, else the `*` rules;
-   an unreachable robots.txt counts as "no"). A 403 is never worked around.
-5. the arXiv PDF endpoint
+| Step | Source |
+|---|---|
+| 1 | The record's own `pdf_url` from the saved search |
+| 2 | Every open-access PDF location OpenAlex lists, in OpenAlex's order |
+| 3 | Unpaywall (`api.unpaywall.org`); needs a contact email |
+| 4 | Article page: the DOI is resolved and the page's `citation_pdf_url` meta tag read, only where `robots.txt` allows it (RFC 9309, product token `pi-literature-review`, else `*`; unreachable robots.txt = no). A 403 is never worked around. |
+| 5 | The arXiv PDF endpoint |
 
-Every download is checked for the `%PDF` magic bytes, so an HTML error
-page is never saved as a PDF. No gray sources, ever.
+- Every download is checked for the `%PDF` magic bytes; an HTML error page is never saved.
+- 30 s timeout per request, 300 ms pause between papers.
+- No grey sources.
 
-## The report
+## Report
 
-Honest per paper:
+One line per paper, with the detail below it:
 
 | Status | Meaning |
 |---|---|
-| `downloaded` | in the library |
-| `already in library` | never fetched twice |
-| `free, open in browser` | open access, but no automatic download worked: the publisher refuses automated clients (HTTP 403; MDPI, Elsevier, Wiley, for example) or no link answered with a PDF. The link opens fine in a browser |
-| `restricted` | not open access, not tried; DOI link to open in the browser |
-| `abstract only` | a conference abstract, no PDF exists |
-| `not freely available -- obtain via authorized access` | access unknown and no free copy found; with the publisher link |
-| `invalid identifier` | -- |
+| `downloaded` | Saved; the detail names the source step |
+| `already in library` | Found in the download folder or anywhere in the library; not fetched again |
+| `free, open in browser` | Open access, but the publisher refuses automated clients (HTTP 403) or no link returned a PDF. The link opens in a browser. |
+| `restricted` | Not open access, not tried; DOI link |
+| `abstract only` | Conference abstract, no PDF exists |
+| `not freely available` | No free source to try; detail: "obtain via authorized access" with the DOI link |
+| `no working free link` | Free links tried, none returned a PDF; detail with the number tried and the DOI link |
+| `invalid identifier` | Not a DOI or arXiv ID |
 
-Below the per-paper lines, one list collects every paper to open in the
-browser (free ones first, then restricted, then the rest). Save such a PDF
-into one of your PDF folders (or drop it onto the browser page):
-`/lit-synthesis` adopts it by the DOI or arXiv ID printed in the PDF (see
-[synthesis.md](synthesis.md)).
+- Below the lines, one list of every paper to open in the browser: free first, then restricted, then the rest with a link.
+- A PDF saved by hand into the download folder or any PDF folder is recognised by the DOI or arXiv ID printed in it ([Synthesis -> Adoption](synthesis.md#adoption)).
 
 ## Download folder
 
-Every interactive run asks where the PDFs go: the last download folder
-first (one Enter keeps it), your other PDF folders, the system's folder
-window (zenity or kdialog on Linux, the macOS and Windows folder dialogs;
-only with a desktop), or a typed path (`~` = home folder; created when
-missing). A folder the agent passes is only offered. The chosen folder is
-remembered (`lastDownloadDir`) and becomes a PDF folder. Only the PDF lands
-there; its metadata twin goes to the store (`meta/`). A paper that is
-already anywhere in the library is not downloaded again.
+Asked on every interactive run:
 
-## Library naming
+| Choice | Note |
+|---|---|
+| Last download folder | Listed first; one Enter keeps it |
+| A folder the agent passed (`folder`) | Offered, never used without your choice |
+| Your other PDF folders | From `pdfFolders` |
+| Folder window | zenity or kdialog on Linux, the macOS and Windows dialogs; only with a desktop |
+| Typed path | Full path, `~` = home folder; created when missing |
 
-`<folder>/<year>_<FirstAuthor>[_et_al]_<Title_words>.pdf`, capped at
-80 characters, umlauts transliterated, built only from the saved API
-records. When year, author or title is unknown, the identifier slug
-(`10.3390_rs13081505`) is used instead.
+- The chosen folder is remembered (`lastDownloadDir`) and becomes a PDF folder.
+- Only the PDF lands there. Its metadata twin goes to the store (`meta/`).
+- Without a dialog (headless, CLI): the last download folder, else `lit-selection/` in the store.
+- Locations: [Configuration -> Where files live](configuration.md#where-files-live).
 
-## The Unpaywall email
+## File names
 
-Unpaywall's usage policy requires a contact email. Once set, it is sent
-with every API request of the package (in the User-Agent; CrossRef,
-OpenAlex and Unpaywall also get it as a parameter). While none is
-configured, the dialog explains this and offers three ways on:
+`<year>_<FirstAuthor>[_et_al]_<Title_words>.pdf`
 
-- enter it for this run only
-- enter and save it to the config file
-  (`~/.config/pi-literature-review/config.json`, mode 0600)
-- continue without Unpaywall -- asked again next time, because "skip" is
-  deliberately not remembered
+- At most 80 characters, umlauts transliterated, built only from the saved API records.
+- Year, author or title unknown: the identifier slug (`10.3390_rs13081505`).
 
-`PI_LITERATURE_REVIEW_MAILTO` overrides everything; use it for headless
-runs. Without an email, downloads still work via record links and arXiv.
+## Contact email
 
-## Command line
+Unpaywall's usage policy requires a contact email. Once set, it goes with the package's API requests:
 
-```
-node src/cli.ts selection 10.3390/rs13081505 arXiv:2401.16393
-```
+| Where | Recipients |
+|---|---|
+| User-Agent header | Scholarly APIs, code sources and download servers, except DataCite and ORCID |
+| `mailto` URL parameter | CrossRef, OpenAlex |
+| `email` URL parameter | Unpaywall |
 
-Where it lives in the code: see [Development -> Module map](development.md#module-map).
+- In a browser (live demo) no User-Agent header is sent.
+- While none is configured, the dialog offers: enter it for this run only; enter and save it to `config.json` (mode 0600); continue without Unpaywall (asked again next time).
+- `PI_LITERATURE_REVIEW_MAILTO` overrides the config; use it for headless runs.
+- Without an email, downloads still work via record links, OpenAlex locations, article pages and arXiv.
+
+## Tool parameters
+
+| Parameter | Meaning |
+|---|---|
+| `identifiers` | DOIs and arXiv IDs, at least one (prefill of the identifier dialog) |
+| `folder` | Full path of a folder the user named; only offered in the folder dialog |
+
+Command line: [CLI -> Selection](cli.md#selection). Code: [Development -> Module map](development.md#module-map).

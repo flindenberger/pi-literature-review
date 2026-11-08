@@ -7,6 +7,7 @@
  * the browser dialog and the /lit-search terminal dialog. Pure.
  */
 
+import { identityKey } from "./pipeline.ts";
 import { parseIdentifier } from "./selection.ts";
 
 export interface Candidate {
@@ -48,7 +49,7 @@ export function candidatesFromRecords(
 	for (const { record, dropped: isDropped } of rows) {
 		const id = record.doi || (record.arxiv_id ? `arXiv:${record.arxiv_id}` : "");
 		if (!id) continue;
-		const key = record.doi ? `doi:${record.doi.toLowerCase()}` : `arxiv:${record.arxiv_id.replace(/v\d+$/i, "").toLowerCase()}`;
+		const key = identityKey({ doi: record.doi, arxiv_id: record.arxiv_id ?? "" });
 		out.push({
 			id,
 			title: record.title,
@@ -56,7 +57,7 @@ export function candidatesFromRecords(
 			access: record.access?.level ?? null,
 			group: record.group ?? null,
 			dropped: isDropped,
-			inLibrary: libraryKeys.has(key),
+			inLibrary: key !== null && libraryKeys.has(key),
 			code: Boolean(record.code_url || record.data_links?.length),
 		});
 	}

@@ -3,7 +3,7 @@
  * diagnostics). Same engines as the pi tools, no agent model in the loop.
  *
  *     node src/cli.ts "<query>" [-n N] [-s SOURCES] [-g "a,b;c,d"] [...]   search (JSON, or --html/--digest)
- *     node src/cli.ts selection <DOI-or-arXiv-ID> [more ...]                 PDF download into lit-selection/
+ *     node src/cli.ts selection <DOI-or-arXiv-ID> [more ...]                 PDF download (alias: fetch)
  *     node src/cli.ts synthesis "<question>" | --report | --session-report   grounded round / report
  *     node src/cli.ts index [--reindex]                                      library match + embedding index
  *     node src/cli.ts extract <file.pdf>                                     what the PDF-to-text step sees
@@ -60,24 +60,24 @@ function usage(): never {
 	warn("       [--require-pdf] [--verified-only] [--sort cites|year] [--html [FILE]] [--no-enrich]");
 	warn("       [--variant \"...\" (repeatable)] [--digest] [--code SOURCES]");
 	warn("       [--author \"Name\" (repeatable)] [--author-id A... (repeatable, paired)] [--author-position first|contributing|any] [--author-scope query|all]");
-	warn("       --html without FILE writes to lit-search/<date>_<query>.html in the working directory");
+	warn("       --html without FILE writes to lit-search/<date>_<query>.html in the store (~/.config/pi-literature-review/)");
 	warn("       (the full JSON payload is always written next to the HTML, same basename)");
 	warn("       --variant adds an alternative phrasing; results are deduplicated across variants");
 	warn("       --digest prints the agent-facing digest instead of JSON (combine with --html for real paths)");
 	warn("       --code searches code repositories FIRST and resolves the papers they cite (up to ~40 s extra)");
 	warn(`available sources: ${Object.keys(SEARCHERS).join(", ")}`);
 	warn(`available code sources: ${Object.keys(CODE_SEARCHERS).join(", ")}`);
-	warn("or:    node src/cli.ts selection <DOI-or-arXiv-ID> [more ...]");
-	warn("       downloads legal open-access PDFs into lit-selection/ in the working directory");
+	warn("or:    node src/cli.ts selection <DOI-or-arXiv-ID> [more ...]   (alias: fetch)");
+	warn("       downloads legal open-access PDFs into the last download folder, else lit-selection/ in the store");
 	warn("or:    node src/cli.ts llm-check");
 	warn("       resolves the LLM backend config and round-trips embed + generate");
 	warn("or:    node src/cli.ts web [--port N] [--no-open] [--root DIR]");
-	warn("       starts the web interface (a chat through search, selection, synthesis) on 127.0.0.1");
-	warn("       without pi; the writing model is llm.generateModel of the config (Ollama, llama.cpp, ...)");
+	warn("       starts the web interface on 127.0.0.1 without pi; --root DIR sets the store folder");
+	warn("       LLM: llm.chatModel of the config, else llm.generateModel (llama.cpp, Ollama, ...)");
 	warn("or:    node src/cli.ts extract <file.pdf>");
 	warn("       shows pages, the usability gate and the chunking for one PDF");
 	warn("or:    node src/cli.ts index [--reindex]");
-	warn("       matches lit-selection/ against the saved searches and updates the embedding index");
+	warn("       matches the library (PDF folders, inbox, legacy places) and updates the embedding index");
 	warn('or:    node src/cli.ts synthesis "<question>" [--paper <file.pdf>] [--session ID] [--model M]');
 	warn("       [--embed-model E] [--top-k N] [--language L] [--reindex] [--digest]");
 	warn("       one grounded chat round about ONE paper (page-exact citations; sticky paper");
@@ -87,7 +87,7 @@ function usage(): never {
 	warn("       [--review] [--session ID] [--model M] [--embed-model E] [--top-k N] [--language L]");
 	warn("       [--ui-language de|en] [--reindex] [--html [FILE]] [--digest]");
 	warn("       composable report: per-paper summaries, detail questions (mode A per paper /");
-	warn("       mode B cross-paper), optional review synthesis; writes lit-synthesis/<date>_Report_...html");
+	warn("       mode B cross-paper), optional review synthesis; writes lit-synthesis/<date>_synthesis_report_...html");
 	warn('or:    node src/cli.ts synthesis --session-report [--paper <file.pdf>] ["<focus>"] [--session ID]');
 	warn("       [--html [FILE]] [--digest]");
 	warn("       grounded summary of ONE pi session's chat rounds (the classic session report)");

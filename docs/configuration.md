@@ -1,94 +1,106 @@
-# Configuration (optional config.json file)
+# Configuration
 
-The default setup does not require a configuration file. It uses a local Ollama instance and bge-m3 for embeddings, which are fetched automatically when the first /lit-synthesis request is made. Text generation uses the LLM model selected in Pi.
+No configuration file is needed for the default setup:
 
-The configuration file is only needed if you want to customize the setup, for example to use llama.cpp, a remote API, a dedicated review model, API keys, or an email address for Unpaywall for extensive PDF downloading.
+- Embeddings: `bge-m3` on a local Ollama, fetched at the first `/lit-synthesis`.
+- LLM: the model selected in Pi.
 
-## Where the file lives
+The file is for everything else: llama.cpp, a remote API, a separate generation model, API keys, a contact email. Most entries can also be set in the browser's Settings ([Browser interface](web.md#settings-and-keys)).
 
-- Linux/macOS: `~/.config/pi-literature-review/config.json` (respects
-  `$XDG_CONFIG_HOME`)
-- Windows: `%APPDATA%\pi-literature-review\config.json`
+## Config file
 
-`node src/cli.ts llm-check` prints the resolved path as its first line.
+| Platform | Path |
+|---|---|
+| Linux, macOS | `~/.config/pi-literature-review/config.json` (`$XDG_CONFIG_HOME` respected) |
+| Windows | `%APPDATA%\pi-literature-review\config.json` |
 
-The file is intentionally kept outside the package directory and ~/.pi: Pi
-may reset these directories during updates, and secrets should not be stored
-alongside version-controlled code.
-
+- `node src/cli.ts llm-check` prints the resolved path as its first line.
+- Plain JSON, file mode 0600.
+- Kept outside the package folder and `~/.pi`: Pi may replace those on updates.
+- Environment variables override the file.
 
 ## Keys and contact data
 
 | Key in config.json | Environment variable | Meaning |
 |---|---|---|
-| `mailto` | `PI_LITERATURE_REVIEW_MAILTO` | Contact email for Unpaywall (required by their policy) and the CrossRef/OpenAlex polite pools. Once set, it is sent with every API request of the package (User-Agent). |
-| `openAlexApiKey` | `PI_LITERATURE_REVIEW_OPENALEX_API_KEY` | Free OpenAlex key (openalex.org/settings/api-key). Without one, OpenAlex gives every machine behind the same IP address ONE small daily budget together (about 100 searches a day; a university network shares it), and the results page notes that the run used it. With a key you get your own budget (about ten times as much). It is sent as an `Authorization: Bearer` header, never in a URL; a key OpenAlex refuses fails the OpenAlex part of the run with a message naming this setting. The citation graph page (`network.html`) asks OpenAlex from your browser and stays without a key. |
-| `s2ApiKey` | `PI_LITERATURE_REVIEW_S2_API_KEY` | Free Semantic Scholar key (apply at semanticscholar.org/product/api; approval can take a few days). Enables Semantic Scholar as the fourth search source and as a second abstract source. Without a key it is not queried -- its anonymous pool is saturated nearly all the time -- and the results page says so next to the sources. |
-| `githubToken` | `PI_LITERATURE_REVIEW_GITHUB_TOKEN` | Raises the GitHub repository search limit from 10 to 30 per minute for the code-first sources (GitHub README search, Google Earth Engine). |
-| `codeListTopics` | `PI_LITERATURE_REVIEW_CODE_LIST_TOPICS` | GitHub topics of your research field whose awesome lists the `awesome-lists` code source reads (default `remote-sensing`, `satellite-imagery`, `earth-observation`, the package's home field; the env variable is a comma list). In the `/lit-search` wizard these are the first topic rows under "Curated lists", where the model adds the field topics of the current query and every row can be unticked; on the command line and in web clients they are the topics read. Awesome lists are filed by field: `bioinformatics`, `finance`, `robotics`, `nlp`, `neuroscience`, `gis` each carry dozens of lists, query words like `flood` carry none. |
+| `mailto` | `PI_LITERATURE_REVIEW_MAILTO` | Contact email. Sent in the User-Agent of every API request except DataCite and ORCID; also as a URL parameter to CrossRef and OpenAlex (`mailto`) and Unpaywall (`email`, required there). Asked at the first download. |
+| `openAlexApiKey` | `PI_LITERATURE_REVIEW_OPENALEX_API_KEY` | Free key (openalex.org/settings/api-key). Without it, all machines behind one IP address share one daily credit budget; the results page notes when a run used it. Sent as `Authorization: Bearer` header, never in a URL. A refused key fails the OpenAlex part with a message naming this setting. `network.html` queries OpenAlex from the browser without a key. |
+| `s2ApiKey` | `PI_LITERATURE_REVIEW_S2_API_KEY` | Free Semantic Scholar key (semanticscholar.org/product/api). Enables Semantic Scholar as fourth search source and second abstract source. Without it Semantic Scholar is not queried; the results page says so. |
+| `githubToken` | `PI_LITERATURE_REVIEW_GITHUB_TOKEN` | Raises the GitHub search limit from 10 to 30 requests per minute for the code sources `github-readme` and `gee-github`. |
+| `codeListTopics` | `PI_LITERATURE_REVIEW_CODE_LIST_TOPICS` | GitHub topics whose awesome lists the `awesome-lists` code source reads (env: comma list). See below. |
 
-The `githubToken`, `openAlexApiKey`, `s2ApiKey` and `llm.apiKey` entries are
-manual entries or set in the browser's Settings -- no dialog ever asks for a key, and the package never
-copies a provider key from Pi's own configuration.
+`codeListTopics`:
 
+- Terminal wizard and CLI: unset = `remote-sensing`, `satellite-imagery`, `earth-observation`. In the wizard they are the first rows under "Awesome lists"; the model adds field topics for the query; every row can be unticked.
+- Browser: the stored topics plus the model's suggestions. Unset = no built-in topics offered.
+- Topics are research fields (`bioinformatics`, `robotics`, `gis`), not query words.
 
-
+Keys (`githubToken`, `openAlexApiKey`, `s2ApiKey`, `llm.apiKey`) are entered in the file or in the browser's Settings. No dialog asks for a key; no key is copied from Pi's configuration.
 
 ## Models and backends
 
 | Key in config.json | Environment variable | Meaning |
 |---|---|---|
-| `llm.baseUrl` | `PI_LITERATURE_REVIEW_LLM_URL` | LLM backend address (default `http://127.0.0.1:11434`, Ollama). |
-| `llm.api` | `PI_LITERATURE_REVIEW_LLM_API` | `ollama` (default) or `openai` for any OpenAI-compatible server (llama.cpp's llama-server, vLLM, ...). |
-| `llm.embedModel` | `PI_LITERATURE_REVIEW_EMBED_MODEL` | Embedding model (default `bge-m3`, multilingual). Changing it re-embeds the index automatically. |
-| `llm.generateModel` | `PI_LITERATURE_REVIEW_LLM_MODEL` | Optional dedicated model for the review genres inside Pi (unset = the model selected in Pi runs everything). Headless/CLI runs use it for all generation (default `openscholar-8b`). |
-| `llm.chatModel` | `PI_LITERATURE_REVIEW_CHAT_MODEL` | The LLM role without pi (keyword blocks, help, chat answers, summaries); falls back to `generateModel`. Inside pi the model selected there takes this role. |
-| `llm.chatBaseUrl`, `llm.chatApi` | `PI_LITERATURE_REVIEW_CHAT_URL`, `_CHAT_API` | Per-role split: a separate server for `chatModel` (a llama-server holds one model). Unset = the generation backend. |
-| `llm.embedBaseUrl`, `llm.embedApi` | `PI_LITERATURE_REVIEW_EMBED_URL`, `_EMBED_API` | Per-role split: a separate backend for embeddings. |
-| `llm.generateBaseUrl`, `llm.generateApi` | `PI_LITERATURE_REVIEW_GENERATE_URL`, `_GENERATE_API` | Per-role split: a separate backend for generation. Unset roles use the shared `baseUrl`/`api`. |
-| `llm.apiKey` | `PI_LITERATURE_REVIEW_LLM_API_KEY` | Bearer token sent on every LLM-backend request; opens the `openai` dialect to REMOTE providers. |
-| `thinking` | `PI_LITERATURE_REVIEW_THINKING` | Hidden reasoning for the LLM role (every model call except the synthesis units): `off` (default), `low`, `medium`, `high`. Independent of pi's own thinking level; see [Thinking](#thinking). |
-| `browserModel` | -- | Inside pi: the browser interface's own LLM among pi's models (`provider/id`); unset = follow the model selected in pi. Never changes pi's session model; the terminal tools ignore it. |
-| `generateThinking` | `PI_LITERATURE_REVIEW_GENERATE_THINKING` | Hidden reasoning for the generation role (the cross-paper synthesis and review units of a report); unset = the value of `thinking`. |
-| `pdfFolders` | `PI_LITERATURE_REVIEW_PDF_FOLDERS` | Your PDF folders, read with all their subfolders, never written to (see below). The variable (separated by `:`, on Windows `;`) replaces the stored list. |
-| `lastDownloadDir` | -- | The folder of the last download, preselected next time. |
-| `ignoredFolders` | -- | Folders the library would read on its own (an older `lit-selection/`, loose PDFs where pi was started) that you took out of the library. |
-| -- | `PI_LITERATURE_REVIEW_HOME` | The store for search runs, reports, index and dropped PDFs (default: the folder of the configuration file; `.` = the working directory). |
-| -- | `PI_LITERATURE_REVIEW_HISTORY` | Folder of the web interface's conversation history (default: `history/` next to the configuration file). |
-| -- | `PI_LITERATURE_REVIEW_BLOCK_CACHE` | File of the saved keyword blocks (default: `keyword-blocks.json` next to the configuration file). |
+| `llm.baseUrl` | `PI_LITERATURE_REVIEW_LLM_URL` | Shared backend address. Default `http://127.0.0.1:11434` (Ollama). |
+| `llm.api` | `PI_LITERATURE_REVIEW_LLM_API` | `ollama` (default) or `openai` (llama.cpp `llama-server`, vLLM, any OpenAI-compatible server). |
+| `llm.embedModel` | `PI_LITERATURE_REVIEW_EMBED_MODEL` | Embedding model. Default `bge-m3`. A change rebuilds the index. |
+| `llm.chatModel` | `PI_LITERATURE_REVIEW_CHAT_MODEL` | Standalone: the LLM role (keyword blocks, help, chat answers, summaries, per-paper units). Unset = `generateModel`. Inside Pi the Pi model takes this role. |
+| `llm.generateModel` | `PI_LITERATURE_REVIEW_LLM_MODEL` | The generation role: cross-paper question units and synthesis. Inside Pi: unset = the Pi model. Standalone: default `openscholar-8b`. |
+| `llm.chatBaseUrl`, `llm.chatApi` | `PI_LITERATURE_REVIEW_CHAT_URL`, `PI_LITERATURE_REVIEW_CHAT_API` | Separate server for `chatModel`. Unset = the generation backend. |
+| `llm.generateBaseUrl`, `llm.generateApi` | `PI_LITERATURE_REVIEW_GENERATE_URL`, `PI_LITERATURE_REVIEW_GENERATE_API` | Separate server for generation. Unset = `baseUrl` / `api`. |
+| `llm.embedBaseUrl`, `llm.embedApi` | `PI_LITERATURE_REVIEW_EMBED_URL`, `PI_LITERATURE_REVIEW_EMBED_API` | Separate server for embeddings. Unset = `baseUrl` / `api`. |
+| `llm.apiKey` | `PI_LITERATURE_REVIEW_LLM_API_KEY` | Bearer token on every LLM-backend request. Needed for remote `openai` providers. |
+| `browserModel` | -- | Inside Pi: the browser's own LLM among Pi's models (`provider/id`). Unset = follow the Pi model. Never changes Pi's model; the terminal ignores it. |
+| `thinking` | `PI_LITERATURE_REVIEW_THINKING` | Thinking for the LLM role: `off` (default), `low`, `medium`, `high`. |
+| `generateThinking` | `PI_LITERATURE_REVIEW_GENERATE_THINKING` | Thinking for the generation role. Unset = `thinking`. |
+
+Which unit runs on which role: [Synthesis -> Models](synthesis.md#models).
+
+## Folders and storage
+
+| Key in config.json | Environment variable | Meaning |
+|---|---|---|
+| `pdfFolders` | `PI_LITERATURE_REVIEW_PDF_FOLDERS` | Your PDF folders, read recursively, never written to. The variable (separator `:`, Windows `;`) replaces the stored list; while it is set, a download does not add its folder. |
+| `lastDownloadDir` | -- | Folder of the last download, preselected next time. |
+| `ignoredFolders` | -- | Legacy places (`lit-selection/`, loose PDFs in the working directory) taken out of the library. |
+| -- | `PI_LITERATURE_REVIEW_HOME` | Moves the store (default: the config file's folder; `.` = the working directory). |
+| -- | `PI_LITERATURE_REVIEW_HISTORY` | Folder of the browser's conversation history. Default `history/` next to the config file. |
+| -- | `PI_LITERATURE_REVIEW_BLOCK_CACHE` | File of the saved keyword blocks. Default `keyword-blocks.json` next to the config file. |
 
 ## Where files live
 
-Two kinds of folders, the same for the terminal and the browser:
+The same for terminal and browser.
 
-- **The store** (default `~/.config/pi-literature-review/`, Windows
-  `%APPDATA%\pi-literature-review\`; `PI_LITERATURE_REVIEW_HOME` moves it):
-  `lit-search/` (search runs: JSON, HTML, `network.html`, list reports,
-  PRISMA diagrams), `lit-synthesis/` (reports, `index/`, `protocols/`),
-  `meta/` (the metadata twin of every PDF, named by a hash of its path),
-  `inbox/` (PDFs dropped onto the browser page), `history/`,
-  `keyword-blocks.json`, `config.json`.
-- **Your PDF folders** (`pdfFolders`): any folders, read recursively with
-  their structure (own folders, Zotero `storage/`, Citavi attachments).
-  Hidden folders are skipped, links are not followed, depth (8 levels) and
-  size (50,000 entries per folder) are capped. Nothing is written into
-  them: titles, authors and DOIs of a PDF live in the store's `meta/`.
-- **Downloads** go into the folder you choose on every run (browser: the
-  download window; terminal: the `/lit-selection` folder question); that
-  folder becomes a PDF folder.
-- Older layouts keep working: a `lit-selection/` in the store or in the
-  working directory, and loose PDFs in the working directory, are still
-  read (flat), and a twin `.json` next to a PDF is still used.
+**Store** (default: the config file's folder; moved by `PI_LITERATURE_REVIEW_HOME`):
+
+| Path | Content |
+|---|---|
+| `lit-search/` | Search runs: JSON, HTML, `network.html`, list reports, PRISMA diagrams |
+| `lit-synthesis/` | Reports, `index/`, `protocols/` |
+| `meta/` | Metadata twin of every PDF, named by a hash of its path |
+| `inbox/` | PDFs dropped onto the browser page |
+
+**Next to the config file** (do not move with `PI_LITERATURE_REVIEW_HOME`): `config.json`, `history/`, `keyword-blocks.json`.
+
+**Your PDF folders** (`pdfFolders`):
+
+- Any folders, read recursively (own folders, Zotero `storage/`, Citavi attachments).
+- Hidden folders skipped, links not followed. Caps: 8 levels deep, 50,000 entries per folder.
+- Nothing is written into them; metadata lives in `meta/`.
+
+**Downloads** go to a folder chosen on every run (browser: download window; terminal: `/lit-selection` folder question). The folder becomes a PDF folder.
+
+**Legacy layouts** are still read, flat: `lit-selection/` in the store or the working directory, loose PDFs in the working directory. A twin `.json` next to a PDF is still used. Read order: [Synthesis -> Corpus](synthesis.md#corpus).
 
 ## Examples
 
-A dedicated review model, everything else default:
+Separate generation model, everything else default:
 
 ```json
 { "llm": { "generateModel": "openscholar-8b" } }
 ```
 
-Pure llama.cpp -- one `llama-server` instance holds exactly one model:
+Pure llama.cpp (one `llama-server` holds one model):
 
 ```json
 { "llm": {
@@ -97,43 +109,38 @@ Pure llama.cpp -- one `llama-server` instance holds exactly one model:
 } }
 ```
 
-with `llama-server --embedding -m bge-m3.gguf --port 9090` for the
-embedding side.
+with `llama-server --embedding -m bge-m3.gguf --port 9090` for embeddings.
 
-Remote embeddings without any local server:
+Remote embeddings, no local server:
 
 ```json
 { "llm": { "api": "openai", "baseUrl": "https://api.openai.com",
            "embedModel": "text-embedding-3-small", "apiKey": "sk-..." } }
 ```
 
-**Disclosure:** If you use a cloud LLM with Pi, the text of your PDFs is sent
-to that provider. Check the permissions and licensing of your documents
-before doing so. The local-LLM setup is the default and preferred option of
-this package, keeping your documents on your machine.
+**Disclosure:** with a remote LLM or embedding API, text from your PDFs is sent to that provider. Check the permissions and licences of your documents first. The local setup is the default.
 
 ## Thinking
 
-The package has its own thinking settings, one per model role:
-`thinking` for the LLM role and `generateThinking` for the synthesis
-units (unset = the same as `thinking`); in the browser's Settings each
-sits under its model (Off / Low / Medium / High), default **off**.
-They apply inside pi and standalone alike, and is independent of pi's own thinking level (your
-other pi work keeps its setting). When on, each call gets extra output
-room for the hidden reasoning (2k / 4k / 8k tokens). On the wire: the
-Ollama dialect sends `think`; a local OpenAI-compatible server
-(llama.cpp) gets `chat_template_kwargs.enable_thinking`; a remote
-OpenAI-compatible API gets `reasoning_effort` only when thinking is on;
-through pi the level goes to pi's model layer. A llama.cpp model served
-through Pi requires a models.json provider with compat.thinkingFormat so
-that thinking can be switched. See
-[Synthesis -- Thinking](synthesis.md#thinking).
+Levels and roles: [Synthesis -> Thinking](synthesis.md#thinking). Independent of Pi's thinking level.
+
+| Backend | Sent |
+|---|---|
+| Ollama dialect | `think` |
+| Local OpenAI-compatible server (llama.cpp) | `chat_template_kwargs.enable_thinking` |
+| Remote OpenAI-compatible API | `reasoning_effort`, only when on |
+| Through Pi | the level, to Pi's model layer |
+
+A llama.cpp model served through Pi needs a `models.json` provider with `compat.thinkingFormat` (e.g. `qwen-chat-template`). The quick form `provider=URL` registers it without, and thinking cannot be switched.
+
+## Terminal links
+
+| Environment variable | Meaning |
+|---|---|
+| `PI_HYPERLINKS` | Pi's override for clickable links on the cards: `1` = short linked file names, `0` = full URLs. Unset = detected from the terminal. |
 
 ## Error messages
 
-When the embedding backend is unreachable, the error message identifies the
-role explicitly: "the embedding model 'bge-m3' is unavailable ...". It also
-makes clear that this is not the chat model selected in Pi, but a separate,
-small embedding model. The message includes the configured backend address
-and lists the available ways to run it: llama.cpp, Ollama, or a remote API.
-`node src/cli.ts llm-check` can be used to diagnose the setup. 
+- An unreachable backend names the role and model: `the embedding model "bge-m3" is unavailable: ...`.
+- For embeddings it adds that this is a separate model, not the LLM selected in Pi, and lists the options: llama.cpp, Ollama, remote API.
+- `node src/cli.ts llm-check` diagnoses the setup.

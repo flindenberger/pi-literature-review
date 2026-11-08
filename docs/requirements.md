@@ -1,61 +1,69 @@
 # Requirements
 
-| Stage            | Requirements                                                                             | LLM / embedding model                                                        |
-| ---------------- | ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| `/lit-search`    | Internet access to the public APIs.                                                      | Optional — the LLM selected in Pi is only used for query-variant generation. |
-| `/lit-selection` | Internet access. A contact email for Unpaywall is optional and requested in a dialog.    | No                                                                           |
-| `/lit-synthesis` | A chat model selected in Pi and a small local **embedding** model (`bge-m3` by default). | Yes — chat LLM + embedding model                                             |
+## Minimum requirements
 
-The package itself requires no accounts, API keys, or paid services. A free
-Semantic Scholar key adds it as a fourth search source (without one it is
-not queried: its anonymous access is almost always overloaded); a GitHub
-token raises the code-search rate limits; a free OpenAlex key gives you your
-own daily OpenAlex budget instead of the one shared by everyone on your
-network. They go into `config.json` — see
-[Configuration](configuration.md).
+| Component | Requirement |
+|---|---|
+| Node.js | 22.19 or newer |
+| Pi coding agent | Only for the Pi extension (tested with Pi 1.2). The standalone browser version runs without it. |
+| Network | Internet access to the public scholarly APIs |
+| Search & select | No model needed. With an LLM, the request is grouped into keyword blocks and synonyms are proposed. |
+| Summarize & synthesize | An LLM and an embedding model, see below |
+| Accounts | None |
 
+## LLM (chat model)
 
-## The embedding model
+Writes answers, summaries and synthesis sections over retrieved passages. Never touches paper metadata or citations.
 
-Pi's model API is completion-only, so PDF-synthesis needs a separate small
-model for retrieval (RAG). The default is `bge-m3` (multilingual, ~1.2 GB)
-served by [Ollama](https://ollama.com).
+| Interface | Model used |
+|---|---|
+| Pi, terminal | The model selected in Pi |
+| Pi, browser | The model selected in Pi, or its own choice under Settings (Pi's model stays untouched) |
+| Standalone | Any server under Settings: llama.cpp (`llama-server`), Ollama, or any OpenAI-compatible API |
 
-Nothing has to be set up in advance: the first `/lit-synthesis` checks
-whether the model is present and offers to fetch it right there -- a
-one-time download that stays on your machine. If no backend is reachable,
-the same dialog names three equal options:
+- **API dialects:** `openai` (`/v1/chat/completions`, llama.cpp, vLLM, remote providers) or `ollama` (native API)
+- **Size:** 9B or larger recommended. Inside Pi, smaller models skipped tool calls or rephrased questions; slash commands avoid this.
+- **Context:** tested with 32k tokens
+- **Generation model (optional):** a separate model for the cross-paper synthesis sections of a report (`llm.generateModel`)
+- **Thinking:** off by default, configurable per role. On modest hardware, thinking can make answers break off.
+- **Remote APIs:** excerpts of your PDFs are sent to the provider
 
-- install and start Ollama
-- run llama.cpp's `llama-server --embedding` with an embedding GGUF
-- point the config at a remote OpenAI-compatible API (paper text then
-  leaves your machine)
+## Embedding model (RAG)
 
-`node src/cli.ts llm-check` prints the config path and round-trips embed
-and generate.
+Embeds PDF passages for retrieval. Required for chat and reports.
 
-## The chat model (LLM)
+- **Default:** `bge-m3` (multilingual, ~1.2 GB) on [Ollama](https://ollama.com)
+- **Setup:** none in advance. The first `/lit-synthesis` offers to pull the model; in the browser: Settings → Embedding → Fetch.
+- **Alternatives:** llama.cpp `llama-server --embedding` with an embedding GGUF, or a remote OpenAI-compatible `/v1/embeddings` API (paper text then leaves your machine)
+- **Model change:** the index is rebuilt automatically
+- **Check:** `npx pi-literature-review llm-check` prints the config path and round-trips both models
 
-Query variants, answers, summaries, and synthesis all run on the LLM selected
-in Pi. Optionally, llm.generateModel can route synthesis tasks to a
-dedicated model.
+## Optional keys
 
-A 9B model is the minimum recommended size for the agent side. In testing,
-smaller models sometimes skipped tool calls or rephrased questions instead of
-executing them, especially when tools were invoked through free-text
-extension calls. Using slash commands to execute tools helped in these cases.
+All free. Set them in the browser under Settings or in `config.json` ([Configuration](configuration.md)).
+
+| Key | Effect |
+|---|---|
+| Semantic Scholar API key | Adds Semantic Scholar as a fourth source. Without a key it is not queried (the anonymous pool is almost always overloaded). |
+| OpenAlex API key | Own daily credit budget instead of the one shared per IP address. Sent as a header; an invalid key fails with HTTP 401. |
+| GitHub token | Higher rate limits for the code sources |
+| Contact email | Polite-pool access and Unpaywall lookups. Asked at the first download. |
 
 ## Tested setup
 
-- Ubuntu Linux, NVIDIA RTX 5060 (8 GB VRAM)
-- Pi with `unsloth/Qwen3.5-9B-GGUF:UD-Q4_K_XL` on llama.cpp's
-  `llama-server` (32k context) as agent and generator
-- Ollama with `bge-m3` for embeddings; optionally [openscholar-8b](https://github.com/akariasai/openscholar)
-  (imported GGUF) for the synthesis
-- Firefox for the PDF highlight links -- Chromium opens the page but
-  ignores the passage search
+| Component | Version |
+|---|---|
+| OS | Ubuntu Linux |
+| GPU | NVIDIA RTX 5060, 8 GB VRAM |
+| LLM | `unsloth/Qwen3.5-9B-GGUF:UD-Q4_K_XL` on `llama-server`, 32k context, in Pi and in the browser |
+| Generation model (optional) | [openscholar-8b](https://github.com/akariasai/openscholar), imported GGUF on Ollama |
+| Embedding model | `bge-m3` on Ollama |
+| Browsers | Firefox, Chromium. HTML reports opened as local files highlight the cited passage in Firefox only. |
 
-Windows and macOS paths are implemented (`%APPDATA%`, `~/.config`) but not
-field-tested. Web UI like [Pi Tau Web Server](https://github.com/milanglacier/pi-tau-web-server) (Pi's RPC mode) are supported with a
-modal-dialog fallback -- see
-[Development](development.md#web--rpc-clients).
+## Platforms
+
+| Platform | Status |
+|---|---|
+| Linux | Tested |
+| Windows, macOS | Implemented, not yet tested |
+| Pi web clients (RPC mode, e.g. [Pi Tau Web Server](https://github.com/milanglacier/pi-tau-web-server)) | Supported with a modal-dialog fallback, see [Development](development.md#web--rpc-clients) |

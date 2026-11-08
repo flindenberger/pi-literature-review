@@ -1,203 +1,157 @@
 # Synthesis (`/lit-synthesis`)
 
-Grounded chat and reports over the local PDF library, with page-exact
-citations that open the PDF at the cited passage.
+Grounded chat and reports over the local PDF library. Every citation names a page and opens the PDF at the cited passage.
 
 ## First call
 
-The first `/lit-synthesis` checks for the local embedding model and, if it
-is missing, offers to fetch it (Ollama, one-time, stays on your machine).
-If no backend is reachable it names the options instead -- see
-[Requirements](requirements.md). For the default setup there is nothing to
-configure.
+- The first `/lit-synthesis` checks the embedding model. When it is missing, it offers `ollama pull <model>` (local, one-time).
+- When no backend is reachable, it names the options. See [Requirements](requirements.md#embedding-model-rag).
 
-## Corpus and index
+## Corpus
 
-The corpus is every PDF in your PDF folders (recursively), the PDFs
-dropped onto the browser page (`inbox/` in the store), an older
-`lit-selection/` library and loose PDFs in the working directory (see
-[configuration.md](configuration.md#where-files-live)). On duplicate file
-names the earlier source wins and the shadowed files are reported. A loose PDF is adopted when its own DOI or arXiv ID can be
-extracted from the text and verified; otherwise it is cited by filename
-and page.
+Sources, read in this order. On a duplicate file name the earlier source wins; the shadowed files are named in a warning.
 
-Each PDF is indexed once under the store's `lit-synthesis/index/`: text extraction
-(scanned PDFs are excluded and named), reference list cut off, roughly
-1000-character chunks, embeddings. The index is invalidated by a change of
-content hash, embedding model or chunking.
+| Order | Source | Read |
+|---|---|---|
+| 1 | Legacy places: `lit-selection/` in the store, in the working directory and in `pi-literature-review/` there; loose PDFs in the working directory | flat |
+| 2 | `inbox/` in the store (PDFs dropped onto the browser page) | flat |
+| 3 | Your PDF folders (`pdfFolders`) | recursive |
 
-## Trust architecture
+- Locations and limits: [Configuration -> Where files live](configuration.md#where-files-live).
+- Legacy places listed in `ignoredFolders` are skipped.
 
-The generator sees only NUMBERED text excerpts and may cite only by
-excerpt number. Fixed code validates every marker, strips fabricated ones
--- reported, not hidden -- and inserts the references from the verified
-records. An answer without a single valid marker is asked for once more,
-with the citation rule repeated at the end of the prompt (small models
-sometimes answer from the excerpts but drop the numbers); if the second
-answer is unmarked too, the first stays and is flagged `grounded: false`
-with a warning.
+## Adoption
 
-Retrieval is the question plus a disclosed English translation variant
-plus a deterministic lexical layer (salient words, whole-word matched),
-returning the top 8 excerpts. Over a chosen set of papers (not the whole
-library) every paper is guaranteed its two best excerpts (fewer when the
-set is large, none once it has more papers than excerpts), the rest go by
-score -- otherwise one well-matching paper can fill all eight places and
-the answer hears from it alone. The same holds for the cross-paper
-questions of a report over chosen papers. The generator has no chat memory of its own;
-the Pi conversation carries the thread.
+A PDF without metadata (no twin from a download) gets an adoption attempt:
+
+- its own DOI or arXiv ID is read by fixed pattern from the first two pages,
+- the ID is looked up at OpenAlex (DOI) or the arXiv API (arXiv ID),
+- a successful lookup writes the metadata twin into the store's `meta/`.
+
+Only the PDFs of the current chat or report scope are tried; a whole-library scope tries every unmatched PDF. A PDF that stays unverified is cited by file name and page.
+
+## Index
+
+- One index file per PDF under `lit-synthesis/index/` in the store.
+- Steps: text extraction, reference list cut off, chunks of about 1000 characters, embeddings.
+- PDFs without extractable text (scans) are excluded and named.
+- Rebuilt on a change of content hash, embedding model or chunking.
+
+## Retrieval
+
+| Parameter | Value |
+|---|---|
+| Queries | The question, plus a disclosed English translation variant, plus a lexical layer (salient words, whole-word match) |
+| `top_k` / `--top-k` | Excerpts per unit. Default 8, maximum 20. |
+| Per-paper minimum | Over a chosen set of papers (not the whole library) each paper gets its 2 best excerpts; fewer when the set is large, none when papers outnumber excerpts. The rest goes by score. Applies to chat answers and cross-paper report units. |
+| Summary units | Six fixed two-language facet queries (aim, methods, study area, results, discussion, outlook), 3 excerpts each, capped by `top_k` |
+
+## Citation gate
+
+- The model sees only numbered excerpts and cites by number.
+- Fixed code checks every marker, strips invalid ones (reported in a warning) and inserts the references from the verified records.
+- A self-written reference section is cut.
+- An answer without any valid marker is asked for once more, with the citation rule repeated. If it stays unmarked, it is flagged `grounded: false`.
+- The model has no chat memory; the Pi conversation carries the thread.
 
 ## Scope
 
-One paper, a selection, or the whole library. You pick it in the wizard
-(checkbox list, select-all = library), or the agent passes exact
-filenames -- unknown names are rejected with the real list.
+- One paper, a selection, or the whole library.
+- Chosen in the wizard (checkbox list, select all = library), or passed by the agent as exact file names. Unknown names are rejected with the real list.
+- The scope is kept per Pi session (also after `/resume`); a new session starts empty.
+- With an empty library the tool is deactivated.
 
-The scope is sticky within one Pi session and survives `/resume`; a new
-session starts blank. With an empty library the tool is deactivated.
+## Chat
 
-## Chat mode
+- One grounded answer per question, on a card with the question as it ran and page-exact `file://...pdf#page=N` links.
+- The agent adds only a brief answer; the card is the reference.
+- Each grounded round turns on paper-chat mode: plain inputs run directly as questions, no agent in between. `exit` leaves it.
+- Rounds are appended to a protocol under `lit-synthesis/protocols/`.
 
-One grounded answer per question, with page-exact references
-(`[1] 2026 | 10.5194/... | Title (p. 4)`) on a card that shows the
-question exactly as it ran and carries `file://...pdf#page=N` links. The
-agent adds only a brief answer in the chat; the card is the ground truth.
+## Report
 
-Every grounded round arms **paper-chat mode** (yellow hint line): plain
-inputs then run directly as questions, with no agent in the answer path.
-`exit` leaves it. Rounds are appended to a protocol file under
-`lit-synthesis/protocols/`.
+Reports run only through the `/lit-synthesis` wizard (many model calls; the wizard is the consent). A report request by the agent is handed back with a pointer to the command; the questions tab is prefilled from the session's chat questions.
 
-## Report mode (`/lit-synthesis` only)
+| Wizard tab | Choice |
+|---|---|
+| Documents | Scope |
+| Questions | One per line; each answered across the chosen papers |
+| Summary | No / bullet points / prose. Summary · each paper on its own, along a fixed rubric. |
+| Synthesis | Synthesis · all papers together: agreement, differences, open points. Two or more papers. |
+| HTML | Write the HTML report, or answer in the chat only |
 
-Reports cost many model calls, so the wizard is the consent: a
-report-flavoured chat request is handed back to `/lit-synthesis`, with the
-questions tab prefilled from the session's chat questions.
+- The browser builds the same report from a paper chat and reuses the chat's answers. See [Browser interface](web.md).
+- A named paper no longer in the library is skipped with a warning.
+- The CLI `--detail-mode` takes `per-paper` or `cross-paper` (engine default `per-paper`). `both` comes only from the browser.
 
-Three building blocks, the same in the wizard and in the browser:
+### Report page
 
-- **Questions**, each answered across the chosen papers (one answer per
-  question; the browser takes the chat's own answers as they stand)
-- **Summary · each paper on its own**: a structured summary per paper
-  along a fixed rubric -- aim, method, study area, results, discussion,
-  outlook
-- **Synthesis · all papers together**: where the papers agree, where they
-  differ, what remains open (several documents only)
+- File: `lit-synthesis/<date>_synthesis_report_<first authors>.html`, e.g. `2026-09-18_synthesis_report_Li_Moortgat_Chen.html`. Up to three first-author surnames in scope order, `_et_al` when more papers follow; without author data, the question slug.
+- Order: paper table (A, B, C), question cards, synthesis, papers in letter order (summary in label rows, cited passages collapsed), "About this report" (metadata, technical notes) collapsed.
+- Prose language: the language of the questions unless set (`--language`). Page labels: the wizard language.
 
-The page ("Paper report") reads top-down in that order of interest:
-over several papers a table of the papers A, B, C (title, authors, year,
-DOI, PDF), the questions (one card each), the synthesis, then the papers
-in letter order, each with its identity, its summary in label rows
-("Methods" left, its points right) and its cited passages (collapsed).
-The metadata and the technical notes close the page in a collapsed
-"About this report" block. Over several papers three small buttons
-under "Layout" in the head (each draws its layout; in the browser app's
-panel they sit in a fixed row under the panel head instead, through the
-page's `window.plrLayouts`) switch the view, kept per browser: **Column** (default), **Contents** (a table of contents on
-the left -- a bar on top in a narrow window -- the papers as cards with
-the summary in two columns) and **Compare** (right after the paper list,
-the summaries side by side: one column per paper, one row per heading,
-two points per cell and "+ n more").
-Citation marks are small boxes as in the browser chat; hovering one
-shows the paper, the page and the passage text. The engine still knows
-questions answered paper by paper (`detailMode` per-paper / both, the CLI
-`--detail-mode`); the wizard and the browser no longer offer it.
+| Layout (several papers, kept per browser) | View |
+|---|---|
+| Column | Default, one column |
+| Contents | Table of contents on the left (a bar on top in a narrow window), papers as cards, summary in two columns |
+| Compare | Summaries side by side: one column per paper, one row per heading, two points per cell and "+ n more" |
 
-The HTML report is named after its papers:
-`lit-synthesis/<date>_synthesis_report_<first authors>.html`, e.g.
-`2026-09-18_synthesis_report_Li_Moortgat_Chen.html` -- up to three first
-authors in scope order, `_et_al` when more papers follow (with no author
-data the scope label is used).
+In the browser panel the layout buttons sit in a row under the panel head (`window.plrLayouts`).
 
-The page follows the chat language and carries a collapsed technical
-block that explains the retrieval in plain language. Every cited passage
-gets one label, and that label is what the superscripts show: one label
-stands for one page and one excerpt, never for a paper (a paper number
-would repeat on every marker of that paper's summary). Over several
-papers the label is the paper's letter plus the passage's number within
-that paper (A1, A2, B1), as in the browser chat; a report written from a
-chat keeps the chat's letters, the other papers take the next letters in
-order of their first citation (uncited papers last), and the numbers count in reading order (questions first), so
-the first question reads exactly as in the chat. A report over one paper
-keeps plain numbers. Several passages cited at the same spot stand side
-by side, sorted (`A1` `B3`), each with its own page link. Each paper's
-block (its letter before the title) lists its
-cited passages with page link, excerpt and the retrieval rank per citing
-question; cross-paper sections name the paper on every passage line and
-add a paper-level reference table (letter, title, pages).
+### Citation labels
+
+- One label = one passage on one page, never a whole paper.
+- Several papers: paper letter + passage number within that paper (`A1`, `B2`). Letters come from the chat when the report is written from one; other papers follow in order of first citation, uncited last. Numbers count in reading order, questions first.
+- One paper: plain numbers.
+- Labels at the same spot stand side by side, sorted, each with its own page link. Hover shows paper, page and passage text.
+- Each paper block lists its cited passages with page link, excerpt and retrieval rank per question. Cross-paper sections add a reference table (letter, title, pages).
 
 ### Highlighted passages
 
 ![Citation superscript opening the PDF at the highlighted passage](img/synthesis-highlight.png)
 
-Citation superscripts open the PDF at the page and highlight the WHOLE
-cited passage. At index time the code measures how much of each chunk the
-PDF viewer can actually find -- `src/pdfjs-find.ts` reproduces pdf.js's
-own text matching -- and offers only that much. In Firefox 90-99 % of
-excerpts highlight in full. A report opened as a file in Chromium-based
-browsers (Chrome, Edge, Brave ...) opens the page but not the highlight:
-their built-in viewer ignores the passage search. In the browser
-interface every PDF opens in the interface's own viewer instead
-(`static/pdfview.html`, the pdf.js build unpdf ships), which highlights
-the passage in every browser with the same matching rules
-(`pdfjsNormalizeMapped` puts a match back onto the text layer).
+- A citation opens the PDF at the page and highlights the whole cited passage.
+- At index time `src/pdfjs-find.ts` reproduces pdf.js's text matching; each excerpt carries only the part the viewer can find.
+- Report opened as a local file: highlights in Firefox; Chromium-based browsers open the page without the highlight.
+- Browser interface: every PDF opens in its own viewer (`src/web/static/pdfview.html`, served at `/static/pdfview.html`, pdf.js from unpdf), with the same matching rules in every browser (`pdfjsNormalizeMapped`).
 
 ### HTML-write gate
 
-While a document scope is active, an agent write of an `.html` file opens
-a dialog offering the report wizard instead. "Allow" lets an unrelated
-file through.
+While a scope is active, an agent write or edit of an `.html` file opens a dialog: report wizard (default), "Allow" for an unrelated file, or cancel. Without a UI the write is blocked.
 
 ## Models
 
-Answers, summaries and reviews run on the model selected in Pi.
-Optionally `llm.generateModel` routes the review genres to a dedicated
-model, for example [OpenScholar-8B](https://github.com/akariasai/openscholar) (Asai et al., 2024, [arXiv:2411.14199](https://arxiv.org/abs/2411.14199)) as a GGUF imported
-into Ollama; the report names the model that ran. Embeddings always run on the embedding backend
--- see [Configuration](configuration.md).
+| Unit | Role | Inside Pi | Standalone |
+|---|---|---|---|
+| Chat answers, summaries, per-paper question units, English retrieval variant | LLM | The Pi model (browser: `browserModel` when set) | `llm.chatModel`, else `llm.generateModel` |
+| Cross-paper question units, synthesis | Generation | `llm.generateModel` when set, else the Pi model | `llm.generateModel` |
+| Embeddings | Embedding | `llm.embedModel` | `llm.embedModel` |
+
+- The report names the model that ran.
+- Example generation model: [OpenScholar-8B](https://github.com/akariasai/openscholar) (Asai et al., 2024, [arXiv:2411.14199](https://arxiv.org/abs/2411.14199)) as a GGUF imported into Ollama.
+- Keys, addresses and per-role servers: [Configuration -> Models and backends](configuration.md#models-and-backends). Tested models: [Requirements](requirements.md).
 
 ### Thinking
 
-Every model call of this package follows the package's own thinking
-settings (config.json or Settings in the browser), one per role: the
-LLM role (answers, summaries, per-paper report units, the English
-retrieval variant, the query-variant suggestions, the browser's keyword
-blocks, help answers and small-talk check) follows `thinking`; the
-generation role (the cross-paper synthesis and review units of a report)
-follows `generateThinking`, unset = the same as `thinking`. Each is
-**off** by default, or low / medium / high.
-It is independent of pi's thinking level, read anew for each call, and
-works the same inside pi and standalone. When on, every call gets extra
-output room for the hidden reasoning (2k / 4k / 8k tokens).
+The package's own setting, independent of Pi's thinking level, read for every call, the same inside Pi and standalone.
 
-<details>
-<summary>What to expect, and what llama.cpp needs</summary>
+| Key | Role | Default |
+|---|---|---|
+| `thinking` | LLM role: every call except the generation units | `off` |
+| `generateThinking` | Generation role: cross-paper question units and synthesis | unset = `thinking` |
 
-Thinking makes every call slower; on a small local model it rarely helps,
-because the calls are excerpt-bound (answer only from the numbered
-excerpts, cite by number). Citations stay code-checked either way. A
-thinking model may still spend a call's whole budget on reasoning and
-return no answer text; the error then says so ("it produced only hidden
-reasoning") -- turn Thinking off or lower, or ask again. Short checks
-with a time limit (small talk, help) fall back as without a model:
-the message is looked up in the papers, the fixed help text is shown.
-
-One prerequisite for llama.cpp served through Pi: the model must be
-registered in Pi WITH metadata -- a `models.json` provider carrying
-`compat.thinkingFormat`, e.g. `qwen-chat-template`. The quick form
-`provider=URL` registers it without, and thinking then cannot be switched
-by any client.
-
-</details>
+- Levels: `off`, `low`, `medium`, `high`. When on, each call gets 2k / 4k / 8k extra output tokens for the reasoning.
+- Thinking slows every call. On a small local model it rarely helps: the calls are excerpt-bound, and citations are code-checked either way.
+- A call may spend its whole budget on reasoning; the error then says "it produced only hidden reasoning". Turn thinking off or lower, or ask again.
+- Short checks with a time limit (small talk, help) fall back to their no-model behaviour.
+- Wire format and the llama.cpp prerequisite: [Configuration -> Thinking](configuration.md#thinking).
 
 ## Command line
 
 ```
 node src/cli.ts synthesis "Which cameras were used?" --paper 2026_Blanch_Water_Level.pdf --digest
 node src/cli.ts synthesis --report --papers "a.pdf,b.pdf" --questions "q1;q2" --summary bullets
-node src/cli.ts synthesis --report --all --review
+node src/cli.ts synthesis --report --all --review --top-k 12
 ```
 
-See [Command line](cli.md).
-
-Where it lives in the code: see [Development -> Module map](development.md#module-map).
+All flags: [Command line](cli.md). Module map: [Development](development.md#module-map).

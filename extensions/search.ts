@@ -57,7 +57,8 @@ import {
 	variantPrompt,
 	yearRangeToSpec,
 } from "../src/intake.ts";
-import { writeRunOutputs } from "../src/output.ts";
+import { outputRoot, writeRunOutputs } from "../src/output.ts";
+import { matchLibrary } from "../src/corpus.ts";
 import { renderHtml } from "../src/render.ts";
 import { writeNetworkPage } from "../src/network.ts";
 import { type AuthorMetrics, fetchAuthorMetrics, fetchJournalScores } from "../src/enrich.ts";
@@ -1780,9 +1781,17 @@ export default function literatureSearch(pi: ExtensionAPI) {
 				}
 
 				// Second part of stage 1: which papers as PDFs (or later).
+				// Papers already in the library are skipped by "all" and "code".
+				let libraryKeys = new Set<string>();
+				try {
+					libraryKeys = new Set(matchLibrary(outputRoot(), () => {}).matched.map((paper) => paper.key));
+				} catch {
+					// an unreadable library only means nothing is skipped
+				}
 				const candidates = candidatesFromRecords(
 					payload.results as unknown as CandidateRecord[],
 					payload.dropped as unknown as Array<{ record: CandidateRecord }>,
+					libraryKeys,
 				);
 				let downloadNote = "The user chose to download papers later (nothing was downloaded).";
 				if (candidates.length && !ctx.signal?.aborted) {

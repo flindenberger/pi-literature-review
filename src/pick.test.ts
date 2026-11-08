@@ -22,6 +22,19 @@ assert.deepEqual(candidates.map((c) => c.dropped), [false, false, false, true]);
 assert.equal(candidates[0].inLibrary, true);
 assert.equal(candidates[1].inLibrary, false);
 
+// Library keys follow identityKey: an arXiv version suffix and DOI case do not matter,
+// and "all" / "code" skip papers already in the library.
+{
+	const inLib = candidatesFromRecords(
+		[record("10.1/A", "", "on_target"), record("", "2401.00001v2", "on_target", { code_url: "https://github.com/x/y" })],
+		[],
+		new Set(["doi:10.1/a", "arxiv:2401.00001"]),
+	);
+	assert.deepEqual(inLib.map((c) => c.inLibrary), [true, true]);
+	assert.deepEqual(pickedIds(parsePickAnswer("all", inLib), inLib), []);
+	assert.deepEqual(pickedIds(parsePickAnswer("code", inLib), inLib), []);
+}
+
 // "all" = on-target, not in the library (dropped ones count too).
 assert.deepEqual(pickedIds(parsePickAnswer("all", candidates), candidates), ["arXiv:2401.00001v2", "10.1/d"]);
 // "code" = code or data link.
