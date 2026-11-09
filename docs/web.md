@@ -56,7 +56,7 @@ Models in detail: [Requirements](requirements.md). How the installed command run
 - The request box button reads **Search**. Enter or the button starts the search at once.
 - The model groups the request's own words into keyword blocks (temperature 0) and adds no word. Code drops every term not in the request. A request in another language is translated once per concept.
 - A typed block expression, e.g. `(river OR stream) AND (bathymetry)`, is searched as typed.
-- Without a model, or without a usable proposal, word-by-word blocks are shown for confirmation first (with **More options**: the question chain for code sources, period, journals, authors and a summary).
+- Without a model, the request is searched at once word by word: every word must occur. If the model gives no usable proposal, these word-by-word blocks are shown for confirmation first (with **More options**: the question chain for code sources, period, journals, authors and a summary).
 - Blocks are saved per request text in `keyword-blocks.json` next to the config file (`PI_LITERATURE_REVIEW_BLOCK_CACHE`). The same request searches with the same blocks.
 - Defaults: last 10 years, 30 records per source, no code sources, all journals and authors.
 

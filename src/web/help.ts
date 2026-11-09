@@ -72,7 +72,7 @@ const HELP: Record<StepId, StepHelp> = {
 	},
 	topic: {
 		mode: "Answering: what you are looking for",
-		means: "The research request. The model splits it into keyword blocks and the search starts at once (last 10 years, 30 records per source, no code sources); the blocks can be edited under the results. Without a model, word-by-word blocks are shown for confirmation first.",
+		means: "The research request. The model splits it into keyword blocks and the search starts at once (last 10 years, 30 records per source, no code sources); the blocks can be edited under the results. Without a model, the request is searched word by word (every word must occur).",
 		inputs: "A sentence or a few keywords, in any language.",
 		examples: ["water level of rivers from satellite images", "sandbar detection Sentinel-1 Sentinel-2"],
 		chips: "None here.",

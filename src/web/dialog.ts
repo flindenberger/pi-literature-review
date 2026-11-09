@@ -360,7 +360,6 @@ const TEXT = {
 	topic: "What are you looking for? A sentence or keywords are both fine.",
 	blocks: "Is it ok if I split your request into these keyword blocks? A paper must match **every** block; the words inside a block are alternatives.",
 	blocksSynonyms: "The model added synonyms to your keyword blocks. Change, add or remove terms, then search. A paper must match **every** block; the words inside a block are alternatives.",
-	blocksDerived: "No model is selected, so the blocks were derived word by word from your text.",
 	blocksModelFailed: "The model gave no usable proposal, so the blocks were derived word by word from your text.",
 	code: "Do you also want **papers with code**? I can additionally search code repositories and add the papers they cite: Hugging Face Papers, GitHub README search, awesome lists, Google Earth Engine repositories. Adds up to about 40 s.",
 	codeSources: "Which code sources?",
@@ -1344,9 +1343,10 @@ function onTopic(state: DialogState, text: string, ctx: DialogContext, options: 
 	});
 	// The browser searches first and lets the blocks be edited afterwards
 	// ("Edit keywords" under the results): a hand-built block expression and
-	// the model's own-words blocks start the search at once. With the
+	// the model's own-words blocks start the search at once, and so do
+	// word-by-word blocks without a model (every word must occur). With the
 	// synonym button the model's synonyms are shown for editing first; so
-	// are word-by-word blocks (no model, model failed).
+	// are word-by-word blocks after a failed model proposal.
 	// Synonym blocks the user already saw and edited in the "+" menu: search with them.
 	if (options.blocks && composedQuery({ ...next.answers, blocks: options.blocks })) {
 		return startSearch(withAnswers(next, { blocks: options.blocks }), ctx);
@@ -1356,7 +1356,7 @@ function onTopic(state: DialogState, text: string, ctx: DialogContext, options: 
 		if (lines) return startSearch(withAnswers(next, { blocks: lines }), ctx);
 	}
 	if (!ctx.hasModel) {
-		return result(askBlocks(withAnswers(next, { blocks: derivedBlocks(text) }), ctx, TEXT.blocksDerived));
+		return startSearch(withAnswers(next, { blocks: derivedBlocks(text) }), ctx);
 	}
 	return result(pending(next, PENDING_BLOCKS), proposeEffect(next.answers));
 }

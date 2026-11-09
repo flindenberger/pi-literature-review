@@ -458,18 +458,15 @@ function job(kind: JobInfo["kind"], id: string, state: JobInfo["state"] = "runni
 	assert.equal(state.answers.codeSources.length, 4);
 }
 
-// ---- no model: blocks derived word by word, questions refused ----
+// ---- no model: word-by-word blocks searched at once, questions refused ----
 {
 	const ctx = context({ hasModel: false, modelLabel: null });
 	let state = initialDialog(ctx);
 	assert.match(last(state).note ?? "", /No model is selected yet/);
 	let out = step(state, { kind: "answer", text: "sandbar detection rivers Sentinel-2" }, ctx);
 	state = out.state;
-	assert.equal(state.step, "blocks");
-	assert.deepEqual(out.effects, []);
-	assert.deepEqual(last(state).editor, ["sandbar", "detection", "rivers", "sentinel-2"]);
-	assert.match(last(state).note ?? "", /No model is selected/);
-	assert.ok(!chipIds(state).includes("again"));
+	assert.equal(out.effects[0]?.kind, "startSearch");
+	assert.deepEqual(state.answers.blocks, ["sandbar", "detection", "rivers", "sentinel-2"]);
 	// The model failing to propose falls back the same way.
 	let s2 = initialDialog(context());
 	s2 = step(s2, { kind: "answer", text: "prose request about rivers and depth" }).state;

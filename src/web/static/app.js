@@ -3444,8 +3444,15 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 			render();
 			if (historyOpen()) loadHistory();
 		});
+		// EventSource reconnects by itself; the warning stays only while the
+		// connection is down, the status line returns once it is back.
+		let lost = false;
 		source.onerror = () => {
+			lost = true;
 			$("status").innerHTML = '<span class="dot bad"></span>connection to the server lost -- is pi still running?';
+		};
+		source.onopen = () => {
+			if (lost) { lost = false; loadState(); }
 		};
 	}
 
