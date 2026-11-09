@@ -2,21 +2,23 @@ cff-version: 1.2.0
 message: "If you use this software for academic research, please cite it using the metadata below."
 type: software
 title: "pi-literature-review"
-abstract: "An open and login-free literature review extension for the Pi coding agent.
-  It provides deterministic multi-source search across arXiv, Crossref,
-  OpenAlex, and Semantic Scholar, with HTTP-verified identifiers, legal
-  open-access PDF selection, and grounded synthesis over local PDFs with
-  page-exact citations. No language model is involved in bibliographic search,
-  identifier verification, or citation path. The system is designed to
-  run with local language models and embedding models, including on
-  low-performance hardware, enabling a fully local literature review workflow
-  without requiring cloud-based AI services."
+abstract: "An open and login-free literature review tool, as an extension for
+  the Pi coding agent or as a standalone browser app. It provides
+  deterministic multi-source search across arXiv, Crossref, OpenAlex, and
+  Semantic Scholar plus code repositories, with HTTP-verified identifiers,
+  citation graphs, PRISMA documentation, legal open-access PDF downloads,
+  and grounded question answering and synthesis over local PDFs with
+  page-exact citations. No language model is involved in bibliographic
+  search, identifier verification, or the citation path. The system is
+  designed to run with local language models and embedding models,
+  including on modest hardware, enabling a fully local literature review
+  workflow without requiring cloud-based AI services."
 authors:
   - family-names: "Lindenberger"
     given-names: "Florian"
     orcid: "https://orcid.org/0009-0008-1759-3515"
-version: "0.1.1"
-date-released: "2026-09-28"
+version: "0.2.0"
+date-released: "2026-11-09"
 license: MIT
 repository-code: "https://github.com/flindenberger/pi-literature-review"
 doi: "10.5281/zenodo.22954995"

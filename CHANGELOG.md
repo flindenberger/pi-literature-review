@@ -4,81 +4,78 @@ All notable changes to this package are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.2.0] - 2026-11-09
 
 ### Added
 
-- Browser interface: its own PDF viewer (the pdf.js build unpdf already
-  ships) jumps to the cited page and highlights the passage in every
-  browser, Chromium-based ones included; reports served to the browser
-  link their citation marks to it. Info button: "Copy link" copies the
-  full address with its access key for another browser; a page opened
-  without the key explains how to get it instead of a JSON error.
+- Browser interface: `/pi-literature-review` in Pi, or without Pi
+  `npx pi-literature-review web` (new `bin` entry, Node.js 22.19 or newer).
+  A local server on 127.0.0.1 with an access key; two stages in the rail,
+  Search & select and Summarize & synthesize, each with its own history of
+  saved conversations (one JSON file each next to the configuration file).
+  Documented in `docs/web.md`.
+- Search & select in the browser: the request starts the search at once
+  (keyword blocks from the request's own words, saved per request so a
+  repeated search is the same search); results as cards with instant
+  filters (period, access, type, citations, code, data, journal, author,
+  source) and sort; a "+" menu for synonyms, papers with code, period,
+  records per source, minimum citations, journals and authors; search
+  report and PRISMA diagram written on click from the filtered list;
+  citation graph per card; an author window (works, citations, h-index,
+  topics, current institution from ORCID).
+- Author search: narrow a topic to chosen authors, or list all their work
+  (empty request), optionally as first author only.
+- Summarize & synthesize in the browser: chat over one paper, chosen papers
+  or folders, or the whole library; answers cite passages by paper letter
+  and number (A1, B2) with a hover card; the browser's own PDF viewer opens
+  at the cited page and highlights the passage in every browser. One
+  report per chat (summary per paper and/or synthesis across papers) that
+  reuses the chat's answers; three report layouts (column, contents,
+  compare).
+- PDF library from your own folders (read recursively, never written to),
+  drag and drop or an upload button for single PDFs, background indexing,
+  a paper info window (citations per year, venue, access, abstract).
+- Settings in the browser: models per role (chat, report writing,
+  embeddings) with their own thinking level, model lists from the running
+  server, API keys, PDF folders, saved data. Inside Pi the browser can use
+  its own Pi model without changing the terminal's.
 - Optional OpenAlex API key (`openAlexApiKey`,
-  `PI_LITERATURE_REVIEW_OPENALEX_API_KEY`, browser Settings): OpenAlex now
-  meters requests, and without a key every machine behind one IP address
-  shares one small daily budget. The key goes as a bearer header (never in
-  a URL); rate-limit errors explain the shared budget, a refused key names
-  the setting, and the results page notes a run made without a key.
-- Web interface: a question channel beside the wizard answers, decided
-  by code behind one plain input box: typed text on a chip-only step, a
-  question-like text the step's parser does not recognise, or a leading
-  `?` goes to a helper that answers from a fixed per-step help text, tailored by the model when one is available, with navigation
-  chips from code (Continue, Edit keyword blocks, Back, Start over). A
-  question-like input that a step's parser does not recognise goes to the
-  helper instead of a bare "I did not recognise".
-- Web interface start screen: four lines that build up once per browser
-  session (the last one typed in two colours), two tiles with what each
-  stage does, an info button for sources and data flow; every page load
-  and the package name return to it. The chat's accent colour is now a
-  near-black instead of blue (hover, selection, primary buttons). Rail: two stages -- SEARCH & SELECT,
-  SUMMARIZE & SYNTHESIZE -- each with its own **+** (New search, New paper chat) that
-  starts a new conversation at that stage and keeps the current one in a
-  collapsible **History** list. Conversations are
-  saved as one JSON file each next to the configuration file
-  (`~/.config/pi-literature-review/history/`, `PI_LITERATURE_REVIEW_HISTORY`
-  overrides), survive server and pi restarts, are named after the request
-  or question with the start time below, grouped by data folder, the
-  current one marked; a click continues one, the trash icon deletes one,
-  Settings can delete all. A local model
-  or embedding server that is not running shows a red dot with a hint
-  (the server probes 127.0.0.1 addresses). The folder path became a
-  folder icon that opens the data folder in the file manager, Settings a
-  gear icon; the Start
-  over and Stop buttons are gone (typed `start over` still works; the
-  server stops from pi or with Ctrl-C).
-
-- Web interface: `/pi-literature-review` starts a local server inside Pi
-  (127.0.0.1, token cookie) and opens a chat in the browser that walks
-  through the three stages -- the request split into keyword blocks
-  (proposed by the model, confirmed or edited by you), papers with code,
-  period, journals and authors from OpenAlex, then the search; papers
-  ticked in the report or named by row number, the legal PDF download;
-  questions over the PDFs with page citations and the synthesis report.
-  The question order and wording are fixed in code; the model only
-  proposes content. Reports open in a panel beside the chat (enlarge,
-  new tab, close), file cards name every written HTML file with a button
-  that shows the folder in the file manager, and the rail lists all
-  HTML reports and the PDF library. Progress streams over Server-Sent
-  Events; the model is the one selected in Pi. `node src/cli.ts web`
-  runs the same interface without Pi on the configured backend.
-  Documentation in `docs/web.md`.
-- `renderSynthReportHtml` and `renderPaperChatReportHtml` accept a
-  `pdfHref` link builder; `webPdfHref` builds server links.
+  `PI_LITERATURE_REVIEW_OPENALEX_API_KEY`): OpenAlex now meters requests,
+  and without a key every machine behind one IP address shares one small
+  daily budget. The key goes as a bearer header, never in a URL.
+- Code and data links from DataCite (Zenodo and other DataCite DOIs)
+  besides CrossRef.
+- Live demo of the browser interface on GitHub Pages: search runs for real
+  in the visitor's browser, the paper chat replays one recorded example.
 
 ### Changed
 
 - Two stages instead of three: "Search and selection" and "Summary and
   synthesis". `/lit-search` asks after its results which papers to
   download (the copied report line, row numbers, identifiers, `all`,
-  `code`; empty or Esc = later) and runs the download in the same dialog;
-  the per-paper report lists the papers to open in the browser first, and
-  says that a PDF saved by hand into a PDF folder is recognised by its
-  DOI. `/lit-selection` stays as the side entrance. The report's step 3
-  reads "Paste it into Pi".
+  `code`; empty or Esc = later) and downloads in the same dialog.
+  `/lit-selection` stays as a side entrance.
+- Where files live: search results and reports go to one store, the
+  folder of the configuration file (`~/.config/pi-literature-review/`;
+  `PI_LITERATURE_REVIEW_HOME` moves it, `.` restores the per-project
+  layout). Downloads ask for a folder on every run. Older folders in
+  working directories are left in place and their PDFs are still read.
+- Thinking is off by default and set per role (`thinking`,
+  `generateThinking`), independent of Pi's own level.
 - Model calls on the Pi model go through Pi's model registry
-  (`streamSimple`) instead of the deprecated `pi-ai/compat` entry, so
-  request-time credentials, base URL and provider environment apply.
+  (`streamSimple`) instead of the deprecated `pi-ai/compat` entry.
+- Reports and the citation graph use one near-black accent; the PRISMA
+  diagram follows the PRISMA 2020 phase layout.
+- Documentation rewritten in a compact reference style.
+
+### Fixed
+
+- OpenAlex removed the work type "grant" and answered every request that
+  excluded it with HTTP 400, so every OpenAlex search failed in 0.1.1.
+- Picked authors no longer drop their own papers when OpenAlex writes the
+  name with a middle initial.
+- The `/lit-search` download question skips papers already in the library
+  for `all` and `code`.
 
 ## [0.1.1] - 2026-09-28
 
@@ -119,5 +116,6 @@ in the Pi coding agent.
   per-paper summaries, detail questions and an optional review synthesis.
 - Command line for all three stages without Pi.
 
+[0.2.0]: https://github.com/flindenberger/pi-literature-review/releases/tag/v0.2.0
 [0.1.1]: https://github.com/flindenberger/pi-literature-review/releases/tag/v0.1.1
 [0.1.0]: https://github.com/flindenberger/pi-literature-review/releases/tag/v0.1.0
