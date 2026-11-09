@@ -17,17 +17,20 @@ Referenced from README.md and docs/*.md by these names:
 
 | File | Shows | Used in |
 |---|---|---|
-| `teaser.png` | The three stages side by side (search, select, synthesize), three screenshots each; built from `design/2026-09-22_teaser/quelle/teaser.html` | README (hero image) |
+| `teaser.png` | The three stages side by side (search, select, synthesize), three screenshots each; built from `design/2026-09-22_teaser/quelle/teaser.html` | README up to 0.1.1 (keep: the published npm README still links it) |
 | `search-variants-tab.png` | The /lit-search wizard on the Query variants tab: main query, a ticked variant, further suggestions, the rows to add or generate variants | docs/search.md |
-| `wizard.gif` | The /lit-search wizard from keyword blocks to the result card: query variants, period, records, journals, authors, code sources, confirm | README |
-| `search-results-page.gif` | The results page: sorting by two columns, an abstract opened, the search documentation with the PRISMA flow diagram | README |
+| `wizard.gif` | The /lit-search wizard from keyword blocks to the result card: query variants, period, records, journals, authors, code sources, confirm | README up to 0.1.1 (keep: the published npm README still links it) |
+| `search-results-page.gif` | The results page: sorting by two columns, an abstract opened, the search documentation with the PRISMA flow diagram | README up to 0.1.1 (keep: the published npm README still links it) |
 | `search-results-page.png` | The "Search documentation" section opened: records identified per source and query, exclusions, verification, targeting, the PRISMA flow diagram, then the start of the results table | docs/search.md |
-| `network-graph.gif` | A Graph button clicked, the citation graph builds, circles hovered, the cited / citing filters toggled | README |
+| `network-graph.gif` | A Graph button clicked, the citation graph builds, circles hovered, the cited / citing filters toggled | README up to 0.1.1 (keep: the published npm README still links it) |
 | `network-graph.png` | The citation graph of one paper, the paper's circle hovered (focus + tooltip) | docs/search.md |
-| `search-code-column.gif` | Result rows with links in the Code / data column; one repository opened on GitHub | README |
-| `search-selection-bar.gif` | A paper ticked on the results page, the download request copied and pasted into Pi, the consent dialog, the PDF downloaded | README |
-| `synthesis-highlight.gif` | A synthesis report in the browser: a citation superscript clicked, the PDF opens at the cited page with the passage highlighted | README |
+| `search-code-column.gif` | Result rows with links in the Code / data column; one repository opened on GitHub | README up to 0.1.1 (keep: the published npm README still links it) |
+| `search-selection-bar.gif` | A paper ticked on the results page, the download request copied and pasted into Pi, the consent dialog, the PDF downloaded | README up to 0.1.1 (keep: the published npm README still links it) |
+| `synthesis-highlight.gif` | A synthesis report in the browser: a citation superscript clicked, the PDF opens at the cited page with the passage highlighted | README up to 0.1.1 (keep: the published npm README still links it) |
 | `synthesis-highlight.png` | Composite: a report answer with citation superscript 6 (left) and the PDF opened at the cited page with the passage highlighted in Firefox (right) | docs/synthesis.md |
-| `synthesis-report.gif` | The /lit-synthesis wizard, the model run (sped up), the report card with page links, then the HTML report and a cited passage in the PDF | README |
+| `synthesis-report.gif` | The /lit-synthesis wizard, the model run (sped up), the report card with page links, then the HTML report and a cited passage in the PDF | README up to 0.1.1 (keep: the published npm README still links it) |
+| `logo.png`, `logo-dark.png` | The logo (white italic pi on a dark disc) with the package name; light and dark theme, 660 x 112 (2x), rendered from SVG so the font does not depend on the reader's system | README (title) |
+| `try-it.png`, `try-it-dark.png` | The "Try it in your browser" button for the live demo; light and dark theme, 544 x 96 (2x) | README |
+| `readme-hero.gif` | Browser paper chat: a paper opened, a question asked, the answer with citation marks, the PDF at the highlighted passage, then a close-up; 768 px, about 21 s | README (under the lead sentence) |
 | `gallery.gif` | Gallery preview for pi.dev/packages (`pi.image` in package.json): title, the three stages, the citation graph animated; 1200 x 750, 128 colours, built from `network-graph.gif` in `design/2026-09-28_gallery_vorschau_entwuerfe/` | package.json (not the README) |
 | `synthesis-chat-card.png` (optional, not taken yet) | A grounded chat answer card with reference lines and the yellow paper-chat mode line | -- |

@@ -1,204 +1,79 @@
-# pi-literature-review
+<p align="center"><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/flindenberger/pi-literature-review/main/docs/img/logo-dark.png"><img src="https://raw.githubusercontent.com/flindenberger/pi-literature-review/main/docs/img/logo.png" width="330" alt="pi-literature-review"></picture></p>
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.22954995.svg)](https://doi.org/10.5281/zenodo.22954995)
+<p align="center"><i>Search the literature. Select the papers. Summarize and synthesize.<br>Streamlined for local AI models.</i></p>
 
-![Search, select, synthesize: the three stages of pi-literature-review](https://raw.githubusercontent.com/flindenberger/pi-literature-review/main/docs/img/teaser.png)
+<p align="center"><a href="https://www.npmjs.com/package/pi-literature-review"><img alt="npm" src="https://img.shields.io/npm/v/pi-literature-review"></a> <a href="https://github.com/flindenberger/pi-literature-review/actions/workflows/test.yml"><img alt="test" src="https://github.com/flindenberger/pi-literature-review/actions/workflows/test.yml/badge.svg"></a> <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue"></a> <a href="https://doi.org/10.5281/zenodo.22954995"><img alt="DOI" src="https://zenodo.org/badge/DOI/10.5281/zenodo.22954995.svg"></a></p>
 
-Local, open, login-free academic literature review for the [Pi coding agent](https://pi.dev).
+<p align="center"><a href="https://flindenberger.github.io/pi-literature-review/"><picture><source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/flindenberger/pi-literature-review/main/docs/img/try-it-dark.png"><img alt="Try it in your browser" src="https://raw.githubusercontent.com/flindenberger/pi-literature-review/main/docs/img/try-it.png" width="272"></picture></a></p>
 
-One package, three tools:
+<p align="center"><a href="#as-pi-coding-agent-extension"><img alt="Install Pi extension: pi install npm:pi-literature-review" src="https://img.shields.io/badge/Install_Pi_extension-pi_install_npm%3Api--literature--review-f6f6f2?labelColor=2a2a2a"></a>&nbsp;&nbsp;<a href="#as-standalone"><img alt="Install standalone: npx pi-literature-review web" src="https://img.shields.io/badge/Install_standalone-npx_pi--literature--review_web-f6f6f2?labelColor=2a2a2a"></a></p>
 
-* `/lit-search` — search the literature
-* `/lit-selection` — download selected papers
-* `/lit-synthesis` — read, discuss and synthesize papers
+&nbsp;
 
-It uses the public APIs of arXiv, CrossRef and OpenAlex, plus Semantic Scholar when you add a free API key. No account, API key or paid service is required. The workflow can run locally with a small LLM and embedding model. See [Requirements](docs/requirements.md).
+A local, open, login-free literature tool as an extension for the [Pi coding agent](https://pi.dev) or as a standalone browser app: search four academic paper databases plus code repositories, explore citation graphs and PRISMA diagrams, then ask your PDFs and get answers with page-exact citations, optimised for your local AI models.
 
-**The central design rule: models never modify or generate paper data.**
+&nbsp;
 
-Metadata, abstracts, PDF text, filtering, verification and citations are handled by APIs and deterministic code. The embedding model only retrieves relevant passages. The LLM suggests search variants and writes answers, summaries and syntheses from those passages.
+<p align="center"><img src="https://raw.githubusercontent.com/flindenberger/pi-literature-review/main/docs/img/readme-hero.gif" width="100%" alt="Asking a question about a PDF in the browser: the answer cites its sources, and the PDF opens at the highlighted passage"></p>
 
-
-## How it works
-
-The workflow has three stages:
-
-| Stage | Command | What it does | Creates |
-|---|---|---|---|
-| Literature search | `/lit-search` | Searches arXiv, CrossRef, OpenAlex (and Semantic Scholar with an API key); filters, deduplicates, verifies, enriches and labels the records | One HTML page + JSON file per run in the store's `lit-search/` |
-| Literature selection | `/lit-selection` | Downloads the papers you ticked on the results page (legal open access only) | PDFs in a folder you choose on every download |
-| Literature synthesis | `/lit-synthesis` | Chats about one paper or builds a report across one or several papers (PDFs), with page-exact citations | HTML reports and chat protocols in the store's `lit-synthesis/` |
-
-The store is a folder next to the configuration (`~/.config/pi-literature-review/`); your PDFs stay in your own folders, which are read with all their subfolders and never written to ([details](docs/configuration.md#where-files-live)).
-
-Each command opens its wizard-dialog directly in Pi. Dialogs can be cancelled with `Esc` before anything is sent.
-
-Three ways to use it:
-
-- **in Pi, in the terminal:** `/lit-search`, `/lit-selection`, `/lit-synthesis`
-- **in Pi, in the browser:** `/pi-literature-review` starts a local web interface over the same stages, with the model selected in Pi
-- **without Pi, in the browser:** `npx pi-literature-review web` (Node.js 22.19 or newer); the writing model (Ollama, llama.cpp or any OpenAI-compatible address) is chosen under Settings
-
-See [Web interface](docs/web.md).
-
-You can also just describe the task in chat and let the agent invoke the
-same tools:
-
-```text
-I want to conduct a literature review on the use of satellite remote sensing for estimating water levels in rivers.
-```
-
-```text
-Which cameras do Blanch et al. (2026) use in their paper
-"Image-based method for real-time water level monitoring"?
-```
-
-The stages connect through the HTML-page, generated by lit-search: there you select papers, copy the download request, and paste it into the download question that `/lit-search` asks right after the results (or later into `/lit-selection`). Once downloaded, you can chat about, summarize or synthesize the papers (PDFs) by using `/lit-synthesis`.
-
+&nbsp;
 
 ## Features
 
-### Search Assistance
-
-![The /lit-search wizard: keyword blocks, query variants, filters, then the search](https://raw.githubusercontent.com/flindenberger/pi-literature-review/main/docs/img/wizard.gif)
-
-The `/lit-search`-wizard starts from user defined keyword blocks or free text. The model can suggest query variants that you can edit or select. 
-
-It can also help identify relevant journals and authors, and lets you filter the results. Each result shows which query found it and which terms matched.
-
-### HTML literature-search report
-
-![Search results: sorting, an abstract, the search documentation with the PRISMA flow diagram](https://raw.githubusercontent.com/flindenberger/pi-literature-review/main/docs/img/search-results-page.gif)
-
-Each search run produces a sortable HTML results page and a JSON file.
-
-Results include bibliographic metadata, verified DOI, BibTeX, citation and open-access metrics, and an on-target / adjacent label.
-
-The page also contains the exact database queries, raw hit counts and a PRISMA-2020-style flow diagram.
-
-### Citation graphs
-
-![Citation graph of one result: hover for details, filter by cited and citing works](https://raw.githubusercontent.com/flindenberger/pi-literature-review/main/docs/img/network-graph.gif)
-
-Each result can open a citation graph showing references, citing works and related literature.
-
-The graph is fetched from OpenAlex when opened; only the DOI or title leaves your machine.
-
-### Papers with code
-
-![Results with code links: a repository opened from the Code / data column](https://raw.githubusercontent.com/flindenberger/pi-literature-review/main/docs/img/search-code-column.gif)
-
-Optionally search for papers with code using Hugging Face Papers, GitHub READMEs, curated awesome-lists and Google Earth Engine repositories.
-
-Known repositories and data archives are shown directly in the results: links named in the abstract and archives the publisher deposited at CrossRef appear in every search, no tick needed.
-
-### Legal open-access downloads
-
-![Download selection: a paper ticked on the results page, the request pasted into Pi, the PDF downloaded](https://raw.githubusercontent.com/flindenberger/pi-literature-review/main/docs/img/search-selection-bar.gif)
-
-Select papers directly from the results page and copy a download request.
-
-`/lit-selection` resolves legal open-access routes through the publisher, Unpaywall and arXiv. Papers that cannot be downloaded are reported with the reason and a browser link.
-
-### Page-exact citations
-
-![Page-exact citation: a citation in the report opens the PDF at the highlighted passage](https://raw.githubusercontent.com/flindenberger/pi-literature-review/main/docs/img/synthesis-highlight.gif)
-
-Synthesis answers and reports cite the page containing the supporting passage.
-
-Clicking a citation opens the PDF at the relevant page and highlights the cited text.
-
-### Synthesis across a paper library
-
-![Synthesis report: the /lit-synthesis wizard, the report card, then the HTML report and a cited passage](https://raw.githubusercontent.com/flindenberger/pi-literature-review/main/docs/img/synthesis-report.gif)
-
-`/lit-synthesis` can work with one paper, several papers or an entire PDF library.
-
-It can provide per-paper summaries, answer questions about individual or multiple papers, and optionally produce a cross-paper review synthesis.
-
+- **Search papers and download them directly** — arXiv, CrossRef, OpenAlex and Semantic Scholar, verified DOIs, open-access PDFs into a folder you choose
+- **Search papers with code repositories** — code and data links on every result, plus papers found through GitHub, Hugging Face and awesome lists
+- **Search for specific authors and their work** — narrow a topic to chosen authors, or list everything they published, optionally as first author
+- **Ask questions and write summaries or synthesis reports about your PDF library** — page-exact citations, highlighted where they come from
+- **Drag and drop your PDFs** — straight into the browser and start asking
+- **Optimised for local AI models** — tested with 8–9B models on an 8 GB graphics card; search needs no model at all
+- **Citation graphs** — see what a paper builds on and who cites it
+- **PRISMA diagrams** — a reproducible search record, from query to final list
+- **No language model ever touches paper data** — titles, authors, DOIs, abstracts and citations come from the source APIs, checked and inserted by fixed code
 
 ## Install
 
-From npm:
+### As Pi coding agent extension
 
-```bash
+```sh
 pi install npm:pi-literature-review
 ```
 
-Or directly from the repository:
+In Pi, call `/pi-literature-review` for the browser interface. For the terminal version, call `/lit-search` or `/lit-synthesis`.
 
-```bash
-pi install git:github.com/flindenberger/pi-literature-review
+### As standalone
+
+To use the standalone version in your browser, run:
+
+```sh
+npx pi-literature-review web
 ```
 
-Search and selection work without a model selected in Pi.
-
-Synthesis additionally needs an embedding model. On first use, `/lit-synthesis` can offer to fetch a local Ollama model (~1.2 GB). llama.cpp and remote backends can also be configured; see [Configuration](docs/configuration.md).
-
-For tested hardware and model combinations, see [Requirements](docs/requirements.md).
-
+Needs Node.js 22.19 or newer. Searching needs no model. Chat and reports use the model selected in Pi, or Ollama, llama.cpp or any OpenAI-compatible server, plus a small embedding model the package fetches for you — see [Requirements](docs/requirements.md).
 
 ## Privacy
 
-The package uses public, login-free endpoints. Search text and paper identifiers are sent to the relevant services.
-
-Used services include:
-
-* arXiv, CrossRef, OpenAlex (and Semantic Scholar, only with an API key) for search and verification
-* Hugging Face Papers, GitHub and ecosyste.ms when code search is enabled
-* Unpaywall and the relevant publisher or repository for downloads
-* OpenAlex for citation graphs
-
-There is no account requirement, scraping or telemetry.
-
-An optional contact email (required by Unpaywall) is sent with every API request once it is set. Paper text is processed locally by the embedding server and by the model selected in Pi. With local models, the paper text stays on your machine. With a cloud model or remote backend, excerpts are sent to that provider.
-
-Check the papers' licenses and your institution's rules before using a remote model. See [Configuration](docs/configuration.md).
+No account, no telemetry. Search terms and paper identifiers go to the public scholarly APIs. PDF text goes only to your own embedding and chat models; with a remote model, excerpts go to that provider.
 
 ## Documentation
 
-| Document                                     | Purpose                             |
-| -------------------------------------------- | ----------------------------------- |
-| [Requirements](docs/requirements.md)         | Hardware, models and prerequisites  |
-| [Search](docs/search.md)                     | Search wizard, pipeline and results |
-| [Selection](docs/selection.md)               | PDF downloads and resolution        |
-| [Synthesis](docs/synthesis.md)               | Indexing, chat and reports          |
-| [Configuration](docs/configuration.md)       | Optional backends, models and keys  |
-| [Web interface](docs/web.md)                 | The stages as a chat in the browser |
-| [Command line](docs/cli.md)                  | Use without the Pi agent            |
-| [Development and tests](docs/development.md) | Development, testing and releases   |
+[Requirements](docs/requirements.md) · [Search & selection](docs/search.md) · [Summary & synthesis](docs/synthesis.md) · [Browser](docs/web.md) · [Configuration](docs/configuration.md) · [Command line](docs/cli.md) · [Development](docs/development.md)
 
-## Limits
+## How to cite
 
-* Search runs on titles, abstracts and metadata; OpenAlex also matches full text where it has it. The on_target label only looks at title and abstract.
-* Scopus, Web of Science and Sci-Hub are not used.
-* Short result lists are not padded: if a query finds two papers, it returns two.
-* Source metadata is passed through as delivered, including broken characters.
-* Windows and macOS paths are implemented but currently untested.
+If the package supports your work, please cite it:
 
-## Status
+> Lindenberger, F. (2026). *pi-literature-review* (Version 0.2.0) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.22954995
 
-Version 0.1.1.
-
-Developed and field-tested on Linux. See [Requirements](docs/requirements.md).
+The DOI always resolves to the latest version. BibTeX and other formats: [`CITATION.cff`](CITATION.cff) or "Cite this repository" in the sidebar of this page.
 
 ## Contributing
 
-This package grew out of the collaborative research project *Satellite Remote Sensing and Field Data Fusion for Hydraulic Engineering*, involving [BAW](https://www.baw.de), [UPC](https://www.upc.edu/ca) and [TU Dresden](https://tu-dresden.de/?set_language=en). 
+Questions, bug reports and pull requests are welcome — open an [issue](https://github.com/flindenberger/pi-literature-review/issues); [CONTRIBUTING.md](CONTRIBUTING.md) says what helps. Please report security problems privately, as described in [SECURITY.md](SECURITY.md).
 
-This extension was developed with substantial help from the Claude Code coding agent. It was used for code and test generation, refactoring, debugging against live APIs, comparing implementation approaches, discussing design decisions and writing documentation. The maintainer made the design decisions and critically tested generated changes. Generated documentation was proofread and corrected where necessary.
+## About
 
-How to ask questions, report bugs, propose changes or fork the project: see [CONTRIBUTING.md](CONTRIBUTING.md). Security problems: see [SECURITY.md](SECURITY.md).
+Developed in the research project *Satellite Remote Sensing and Field Data Fusion for Hydraulic Engineering* ([BAW](https://www.baw.de), [UPC](https://www.upc.edu/ca), [TU Dresden](https://tu-dresden.de/?set_language=en)). The multi-source search was inspired by [paper-search-mcp](https://github.com/openags/paper-search-mcp) (MIT). The synthesis stage can use [OpenScholar-8B](https://github.com/akariasai/openscholar) (Asai et al., 2024, [arXiv:2411.14199](https://arxiv.org/abs/2411.14199)) as its writing model; the package was first built around it.
 
+**Use of AI.** Developed using Claude Code as a development tool (code, tests, documentation). The maintainer made the design decisions and tested the changes.
 
-
-## License and attribution
-
-MIT — see [LICENSE](LICENSE). If this package supports your academic work, please cite it using [`CITATION.cff`](CITATION.cff) or the Zenodo DOI [10.5281/zenodo.22954995](https://doi.org/10.5281/zenodo.22954995). GitHub also provides APA and BibTeX entries under **Cite this repository**.
-
-The package started from the wish to use [OpenScholar](https://github.com/akariasai/openscholar) (Asai et al., 2024, [arXiv:2411.14199](https://arxiv.org/abs/2411.14199)) on local PDFs.
-
-The multi-source search design was inspired by [paper-search-mcp](https://github.com/openags/paper-search-mcp), released under MIT by OPENAGS. 
-
-
-
+**License.** MIT — see [LICENSE](LICENSE).
