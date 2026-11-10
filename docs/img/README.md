@@ -31,6 +31,6 @@ Referenced from README.md and docs/*.md by these names:
 | `synthesis-report.gif` | The /lit-synthesis wizard, the model run (sped up), the report card with page links, then the HTML report and a cited passage in the PDF | README up to 0.1.1 (keep: the published npm README still links it) |
 | `logo.png`, `logo-dark.png` | The logo (white italic pi on a dark disc) with the package name; light and dark theme, 660 x 112 (2x), rendered from SVG so the font does not depend on the reader's system | README (title) |
 | `try-it.png`, `try-it-dark.png` | The "Try it in your browser" button for the live demo; light and dark theme, 544 x 96 (2x) | README |
-| `readme-hero.gif` | Browser paper chat: a paper opened, a question asked, the answer with citation marks, the PDF at the highlighted passage, then a close-up; 768 px, about 21 s | README (under the lead sentence) |
+| `readme-hero.gif` | Browser: a search with result cards, an abstract and an author window, then a paper opened, a question asked, the answer with citation marks and the PDF at the highlighted passage; 1000 px, 12 fps, about 34 s | README (under the lead sentence) |
 | `gallery.gif` | Gallery preview for pi.dev/packages (`pi.image` in package.json): title, the three stages, the citation graph animated; 1200 x 750, 128 colours, built from `network-graph.gif` in `design/2026-09-28_gallery_vorschau_entwuerfe/` | package.json (not the README) |
 | `synthesis-chat-card.png` (optional, not taken yet) | A grounded chat answer card with reference lines and the yellow paper-chat mode line | -- |

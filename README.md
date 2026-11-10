@@ -14,7 +14,7 @@ A local, open, login-free literature tool as an extension for the [Pi coding age
 
 &nbsp;
 
-<p align="center"><img src="https://raw.githubusercontent.com/flindenberger/pi-literature-review/main/docs/img/readme-hero.gif" width="100%" alt="Asking a question about a PDF in the browser: the answer cites its sources, and the PDF opens at the highlighted passage"></p>
+<p align="center"><img src="https://raw.githubusercontent.com/flindenberger/pi-literature-review/main/docs/img/readme-hero.gif" width="100%" alt="In the browser: a literature search lists result cards with abstracts and author details, then a question to one of the PDFs is answered with citations, and the PDF opens at the highlighted passage"></p>
 
 &nbsp;
 
