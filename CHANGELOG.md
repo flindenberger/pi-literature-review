@@ -4,6 +4,15 @@ All notable changes to this package are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- PRISMA diagram viewer in the browser loads only diagram files from its
+  own server; other addresses in the link are ignored.
+- Typed number lists ("1, 3, 7") are parsed without slowing down on very
+  long input.
+
 ## [0.2.0] - 2026-11-09
 
 ### Added
