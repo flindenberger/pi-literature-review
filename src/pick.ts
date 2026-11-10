@@ -75,7 +75,7 @@ export function parsePickAnswer(text: string, candidates: Candidate[]): PickAnsw
 	if (/^(all|all on-target|everything)$/.test(lower)) return { kind: "all" };
 	if (/^(code|with code|papers with code)$/.test(lower)) return { kind: "code" };
 	const results = candidates.filter((candidate) => !candidate.dropped);
-	if (/^\d+(\s*[,;\s]\s*\d+)*$/.test(t)) {
+	if (/^\d+(?:[\s,;]+\d+)*$/.test(t)) {
 		const ids = [...new Set(t.split(/[^\d]+/).filter(Boolean).map(Number))]
 			.filter((n) => n >= 1 && n <= results.length)
 			.map((n) => results[n - 1].id);

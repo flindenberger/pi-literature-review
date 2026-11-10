@@ -429,7 +429,7 @@ export function parseListAnswer(text: string, labels: string[]): ListAnswer {
 	const t = text.trim().toLowerCase();
 	if (!t) return { kind: "none" };
 	if (/^(all|every|everything|no filter|any)$/.test(t)) return { kind: "all" };
-	if (/^\d+(\s*[,;\s]\s*\d+)*$/.test(t)) {
+	if (/^\d+(?:[\s,;]+\d+)*$/.test(t)) {
 		const indexes = [...new Set(t.split(/[^\d]+/).filter(Boolean).map(Number))]
 			.filter((n) => n >= 1 && n <= labels.length)
 			.map((n) => n - 1);

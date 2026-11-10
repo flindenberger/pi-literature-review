@@ -39,7 +39,18 @@
 "use strict";
 (function () {
 	var params = new URLSearchParams(location.search);
-	var file = params.get("file") || "";
+	// Only a diagram file served by this page's own server is loaded: a
+	// foreign address or a javascript: link in ?file= is ignored.
+	var file = (function (raw) {
+		try {
+			var url = new URL(raw, location.href);
+			if (url.origin !== location.origin) return "";
+			if (!/\/files\/.+\.prisma\.svg$/i.test(url.pathname)) return "";
+			return url.pathname + url.search;
+		} catch (error) {
+			return "";
+		}
+	})(params.get("file") || "");
 	var name = decodeURIComponent(file.split("/").pop() || "flow.prisma.svg").replace(/[?#].*$/, "");
 	var run = name.replace(/\.prisma\.svg$/, "");
 	var svgText = "";
@@ -50,7 +61,7 @@
 	document.getElementById("dl-svg").href = file;
 	document.getElementById("dl-svg").setAttribute("download", name);
 
-	fetch(file).then(function (r) {
+	(file ? fetch(file) : Promise.reject(new Error("no diagram file given"))).then(function (r) {
 		if (!r.ok) throw new Error("the diagram could not be loaded (HTTP " + r.status + ")");
 		return r.text();
 	}).then(function (text) {
