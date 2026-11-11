@@ -127,7 +127,7 @@ Fixed code, no model:
 9. **Filters** (period, citations, journal score, journals, authors, PDF, verified), optional sort, then **labeling**.
 10. **Links and access**, for both tables:
     - code link named in the abstract (GitHub, GitLab, Bitbucket, Codeberg, Hugging Face, Zenodo, OSF);
-    - data links from the DOI registry record to a known archive (Zenodo, PANGAEA, Mendeley Data, Dryad, figshare, Dataverse, HydroShare, OSF, Eawag, GitHub, GitLab): CrossRef relations `is-supplemented-by`, `is-part-of`, `references` (40 DOIs per request, started right after deduplication); DOIs CrossRef does not hold go to DataCite (`IsSupplementTo`, `IsSupplementedBy`, `References`; 25 DOIs per request);
+    - data links from the DOI registry record to a known archive (Zenodo, PANGAEA, Mendeley Data, Dryad, figshare, Dataverse, HydroShare, OSF, Eawag, GitHub, GitLab): CrossRef relations `is-supplemented-by`, `is-part-of`, `references` (100 DOIs per request, started right after deduplication); DOIs CrossRef does not hold go to DataCite (`IsSupplementTo`, `IsSupplementedBy`, `References`; 25 DOIs per request);
     - access status from OpenAlex by DOI (50 DOIs per request): `access` (`level`, `oa_status`, `pdf_urls`, `work_type`, `source_type`) and `access_counts` in the JSON.
 
 Every removed record stays in the dropped table with its reason. A failed source is listed while the run continues.

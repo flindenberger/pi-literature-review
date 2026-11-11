@@ -24,6 +24,9 @@ All notable changes to this package are listed here. The format follows
 
 - Browser interface and live demo on phones: one column, the rail is a
   drawer behind a menu button, closed at start; no sideways scrolling.
+- Data and code archive lookup at CrossRef asks for 100 DOIs per request
+  instead of 40: a search with 200 records spends about 8 s there instead
+  of about 19 s.
 - Gallery image on pi.dev is a static PNG (`docs/img/gallery.png`).
 
 ## [0.2.0] - 2026-11-09

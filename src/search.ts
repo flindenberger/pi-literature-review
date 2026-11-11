@@ -451,7 +451,7 @@ export async function runSearch(options: SearchOptions) {
 		const combined = [...grouped, ...droppedEntries.map((entry) => entry.record)] as typeof grouped;
 		// Code links named in the abstracts (no request), then the data and
 		// code archives the publishers deposited at CrossRef (one batched
-		// request per 40 DOIs) -- both on every search, for kept AND dropped
+		// request per 100 DOIs) -- both on every search, for kept AND dropped
 		// rows.
 		const linked = addCodeLinks(combined, warn);
 		aborted();

@@ -519,7 +519,7 @@ export function addCodeLinks<T extends EnrichableRecord & { abstract?: string }>
 /**
  * Attach the data and code archives the publisher linked to each paper in
  * its CrossRef record (field data_links, provider "crossref" in
- * `enriched`). One batched request per 40 DOIs, on every search; records
+ * `enriched`). One batched request per 100 DOIs, on every search; records
  * without a DOI, or whose DOI CrossRef does not hold, stay unchanged. A
  * failed lookup leaves all records unchanged, with a warning. Maps its
  * input 1:1 (same length, same order); the lookup is injectable for tests.

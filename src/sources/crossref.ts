@@ -213,12 +213,14 @@ export function dataLinksFromRelation(relation: unknown): DataLink[] {
 	return links;
 }
 
-/** DOIs per relation lookup; 40 keeps the filter URL short. */
-const RELATION_BATCH_SIZE = 40;
+/** DOIs per relation lookup. CrossRef answers 40 or 100 DOIs in about
+ * the same 2-3 s and its public pool allows one request at a time, so
+ * larger batches mean fewer waits; 100 keeps the URL near 4 kB. */
+const RELATION_BATCH_SIZE = 100;
 
 /**
  * Data and code links for a list of DOIs, keyed by lower-case DOI. One
- * batched request per 40 DOIs (filter doi:a,doi:b,..., only the DOI and
+ * batched request per 100 DOIs (filter doi:a,doi:b,..., only the DOI and
  * relation fields), through the paced CrossRef client. DOIs CrossRef does
  * not hold (arXiv's DataCite DOIs, for example) are simply absent from the
  * answer; DOIs containing a comma are skipped because the filter syntax
