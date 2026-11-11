@@ -18,7 +18,7 @@ All notable changes to this package are listed here. The format follows
   read now, and a looked-up record is accepted only when its title is
   printed on the PDF's first pages.
 - The start page no longer shows an empty input box for a moment while
-  the page loads.
+  the page loads; a pulsing pi mark shows that it is loading.
 
 ### Changed
 

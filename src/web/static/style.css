@@ -138,6 +138,13 @@ button.primary:hover { background: #000000; }
 .hero .tile:hover svg { color: var(--accent); }
 .hero .tile:disabled { opacity: 0.45; cursor: default; }
 .hero .tile:disabled:hover { background: transparent; border-color: transparent; }
+/* Start of the page (index.html): the invisible start-screen copy keeps
+   only its pi mark visible; it starts to pulse after 0.4 s, from full
+   strength, so a fast load shows the still mark only. */
+.hero.boot h1, .hero.boot .tiles { visibility: hidden; }
+.hero.boot .hero-mark { animation: boot-pulse 1.4s ease-in-out 0.4s infinite; }
+@keyframes boot-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+@media (prefers-reduced-motion: reduce) { .hero.boot .hero-mark { animation: none; } }
 .hero .tile:disabled:hover svg { color: #6b6b6b; }
 /* Info popover in the rail: where the data goes, the sources. */
 .rail .links { position: relative; }

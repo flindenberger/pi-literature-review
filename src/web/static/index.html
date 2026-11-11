@@ -73,7 +73,15 @@
   <div class="rail-backdrop" id="rail-backdrop" aria-hidden="true"></div>
   <section class="chat booting">
     <button type="button" class="rail-toggle" id="btn-rail" aria-label="Menu" aria-controls="rail" aria-expanded="false" title="Menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
-    <div class="thread" id="thread"></div>
+    <!-- While the page starts: an invisible copy of the start screen
+         (app.js heroHtml, same lines and tiles) holds the pi mark exactly
+         where the real start screen puts it; the mark pulses after a short
+         wait. The first render replaces it. Keep in step with heroHtml. -->
+    <div class="thread" id="thread"><div class="hero boot" aria-hidden="true">
+<div class="hero-mark"><svg viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="currentColor"/><text x="15.72" y="22" text-anchor="middle" font-family="Georgia,serif" font-weight="700" font-style="italic" font-size="22" fill="#fff">&pi;</text></svg></div>
+<h1><span>Search the literature.</span><span>Select the papers.</span><span>Summarize and synthesize.</span><span class="typed">Streamlined for local AI models</span></h1>
+<div class="tiles"><span class="tile"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10.5" cy="10.5" r="6.5"/></svg><span>search &amp; select</span></span><span class="tile"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M7 3h8"/></svg><span>summarize &amp; synthesize</span></span></div>
+</div></div>
     <div class="composer-wrap">
       <form class="composer" id="composer" autocomplete="off">
         <input id="input" type="text" placeholder="Type your answer or question ..." autocomplete="off">

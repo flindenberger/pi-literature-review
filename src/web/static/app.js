@@ -947,7 +947,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		document.querySelector(".chat").classList.remove("booting");
 		// A fresh start screen is not rebuilt while it is already showing
 		// (dialog frames arrive during the build-up; a rebuild would restart it).
-		if (fresh && thread.querySelector(".hero")) { renderStages(view); return; }
+		if (fresh && thread.querySelector(".hero:not(.boot)")) { renderStages(view); return; }
 		// Stage 1 after a search is a results page, not a chat: the newest list
 		// stands alone (a running search above it); download, contact and
 		// edited blocks run in a window over it; the input box is away. The
