@@ -4,7 +4,7 @@
  */
 
 import assert from "node:assert/strict";
-import { type AdoptDeps, adoptUnmatched, findIdentifier } from "./adopt.ts";
+import { type AdoptDeps, adoptUnmatched, findIdentifier, titleOnPages } from "./adopt.ts";
 import type { SidecarEntry } from "./selection.ts";
 
 /* ---------------- findIdentifier ---------------- */
@@ -34,6 +34,28 @@ import type { SidecarEntry } from "./selection.ts";
 	assert.equal(findIdentifier(["clean", "clean", "10.1234/from-the-references"]), null);
 	assert.equal(findIdentifier(["no identifiers here at all"]), null);
 	assert.equal(findIdentifier([]), null);
+	// Older Elsevier DOIs carry parentheses; the whole DOI is kept.
+	assert.deepEqual(
+		findIdentifier(["Journal of Hydrology 278 (2003) 17-38 doi:10.1016/S0022-1694(03)00129-X"]),
+		{ kind: "doi", id: "10.1016/S0022-1694(03)00129-X" },
+	);
+	// A DOI printed inside parentheses keeps the closing bracket out.
+	assert.deepEqual(
+		findIdentifier(["(https://doi.org/10.1029/2020WR027786)."]),
+		{ kind: "doi", id: "10.1029/2020WR027786" },
+	);
+}
+
+/* ---------------- titleOnPages ---------------- */
+{
+	const pages = ["Evaluating the potential for measuring river dis-\ncharge from space David M. Bjerklie"];
+	assert.equal(titleOnPages("Evaluating the potential for measuring river discharge from space", pages), true);
+	assert.equal(titleOnPages("Chemical denudation and silicate weathering in Himalayan glacier basins", pages), false);
+	// Most words present (formula in the title broke the exact match).
+	assert.equal(titleOnPages("Evaluating the potential for measuring river discharge (Q) from space", pages), true);
+	assert.equal(titleOnPages("", pages), false);
+	// Page 3+ is not used for the check either.
+	assert.equal(titleOnPages("Hidden title", ["a", "b", "Hidden title"]), false);
 }
 
 /* ---------------- adoptUnmatched ---------------- */
@@ -63,8 +85,8 @@ function makeDeps(pageByFile: Record<string, string[]>, overrides: Partial<Adopt
 // Success paths: DOI and arXiv PDFs both gain twins next to the PDF.
 {
 	const { deps, twins } = makeDeps({
-		"/lib/vistula.pdf": ["header https://doi.org/10.3390/rs13081505"],
-		"/lib/amazon.pdf": ["arXiv:2401.16393v1 [cs.CV]"],
+		"/lib/vistula.pdf": ["header https://doi.org/10.3390/rs13081505 Application of Satellite Sentinel-2 Images"],
+		"/lib/amazon.pdf": ["arXiv:2401.16393v1 [cs.CV] Amazon drought"],
 	});
 	const progress: string[] = [];
 	const results = await adoptUnmatched(["vistula.pdf", "amazon.pdf"], "/lib", deps, (m) => progress.push(m));
@@ -98,6 +120,16 @@ function makeDeps(pageByFile: Record<string, string[]>, overrides: Partial<Adopt
 	const results = await adoptUnmatched(["broken.pdf"], "/lib", deps);
 	assert.equal(results[0].status, "no_identifier");
 	assert.ok(results[0].detail.includes("bad xref"));
+	assert.equal(twins.length, 0);
+}
+
+// A record whose title is not printed in the PDF is refused (an
+// identifier that resolved to another work).
+{
+	const { deps, twins } = makeDeps({ "/lib/other.pdf": ["doi 10.3390/rs13081505 Some other paper entirely"] });
+	const results = await adoptUnmatched(["other.pdf"], "/lib", deps);
+	assert.equal(results[0].status, "lookup_failed");
+	assert.ok(results[0].detail.includes("not printed in this PDF"));
 	assert.equal(twins.length, 0);
 }
 

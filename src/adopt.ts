@@ -8,8 +8,9 @@
  *   1. extract the identifier by fixed pattern from the first pages
  *      (no guessing, no fuzzy matching, no LLM),
  *   2. look the identifier up at the open APIs (OpenAlex for DOIs, the
- *      arXiv API for arXiv IDs) -- a successful by-identifier lookup is the
- *      verification: the API resolved exactly this identity,
+ *      arXiv API for arXiv IDs) and accept the record only when its title
+ *      is printed on the same pages -- lookup plus title check is the
+ *      verification,
  *   3. write the metadata twin (same format the selection stage writes) into
  *      the store (library.ts: never into the user's folder), so the library
  *      matcher picks the paper up like any fetched one.
@@ -39,6 +40,12 @@ export interface FoundIdentifier {
 	id: string;
 }
 
+/** DOI pattern: suffix characters up to whitespace or a bracket, plus
+ * balanced parenthesised parts, as in older Elsevier DOIs
+ * ("10.1016/S0022-1694(03)00129-X"). An unbalanced ")" ends the DOI, so a
+ * DOI printed inside parentheses keeps its own closing bracket out. */
+const DOI_PATTERN = /\b(10\.\d{4,9}\/(?:[^\s"<>()[\]{}]|\([^\s"<>()[\]{}]*\))+)/;
+
 /**
  * Fixed-pattern identifier scan over the first pages. Priority per page:
  * the arXiv watermark first (it is unambiguously the paper's OWN id),
@@ -49,10 +56,37 @@ export function findIdentifier(pages: string[]): FoundIdentifier | null {
 	for (const page of pages.slice(0, SCAN_PAGES)) {
 		const arxiv = page.match(/arXiv:\s*(\d{4}\.\d{4,5}(?:v\d+)?)/i);
 		if (arxiv) return { kind: "arxiv", id: arxiv[1] };
-		const doi = page.match(/\b(10\.\d{4,9}\/[^\s"<>()[\]{}]+)/);
+		const doi = page.match(DOI_PATTERN);
 		if (doi) return { kind: "doi", id: doi[1].replace(/[.,;:]+$/, "") };
 	}
 	return null;
+}
+
+/** Lowercase letters and digits only, accents folded: line breaks,
+ * hyphenation and punctuation in the PDF text drop out. */
+function compact(text: string): string {
+	return text.normalize("NFKD").replace(/\p{M}/gu, "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+}
+
+/** Share of the title's words (4+ letters) that must occur in the page
+ * text when the whole title is not found in one piece (formulas,
+ * sub- and superscripts, ligatures break the exact match). */
+const TITLE_WORD_SHARE = 0.8;
+
+/**
+ * Cross-check of a lookup: the record's title must be printed on the
+ * scanned pages. Guards against an identifier that resolved to a
+ * different work (a cut-off DOI, a DOI of a cited paper in the header).
+ */
+export function titleOnPages(title: string, pages: string[]): boolean {
+	const text = compact(pages.slice(0, SCAN_PAGES).join(" "));
+	const whole = compact(title);
+	if (!whole || !text) return false;
+	if (text.includes(whole)) return true;
+	const words = title.split(/[^\p{L}\p{N}]+/u).map(compact).filter((word) => word.length >= 4);
+	if (words.length < 3) return false;
+	const hits = words.filter((word) => text.includes(word)).length;
+	return hits / words.length >= TITLE_WORD_SHARE;
 }
 
 export interface AdoptDeps {
@@ -87,8 +121,10 @@ export async function adoptUnmatched(
 		if (signal?.aborted) throw new Error("adoption aborted by the user");
 		const path = join(papersDir, file);
 		let found: FoundIdentifier | null = null;
+		let pages: string[] = [];
 		try {
-			found = findIdentifier(await deps.extract(deps.readPdf(path)));
+			pages = await deps.extract(deps.readPdf(path));
+			found = findIdentifier(pages);
 		} catch (error) {
 			results.push({
 				file,
@@ -125,6 +161,14 @@ export async function adoptUnmatched(
 				file,
 				status: "lookup_failed",
 				detail: `${found.id} is not known to the ${found.kind === "doi" ? "OpenAlex" : "arXiv"} API`,
+			});
+			continue;
+		}
+		if (!titleOnPages(entry.title, pages)) {
+			results.push({
+				file,
+				status: "lookup_failed",
+				detail: `${found.id} resolved to "${entry.title}", a title not printed in this PDF`,
 			});
 			continue;
 		}

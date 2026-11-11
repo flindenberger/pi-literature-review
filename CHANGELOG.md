@@ -12,6 +12,15 @@ All notable changes to this package are listed here. The format follows
   own server; other addresses in the link are ignored.
 - Typed number lists ("1, 3, 7") are parsed without slowing down on very
   long input.
+- A library PDF whose first page prints an older Elsevier DOI with
+  parentheses (e.g. `10.1016/S0022-1694(03)00129-X`) was matched to the
+  wrong paper: the DOI was cut at the first parenthesis. The whole DOI is
+  read now, and a looked-up record is accepted only when its title is
+  printed on the PDF's first pages.
+
+### Changed
+
+- Gallery image on pi.dev is a static PNG (`docs/img/gallery.png`).
 
 ## [0.2.0] - 2026-11-09
 

@@ -48,7 +48,7 @@
     "extensions": [
       "./index.ts"
     ],
-    "image": "https://raw.githubusercontent.com/flindenberger/pi-literature-review/main/docs/img/gallery.gif"
+    "image": "https://raw.githubusercontent.com/flindenberger/pi-literature-review/main/docs/img/gallery.png"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",

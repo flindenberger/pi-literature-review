@@ -26,7 +26,8 @@ A PDF without metadata (no twin from a download) gets an adoption attempt:
 
 - its own DOI or arXiv ID is read by fixed pattern from the first two pages,
 - the ID is looked up at OpenAlex (DOI) or the arXiv API (arXiv ID),
-- a successful lookup writes the metadata twin into the store's `meta/`.
+- the record found is accepted only when its title is printed on those pages (guards against a DOI that resolved to another work),
+- an accepted record writes the metadata twin into the store's `meta/`.
 
 Only the PDFs of the current chat or report scope are tried; a whole-library scope tries every unmatched PDF. A PDF that stays unverified is cited by file name and page.
 
