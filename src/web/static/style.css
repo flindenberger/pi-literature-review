@@ -385,6 +385,24 @@ dialog .row { display: flex; gap: 0.6rem; justify-content: flex-end; margin-top:
   .shell:not(.no-report) .report { position: fixed; inset: 2.2rem 1rem; z-index: 30; border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 12px 40px rgba(0,0,0,0.25); }
 }
 
+/* Narrow screens (phones, small tablets): one column. The rail becomes a
+   drawer from the left, closed at start, opened by the menu button
+   (#btn-rail) and closed by the backdrop or by choosing an entry in it. */
+.rail-toggle, .rail-backdrop { display: none; }
+@media (max-width: 48rem) {
+  .shell, .shell.no-report { grid-template-columns: minmax(0, 1fr) 0; height: 100dvh; }
+  .rail-resize { display: none; }
+  .rail { position: fixed; top: 0; bottom: 0; left: 0; width: min(18rem, 85vw); z-index: 40; transform: translateX(-100%); transition: transform 0.2s ease; visibility: hidden; }
+  .shell.rail-open .rail { transform: none; visibility: visible; box-shadow: 0 0 40px rgba(0, 0, 0, 0.25); }
+  .shell.rail-open .rail-backdrop { display: block; position: fixed; inset: 0; z-index: 35; background: rgba(0, 0, 0, 0.3); }
+  .rail-toggle { display: inline-flex; align-items: center; justify-content: center; position: fixed; top: 0.6rem; left: 0.6rem; z-index: 20; width: 2.4rem; height: 2.4rem; padding: 0; border: 1px solid var(--line); border-radius: 8px; background: rgba(255, 255, 255, 0.92); color: var(--ink); cursor: pointer; }
+  .rail-toggle svg { width: 1.3rem; height: 1.3rem; }
+  .chat { border-right: 0; }
+  .thread { padding: 3.4rem 0.9rem 0.5rem; }
+  .composer-wrap { padding: 0.5rem 0.7rem 0.8rem; }
+  .shell:not(.no-report) .report { inset: 0; border: 0; border-radius: 0; z-index: 45; }
+}
+
 /* Result cards of a search run (app.js resultsHtml): header with counters,
    filter funnel and sort; the searched blocks; the filter panel; the
    cards; the action bar (download, add-on, reports from the list). */
@@ -479,7 +497,7 @@ dialog.modal .regen:disabled { opacity: 0.5; cursor: default; }
 .results .ractions .lbl { font-size: 0.75rem; color: var(--muted); }
 
 /* Results view (stage 1 after a search): the list is the page, the input box is away. */
-.chat.resultsview .composer-wrap, .chat.startscreen .composer-wrap { display: none; }
+.chat.resultsview .composer-wrap, .chat.startscreen .composer-wrap, .chat.booting .composer-wrap { display: none; }
 .chat.resultsview .thread { padding-bottom: 1.2rem; }
 /* The window over the list (download, contact email, keyword blocks). */
 dialog.modal { width: min(32rem, 92vw); padding: 1.1rem 1.3rem 1rem; }

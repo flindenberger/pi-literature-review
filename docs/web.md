@@ -39,6 +39,7 @@ Models in detail: [Requirements](requirements.md). How the installed command run
 
 - Every page load opens a new conversation on the start screen. The previous one stays in History; a running job keeps running in it.
 - The package name in the rail also returns to the start screen.
+- Narrow screens (48 rem and less, phones): one column. The rail is a drawer from the left, closed at start, opened by the menu button top left; choosing an entry or tapping beside it closes it. The panel covers the whole screen.
 - Status line: model, embeddings and thinking levels. A local model or embedding server that does not answer shows a red dot (probed on every state read).
 
 ## Start screen

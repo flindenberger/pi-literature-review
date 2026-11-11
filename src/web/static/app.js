@@ -944,6 +944,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		document.querySelector(".chat").classList.toggle("entry", entry);
 		// The start screen offers the two tiles only; no input box.
 		document.querySelector(".chat").classList.toggle("startscreen", fresh);
+		document.querySelector(".chat").classList.remove("booting");
 		// A fresh start screen is not rebuilt while it is already showing
 		// (dialog frames arrive during the build-up; a rebuild would restart it).
 		if (fresh && thread.querySelector(".hero")) { renderStages(view); return; }
@@ -3357,6 +3358,22 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	});
 	$("input").addEventListener("pointerdown", dismissEntryTyping);
 	$("input").addEventListener("keydown", dismissEntryTyping);
+	/* Narrow screens: the rail is a drawer (style.css), closed at start. */
+	const NARROW = window.matchMedia("(max-width: 48rem)");
+	const setRail = (open) => {
+		shell.classList.toggle("rail-open", open);
+		$("btn-rail").setAttribute("aria-expanded", String(open));
+	};
+	$("btn-rail").addEventListener("click", () => setRail(!shell.classList.contains("rail-open")));
+	$("rail-backdrop").addEventListener("click", () => setRail(false));
+	// Choosing an entry closes the drawer; ticks, trash and info buttons keep it open.
+	$("rail").addEventListener("click", (event) => {
+		if (!NARROW.matches) return;
+		const target = event.target;
+		if (target.closest(".tickhit, .trash, [data-info], [data-reveal], [data-unlink]")) return;
+		if (target.closest("a.item, #btn-new-search, #btn-new-chat, #brand-home")) setRail(false);
+	});
+	NARROW.addEventListener("change", () => setRail(false));
 	$("btn-new-search").addEventListener("click", () => startNew("search"));
 	$("btn-new-chat").addEventListener("click", () => startNew("synthesis"));
 	// The package name returns to the start screen (a new conversation; the current one stays in History).

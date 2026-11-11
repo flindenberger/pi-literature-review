@@ -17,9 +17,13 @@ All notable changes to this package are listed here. The format follows
   wrong paper: the DOI was cut at the first parenthesis. The whole DOI is
   read now, and a looked-up record is accepted only when its title is
   printed on the PDF's first pages.
+- The start page no longer shows an empty input box for a moment while
+  the page loads.
 
 ### Changed
 
+- Browser interface and live demo on phones: one column, the rail is a
+  drawer behind a menu button, closed at start; no sideways scrolling.
 - Gallery image on pi.dev is a static PNG (`docs/img/gallery.png`).
 
 ## [0.2.0] - 2026-11-09

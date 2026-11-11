@@ -11,7 +11,7 @@
 
 <div class="shell no-report" id="shell">
   <div class="rail-resize" id="rail-resize" title="Drag to change the width" aria-hidden="true"></div>
-  <aside class="rail">
+  <aside class="rail" id="rail">
     <!-- Two marks: inside pi the three-colour logo from pi.dev/press-kit
          (logo.svg, inlined, links to pi.dev); everywhere (for now) the same mark as the favicon: a white bold
          italic serif pi on a dark disc, the glyph placed by its measured ink
@@ -66,7 +66,13 @@
     </div>
   </aside>
 
-  <section class="chat">
+  <!-- "booting" hides the input box until the first dialog state is
+       drawn (app.js render), so the start screen does not flash a chat box. -->
+  <!-- Narrow screens: the rail is a drawer, closed at start; this button
+       opens it, the backdrop closes it (style.css, app.js). -->
+  <div class="rail-backdrop" id="rail-backdrop" aria-hidden="true"></div>
+  <section class="chat booting">
+    <button type="button" class="rail-toggle" id="btn-rail" aria-label="Menu" aria-controls="rail" aria-expanded="false" title="Menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
     <div class="thread" id="thread"></div>
     <div class="composer-wrap">
       <form class="composer" id="composer" autocomplete="off">
