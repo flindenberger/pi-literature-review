@@ -6,6 +6,8 @@ All notable changes to this package are listed here. The format follows
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-11
+
 ### Fixed
 
 - PRISMA diagram viewer in the browser loads only diagram files from its
@@ -141,7 +143,8 @@ in the Pi coding agent.
   per-paper summaries, detail questions and an optional review synthesis.
 - Command line for all three stages without Pi.
 
-[Unreleased]: https://github.com/flindenberger/pi-literature-review/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/flindenberger/pi-literature-review/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/flindenberger/pi-literature-review/releases/tag/v0.2.1
 [0.2.0]: https://github.com/flindenberger/pi-literature-review/releases/tag/v0.2.0
 [0.1.1]: https://github.com/flindenberger/pi-literature-review/releases/tag/v0.1.1
 [0.1.0]: https://github.com/flindenberger/pi-literature-review/releases/tag/v0.1.0

@@ -1,6 +1,6 @@
 {
   "name": "pi-literature-review",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Local, open, login-free academic literature tool for Pi or the browser: search paper databases plus code repositories, citation graphs, PRISMA diagrams, answers over your PDFs with page-exact citations. Optimised for local AI models.",
   "type": "module",
   "license": "MIT",
