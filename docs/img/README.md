@@ -33,5 +33,4 @@ Referenced from README.md and docs/*.md by these names:
 | `try-it.png`, `try-it-dark.png` | The "Try it in your browser" button for the live demo; light and dark theme, 544 x 96 (2x) | README |
 | `readme-hero.gif` | Browser: a search with result cards, an abstract and an author window, then a paper opened, a question asked, the answer with citation marks and the PDF at the highlighted passage; 1000 px, 12 fps, about 34 s | README (under the lead sentence) |
 | `gallery.png` | Gallery preview for pi.dev/packages (`pi.image` in package.json): pi mark + package name on pi.dev's light background; 480 x 300, static; built from `design/2026-11-08_galeriebild_entwuerfe/quelle/g1b-marke-pidev-480.html` | package.json (not the README) |
-| `gallery.gif` | Same image as an earlier gallery preview; still loaded by the published 0.2.0 from `main`, delete once a release with `gallery.png` is on npm | package.json of 0.2.0 |
 | `synthesis-chat-card.png` (optional, not taken yet) | A grounded chat answer card with reference lines and the yellow paper-chat mode line | -- |
