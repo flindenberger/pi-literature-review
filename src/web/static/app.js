@@ -3854,7 +3854,12 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	/** The demo's paper chat takes the recorded questions only: the box is
 	 * greyed and read-only, its placeholder points to the installation. */
 	function demoChatLocked() {
-		return Boolean(demoQuestions() && state.chatMenu && state.dialog && state.dialog.stage && state.dialog.stage.stage === 2);
+		return Boolean(demoQuestions() && demoPaperChat() && state.dialog.stage && state.dialog.stage.stage === 2);
+	}
+	/** A paper chat of the demo: the library chat (its "+" box) or the chat
+	 * on one PDF that a click on a paper in the library opens. */
+	function demoPaperChat() {
+		return Boolean(state.dialog && (state.chatMenu || (onePdfChat() && ["ask", "finished", "answering", "reporting"].includes(state.dialog.step))));
 	}
 	const DEMO_LOCKED_PLACEHOLDER = "Install pi-literature-review to ask your own questions";
 	function lockDemoBox(locked) {
@@ -3869,7 +3874,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		let row = document.getElementById("demo-asks");
 		const questions = demoQuestions();
 		lockDemoBox(demoChatLocked());
-		const show = Boolean(questions && state.chatMenu && state.dialog && state.dialog.step === "ask");
+		const show = Boolean(questions && demoPaperChat() && state.dialog.step === "ask");
 		if (!show) { if (row) row.hidden = true; return; }
 		if (!row) {
 			row = document.createElement("div");
@@ -3892,7 +3897,8 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		const asked = state.dialog.answers.questions || [];
 		// First one link to the example paper; its click opens the library at
 		// the paper (ticked) and brings the recorded questions here.
-		if (!state.demoExample && !asked.length) {
+		// A chat on one PDF already shows the paper: the questions at once.
+		if (!state.demoExample && !asked.length && !onePdfChat()) {
 			row.innerHTML = `<button type="button" class="demolink" data-demo-example="1" title="Opens the example paper in the library, with questions answered from a recording">Try it on an example paper (${esc(state.info.replay.paper.label)})</button>`;
 			row.hidden = false;
 			return;
@@ -3906,11 +3912,11 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	// (one-paper) library; any other question opens the install window.
 	$("composer").addEventListener("submit", (event) => {
 		const questions = demoQuestions();
-		if (!questions || !state.chatMenu || !state.dialog || state.dialog.step !== "ask") return;
+		if (!questions || !demoPaperChat() || state.dialog.step !== "ask") return;
 		const text = $("input").value.trim();
 		if (!text || text.startsWith("?")) return;
 		if (questions.some((question) => sameQuestion(question, text))) {
-			if (!chatScope().chosen) state.chat.whole = true;
+			if (!onePdfChat() && !chatScope().chosen) state.chat.whole = true;
 			return;
 		}
 		event.preventDefault();
