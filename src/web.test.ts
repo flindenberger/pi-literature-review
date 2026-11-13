@@ -271,6 +271,8 @@ try {
 		await pdfjsBuild.arrayBuffer();
 		const { pdfjsFindModule, PDFJS_FIND_COPY } = await import("./web/static-gen.ts");
 		assert.equal(readFileSync(PDFJS_FIND_COPY, "utf8"), pdfjsFindModule(), "static/pdfjs-find.mjs is stale: run node src/web/static-gen.ts");
+		const { notemdModule, NOTEMD_COPY } = await import("./web/static-gen.ts");
+		assert.equal(readFileSync(NOTEMD_COPY, "utf8"), notemdModule(), "static/notemd.mjs is stale: run node src/web/static-gen.ts");
 	}
 	// Bearer header works too (curl, tests).
 	const state = await (await fetch(`${base}/api/state`, { headers: { authorization: "Bearer t0ken" } })).json();
@@ -736,6 +738,36 @@ try {
 			assert.equal(info.openalex, null);
 			assert.equal(workFactCalls, 0);
 			assert.equal((await fetch(`http://127.0.0.1:${ixServer.port}/api/paper?base=nope`, { headers: h4 })).status, 404);
+			// Paper notes: none yet, saved, read back; an image clip; only
+			// library papers; images served by their own names only.
+			const ix = `http://127.0.0.1:${ixServer.port}`;
+			assert.equal((await (await fetch(`${ix}/api/notes?base=a`, { headers: h4 })).json()).note, null);
+			const put = await fetch(`${ix}/api/notes`, { method: "PUT", headers: { ...h4, "content-type": "application/json" }, body: JSON.stringify({ base: "a", markdown: "# Idea\n\nText **bold**\n", background: "lined" }) });
+			assert.equal(put.status, 200);
+			const noteA = (await (await fetch(`${ix}/api/notes?base=a`, { headers: h4 })).json()).note;
+			assert.equal(noteA.markdown, "# Idea\n\nText **bold**\n");
+			assert.equal(noteA.background, "lined");
+			assert.deepEqual((await (await fetch(`${ix}/api/notes/list`, { headers: h4 })).json()).bases, ["a"]);
+			assert.equal((await fetch(`${ix}/api/notes`, { method: "PUT", headers: { ...h4, "content-type": "application/json" }, body: JSON.stringify({ base: "nope", markdown: "x" }) })).status, 404);
+			const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0, 0, 0, 0, 0]);
+			const clip = await (await fetch(`${ix}/api/notes/image?base=a&page=3`, { method: "POST", headers: { ...h4, "content-type": "image/png" }, body: pngBytes })).json();
+			assert.equal(clip.src, "img/p3-1.png");
+			const served = await fetch(`${ix}/notes/${encodeURIComponent(clip.dir)}/img/p3-1.png`, { headers: h4 });
+			assert.equal(served.status, 200);
+			assert.equal(served.headers.get("content-type"), "image/png");
+			assert.equal((await fetch(`${ix}/notes/${encodeURIComponent(clip.dir)}/img/..%2Fnotes.md`, { headers: h4 })).status, 404);
+			assert.equal((await fetch(`${ix}/api/notes/image?base=a`, { method: "POST", headers: { ...h4, "content-type": "image/svg+xml" }, body: "<svg onload=alert(1)></svg>....." })).status, 400);
+			// Export: one file, the image inside, a download by default.
+			await fetch(`${ix}/api/notes`, { method: "PUT", headers: { ...h4, "content-type": "application/json" }, body: JSON.stringify({ base: "a", markdown: "# Idea\n\n![a clip](img/p3-1.png \"page 3\")\n\n> quote ([A 2020, p. 3](#page=3))\n", background: "blank" }) });
+			const mdExport = await fetch(`${ix}/api/notes/export?base=a&format=md`, { headers: h4 });
+			assert.match(mdExport.headers.get("content-disposition") ?? "", /^attachment; filename="a - notes\.md"/);
+			const mdText = await mdExport.text();
+			assert.match(mdText, /!\[a clip\]\(data:image\/png;base64,iVBORw0KGgo[A-Za-z0-9+/=]*\)/);
+			assert.match(mdText, /> quote \(A 2020, p\. 3\)/);
+			const htmlExport = await fetch(`${ix}/api/notes/export?base=a&format=html&inline=1`, { headers: h4 });
+			assert.match(htmlExport.headers.get("content-disposition") ?? "", /^inline;/);
+			assert.match(await htmlExport.text(), /<img src="data:image\/png;base64,/);
+			assert.equal((await fetch(`${ix}/api/notes/export?base=b&format=md`, { headers: h4 })).status, 404);
 			// Author window: the name on a card resolves through the work's authors.
 			const au = await (await fetch(`http://127.0.0.1:${ixServer.port}/api/author?doi=10.1/x&name=${encodeURIComponent("Jane Doe")}`, { headers: h4 })).json();
 			assert.equal(au.author.id, "A9");

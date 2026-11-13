@@ -6,6 +6,40 @@ All notable changes to this package are listed here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Notes per library paper in the browser. A notepad opens in place of
+  the chat while the paper's PDF stays beside it: from the pen on the
+  paper's row in the library, or the chat/note switch above the chat.
+- Notes are written as they look and saved automatically as Markdown
+  with their images next to them (`<store>/notes/<paper>/notes.md` and
+  `img/`). A renamed PDF finds its note again by DOI.
+- Editor: normal text, three heading sizes, bold, italic, code, lists
+  and numbered lists with nesting, indent and outdent, divider line,
+  undo and redo. Blank, lined or grid page.
+- Tables: inserted from the table row, with a row below, a column right,
+  and deleting the row, the column or the table. Tab moves through the
+  cells.
+- Tables and pictures are removed with Backspace or Delete in two steps
+  (select, then remove).
+- Clips from the PDF: drag a rectangle over the page; the picture is
+  drawn anew from the PDF and captioned with author, year and page,
+  linked to the page.
+- Quotes from the PDF: the selected text with author, year and page.
+- Paper details in one click: title, authors, year, journal, DOI and
+  citations, as in the paper's info window.
+- Text pasted from a PDF becomes paragraphs: lines joined, words split
+  at a line end joined again, ligatures (ﬁ, ﬂ) as plain letters.
+- AI corrector for selected text: spelling and grammar, or an
+  alternative wording, by the LLM with thinking off. Fixed code refuses
+  answers beyond the chosen mode, in another language, or with lost or
+  new numbers, abbreviations and names. A window shows every change
+  before it is applied; quotes, links, code and captions never change.
+- Export as Markdown or web page (one file each, pictures inside) or as
+  PDF from the print view; show the note's folder.
+- Live demo: notes work there too, kept in the visitor's browser; the AI
+  buttons are greyed.
+
 ## [0.2.1] - 2026-11-11
 
 ### Fixed

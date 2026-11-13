@@ -2784,6 +2784,9 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 
 	const historyOpen = () => $("hist-1").open || $("hist-2").open;
 
+	/** Pen: write a note; pen on a page: the paper has a note. */
+	const ICON_NOTE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></svg>';
+	const ICON_NOTE_DOC = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 3H6.5A1.5 1.5 0 0 0 5 4.5v15A1.5 1.5 0 0 0 6.5 21H11"/><path d="M13 3l5 5v2"/><path d="M8.5 9h4M8.5 12.5h4"/><path d="M14 21h2.5l5-5-2.5-2.5-5 5z"/></svg>';
 	const ICON_INFO = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.01"/></svg>';
 	const ICON_REVEAL = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M20 4l-8 8M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg>';
 	/** The library as folders: each source folder with its subfolders (the
@@ -2831,10 +2834,11 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		// the paper chat; the title itself opens the PDF (and its chat).
 		const embed = state.lib && state.lib.embeddingModel;
 		const indexed = (paper) => Boolean(paper.index && (!embed || paper.index.model === embed));
+		const noted = new Set((state.lib && state.lib.noted) || []);
 		const item = (paper) => {
 			const lead = [paper.year, authorsShort(paper.authors)].filter(Boolean).join(" ");
 			const fresh = !indexed(paper);
-			return `<a class="item paper ${fresh ? "noidx" : ""}" data-url="${esc(paper.pdfUrl)}" data-name="${esc(paper.base)}.pdf" data-base="${esc(paper.base)}" title="${esc(paper.title || paper.base)}${fresh ? " (not indexed yet)" : ""}"><label class="tickhit"><input type="checkbox" class="tick" data-tick-paper="${esc(paper.base)}" aria-label="Use as a source"></label><span>${lead ? `${esc(lead)} · ` : ""}${esc(paper.title || paper.base)}</span><button type="button" class="newchat info" data-info="${esc(paper.base)}" title="About this paper: citations, journal, abstract" aria-label="About this paper">${ICON_INFO}</button><button type="button" class="newchat" data-newchat="${esc(paper.base)}" title="New chat about this PDF" aria-label="New chat about this PDF">+</button></a>`;
+			return `<a class="item paper ${fresh ? "noidx" : ""}" data-url="${esc(paper.pdfUrl)}" data-name="${esc(paper.base)}.pdf" data-base="${esc(paper.base)}" title="${esc(paper.title || paper.base)}${fresh ? " (not indexed yet)" : ""}"><label class="tickhit"><input type="checkbox" class="tick" data-tick-paper="${esc(paper.base)}" aria-label="Use as a source"></label><span>${lead ? `${esc(lead)} · ` : ""}${esc(paper.title || paper.base)}</span><button type="button" class="newchat note${noted.has(paper.base) ? " noted" : ""}" data-note="${esc(paper.base)}" title="${noted.has(paper.base) ? "Your notes on this paper" : "Write notes on this paper"}" aria-label="Notes on this paper">${noted.has(paper.base) ? ICON_NOTE_DOC : ICON_NOTE}</button><button type="button" class="newchat info" data-info="${esc(paper.base)}" title="About this paper: citations, journal, abstract" aria-label="About this paper">${ICON_INFO}</button><button type="button" class="newchat" data-newchat="${esc(paper.base)}" title="New chat about this PDF" aria-label="New chat about this PDF">+</button></a>`;
 		};
 		const node = (entry, name, depth) => {
 			const children = [...entry.children.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([part, child]) => node(child, part, depth + 1)).join("");
@@ -3035,7 +3039,78 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		const m = url && /^\/pdf\/([^?#]+)\.pdf/i.exec(unbase(url));
 		return m ? decodeURIComponent(m[1]) : null;
 	}
-	function syncPaperInfoButton() { $("btn-paper-info").hidden = !panelPaperBase(); }
+	function syncPaperInfoButton() { $("btn-paper-info").hidden = !panelPaperBase(); syncViewbar(); }
+
+	/* ---------------- notepad (static/notes.js) ---------------- */
+	/** The script's own ?v= (the demo's build version), passed on to the
+	 * modules it loads, so a new build never meets an old cached copy. */
+	const SCRIPT_QUERY = (document.currentScript && new URL(document.currentScript.src, location.href).search) || "";
+	let notesModule = null;
+	const loadNotes = () => (notesModule ||= import(`${BASE}/static/notes.js${SCRIPT_QUERY}`).then((module) => module.createNotes({
+		BASE, esc, get, post, toast, shell,
+		demo: () => isDemo(),
+		install: (title, text) => installBox(title, text),
+		/** The PDF viewer showing `base` (clips, selected text), else null. */
+		viewer: (base) => {
+			if (panelPaperBase() !== base || frame.hidden) return null;
+			try { return frame.contentWindow.plrViewer || null; } catch { return null; }
+		},
+		/** "Author Year" of a paper for captions and quotes (from the library record). */
+		citeLabel: (base) => {
+			const paper = state.lib && state.lib.papers.find((entry) => entry.base === base);
+			const label = paper ? [authorsShort(paper.authors), paper.year].filter(Boolean).join(" ") : "";
+			return label || base;
+		},
+		showPage: (base, page) => { state.panelClosedByUser = false; showPdf(`${BASE}/pdf/${encodeURIComponent(base)}.pdf#page=${page}`); },
+		noted: (base) => {
+			if (!state.lib) return;
+			const list = state.lib.noted || (state.lib.noted = []);
+			if (list.includes(base)) return;
+			list.push(base);
+			const pen = $("rail-library-list").querySelector(`[data-note="${CSS.escape(base)}"]`);
+			if (pen) { pen.classList.add("noted"); pen.title = "Your notes on this paper"; pen.innerHTML = ICON_NOTE_DOC; }
+		},
+	})).catch((error) => { notesModule = null; throw error; }));
+	const notesOpen = () => !$("notes").hidden;
+	function paperLabel(base) {
+		const paper = state.lib && state.lib.papers.find((entry) => entry.base === base);
+		if (!paper) return base;
+		const lead = [authorsShort(paper.authors), paper.year].filter(Boolean).join(" ");
+		return [lead, paper.title || base].filter(Boolean).join(" · ");
+	}
+	/** The notes of a library paper, its PDF beside them. */
+	async function openNotes(base) {
+		if (isDemo() && !state.lib) await loadLibrary();
+		if (panelPaperBase() !== base) { state.panelClosedByUser = false; showPdf(`${BASE}/pdf/${encodeURIComponent(base)}.pdf`); }
+		try {
+			const notes = await loadNotes();
+			await notes.open(base, paperLabel(base));
+		} catch (error) { toast(`The notepad did not open: ${error.message}`); }
+		syncViewbar();
+	}
+	async function closeNotes() {
+		if (!notesModule || !notesOpen()) return;
+		await (await notesModule).close();
+		syncViewbar();
+	}
+	/** Chat | Notes above the chat while a library PDF is in the panel. */
+	function syncViewbar() {
+		const base = panelPaperBase();
+		const bar = $("viewbar-chat");
+		bar.hidden = !base || notesOpen();
+		if (base) $("viewbar-label").textContent = paperLabel(base);
+	}
+	document.addEventListener("click", async (event) => {
+		const tab = event.target.closest(".viewtabs [data-view]");
+		if (!tab || tab.classList.contains("on")) return;
+		const base = notesOpen() && notesModule ? (await notesModule).base() : panelPaperBase();
+		if (!base) return;
+		if (tab.dataset.view === "notes") return openNotes(base);
+		await closeNotes();
+		// Back to the chat: this paper's chat, unless the open one is about it.
+		if (!(onePdfChat() && state.dialog.answers.scope[0] === base)) await openPaperChat(base);
+	});
+	$("btn-rail-notes").addEventListener("click", () => $("btn-rail").click());
 	$("btn-paper-info").addEventListener("click", () => { const base = panelPaperBase(); if (base) showPaperInfo(base); });
 
 	/** Add a PDF folder: the system's folder window, else the typed path in Settings. */
@@ -3238,6 +3313,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 			event.preventDefault();
 			try {
 				const view = await post(BASE + "/api/history/open", { id: past.dataset.history });
+				await closeNotes();
 				state.dialog = view;
 				render();
 				loadHistory();
@@ -3247,6 +3323,16 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		}
 		const info = event.target.closest("[data-info]");
 		if (info) { event.preventDefault(); event.stopPropagation(); showPaperInfo(info.dataset.info); return; }
+		// The pen, or a paper title while the notepad is open: that paper's
+		// notes beside its PDF.
+		const pen = event.target.closest("[data-note]");
+		const titleInNotes = !pen && notesOpen() && event.target.closest("a.item.paper[data-base] > span");
+		if (pen || titleInNotes) {
+			event.preventDefault();
+			event.stopPropagation();
+			openNotes(pen ? pen.dataset.note : titleInNotes.closest("a.item.paper").dataset.base);
+			return;
+		}
 		const item = event.target.closest("a.item[data-url]");
 		if (!item || event.target.closest(".tickhit")) return;
 		// A paper row opens from its title or its "+" only: a click beside
@@ -3259,23 +3345,24 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		else showReport(item.dataset.url, item.dataset.name);
 		// A paper of the library: its last chat continues (the newest one in
 		// History); the "+" on the row, or a paper without a chat, starts a new one.
-		if (item.dataset.base) {
-			entryDismissed = "";
-			const fresh = Boolean(event.target.closest("[data-newchat]"));
-			(async () => {
-				try {
-					const last = fresh ? null : ((await get(BASE + "/api/history")).history || []).find((entry) => entry.paper === item.dataset.base && !entry.current);
-					const current = !fresh && onePdfChat() && state.dialog.answers.scope[0] === item.dataset.base;
-					if (current) return;
-					state.dialog = last
-						? await post(BASE + "/api/history/open", { id: last.id })
-						: await post(BASE + "/api/dialog/new", { start: "synthesis", scope: [item.dataset.base] });
-					render();
-					loadHistory();
-				} catch (error) { toast(error.message); }
-			})();
-		}
+		if (item.dataset.base) openPaperChat(item.dataset.base, Boolean(event.target.closest("[data-newchat]")));
 	});
+
+	/** A paper's chat: its newest one continues (History), or a new one
+	 * starts (`fresh`, or no chat yet). */
+	async function openPaperChat(base, fresh = false) {
+		entryDismissed = "";
+		try {
+			const last = fresh ? null : ((await get(BASE + "/api/history")).history || []).find((entry) => entry.paper === base && !entry.current);
+			const current = !fresh && onePdfChat() && state.dialog.answers.scope[0] === base;
+			if (current) return;
+			state.dialog = last
+				? await post(BASE + "/api/history/open", { id: last.id })
+				: await post(BASE + "/api/dialog/new", { start: "synthesis", scope: [base] });
+			render();
+			loadHistory();
+		} catch (error) { toast(error.message); }
+	}
 
 	// A stage block opens on click (its +, History and HTML reports); the
 	// block of the active stage opens by itself when the stage changes.
@@ -3284,7 +3371,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		entryDismissed = ""; // a new conversation types its examples again
 		// A running job keeps going in its own conversation (History marks it).
 		// A new conversation starts without the PDF or report of the last one.
-		try { state.dialog = await post(BASE + "/api/dialog/new", { start }); closePanel(); render(); loadHistory(); } catch (error) { toast(error.message); }
+		try { state.dialog = await post(BASE + "/api/dialog/new", { start }); await closeNotes(); closePanel(); render(); loadHistory(); } catch (error) { toast(error.message); }
 	};
 	/* The rail's width: drag its right edge (10-30 rem); kept per browser. */
 	(() => {

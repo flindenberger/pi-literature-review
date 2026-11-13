@@ -123,7 +123,7 @@ export async function buildDemo(out: string, pdfCache: string | null = null): Pr
 	// Code that changes per build lives below v/<hash>/ and the interface
 	// files carry ?v=<hash>: GitHub Pages lets browsers keep files for ten
 	// minutes, and a new build must never mix with an old one.
-	const version = contentHash([...sources, ...runtimeFiles.map((file) => readFileSync(file, "utf8")), readFileSync(join(HERE, "static", "app.js"), "utf8"), readFileSync(join(HERE, "static", "style.css"), "utf8")]);
+	const version = contentHash([...sources, ...runtimeFiles.map((file) => readFileSync(file, "utf8")), readFileSync(join(HERE, "static", "app.js"), "utf8"), readFileSync(join(HERE, "static", "notes.js"), "utf8"), readFileSync(join(HERE, "static", "notemd.mjs"), "utf8"), readFileSync(join(HERE, "static", "style.css"), "utf8")]);
 	const versioned = join(out, "v", version);
 	for (const [i, file] of modules.entries()) {
 		const target = join(versioned, "app", "src", relative(SRC, file)).replace(/\.ts$/, ".js");

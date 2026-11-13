@@ -242,6 +242,35 @@ One report per chat, from the **Report** button right of the source pill.
 - Language follows the questions (German or English); the interface stays English.
 - Page layout of the report: [Synthesis](synthesis.md#report-page).
 
+### Notes
+
+One note per library paper, written beside its PDF.
+
+- Open: the pen on the paper's row in the library, shown on hover (a pen on a page once the paper has a note), or the note icon in the chat/note switch above the chat while a library PDF is in the panel. The chat icon returns to the paper's newest chat.
+- While the notepad is open, a paper title in the library opens that paper's note and PDF.
+- Editing: as it looks (no Markdown on screen). Toolbar: undo, redo, normal text, three heading sizes, bold, italic, code, list, numbered list, outdent, indent, table tools, divider line, clip from the PDF, quote from the PDF, paper details. Pressed buttons follow the caret.
+- Typing: `# `, `## `, `### `, `- `, `1. ` and `> ` at the start of an empty line start that block. Enter twice ends a list or a quote. Code: with text selected the button marks it; without, what is typed next is code until the button is pressed again.
+- Indent: Tab or the indent button nests a list item under the one before it (up to three levels) or indents a line (up to three steps); Shift+Tab or outdent goes back, at the top of a list out of it. Stored as nested Markdown lists (two spaces per level under `-`, three under `1.`) and, for lines, two em spaces (U+2003) per step. Ctrl+Z / Ctrl+Shift+Z (Ctrl+Y) use the notepad's own history (typing is grouped per pause; every command is a step).
+- Tables: the table button opens a second row: insert a table, then (with the caret in a table) a row below, a column right, delete the row, the column or the table. Tab moves to the next cell and adds a row after the last one. Column widths follow the content (Markdown tables store none).
+- Removing a table or picture: Backspace at the start of the line after it (Delete at the end of the line before it) selects it, a second press removes it; a click on a picture selects it too. A divider line goes at the first press.
+- Clip: the camera button turns the PDF viewer into a crosshair; the dragged rectangle is drawn anew from the PDF at 3 pixels per point (at most 4000 px a side) and lands where the caret was, captioned "Author Year, p. N" with a link to the page. Esc or the button again cancels.
+- Quote from the PDF: text selected in the viewer becomes a quote with "(Author Year, p. N)" linked to its page; a word split by a hyphen at a line end is joined again.
+- AI corrector: selected text gets two small buttons beside it, **spelling** (spelling, grammar, punctuation) and **wording** (alternative phrasing). The LLM runs with thinking off and is told the text's language (detected from its common small words). Fixed code (`src/web/proofread.ts`) checks the answer: a line break inside a paragraph is sent as a space (the model may join lines; a break goes only where its space is replaced); spelling allows only a correction (same paragraphs, length 70-140 %, at most about 30 % of the words changed); wording allows a rewrite but refuses another language, nearly all words replaced, a length outside 50-200 %, and any lost or new number, abbreviation or name with inner capitals or digits. A window opens at once and always reports: the changes (removed struck through, added green) with Apply or Discard, "No spelling or grammar mistakes found", or why nothing is offered. Applied word by word into the text, so bold, links and other marks stay; quotes, links, code and captions are never changed. Undo takes it back. Live demo: the buttons are greyed and open the install window.
+- Paper details: one button inserts title, authors, year, journal, DOI (or arXiv id) and citations, as in the paper's info window (library record; journal and citations from OpenAlex with the date of the count).
+- Page: blank, lined or grid (buttons in the head); kept per note, the last choice is the default for new notes (per browser).
+- Paste: formatted text keeps only what a note can hold; text without structure (as copied from a PDF: one line per printed line, also when a PDF viewer wraps the lines in div or span elements) becomes paragraphs: blank lines separate them, and so does a clearly short line that ends a sentence (the printed paragraph's last line); the other lines are joined, a word split by a hyphen at a line end is joined again, PDF ligatures (ﬁ, ﬂ, ﬀ) become plain letters, list-like lines keep their breaks. Pasted images (PNG, JPEG, GIF, WebP) are stored with the note.
+- Saved automatically shortly after typing; the dot right of the title shows the state (green saved, amber pending, red failed, tooltip says why).
+- Export (arrow in the head): Markdown (.md) or web page (.html), each one file with the pictures inside as data URLs; PDF opens the print view of the web page ("Save as PDF" there); Show folder opens the note's folder (installed version only). In exports, page links become plain text.
+- Live demo: notes work there too, kept in the visitor's browser (IndexedDB) like the History.
+
+| Item | Where |
+|---|---|
+| Note | `<store>/notes/<paper>/notes.md`: front matter (paper, DOI, title from the library; background; updated), then Markdown |
+| Images | `<store>/notes/<paper>/img/`, `p<page>-<n>.png` for PDF clips, `pasted-<n>.<ext>` |
+| Folder name | the paper's library name; a renamed PDF finds its note again by DOI |
+
+Markdown subset: `#` to `###`, paragraphs, `**bold**`, `*italic*`, `` `code` ``, links (http, https, mailto, `#page=N`), `>` quotes, `-` and `1.` lists, GFM tables, `---`, images as `![caption](img/p4-1.png "page 4")`. The same module (`src/notemd.ts`, browser copy `static/notemd.mjs`) writes and reads it on both sides. Routes: `GET`/`PUT /api/notes`, `POST /api/notes/image?base=&page=`, `GET /api/notes/list`, `GET /api/notes/export?base=&format=md|html[&inline=1]`, `GET /notes/<folder>/img/<file>`.
+
 ## Conversation
 
 Question order and wording are fixed in `src/web/dialog.ts`; the model only proposes content. Typed answers are read by fixed rules.

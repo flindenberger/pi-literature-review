@@ -9,7 +9,7 @@
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
 body { font-family: system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; color: var(--ink); background: var(--bg); display: flex; flex-direction: column; }
-.bar { display: flex; align-items: center; gap: 0.35rem; padding: 0.3rem 0.6rem; background: #fbfbf8; border-bottom: 1px solid var(--line); font-size: 0.8rem; flex: none; }
+.bar { display: flex; align-items: center; gap: 0.35rem; height: 2.35rem; box-sizing: border-box; padding: 0 0.6rem; background: #fbfbf8; border-bottom: 1px solid var(--line); font-size: 0.8rem; flex: none; }
 .bar button { font: inherit; width: 1.8rem; height: 1.6rem; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 1px solid transparent; border-radius: 4px; background: transparent; color: #444; cursor: pointer; }
 .bar button:hover { background: #f1f1ec; border-color: var(--line); }
 .bar button svg { width: 1.05rem; height: 1.05rem; }
@@ -32,6 +32,11 @@ body { font-family: system-ui, -apple-system, "Segoe UI", Helvetica, Arial, sans
 .textLayer br::selection { background: transparent; }
 /* The cited passage: a piece of a text span, laid out inline in it. */
 .textLayer span.hl, .textLayer .markedContent span.hl { position: static; font-size: inherit; transform: none; background: var(--hl); border-radius: 2px; box-shadow: 0 0 0 1px var(--hl-line) inset; }
+/* Clip mode (notepad): a crosshair over the pages, text not selectable. */
+body.clipping .page { cursor: crosshair; }
+body.clipping .textLayer { pointer-events: none; }
+body.clipping #pages { user-select: none; }
+.cliprect { position: absolute; z-index: 5; border: 2px dashed #b03a2e; background: rgba(176, 58, 46, 0.08); pointer-events: none; }
 .msg { margin: 20vh auto; max-width: 28rem; text-align: center; color: #555; font-size: 0.9rem; }
 </style>
 </head>

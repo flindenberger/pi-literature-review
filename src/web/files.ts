@@ -30,6 +30,12 @@ export const FILE_TYPES: Record<string, string> = {
 	js: "text/javascript; charset=utf-8",
 	mjs: "text/javascript; charset=utf-8",
 	svg: "image/svg+xml",
+	png: "image/png",
+	jpg: "image/jpeg",
+	jpeg: "image/jpeg",
+	gif: "image/gif",
+	webp: "image/webp",
+	md: "text/markdown; charset=utf-8",
 };
 
 /** A single path segment without traversal or separators; the extension

@@ -58,7 +58,7 @@ node -e "import('./index.ts').then(() => console.log('index loads'))"
 - Type check: strict TypeScript over `index.ts`, `src/` and `extensions/`, tests included; no output files.
 - Tests: standalone and offline; network clients run against captured fixtures and a stubbed `fetch`.
 - Last line: the extension entry loads with the peers present.
-- `static/pdfjs-find.mjs` is generated from `src/pdfjs-find.ts`. `src/web.test.ts` fails when the copy is stale; regenerate with `node src/web/static-gen.ts`.
+- `static/pdfjs-find.mjs` is generated from `src/pdfjs-find.ts`, `static/notemd.mjs` from `src/notemd.ts`. `src/web.test.ts` fails when a copy is stale; regenerate both with `node src/web/static-gen.ts`.
 
 ## Release acceptance gate
 
@@ -158,6 +158,7 @@ Pages and files:
 | GET | `/static/*` | interface files |
 | GET | `/files/<stage>/<name>` | output files; synthesis pages re-rendered with `/pdf/` links; search reports without tick column and paste steps; `network.html` rendered from code |
 | GET | `/pdf/<name>` | a library PDF |
+| GET | `/notes/<folder>/img/<file>` | an image of a paper note |
 
 API:
 
@@ -173,6 +174,11 @@ API:
 | GET | `/api/runs/facts` | provenance behind a flow diagram |
 | POST | `/api/runs/report` | search report or PRISMA diagram from the filtered list |
 | GET | `/api/author` | author window (OpenAlex via the card's work, ORCID) |
+| GET, PUT | `/api/notes` | a paper's note (Markdown body, background) |
+| POST | `/api/notes/image` | store an image of a note (`?base=&page=`) |
+| GET | `/api/notes/list` | bases that have a note |
+| POST | `/api/notes/proofread` | AI corrector: `{text, mode: spelling\|wording}` -> `{ok, corrected, diff, changes}` or `{ok: false, reason}` (409 without a model) |
+| GET | `/api/notes/export` | a note as one file (`format=md\|html`, images inside; `inline=1` for the print view) |
 | GET | `/api/paper` | paper info window (library record + OpenAlex) |
 | GET | `/api/library` | library papers, folders, indexing state |
 | POST | `/api/search/variants` | model query variants |
@@ -278,6 +284,9 @@ Adapter and engine of a stage share their basename.
 | `src/retrieve.ts` | retrieval: query variants, lexical layer, embedding ranking, union, per-paper minimum |
 | `src/extract.ts` | PDF text extraction, cleanup, bibliography cut, chunking, highlight-phrase check |
 | `src/pdfjs-find.ts` | port of the PDF viewer's find normalization (guarantees highlights) |
+| `src/notemd.ts` | paper notes as blocks, Markdown and HTML (no imports; browser copy `static/notemd.mjs`) |
+| `src/web/proofread.ts` | the notepad's AI corrector: prompts per mode, language detection, reply cleanup, token diff, gates per mode |
+| `src/notes.ts` | paper notes on disk: `<store>/notes/<paper>/notes.md` + `img/`, DOI follow-up after a rename, image type check |
 | `src/corpus.ts` | corpus PDFs (`libraryFiles`), library matching, embedding-index cache |
 | `src/library.ts` | recursive capped walk of PDF folders, `inbox/`, `meta/` twins by path hash |
 | `src/folderpick.ts` | system folder and file windows (zenity/kdialog, osascript, PowerShell), no shell |
@@ -309,7 +318,7 @@ Adapter and engine of a stage share their basename.
 | `src/web/files.ts` | listings of runs, library, index state, reports, chat sessions; safe file names |
 | `src/web/intake.ts` | posted search form as `SearchOptions` + filters |
 | `src/web/open.ts` | open the browser or a folder without a shell |
-| `src/web/static-gen.ts` | writes `static/pdfjs-find.mjs` from `src/pdfjs-find.ts` |
+| `src/web/static-gen.ts` | writes `static/pdfjs-find.mjs` from `src/pdfjs-find.ts` and `static/notemd.mjs` from `src/notemd.ts` |
 | `src/web/static/` | `index.html`, `app.js`, `style.css`; `pdfview.html` + `pdfview.js` (PDF viewer with passage highlight); `prisma.html` (diagram viewer); `pdfjs-find.mjs` (generated) |
 | `src/provider.ts` | model provider interface and the endpoint provider for standalone use |
 

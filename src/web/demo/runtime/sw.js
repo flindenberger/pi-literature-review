@@ -1,11 +1,11 @@
 /* Browser demo, Service Worker: the cable between the page and the server
    running in the page's Web Worker. Requests to the server's addresses
-   (api/, files/, pdf/ below the demo's folder) go over a MessagePort to
+   (api/, files/, pdf/, notes/ below the demo's folder) go over a MessagePort to
    the worker; the answer streams back as a normal response, so the page,
    its frames and new tabs work as with the installed server. Everything
    else (the page, static/) comes from the network as usual. */
 
-const SERVER_ROUTES = /^\/(api|files|pdf)\//;
+const SERVER_ROUTES = /^\/(api|files|pdf|notes)\//;
 const TOKEN = "demo";
 const BODY_LIMIT = 20000000;
 let serverPort = null;

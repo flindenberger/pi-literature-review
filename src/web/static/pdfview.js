@@ -229,4 +229,100 @@ $("page").addEventListener("keydown", (event) => {
 	$("page").blur();
 });
 
+/* ---------------- clips and quotes for the notepad ---------------- */
+// The notepad (notes.js, in the parent page) calls window.plrViewer:
+// clip() waits for a rectangle dragged over one page and returns it as a
+// PNG drawn anew from the PDF (sharp at any zoom); selection() returns the
+// selected text and its page.
+/** Pixels per PDF point of a clip (3 = 216 dpi), capped by CLIP_MAX_PX. */
+const CLIP_SCALE = 3;
+const CLIP_MAX_PX = 4000;
+let clipJob = null;
+
+function endClip(result) {
+	if (!clipJob) return;
+	const { resolve, box } = clipJob;
+	clipJob = null;
+	document.body.classList.remove("clipping");
+	if (box) box.remove();
+	resolve(result);
+}
+
+async function clipImage(page, x, y, width, height) {
+	const s = page.scale || scale();
+	const proxy = await state.doc.getPage(page.number);
+	const factor = Math.min(CLIP_SCALE, CLIP_MAX_PX / (Math.max(width, height) / s));
+	const viewport = proxy.getViewport({ scale: factor });
+	const canvas = document.createElement("canvas");
+	canvas.width = Math.max(1, Math.round((width / s) * factor));
+	canvas.height = Math.max(1, Math.round((height / s) * factor));
+	const context = canvas.getContext("2d");
+	context.fillStyle = "#fff";
+	context.fillRect(0, 0, canvas.width, canvas.height);
+	await proxy.render({ canvasContext: context, viewport, transform: [1, 0, 0, 1, -(x / s) * factor, -(y / s) * factor] }).promise;
+	return new Promise((resolve, reject) => canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("no image"))), "image/png"));
+}
+
+pagesBox.addEventListener("pointerdown", (event) => {
+	if (!clipJob || event.button !== 0) return;
+	const div = event.target.closest(".page");
+	if (!div) return;
+	event.preventDefault();
+	const page = state.pages[Number(div.dataset.number) - 1];
+	const origin = div.getBoundingClientRect();
+	const start = { x: event.clientX - origin.left, y: event.clientY - origin.top };
+	const box = document.createElement("div");
+	box.className = "cliprect";
+	div.appendChild(box);
+	clipJob.box = box;
+	const clamp = (value, max) => Math.max(0, Math.min(max, value));
+	let rect = { x: start.x, y: start.y, width: 0, height: 0 };
+	const move = (moved) => {
+		const x = clamp(moved.clientX - origin.left, origin.width), y = clamp(moved.clientY - origin.top, origin.height);
+		rect = { x: Math.min(start.x, x), y: Math.min(start.y, y), width: Math.abs(x - start.x), height: Math.abs(y - start.y) };
+		Object.assign(box.style, { left: `${rect.x}px`, top: `${rect.y}px`, width: `${rect.width}px`, height: `${rect.height}px` });
+	};
+	const up = async () => {
+		removeEventListener("pointermove", move);
+		removeEventListener("pointerup", up);
+		if (!clipJob) return;
+		// A click without a drag: try again.
+		if (rect.width < 8 || rect.height < 8) { box.remove(); clipJob.box = null; return; }
+		try {
+			const blob = await clipImage(page, rect.x, rect.y, rect.width, rect.height);
+			endClip({ blob, page: page.number });
+		} catch (error) {
+			const job = clipJob;
+			endClip(null);
+			if (job) job.reject(error);
+		}
+	};
+	addEventListener("pointermove", move);
+	addEventListener("pointerup", up);
+});
+addEventListener("keydown", (event) => { if (event.key === "Escape") endClip(null); });
+
+window.plrViewer = {
+	clip() {
+		endClip(null);
+		return new Promise((resolve, reject) => {
+			clipJob = { resolve, reject, box: null };
+			document.body.classList.add("clipping");
+		});
+	},
+	cancelClip() { endClip(null); },
+	selection() {
+		const selected = getSelection();
+		const text = selected ? selected.toString() : "";
+		if (!text.trim() || !selected.anchorNode) return null;
+		const anchor = selected.anchorNode.nodeType === 1 ? selected.anchorNode : selected.anchorNode.parentElement;
+		const div = anchor && anchor.closest(".page");
+		return {
+			// Lines joined; a word split by a hyphen at a line end is joined again.
+			text: text.replace(/-\s*\n\s*(?=\p{Ll})/gu, "").replace(/\s*\n\s*/g, " ").replace(/\s{2,}/g, " ").trim(),
+			page: div ? Number(div.dataset.number) : currentPage(),
+		};
+	},
+};
+
 open();

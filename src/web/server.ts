@@ -116,6 +116,9 @@ import {
 	type StartStage,
 } from "./dialog.ts";
 import { Indexer } from "./indexer.ts";
+import { type NoteBackground, NOTE_BACKGROUNDS } from "../notemd.ts";
+import { checkCorrection, PROOFREAD_MAX_CHARS, PROOFREAD_TIMEOUT_MS, type ProofreadMode, proofreadPrompt, systemFor } from "./proofread.ts";
+import { NOTE_IMAGE_DIR, NOTE_IMAGE_MAX_BYTES, NOTE_MAX_BYTES, exportNote, notedBases, noteDirName, notesRoot, noteImagePath, type PaperRef, readNote, saveNoteImage, writeNote } from "../notes.ts";
 import { FILE_TYPES, indexSummary, listLibrary, listReports, listSearchRuns, listSessions, pdfFile, readRunPayload, safeName, searchCandidates, stageFile, stageOf } from "./files.ts";
 import { applyCardFilters, cardRows, describeCardFilters, hasCardFilters, parseCardFilters } from "./results.ts";
 import { revealFolder } from "./open.ts";
@@ -1268,6 +1271,17 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 		};
 	};
 
+	/** The library paper a note belongs to (paper, DOI and title come from
+	 * the library, never from the page) and every base in the library now
+	 * (a renamed PDF's note may move only when its old base is gone). */
+	const notePaper = (base: string): { paper: PaperRef; live: Set<string> } => {
+		const papers = listLibrary(root, cwd, deps.matchLibrary(root)).papers;
+		const entry = papers.find((candidate) => candidate.base === base);
+		if (!entry) throw new HttpError(404, "this PDF is not in the library");
+		const doi = entry.doi || (entry.arxiv_id ? `10.48550/arxiv.${entry.arxiv_id}` : "");
+		return { paper: { base: entry.base, doi, title: entry.title ?? "" }, live: new Set(papers.map((candidate) => candidate.base)) };
+	};
+
 	/* ---------------- routes ---------------- */
 
 	const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
@@ -1350,6 +1364,14 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 			const name = decodeURIComponent(path.slice(PDF_ROUTE.length + 1));
 			const file = pdfFile(root, cwd, name);
 			if (!file) throw new HttpError(404, "no such PDF in the library");
+			return serveFile(res, file);
+		}
+
+		// Images of the paper notes: /notes/<folder>/img/<file>.
+		if (method === "GET" && path.startsWith("/notes/")) {
+			const parts = path.slice("/notes/".length).split("/").map((part) => decodeURIComponent(part));
+			const file = parts.length === 3 && parts[1] === NOTE_IMAGE_DIR ? noteImagePath(root, parts[0], parts[2]) : null;
+			if (!file) throw new HttpError(404, "no such note image");
 			return serveFile(res, file);
 		}
 
@@ -1474,6 +1496,60 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 			}
 			return json(res, 200, { paper: { ...paper, pdfUrl: pdfHref(paper.file) }, openalex, checked, error, embeddingModel: llmConfig().embedModel });
 		}
+		/* ---- paper notes (one per library paper; notes.ts) ---- */
+		if (route === "GET /api/notes") {
+			const { paper, live } = notePaper(url.searchParams.get("base") ?? "");
+			const note = readNote(root, paper, live);
+			const dir = note ? note.dir : noteDirName(paper.base);
+			return json(res, 200, { base: paper.base, dir, folder: join(notesRoot(root), dir), note });
+		}
+		if (route === "PUT /api/notes") {
+			const body = (await readBody(req, NOTE_MAX_BYTES + 10_000)) as Record<string, unknown>;
+			const { paper, live } = notePaper(typeof body.base === "string" ? body.base : "");
+			if (typeof body.markdown !== "string") throw new HttpError(400, "markdown missing");
+			const background = NOTE_BACKGROUNDS.includes(body.background as NoteBackground) ? body.background as NoteBackground : "blank";
+			return json(res, 200, writeNote(root, paper, body.markdown, background, live));
+		}
+		if (route === "POST /api/notes/image") {
+			const { paper, live } = notePaper(url.searchParams.get("base") ?? "");
+			const page = Number(url.searchParams.get("page"));
+			const bytes = await readRawBody(req, NOTE_IMAGE_MAX_BYTES);
+			try {
+				return json(res, 200, saveNoteImage(root, paper, bytes, Number.isInteger(page) && page > 0 ? page : null, live));
+			} catch (error) {
+				throw new HttpError(400, errorMessage(error));
+			}
+		}
+		if (route === "GET /api/notes/list") return json(res, 200, { bases: notedBases(root) });
+		// AI corrector: a piece of the user's own note text, corrected by
+		// the model (thinking off); proofread.ts accepts only corrections.
+		if (route === "POST /api/notes/proofread") {
+			const body = (await readBody(req)) as Record<string, unknown>;
+			const text = typeof body.text === "string" ? body.text : "";
+			if (!text.trim()) throw new HttpError(400, "no text");
+			if (text.length > PROOFREAD_MAX_CHARS) throw new HttpError(413, `select at most ${PROOFREAD_MAX_CHARS} characters`);
+			if (options.demo || !provider.hasModel()) throw new HttpError(409, "the AI corrector needs a model (Settings)");
+			const mode: ProofreadMode = body.mode === "wording" ? "wording" : "spelling";
+			let raw: string;
+			try {
+				raw = await provider.generate({ system: systemFor(mode), user: proofreadPrompt(text, mode), maxTokens: Math.ceil(text.length / (mode === "wording" ? 1.5 : 2)) + 200, temperature: mode === "wording" ? 0.3 : 0, noThinking: true, signal: AbortSignal.timeout(PROOFREAD_TIMEOUT_MS) });
+			} catch (error) {
+				throw new HttpError(502, `the model did not answer: ${errorMessage(error)}`);
+			}
+			return json(res, 200, checkCorrection(text, raw, mode));
+		}
+		// A note as one file (images inside): ?format=md|html; &inline=1
+		// shows the page instead of a download (the print view).
+		if (route === "GET /api/notes/export") {
+			const { paper, live } = notePaper(url.searchParams.get("base") ?? "");
+			const format = url.searchParams.get("format") === "md" ? "md" : "html";
+			const file = exportNote(root, paper, format, live);
+			if (!file) throw new HttpError(404, "this paper has no note yet");
+			const disposition = url.searchParams.get("inline") === "1" ? "inline" : "attachment";
+			res.writeHead(200, { "content-type": file.type, "cache-control": "no-store", "content-disposition": `${disposition}; filename="${file.name.replace(/[^\x20-\x7e]/g, "_").replace(/"/g, "'")}"; filename*=UTF-8''${encodeURIComponent(file.name)}` });
+			res.end(file.body);
+			return;
+		}
 		// Example questions for the paper chat's box: the model words them
 		// from the chosen papers' names, titles and keywords (thinking off),
 		// fixed rules check them (examples.ts); null keeps the page's templates.
@@ -1514,6 +1590,7 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 				dirs: library.dirs,
 				folders: pdfFolders(),
 				store: root,
+				noted: notedBases(root),
 				embeddingModel: llmConfig().embedModel,
 				indexing: indexer.snapshot(),
 			});

@@ -767,3 +767,126 @@ dialog.modal table.installrows a { display: block; font-size: 0.78rem; margin-to
 .demo-asks .demolink { border: 0; background: none; padding: 0.2rem 0.1rem; font: inherit; font-size: 0.9rem; color: var(--ink); text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
 .demo-asks .demolink:hover { text-decoration-thickness: 2px; }
 .info-pop .demo-install-row { display: block; margin-top: 0.45rem; }
+
+/* Notepad (static/notes.js): one note per library paper, in the chat
+   column's place; the PDF stays in the panel. Chat | Notes switches. */
+.rail-list a.item.paper .newchat.note svg { width: 0.85rem; height: 0.85rem; }
+.rail-list a.item.paper .newchat.note { align-items: center; }
+.rail-list a.item.paper .newchat.note + .newchat { margin-left: 0; }
+.shell.notes-open > .chat { display: none; }
+.notes { display: flex; flex-direction: column; min-height: 0; min-width: 0; border-right: 1px solid var(--line); background: var(--paper); }
+.viewbar { display: flex; align-items: center; gap: 0.7rem; min-width: 0; padding: 0.5rem 0.9rem; border-bottom: 1px solid var(--line); background: var(--paper); }
+.viewbar .viewlabel { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.82rem; font-weight: 500; color: #3d3d3d; }
+.viewtabs { display: inline-flex; flex: none; border: 1px solid #c9c9c2; border-radius: 7px; overflow: hidden; }
+.viewtabs button { border: 0; border-radius: 0; background: #fff; padding: 0.18rem 0.75rem; font-size: 0.8rem; color: var(--muted); }
+.viewtabs button + button { border-left: 1px solid #c9c9c2; }
+.viewtabs button.on { background: var(--accent); color: #fff; cursor: default; }
+.viewtabs button:not(.on):hover { background: #f1f1ec; color: var(--ink); }
+.notes-state { flex: none; width: 8px; height: 8px; border-radius: 50%; background: #b9b9b2; }
+.notes-state.saved { background: var(--green); }
+.notes-state.dirty { background: var(--amber); }
+.notes-state.error { background: var(--red); }
+.notes-bar { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; padding: 0.35rem 1.1rem; border-bottom: 1px solid var(--line); background: #fbfbf9; }
+.notes-tools, .notes-bg { display: flex; align-items: center; gap: 0.1rem; flex-wrap: wrap; }
+.notes-bar button, .notes-bg button { display: inline-flex; align-items: center; justify-content: center; min-width: 1.75rem; height: 1.85rem; padding: 0 0.3rem; border: 0; border-radius: 5px; background: transparent; color: #3d3d3d; font-size: 0.82rem; }
+.notes-bg button:hover, .notes-bar button:hover { background: #ecece6; color: var(--ink); }
+.notes-bg button.on, .notes-bar button.on { background: #e2e2dc; color: var(--ink); }
+.notes-bg button svg, .notes-bar button svg { width: 1.05rem; height: 1.05rem; }
+.notes-bar .mono { font-family: "DejaVu Sans Mono", Consolas, monospace; font-size: 0.76rem; }
+.notes-bar .sep { width: 1px; height: 1.2rem; margin: 0 0.3rem; background: #d6d6d0; }
+.notes-scroll { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 1.2rem 1.2rem 3rem; }
+.notepaper { --line-h: 1.75rem; max-width: 46rem; min-height: 100%; margin: 0 auto; padding: 1.2rem 1.6rem 4rem; background-color: #fff; border: 1px solid #e4e4de; border-radius: 6px; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04); font-size: 0.97rem; line-height: var(--line-h); color: var(--ink); outline: none; overflow-wrap: anywhere; }
+/* Lined: one rule per text line; grid: 5 mm squares like squared paper. */
+.notepaper[data-bg="lined"] { background-image: linear-gradient(to bottom, transparent calc(var(--line-h) - 1px), #d9e3ec calc(var(--line-h) - 1px)); background-size: 100% var(--line-h); background-position: 0 1.2rem; }
+.notepaper[data-bg="grid"] { background-image: linear-gradient(to bottom, #e3e8ee 1px, transparent 1px), linear-gradient(to right, #e3e8ee 1px, transparent 1px); background-size: 0.875rem 0.875rem; background-position: -1px 1.2rem; }
+.notepaper > :first-child { margin-top: 0; }
+.notepaper p, .notepaper ul, .notepaper ol, .notepaper blockquote, .notepaper table, .notepaper figure { margin: 0 0 var(--line-h); }
+.notepaper h1, .notepaper h2, .notepaper h3 { margin: 0 0 calc(var(--line-h) / 2); line-height: var(--line-h); }
+.notepaper h1 { font-size: 1.45rem; }
+.notepaper h2 { font-size: 1.2rem; }
+.notepaper h3 { font-size: 1.02rem; }
+.notepaper ul, .notepaper ol { padding-left: 1.5rem; }
+.notepaper blockquote { padding: 0 0 0 0.9rem; border-left: 3px solid #c9c9c2; color: #3d3d3d; }
+.notepaper a { color: var(--ink); text-decoration: underline; text-decoration-color: #9a9a94; text-underline-offset: 2px; cursor: pointer; }
+.notepaper hr { border: 0; border-top: 1px solid #c9c9c2; margin: 0 0 var(--line-h); }
+.notepaper table { border-collapse: collapse; background: #fff; }
+.notepaper th, .notepaper td { border: 1px solid #c9c9c2; padding: 0.1rem 0.5rem; min-width: 4rem; vertical-align: top; text-align: left; }
+.notepaper th { background: #f4f4f0; font-weight: 600; }
+.notepaper figure { display: table; max-width: 100%; padding: 0.4rem; background: #fff; border: 1px solid #e4e4de; border-radius: 4px; cursor: default; }
+.notepaper figure img { display: block; max-width: 100%; height: auto; }
+.notepaper figcaption { padding-top: 0.25rem; font-size: 0.78rem; line-height: 1.3; color: #3d3d3d; font-style: italic; }
+.notepaper figcaption:empty { display: none; }
+.notepaper figure.sel, .notepaper table.sel { outline: 2px solid #4a7fc1; outline-offset: 2px; }
+@media (max-width: 48rem) {
+  .notes { border-right: 0; }
+  .notes .notes-rail { position: static; flex: none; }
+  .notes-scroll { padding: 0.6rem 0.4rem 2rem; }
+  .notepaper { padding: 0.9rem 1rem 3rem; }
+}
+/* Toolbar labels: the heading buttons show their own weight and size,
+   italic is a slanted serif letter; pressed buttons follow the caret. */
+.notes-bar .tp { font-family: Georgia, "Times New Roman", serif; font-size: 0.98rem; }
+.notes-bar .th1, .notes-bar .th2, .notes-bar .th3 { font-weight: 700; letter-spacing: -0.01em; }
+.notes-bar .th1 { font-size: 0.86rem; }
+.notes-bar .th2 { font-size: 0.76rem; }
+.notes-bar .th3 { font-size: 0.66rem; }
+.notes-bar .tb { font-weight: 800; font-size: 0.95rem; }
+.notes-bar .ti { font-family: Georgia, "Times New Roman", serif; font-style: italic; font-size: 1.02rem; }
+.notes-bar button.on { background: #dcdcd5; color: var(--ink); box-shadow: inset 0 0 0 1px #c4c4bc; }
+.notes-bar button.armed { background: #f6e3e0; color: var(--red); box-shadow: inset 0 0 0 1px #e2b5ae; }
+.notes-bar button:disabled { opacity: 0.35; background: transparent; }
+.notes-tabletools { flex-basis: 100%; display: flex; align-items: center; gap: 0.1rem; padding-top: 0.25rem; border-top: 1px dashed #e0e0da; }
+.viewtabs button { display: inline-flex; align-items: center; justify-content: center; padding: 0.2rem 0.6rem; }
+.viewtabs button svg { width: 1.05rem; height: 1.05rem; }
+.rail-list a.item.paper .newchat.note.noted svg { width: 0.95rem; height: 0.95rem; }
+.notepaper p[data-indent="1"] { padding-left: 2rem; }
+.notepaper p[data-indent="2"] { padding-left: 4rem; }
+.notepaper p[data-indent="3"] { padding-left: 6rem; }
+.notepaper li > ul, .notepaper li > ol { margin: 0; }
+.notepaper ul ul { list-style-type: circle; }
+.notepaper ul ul ul { list-style-type: square; }
+.notepaper ol ol { list-style-type: lower-alpha; }
+.notepaper ol ol ol { list-style-type: lower-roman; }
+.notes-tabletools button:disabled { opacity: 0.3; }
+/* The notepad's head lines up with the panel's head: same padding,
+   buttons no taller than the panel's icon buttons. */
+.viewbar .notes-bg button, .viewbar button.icon { height: 1.65rem; min-width: 1.65rem; padding: 0 0.2rem; }
+.viewbar .notes-bg button svg, .viewbar button.icon svg { width: 1.1rem; height: 1.1rem; }
+.viewbar button.icon { display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 5px; background: transparent; color: #3d3d3d; }
+.viewbar button.icon:hover { background: #ecece6; color: var(--ink); }
+.viewtabs button { height: 1.55rem; }
+.notes-export { position: relative; display: inline-flex; }
+.exportmenu { position: absolute; top: calc(100% + 0.35rem); right: 0; z-index: 30; display: flex; flex-direction: column; min-width: 11rem; padding: 0.3rem; background: #fff; border: 1px solid #cfcfc8; border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12); }
+.exportmenu button { border: 0; background: transparent; text-align: left; padding: 0.38rem 0.6rem; border-radius: 5px; font-size: 0.84rem; }
+.exportmenu button:hover { background: #f1f1ec; }
+.report .head { min-height: 2.85rem; }
+.viewbar { height: 2.85rem; flex: none; }
+.notes-bar { padding: 0.3rem 0.7rem; }
+.notes-bar button { min-width: 1.6rem; padding: 0 0.2rem; }
+.notes-bar .sep { margin: 0 0.15rem; }
+/* The notepad's toolbar row lines up with the PDF viewer's bar
+   (pdfview.html .bar, 2.35rem); the table row adds below it. The head
+   never wraps: the paper title gives way. */
+.notes-bar { min-height: 2.35rem; padding: 0 0.7rem; align-content: center; }
+.notes-bar button { height: 1.7rem; }
+.notes-tabletools { padding: 0.2rem 0; }
+.viewbar .notes-bg { flex-wrap: nowrap; flex: none; }
+.viewbar .viewtabs, .viewbar .notes-export, .viewbar .notes-state { flex: none; }
+/* A narrow column: the tools scroll sideways instead of a second line. */
+.notes-tools { flex: 1 1 100%; min-width: 0; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+.notes-tools::-webkit-scrollbar { display: none; }
+.notes-tools button, .notes-tools .sep { flex: none; }
+/* AI corrector: a small button beside the selected text, then a window
+   with the changes (removed struck through, added green). */
+.notes-ai { position: fixed; z-index: 40; display: inline-flex; gap: 1px; padding: 2px; border: 1px solid #c9c9c2; border-radius: 9px; background: #fff; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.14); }
+.notes-ai button { display: inline-flex; align-items: center; justify-content: center; width: 1.9rem; height: 1.9rem; padding: 0; border: 0; border-radius: 7px; background: transparent; color: var(--ink); }
+.notes-ai button:hover { background: #f1f1ec; }
+.notes-ai svg { width: 1.15rem; height: 1.15rem; }
+.proofstate { display: flex; align-items: center; gap: 0.5rem; margin: 0.4rem 0 0.2rem; font-size: 0.92rem; }
+.proofnote { margin: 0.5rem 0 0; font-size: 0.84rem; }
+dialog.notes-proof { width: min(40rem, 94vw); }
+.proofdiff { max-height: 55vh; overflow: auto; padding: 0.7rem 0.9rem; border: 1px solid var(--line); border-radius: 6px; background: #fff; font-size: 0.95rem; line-height: 1.6; white-space: pre-wrap; }
+.proofdiff del { color: var(--red); background: #f8e6e3; text-decoration: line-through; }
+.proofdiff ins { color: var(--green); background: #e3f3e6; text-decoration: none; font-weight: 600; }
+.notes-ai.demo button { color: #b4b4ae; }
+.notes-ai.demo button:hover { background: transparent; color: #8a8a84; }
