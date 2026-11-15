@@ -24,6 +24,7 @@ A local, open, login-free literature tool as an extension for the [Pi coding age
 - **Search papers with code repositories** — code and data links on every result, plus papers found through GitHub, Hugging Face and awesome lists
 - **Search for specific authors and their work** — narrow a topic to chosen authors, or list everything they published, optionally as first author
 - **Ask questions and write summaries or synthesis reports about your PDF library** — page-exact citations, highlighted where they come from
+- **Integrated notes editor** — one notepad per paper, with screenshots and citations from the PDF, an AI corrector and an AI wording assistant
 - **Drag and drop your PDFs** — straight into the browser and start asking
 - **Optimised for local AI models** — tested with 8–9B models on an 8 GB graphics card; search needs no model at all
 - **Citation graphs** — see what a paper builds on and who cites it
