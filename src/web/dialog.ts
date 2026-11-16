@@ -15,6 +15,7 @@
  */
 
 import { CODE_SEARCHERS } from "../codesearch.ts";
+import { MAX_SEEDS } from "../snowball.ts";
 import { detectDialogLang, type DialogLang } from "../dialog-state.ts";
 import {
 	blocksForEditing,
@@ -202,6 +203,10 @@ export interface DialogAnswers {
 	autoTopics: boolean;
 	/** The code icon next to the request box: the first search runs with the code sources. */
 	codeAtStart: boolean;
+	/** Citation searching added to this search: the seed ids (DOIs /
+	 * "arXiv:" ids) ticked for it so far and the latest direction. Kept on
+	 * every re-run of the same request, cleared by a new request. */
+	snowball?: { seeds: string[]; direction: "both" | "back" | "forward" } | null;
 	/** The synonym button next to the request box: the model adds synonyms
 	 * and the blocks are shown for editing before the search. Off, the
 	 * blocks hold only the request's own words and the search starts at once. */
@@ -264,7 +269,7 @@ export interface DialogState {
 export type DialogEvent =
 	/** `ask`: the text is a question for the helper, not an answer (question
 	 * mode on the page, or a leading "?"). */
-	| { kind: "answer"; text?: string; chip?: string; ids?: string[]; blocks?: string[]; toggles?: string[]; ask?: boolean; filters?: SearchAgainFilters; code?: boolean; synonyms?: boolean; period?: PeriodPreset; options?: SearchOptionsAnswer; folder?: string; chat?: ChatOptionsAnswer }
+	| { kind: "answer"; text?: string; chip?: string; ids?: string[]; blocks?: string[]; toggles?: string[]; ask?: boolean; filters?: SearchAgainFilters; direction?: "both" | "back" | "forward"; code?: boolean; synonyms?: boolean; period?: PeriodPreset; options?: SearchOptionsAnswer; folder?: string; chat?: ChatOptionsAnswer }
 	/** A file the server wrote on the user's click (report from the list): shown as a card. */
 	| { kind: "fileWritten"; card: FileCard; quiet?: boolean }
 	| { kind: "helpAnswered"; text: string | null; error?: string }
@@ -353,6 +358,8 @@ export const CODE_SOURCE_LABELS: Record<string, string> = {
 	"github-readme": "GitHub README search",
 	"awesome-lists": "Awesome lists (awesome.ecosyste.ms)",
 	"gee-github": "Google Earth Engine (GitHub)",
+	"datacite-software": "Archived software (DataCite)",
+	"web-search": "Web search (your SearXNG or Exa key)",
 };
 
 const TEXT = {
@@ -361,7 +368,7 @@ const TEXT = {
 	blocks: "Is it ok if I split your request into these keyword blocks? A paper must match **every** block; the words inside a block are alternatives.",
 	blocksSynonyms: "The model added synonyms to your keyword blocks. Change, add or remove terms, then search. A paper must match **every** block; the words inside a block are alternatives.",
 	blocksModelFailed: "The model gave no usable proposal, so the blocks were derived word by word from your text.",
-	code: "Do you also want **papers with code**? I can additionally search code repositories and add the papers they cite: Hugging Face Papers, GitHub README search, awesome lists, Google Earth Engine repositories. Adds up to about 40 s.",
+	code: "Do you also want **papers with code**? I can additionally search code repositories and add the papers they cite: Hugging Face Papers, GitHub README search, awesome lists, Google Earth Engine repositories, archived software at DataCite, and your own web search engine if one is set up. Adds up to about 40 s.",
 	codeSources: "Which code sources?",
 	topics: "For the awesome lists I would look at these GitHub topics. Keep them, add one (type a word), or skip the lists?",
 	period: "Which publication period?",
@@ -500,6 +507,7 @@ export function formFromAnswers(answers: DialogAnswers, thisYear: number): Searc
 		codeSources: answers.codeSources,
 		codeTopics: answers.codeSources.includes("awesome-lists") ? answers.topicsOn : [],
 		minCites: answers.minCites ?? undefined,
+		...(answers.snowball?.seeds.length ? { snowball: answers.snowball } : {}),
 	};
 	if (answers.journalsOn !== "all" && answers.journalsOn.length) {
 		const names = answers.journals.filter((row) => (answers.journalsOn as string[]).includes(row.id)).map((row) => row.name);
@@ -1028,6 +1036,14 @@ function onAnswer(state: DialogState, event: Extract<DialogEvent, { kind: "answe
 		if (!blocks.length || !composedQuery({ ...state.answers, blocks })) return result(askPick(say(echoed, "At least one block needs a term."), ctx));
 		return startSearch(withAnswers(echoed, { blocks, useVariants: false }), ctx);
 	}
+	// "Snowball": the ticked papers become seeds (added to earlier ones);
+	// the same request runs again with the citation searching added.
+	if (chip === "snowball" && (state.answers.blocks.length || isAuthorsOnly(state.answers))) {
+		const ids = (event.ids ?? []).map((id) => id.trim()).filter(Boolean);
+		if (!ids.length) return result(askPick(say(echoed, "Tick at least one paper to snowball from."), ctx));
+		const direction = event.direction === "back" || event.direction === "forward" ? event.direction : "both";
+		return snowballFrom(echoed, ids, direction, ctx);
+	}
 	if (chip === "searchAgain" && (state.answers.blocks.length || isAuthorsOnly(state.answers))) {
 		const filters = event.filters ?? {};
 		let next = echoed;
@@ -1337,7 +1353,7 @@ function periodOf(event: Extract<DialogEvent, { kind: "answer" }>): { period?: P
 
 function onTopic(state: DialogState, text: string, ctx: DialogContext, options: RequestOptions = { code: false, synonyms: false }): ReduceResult {
 	const next = withAnswers(state, {
-		topic: text, variants: [], useVariants: false, codeAtStart: options.code, synonyms: options.synonyms,
+		topic: text, variants: [], useVariants: false, codeAtStart: options.code, synonyms: options.synonyms, snowball: null,
 		...(options.period ? { period: { preset: options.period } } : {}),
 		...optionAnswers(options.options),
 	});
@@ -1538,6 +1554,22 @@ function startSearch(state: DialogState, ctx: DialogContext): ReduceResult {
 	return result(pending(state, "starting the search"), { kind: "startSearch", form: formFromAnswers(state.answers, ctx.thisYear) });
 }
 
+/** Snowball from ticked papers: the seeds add up over clicks (a later full
+ * search repeats every round); the current list is extended by the round
+ * from the new seeds only. */
+function snowballFrom(state: DialogState, ids: string[], direction: "both" | "back" | "forward", ctx: DialogContext): ReduceResult {
+	const earlier = state.answers.snowball?.seeds ?? [];
+	const fresh = ids.filter((id, index) => !earlier.some((seed) => seed.toLowerCase() === id.toLowerCase()) && ids.findIndex((other) => other.toLowerCase() === id.toLowerCase()) === index);
+	const room = Math.max(0, MAX_SEEDS - earlier.length);
+	const added = fresh.slice(0, room);
+	if (!added.length) return result(askPick(say(state, fresh.length ? `At most ${MAX_SEEDS} seed papers per list.` : "The list already holds the snowball of these papers."), ctx));
+	const next = withAnswers(state, { snowball: { seeds: [...earlier, ...added], direction } });
+	const run = state.answers.search?.name;
+	if (!run) return startSearch(next, ctx);
+	const form = { ...formFromAnswers(next.answers, ctx.thisYear), extend: { run, seeds: added, direction } };
+	return result(pending(next, "starting the snowball"), { kind: "startSearch", form });
+}
+
 function onPick(state: DialogState, event: Extract<DialogEvent, { kind: "answer" }>, text: string, chip: string, ctx: DialogContext): ReduceResult {
 	const candidates = state.answers.search?.candidates ?? [];
 	if (chip === "skip") return result(askAsk(withAnswers(state, { scope: "library" }), ctx));
@@ -1551,6 +1583,10 @@ function onPick(state: DialogState, event: Extract<DialogEvent, { kind: "answer"
 		ids = candidates.filter((candidate) => candidate.group === "on_target" && !candidate.inLibrary).map((candidate) => candidate.id);
 	} else {
 		const parsed = parsePickAnswer(text, candidates);
+		// Typed "snowball 1 3": the same as the Snowball button.
+		if (parsed.kind === "snowball" && (state.answers.blocks.length || isAuthorsOnly(state.answers))) {
+			return snowballFrom(state, parsed.ids, "both", ctx);
+		}
 		if (parsed.kind === "none") {
 			// Ticks sent along with free text count too.
 			ids = (event.ids ?? []).map((id) => id.trim()).filter(Boolean);

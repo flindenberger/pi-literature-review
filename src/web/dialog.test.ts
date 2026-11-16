@@ -191,7 +191,7 @@ function job(kind: JobInfo["kind"], id: string, state: JobInfo["state"] = "runni
 	out = step(state, { kind: "answer", chip: "yes" });
 	state = out.state;
 	assert.deepEqual(out.effects, [{ kind: "loadTopics", query: "(satellite OR remote sensing) AND (bathymetry) AND (river)" }]);
-	assert.equal(state.answers.codeSources.length, 4);
+	assert.equal(state.answers.codeSources.length, 6);
 	out = step(state, { kind: "topics", topics: [{ topic: "remote-sensing", lists: 8 }, { topic: "hydrology", lists: 2 }, { topic: "nothing-here", lists: 0 }] });
 	state = out.state;
 	assert.equal(state.step, "topics");
@@ -455,7 +455,7 @@ function job(kind: JobInfo["kind"], id: string, state: JobInfo["state"] = "runni
 	out = step(state, { kind: "answer", text: "code on" }, context({ hasModel: false }));
 	state = out.state;
 	assert.equal(state.step, "period");
-	assert.equal(state.answers.codeSources.length, 4);
+	assert.equal(state.answers.codeSources.length, 6);
 }
 
 // ---- no model: word-by-word blocks searched at once, questions refused ----
@@ -501,7 +501,7 @@ function job(kind: JobInfo["kind"], id: string, state: JobInfo["state"] = "runni
 	const out = step(state, { kind: "topics", topics: [{ topic: "a", lists: 0 }, { topic: "b", lists: 0 }] });
 	assert.equal(out.state.step, "period");
 	assert.ok(!out.state.answers.codeSources.includes("awesome-lists"));
-	assert.equal(out.state.answers.codeSources.length, 3);
+	assert.equal(out.state.answers.codeSources.length, 5);
 	assert.match(out.state.messages[out.state.messages.length - 2].text ?? "", /left out of this search/);
 	// A prose request with parentheses asks the model instead of being taken as blocks.
 	let s2 = initialDialog(context());
@@ -754,12 +754,12 @@ console.log("dialog keyword-navigation tests ok");
 	let out = step(state, { kind: "answer", chip: "addCode" }, ctx);
 	assert.equal(out.state.pending, "suggesting list topics");
 	assert.deepEqual(out.effects, [{ kind: "loadTopics", query: "(waterline) AND (river)" }]);
-	assert.equal(out.state.answers.codeSources.length, 4);
+	assert.equal(out.state.answers.codeSources.length, 6);
 	out = step(out.state, { kind: "topics", topics: [{ topic: "remote-sensing", lists: 8 }, { topic: "rivers", lists: 1 }, { topic: "hydrology", lists: 5 }, { topic: "none", lists: 0 }, { topic: "gis", lists: 3 }] }, ctx);
 	assert.equal(out.effects[0]?.kind, "startSearch");
 	assert.ok(out.effects[0]?.kind === "startSearch");
 	assert.deepEqual(out.effects[0].form.codeTopics, ["remote-sensing", "hydrology", "gis"]);
-	assert.equal(out.effects[0].form.codeSources?.length, 4);
+	assert.equal(out.effects[0].form.codeSources?.length, 6);
 	assert.equal(out.state.answers.autoTopics, false);
 	// No topics at all: the awesome lists are left out, the search still starts.
 	let none = step(state, { kind: "answer", chip: "addCode" }, ctx).state;
@@ -787,16 +787,52 @@ console.log("dialog keyword-navigation tests ok");
 	assert.equal(out.effects[0].form.minCites ?? null, null);
 }
 
+// Snowball from the ticked papers: seeds added up across clicks (no
+// doubles), direction from the window, carried by every later re-run of
+// the same request, cleared by a new request; nothing ticked = no search.
+{
+	const ctx = context({});
+	const done = (s: DialogState, id: string) => {
+		s = step(s, { kind: "jobStarted", job: job("search", id) }, ctx).state;
+		return step(s, { kind: "job", job: job("search", id, "done"), search: { name: id, htmlUrl: `/files/lit-search/${id}.html`, included: 2, dropped: 0, candidates: [] } }, ctx).state;
+	};
+	let state = done(step(initialDialog(ctx, "search"), { kind: "answer", text: "(waterline) AND (river)" }, ctx).state, "s-1");
+	assert.equal(state.step, "pick");
+	let out = step(state, { kind: "answer", chip: "snowball", ids: ["10.3390/rs13081505", "arXiv:2405.11494"], direction: "back" }, ctx);
+	assert.ok(out.effects[0]?.kind === "startSearch");
+	assert.deepEqual(out.effects[0].form.snowball, { seeds: ["10.3390/rs13081505", "arXiv:2405.11494"], direction: "back" });
+	// The current list is extended, from the new seeds only.
+	assert.deepEqual(out.effects[0].form.extend, { run: "s-1", seeds: ["10.3390/rs13081505", "arXiv:2405.11494"], direction: "back" });
+	state = done(out.state, "s-2");
+	out = step(state, { kind: "answer", chip: "snowball", ids: ["10.3390/RS13081505", "10.1130/b35829.1"] }, ctx);
+	assert.ok(out.effects[0]?.kind === "startSearch");
+	assert.deepEqual(out.effects[0].form.snowball, { seeds: ["10.3390/rs13081505", "arXiv:2405.11494", "10.1130/b35829.1"], direction: "both" });
+	assert.deepEqual(out.effects[0].form.extend, { run: "s-2", seeds: ["10.1130/b35829.1"], direction: "both" });
+	state = done(out.state, "s-3");
+	// Seeds the list already rolled from: no new round.
+	assert.equal(step(state, { kind: "answer", chip: "snowball", ids: ["arXiv:2405.11494"] }, ctx).effects.length, 0);
+	out = step(state, { kind: "answer", chip: "searchAgain", filters: { allYears: true } }, ctx);
+	assert.ok(out.effects[0]?.kind === "startSearch");
+	assert.equal((out.effects[0].form.snowball?.seeds as string[]).length, 3);
+	assert.equal(out.effects[0].form.extend, undefined);
+	out = step(state, { kind: "answer", chip: "snowball", ids: [] }, ctx);
+	assert.equal(out.effects.length, 0);
+	out = step(state, { kind: "answer", chip: "goSearch" }, ctx);
+	out = step(out.state, { kind: "answer", text: "(sandbar) AND (river)" }, ctx);
+	assert.ok(out.effects[0]?.kind === "startSearch");
+	assert.equal(out.effects[0].form.snowball, undefined);
+}
+
 // The code icon next to the request box: the first search takes the code sources.
 {
 	const ctx = context({ storedTopics: ["hydrology"] });
 	let out = step(initialDialog(ctx, "search"), { kind: "answer", text: "(waterline) AND (river)", code: true }, ctx);
 	assert.equal(out.state.pending, "suggesting list topics");
-	assert.equal(out.state.answers.codeSources.length, 4);
+	assert.equal(out.state.answers.codeSources.length, 6);
 	assert.equal(out.state.answers.codeAtStart, false);
 	out = step(out.state, { kind: "topics", topics: [{ topic: "rivers", lists: 2 }] }, ctx);
 	assert.ok(out.effects[0]?.kind === "startSearch");
-	assert.equal(out.effects[0].form.codeSources?.length, 4);
+	assert.equal(out.effects[0].form.codeSources?.length, 6);
 	assert.deepEqual(out.effects[0].form.codeTopics, ["rivers"]);
 	// Without the icon the search starts at once, code sources off.
 	out = step(initialDialog(ctx, "search"), { kind: "answer", text: "(waterline) AND (river)" }, ctx);

@@ -326,7 +326,7 @@ try {
 	const job = (await started.json()).job;
 	assert.equal(job.kind, "search");
 	await readUntil(/"state":"done"/);
-	assert.match(received, /event: line\ndata: \{"type":"line","job":"search-1".*source 'arxiv': 1 record\(s\)/);
+	assert.match(received, /event: line\ndata: \{"type":"line","job":"search-[a-z0-9]+-1".*source 'arxiv': 1 record\(s\)/);
 	assert.match(received, /event: line\ndata: .*verified 1\/1 records/);
 	assert.match(received, /event: job\ndata: .*"state":"done".*"htmlUrl":"\/files\/lit-search\/2026-10-15_stub.html"/);
 	assert.deepEqual(seen, ["search:(river) AND (bathymetry)"]);
@@ -336,13 +336,13 @@ try {
 	void slow;
 	const selectionStarted = await fetch(`${base}/api/selection/run`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ identifiers: ["10.1000/abc"], confirmed: true, withoutUnpaywall: true }) });
 	assert.equal(selectionStarted.status, 202);
-	await readUntil(/selection-2.*"state":"done"/);
+	await readUntil(/selection-[a-z0-9]+-2.*"state":"done"/);
 	assert.ok(seen.includes("selection:10.1000/abc:-"));
 	// A chosen download folder reaches the engine and is remembered.
 	const downloadsDir = join(root, "My Papers");
 	const intoFolder = await fetch(`${base}/api/selection/run`, { method: "POST", headers: { ...auth, "content-type": "application/json" }, body: JSON.stringify({ identifiers: ["10.1000/abc"], confirmed: true, withoutUnpaywall: true, folder: downloadsDir }) });
 	assert.equal(intoFolder.status, 202);
-	await readUntil(/selection-3.*"state":"done"/);
+	await readUntil(/selection-[a-z0-9]+-3.*"state":"done"/);
 	assert.ok(seen.includes(`selection:10.1000/abc:-:${downloadsDir}`));
 	assert.ok(seen.includes(`remember:${downloadsDir}`));
 	assert.ok(existsSync(downloadsDir)); // created when missing

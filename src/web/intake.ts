@@ -7,6 +7,7 @@
  */
 
 import { CODE_SEARCHERS } from "../codesearch.ts";
+import { MAX_SEEDS } from "../snowball.ts";
 import {
 	type BlockFormQuery,
 	parsePerSource,
@@ -34,6 +35,11 @@ export interface SearchForm {
 	sources?: string[];
 	codeSources?: string[];
 	codeTopics?: string[];
+	/** Citation searching: seed DOIs / "arXiv:" ids and the direction. */
+	snowball?: { seeds?: unknown; direction?: unknown };
+	/** Snowball as an extension of the earlier list `run` (a lit-search
+	 * file name): only the citation searching runs, from `seeds`. */
+	extend?: { run?: unknown; seeds?: unknown; direction?: unknown };
 	minCites?: string | number;
 	journals?: string[];
 	journalsOther?: boolean;
@@ -152,6 +158,8 @@ export function intakeFromForm(form: SearchForm, thisYear = new Date().getFullYe
 		}
 	}
 
+	const snowballSeeds = strings(form.snowball?.seeds).slice(0, MAX_SEEDS);
+	const snowballDirection = form.snowball?.direction === "back" || form.snowball?.direction === "forward" ? form.snowball.direction : "both";
 	const variants = strings(form.variants).filter((variant) => variant.toLowerCase() !== query.query.toLowerCase());
 	const options: SearchOptions = {
 		query: query.query,
@@ -163,6 +171,7 @@ export function intakeFromForm(form: SearchForm, thisYear = new Date().getFullYe
 		filters,
 		codeSources: codeSources.length ? codeSources : undefined,
 		codeListTopics: codeSources.includes("awesome-lists") && codeTopics.length ? codeTopics : undefined,
+		snowball: snowballSeeds.length ? { seeds: snowballSeeds, direction: snowballDirection } : undefined,
 		authorIds,
 		authorScope,
 		enrich: true,

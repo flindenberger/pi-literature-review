@@ -50,6 +50,8 @@ interface CliArgs {
 	digest: boolean;
 	/** Code-first sources (--code): repositories first, papers resolved. */
 	codeSources: string[] | undefined;
+	/** Citation searching (--snowball): seed DOIs / arXiv ids, direction. */
+	snowball: { seeds: string[]; direction: "both" | "back" | "forward" } | undefined;
 	authorIds: string[] | undefined;
 	authorScope: "query" | "all" | undefined;
 }
@@ -58,13 +60,14 @@ function usage(): never {
 	warn('usage: node src/cli.ts "<query>" [-n PER_SOURCE] [-s SOURCES] [-g "a,b;c,d"]');
 	warn("       [--min-cites N] [--year-from YYYY] [--year-to YYYY] [--venues \"a,b\"]");
 	warn("       [--require-pdf] [--verified-only] [--sort cites|year] [--html [FILE]] [--no-enrich]");
-	warn("       [--variant \"...\" (repeatable)] [--digest] [--code SOURCES]");
+	warn("       [--variant \"...\" (repeatable)] [--digest] [--code SOURCES] [--snowball IDS [--snowball-direction both|back|forward]]");
 	warn("       [--author \"Name\" (repeatable)] [--author-id A... (repeatable, paired)] [--author-position first|contributing|any] [--author-scope query|all]");
 	warn("       --html without FILE writes to lit-search/<date>_<query>.html in the store (~/.config/pi-literature-review/)");
 	warn("       (the full JSON payload is always written next to the HTML, same basename)");
 	warn("       --variant adds an alternative phrasing; results are deduplicated across variants");
 	warn("       --digest prints the agent-facing digest instead of JSON (combine with --html for real paths)");
 	warn("       --code searches code repositories FIRST and resolves the papers they cite (up to ~40 s extra)");
+	warn("       --snowball adds the reference lists of and the works citing the seed papers (comma list of DOIs / arXiv ids; OpenAlex)");
 	warn(`available sources: ${Object.keys(SEARCHERS).join(", ")}`);
 	warn(`available code sources: ${Object.keys(CODE_SEARCHERS).join(", ")}`);
 	warn("or:    node src/cli.ts selection <DOI-or-arXiv-ID> [more ...]   (alias: fetch)");
@@ -111,6 +114,7 @@ function parseArgs(argv: string[]): CliArgs {
 	let enrich = true;
 	let digest = false;
 	let codeSources: string[] | undefined;
+	let snowball: { seeds: string[]; direction: "both" | "back" | "forward" } | undefined;
 	// Picked authors: names (post-filter, CrossRef, arXiv) and OpenAlex ids
 	// (exact filter), paired in order; position and scope as in the wizard.
 	const pickedAuthors: string[] = [];
@@ -180,6 +184,14 @@ function parseArgs(argv: string[]): CliArgs {
 			enrich = false;
 		} else if (arg === "--digest") {
 			digest = true;
+		} else if (arg === "--snowball") {
+			const seeds = (argv[++i] ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+			if (!seeds.length) usage();
+			snowball = { seeds, direction: snowball?.direction ?? "both" };
+		} else if (arg === "--snowball-direction") {
+			const direction = argv[++i];
+			if (direction !== "both" && direction !== "back" && direction !== "forward") usage();
+			snowball = { seeds: snowball?.seeds ?? [], direction };
 		} else if (arg === "--code") {
 			codeSources = (argv[++i] ?? "").split(",").map((s) => s.trim()).filter(Boolean);
 			if (!codeSources.length) usage();
@@ -190,10 +202,11 @@ function parseArgs(argv: string[]): CliArgs {
 		}
 	}
 	if (!query) usage();
+	if (snowball && !snowball.seeds.length) usage(); // a direction needs --snowball
 	if (pickedAuthors.length) filters.pickedAuthors = pickedAuthors;
 	else if (authorIds.length || filters.authorPosition || authorScope) usage(); // ids/position/scope need --author
 	return {
-		query, variants, perSource, sources, groupTerms, filters, sort, htmlFile, enrich, digest, codeSources,
+		query, variants, perSource, sources, groupTerms, filters, sort, htmlFile, enrich, digest, codeSources, snowball,
 		authorIds: authorIds.length ? authorIds : undefined,
 		authorScope,
 	};
@@ -524,6 +537,7 @@ const options: SearchOptions = {
 	sort: args.sort,
 	enrich: args.enrich,
 	codeSources: args.codeSources,
+	snowball: args.snowball,
 	authorIds: args.authorIds,
 	authorScope: args.authorScope,
 	onWarn: warn,

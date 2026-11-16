@@ -4,6 +4,37 @@ All notable changes to this package are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- Papers with code: two more code sources. "Archived software
+  (DataCite)" finds code releases archived at Zenodo, figshare and
+  others that match the search and reads the paper from the record or
+  the repository's README; open, no key. "Web search" sends the query to
+  your own search engine -- your SearXNG instance or Exa with your own
+  API key (Settings) -- and reads repositories and paper identifiers from
+  the hits; skipped when neither is set up. Both run with "Add papers
+  with code".
+- Snowball search: from ticked papers, the search follows their
+  citations at OpenAlex -- the papers they cite and the papers citing
+  them (up to 200 per paper) -- and adds the finds to the list; the
+  list itself stays as it is. Finds that miss your keywords go to the
+  dropped records. Browser: Snowball button in the results toolbar;
+  terminal: `snowball 1 3` in the download question; CLI: `--snowball`.
+  Cards mark seeds and finds ("seed", "cites ...", "cited by ...");
+  reports name where each find came from; the PRISMA diagram counts
+  citation searching separately.
+
+### Fixed
+
+- Live demo: a hard reload (Ctrl+Shift+R) could leave the page at
+  "connecting ..." for good.
+- Browser: a search started in a conversation reopened from History
+  after a restart showed the status line of an older finished search.
+- Browser: the result list keeps its buttons, greyed out, while a
+  follow-up search runs.
+
 ## [0.3.0] - 2026-11-15
 
 ### Added
@@ -177,6 +208,7 @@ in the Pi coding agent.
   per-paper summaries, detail questions and an optional review synthesis.
 - Command line for all three stages without Pi.
 
+[Unreleased]: https://github.com/flindenberger/pi-literature-review/compare/v0.3.0...HEAD
 [0.3.0]: https://github.com/flindenberger/pi-literature-review/releases/tag/v0.3.0
 [0.2.1]: https://github.com/flindenberger/pi-literature-review/releases/tag/v0.2.1
 [0.2.0]: https://github.com/flindenberger/pi-literature-review/releases/tag/v0.2.0

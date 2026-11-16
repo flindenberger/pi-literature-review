@@ -79,7 +79,7 @@ One call to the LLM suggests three alternative searches as concept-block boolean
 
 ### Code
 
-Four code-first sources, off by default. The head row "Search and add papers with Code" ticks or clears all. No key needed. Together up to about 40 s per run.
+Six code-first sources, off by default. The head row "Search and add papers with Code" ticks or clears all. Together up to about 40 s per run. Five need no key; the web search needs your own search engine.
 
 | Source | Finds |
 |---|---|
@@ -87,13 +87,34 @@ Four code-first sources, off by default. The head row "Search and add papers wit
 | GitHub README search | Repositories whose README cites an arXiv paper |
 | Awesome lists (awesome.ecosyste.ms) | Awesome lists found by GitHub topic; entries matched against the blocks |
 | Google Earth Engine (GitHub) | Repositories for the Earth Engine code editor whose README cites a DOI |
+| Archived software (DataCite) | Code releases archived at Zenodo, figshare and others (DataCite resource type "software") matching the blocks. A record that names its paper by DOI is paired directly; otherwise the linked GitHub repository's README is read. With three or more blocks and few hits, each block is left out once. |
+| Web search (your own engine) | The query text, alone and with "github", goes to your own search engine: a SearXNG instance (`searxngUrl`, asked first) or Exa with your API key (`exaApiKey`). Repository addresses and paper identifiers are pulled out of the hits by pattern; READMEs as above. Without either setting the source is not queried and the results page says so. Not available in the live demo. |
 
 - Repositories are searched first; the papers they cite are resolved at arXiv or OpenAlex.
 - **Date gate:** repository created more than a year after its paper: dropped table. More than five years: not listed.
 - **Overview pages:** the linked repository whose name matches the paper title is taken.
 - **Topic gate:** a paper found only by code sources must fit the query: title and abstract hit every block (1-2 blocks) or all but one (3 or more) of at least one confirmed query. Otherwise dropped table.
 - **Awesome-list topics:** ticking the source shows topic rows: the configured `codeListTopics` (default `remote-sensing`, `satellite-imagery`, `earth-observation`) and up to 5 model suggestions, each with its list count from awesome.ecosyste.ms (suggestions with 0 lists are hidden). An own topic can be added.
+- **Privacy:** the code sources receive the query words, like the paper databases. The web search sends them to the engine you set up; with Exa that is a commercial service under your own account and terms.
 - Without code sources, code and data links still come from the abstract and the DOI registries (see [Pipeline](#pipeline), step 10).
+
+## Snowball (citation searching)
+
+From papers of a result list, the search follows their citations at OpenAlex: backward to the works they cite (their reference lists), forward to the works citing them. One round per request; the papers you pick are the seeds.
+
+| Step | What happens |
+|---|---|
+| Seeds | Ticked papers (browser **Snowball**), `snowball 1 3` in the download question (terminal), `--snowball` (CLI). DOIs or arXiv IDs; at most 25. |
+| Direction | References and citing papers (default), only references, or only citing papers |
+| Requests | Seeds by DOI, reference lists in batches of 50 ids, citing works per seed (at most 200, most cited first). Each an exact OpenAlex filter: one credit. Measured: 3 seeds, 217 works, 7 requests, 4.5 s. |
+| List extended | Only the citation searching runs (`runSearch` with `snowballOnly`); the earlier list stays as it is (`src/snowmerge.ts`). Finds already in the list gain their provenance and count as duplicates; new finds pass the same steps: dedupe, abstract gate, **topic gate** (a find only the snowball delivered must fit the blocks like a code-only find), filters. The flow numbers of both rounds add up; the result is written as a new run file. |
+| Provenance | Card and JSON (`snowball`): "references of: Lee 2021" (card: "cited by Lee 2021"), "cites: Lee 2021"; seeds carry `snowball_seed` (card: "seed") |
+| Report | "Citation searching (OpenAlex)" row with seeds, direction and counts; the PRISMA diagram splits "Records identified" into databases and citation searching and counts off-topic snowball finds |
+
+- Seeds add up: a second snowball rolls from the new seeds only and keeps the earlier ones; a later full search (search again, add code) repeats every seed; a new request starts without.
+- `--snowball` (CLI) runs the search with the snowball as one more source in one go.
+- Seeds OpenAlex does not know are named in the report row.
+- No model involved; OpenAlex data is CC0.
 
 ## Author-only search
 
@@ -143,6 +164,7 @@ After the results card, `/lit-search` asks **Which papers do you want as PDFs?**
 | DOIs or arXiv IDs | These papers |
 | `all` | Every on-target paper not yet in your library |
 | `code` | Every paper with a code or data link, not yet in your library |
+| `snowball 1 3` (or DOIs) | No download: the list is extended by the papers citing or cited by these papers ([Snowball](#snowball-citation-searching)); the new card and the question follow |
 | Empty or Esc | Later; `/lit-selection` takes the same input any time |
 
 - An answer that names no paper, or selects none, is asked again.
@@ -216,7 +238,7 @@ Tool `pi-literature-search`. In interactive calls every parameter only prefills 
 | `group_terms` | Concept blocks of the base query; drive search and labeling |
 | `per_source` | Records per source. Default 5, maximum 50. |
 | `sources` | Subset of `arxiv`, `crossref`, `openalex`, `semanticscholar` |
-| `code_sources` | Any of `hf-papers`, `github-readme`, `awesome-lists`, `gee-github`. Default none. |
+| `code_sources` | Any of `hf-papers`, `github-readme`, `awesome-lists`, `gee-github`, `datacite-software`, `web-search`. Default none. |
 | `code_list_topics` | GitHub topics for the awesome-lists source (fields, not query words) |
 | `min_cites`, `min_journal_score` | Minimum citations; minimum journal 2-year citedness |
 | `year_from`, `year_to` | Publication year range |

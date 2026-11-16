@@ -22,6 +22,13 @@ assert.deepEqual(candidates.map((c) => c.dropped), [false, false, false, true]);
 assert.equal(candidates[0].inLibrary, true);
 assert.equal(candidates[1].inLibrary, false);
 
+// "snowball" + rows or ids: seeds for citation searching, never a download;
+// library papers are not skipped (a library paper is a fine seed).
+assert.deepEqual(parsePickAnswer("snowball 1 2", candidates), { kind: "snowball", ids: ["10.1/a", "arXiv:2401.00001v2"] });
+assert.deepEqual(parsePickAnswer("Snowball: 10.1234/xyz", candidates), { kind: "snowball", ids: ["10.1234/xyz"] });
+assert.deepEqual(parsePickAnswer("snowball", candidates), { kind: "none" });
+assert.deepEqual(pickedIds(parsePickAnswer("snowball 1", candidates), candidates), ["10.1/a"]);
+
 // Library keys follow identityKey: an arXiv version suffix and DOI case do not matter,
 // and "all" / "code" skip papers already in the library.
 {

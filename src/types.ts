@@ -22,6 +22,12 @@ export interface SourceRecord {
 	abstract: string;
 	/** Query variants that found this record; only set on multi-query runs. */
 	found_by?: string[];
+	/** Snowball provenance: "references of: Lee 2021" / "cites: Lee 2021"
+	 * for every seed that led here (citation searching, snowball.ts). */
+	snowball?: string[];
+	/** A seed of the list's citation searching (set when a run is extended,
+	 * snowmerge.ts). */
+	snowball_seed?: boolean;
 	/** OpenAlex source (journal) ID, e.g. "S43295729", when the API named one. */
 	venue_id?: string;
 	/** Journal-level 2-yr mean citedness from OpenAlex; set by enrichment. */

@@ -1,6 +1,6 @@
 /**
  * Offline tests for the code-first search: identifier extraction, list
- * matching, the shared resolution with the date gate, and the four
+ * matching, the shared resolution with the date gate, and the six
  * searchers on injected stubs (no network, no pacer waits). Fixtures are
  * field cases measured on 2026-09-03.
  * Run: node src/codesearch.test.ts
@@ -164,6 +164,32 @@ const stubDeps: CodeSearchDeps = {
 		calls.push(`openalex:${dois.join(",")}`);
 		return dois.map((d) => papers[d]).filter(Boolean);
 	},
+	softwareSearch: async (query, size) => {
+		calls.push(`datacite:${query}:${size}`);
+		return [
+			// Names its paper by DOI: paired directly, no README read.
+			{ doi: "10.5281/zenodo.1", year: "2020", repoUrls: ["https://github.com/Servir-Mekong/hydra-floods/tree/v1.0"], paperDois: ["10.3390/rs12152469"] },
+			// Same repository again (a second release): skipped.
+			{ doi: "10.5281/zenodo.2", year: "2021", repoUrls: ["https://github.com/Servir-Mekong/hydra-floods/tree/v1.1"], paperDois: ["10.3390/rs12152469"] },
+			// No paper relation: the README decides.
+			{ doi: "10.5281/zenodo.3", year: "2024", repoUrls: ["https://github.com/davdma/floodmaps/tree/v0.1"], paperDois: [] },
+			// GitLab only: not read (GitHub READMEs only).
+			{ doi: "10.5281/zenodo.4", year: "2024", repoUrls: ["https://gitlab.com/x/y"], paperDois: [] },
+		];
+	},
+	webSearch: async (query) => {
+		calls.push(`web:${query}`);
+		if (query.endsWith(" github")) {
+			return [
+				{ url: "https://github.com/cordmaur/Sentinel1-Flood-Finder", title: "Sentinel1-Flood-Finder", text: "flood mapping" },
+				{ url: "https://github.com/arbal/awesome-flood", title: "awesome", text: "a list" },
+			];
+		}
+		return [
+			// A blog post linking a repository and citing a paper.
+			{ url: "https://blog.example.org/floods", title: "Flood maps", text: "Code: https://github.com/davdma/floodmaps -- paper https://doi.org/10.3390/rs12152469" },
+		];
+	},
 };
 const scope = { blocks: [["water", "flood"], ["mapping", "segmentation"]] };
 
@@ -322,6 +348,48 @@ const scope = { blocks: [["water", "flood"], ["mapping", "segmentation"]] };
 	assert.deepEqual(down.failures.map((f) => f.step), ["lists for topic remote-sensing", "lists for topic satellite-imagery, earth-observation"]);
 	assert.match(down.failures[1].error, /not asked/);
 	clearListCache();
+}
+
+// datacite-software: a record naming its paper pairs directly; duplicate
+// repositories once; without a paper relation the README decides; GitLab
+// links are not read; the query is the DataCite boolean form.
+{
+	calls.length = 0;
+	const result = await CODE_SEARCHERS["datacite-software"]("ignored", 5, scope, { deps: stubDeps });
+	assert.equal(calls[0], "datacite:(water OR flood) AND (mapping OR segmentation):30");
+	assert.deepEqual(calls.filter((c) => c.startsWith("readme:")), ["readme:davdma/floodmaps"]);
+	const hydra = result.records.find((r) => r.doi === "10.3390/rs12152469")!;
+	assert.equal(hydra.code_url, "https://github.com/Servir-Mekong/hydra-floods");
+	assert.equal(hydra.source, "datacite-software");
+	assert.ok(result.records.some((r) => r.arxiv_id === "2411.01411" && r.code_url === "https://github.com/davdma/floodmaps"));
+	assert.equal(result.candidates, 2);
+	// Three or more blocks and too few hits: each block left out once.
+	calls.length = 0;
+	await CODE_SEARCHERS["datacite-software"]("ignored", 5, { blocks: [["sandbar"], ["river"], ["sentinel-2"]] }, { deps: stubDeps });
+	assert.deepEqual(calls.filter((c) => c.startsWith("datacite:")).map((c) => c.split(":")[1]), [
+		"sandbar AND river AND sentinel-2", "river AND sentinel-2", "sandbar AND sentinel-2", "sandbar AND river",
+	]);
+	await assert.rejects(CODE_SEARCHERS["datacite-software"]("q", 5, scope, { deps: { ...stubDeps, softwareSearch: async () => { throw new Error("HTTP 500"); } } }), /DataCite software search failed: HTTP 500/);
+}
+
+// web-search: two requests per query (words, words + github); repositories
+// from hit addresses and hit texts, aggregator repositories skipped; ids
+// in a non-repository page become papers without code; one failed request
+// is a failure, all failed throws.
+{
+	calls.length = 0;
+	const result = await CODE_SEARCHERS["web-search"]("ignored", 5, scope, { deps: stubDeps });
+	assert.deepEqual(calls.filter((c) => c.startsWith("web:")), ["web:water flood mapping segmentation", "web:water flood mapping segmentation github"]);
+	assert.deepEqual(calls.filter((c) => c.startsWith("readme:")), ["readme:davdma/floodmaps", "readme:cordmaur/Sentinel1-Flood-Finder"]);
+	assert.ok(result.records.every((r) => r.source === "web-search"));
+	assert.ok(result.records.some((r) => r.arxiv_id === "2411.01411" && r.code_url === "https://github.com/davdma/floodmaps"));
+	// The DOI from the blog text, also named by no README here as code.
+	assert.ok(result.records.some((r) => r.doi === "10.3390/rs12152469"));
+	const half = await CODE_SEARCHERS["web-search"]("ignored", 5, scope, {
+		deps: { ...stubDeps, webSearch: async (query: string) => { if (query.endsWith("github")) throw new Error("HTTP 429"); return stubDeps.webSearch(query); } },
+	});
+	assert.equal(half.failures[0].step, 'web search "water flood mapping segmentation github"');
+	await assert.rejects(CODE_SEARCHERS["web-search"]("q", 5, scope, { deps: { ...stubDeps, webSearch: async () => { throw new Error("HTTP 401"); } } }), /web search failed: HTTP 401/);
 }
 
 // MAX_IDS_PER_README caps a long reference list at the first two ids.

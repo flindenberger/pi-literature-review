@@ -40,6 +40,10 @@ export interface CardRow {
 	codeUrl: string | null;
 	dataLinks: Array<{ url: string; archive: string }>;
 	sources: string[];
+	/** Snowball provenance ("cites: Lee 2021", "references of: Lee 2021"). */
+	snowball: string[];
+	/** A seed of the list's citation searching. */
+	seed: boolean;
 	group: "on_target" | "adjacent" | null;
 	dropped: boolean;
 	reason: string | null;
@@ -145,6 +149,8 @@ function rowOf(record: AnyRecord, n: number, dropped: boolean, reason: string | 
 		codeUrl: ownCode || repoLink?.url || null,
 		dataLinks,
 		sources,
+		snowball: Array.isArray(record.snowball) ? record.snowball.filter((s: unknown): s is string => typeof s === "string") : [],
+		seed: record.snowball_seed === true,
 		group: record.group === "on_target" || record.group === "adjacent" ? record.group : null,
 		dropped,
 		reason,

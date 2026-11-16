@@ -18,13 +18,14 @@ import {
 	dropWithoutAbstract,
 	filterRecords,
 	groupAcrossQueries,
+	identityKey,
 	type ResultFilters,
 	sanitizeTermGroups,
 	type SortKey,
 	sortRecords,
 	type TermGroups,
 } from "./pipeline.ts";
-import { blockQuery, CODE_SEARCHERS, searchWords } from "./codesearch.ts";
+import { blockQuery, CODE_SEARCHERS, searchWords, webQueries } from "./codesearch.ts";
 import { codeListTopics, openAlexApiKey, s2ApiKey } from "./config.ts";
 import { addAccessStatus, addCodeLinks, addDataLinks, addJournalScores, enrichAll } from "./enrich.ts";
 import { queryBlocks } from "./intake.ts";
@@ -34,6 +35,9 @@ import { lookupAllDataLinks } from "./sources/datacite.ts";
 import { type AccessInfo, type AccessLevel, buildWorksParams, searchOpenalex } from "./sources/openalex.ts";
 import { buildHfQuery } from "./sources/huggingface.ts";
 import { buildBulkQuery, searchSemanticScholar } from "./sources/semanticscholar.ts";
+import { dataciteBlockQuery } from "./sources/datacite.ts";
+import { webEngine } from "./sources/websearch.ts";
+import { runSnowball, type SnowballDirection, type SnowballResult } from "./snowball.ts";
 import type { DataLink, SourceRecord, SourceScope } from "./types.ts";
 import { verifyAll } from "./verify.ts";
 
@@ -55,6 +59,10 @@ export const SEARCHERS: Record<string, Searcher> = {
  * In a browser (the browser demo) arXiv is never asked: its API sends no
  * header that lets a web page read the answer. */
 export function keyRequirement(source: string): string | null {
+	if (source === "web-search") {
+		if (IN_BROWSER) return "not queried in the browser demo: needs your own search engine (the installed version can use one)";
+		return webEngine() ? null : "not queried: needs your own search engine -- an Exa API key or a SearXNG address in the settings (see docs/configuration.md)";
+	}
 	if (source === "arxiv" && IN_BROWSER) return "not queried in the browser demo: arXiv answers no requests from web pages (the installed version queries it)";
 	return source === "semanticscholar" && !s2ApiKey()
 		? "not queried: optional, needs a free API key (s2ApiKey in config.json, see docs/configuration.md)"
@@ -82,6 +90,18 @@ export interface SearchOptions {
 	 * at arXiv/OpenAlex. Off unless named -- costs up to ~40 s per run. Runs
 	 * regardless of `enrich` (identification, not enrichment). */
 	codeSources?: string[];
+	/** Citation searching from seed papers (DOIs or arXiv ids): their
+	 * reference lists and/or the works citing them, from OpenAlex, one
+	 * round (snowball.ts). The finds run through every gate like the rest;
+	 * a find only the snowball delivered must fit the query blocks. */
+	snowball?: { seeds: string[]; direction: SnowballDirection };
+	/** Extend an earlier run (snowmerge.ts): no database or code source is
+	 * queried, only the snowball round runs. */
+	snowballOnly?: boolean;
+	/** Identity keys (pipeline.ts identityKey) of the records the extended
+	 * run already lists. Such finds leave right after dedupe as duplicates;
+	 * their provenance travels in `snowball_known` for the merge. */
+	knownKeys?: ReadonlySet<string>;
 	/** GitHub topics for the awesome-lists searcher; default from config
 	 * (codeListTopics(): env > config.json > remote-sensing,
 	 * satellite-imagery, earth-observation). */
@@ -280,9 +300,9 @@ export async function runSearch(options: SearchOptions) {
 		}
 		return out;
 	};
-	type Job = { source: string; kind: "database" | "code"; run: Promise<SourceRun> | null; skip?: string };
+	type Job = { source: string; kind: "database" | "code" | "citation"; run: Promise<SourceRun> | null; skip?: string };
 	const jobs: Job[] = [];
-	for (const source of sources) {
+	for (const source of options.snowballOnly ? [] : sources) {
 		const search = SEARCHERS[source];
 		if (!search) {
 			warn(`unknown source '${source}'; skipping (available: ${Object.keys(SEARCHERS).join(", ")})`);
@@ -309,13 +329,42 @@ export async function runSearch(options: SearchOptions) {
 	// cite. Identification, not enrichment -- they run even with enrich:false.
 	const listTopics = options.codeListTopics ?? codeListTopics();
 	const codeContext = { signal: options.signal, warn, listTopics };
-	for (const source of codeSources) {
+	for (const source of options.snowballOnly ? [] : codeSources) {
 		const search = CODE_SEARCHERS[source];
 		if (!search) {
 			warn(`unknown code source '${source}'; skipping (available: ${Object.keys(CODE_SEARCHERS).join(", ")})`);
 			continue;
 		}
+		const codeNeedsKey = keyRequirement(source);
+		if (codeNeedsKey) {
+			warn(`code source '${source}': ${codeNeedsKey}`);
+			sourcesSkipped.push({ source, reason: codeNeedsKey });
+			continue;
+		}
 		jobs.push({ source, kind: "code", run: runSource(source, (query, scope) => search(query, perSource, scope, codeContext)) });
+	}
+	// Citation searching: once per run (not per query), from the seeds.
+	let snowballInfo: (Omit<SnowballResult, "records"> & { direction: SnowballDirection }) | null = null;
+	if (options.snowball?.seeds.length) {
+		const { seeds, direction } = options.snowball;
+		jobs.push({ source: "snowball", kind: "citation", run: (async (): Promise<SourceRun> => {
+			const out: SourceRun = { records: [], counts: [], failures: [], lists: [], succeeded: false };
+			try {
+				const found = await runSnowball(seeds, direction, { signal: options.signal, warn });
+				const { records: snowRecords, ...info } = found;
+				snowballInfo = { ...info, direction };
+				warn(`source 'snowball': ${snowRecords.length} record(s) from ${info.seeds.length} seed(s) (${info.backward} cited, ${info.forward} citing, ${info.requests} OpenAlex requests)`);
+				out.records.push(...snowRecords);
+				out.counts.push({ source: "snowball", query: `${direction === "back" ? "references of" : direction === "forward" ? "works citing" : "references of and works citing"} ${info.seeds.join(", ") || "(no seed found)"}`, count: snowRecords.length });
+				out.succeeded = true;
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				if (options.signal?.aborted) throw error;
+				warn(`source 'snowball' failed: ${message}`);
+				out.failures.push({ source: "snowball", error: message });
+			}
+			return out;
+		})() });
 	}
 	// allSettled: every started source finishes (or hits the abort check)
 	// before the run goes on; an abort then surfaces as the thrown error.
@@ -334,7 +383,7 @@ export async function runSearch(options: SearchOptions) {
 		for (const list of result.lists) {
 			if (!listsRead.includes(list)) listsRead.push(list);
 		}
-		if (result.succeeded) (job.kind === "database" ? sourcesUsed : codeSourcesUsed).push(job.source);
+		if (result.succeeded && job.kind !== "citation") (job.kind === "database" ? sourcesUsed : codeSourcesUsed).push(job.source);
 	}
 
 	const { kept, dropped } = filterRecords(records);
@@ -342,10 +391,21 @@ export async function runSearch(options: SearchOptions) {
 		const label = record.title || record.doi || record.arxiv_id || "(no identifier)";
 		warn(`dropped [${record.source}] "${label}": ${reason}`);
 	}
-	const deduped = dedupe(kept);
-	if (deduped.length < kept.length) {
-		warn(`dedupe merged ${kept.length - deduped.length} duplicate record(s)`);
+	const merged = dedupe(kept);
+	if (merged.length < kept.length) {
+		warn(`dedupe merged ${kept.length - merged.length} duplicate record(s)`);
 	}
+	// Extending an earlier run: finds it already lists are duplicates of it.
+	const knownFinds: Array<{ key: string; snowball: string[] }> = [];
+	const deduped = options.knownKeys?.size
+		? merged.filter((record) => {
+			const key = identityKey(record);
+			if (!key || !options.knownKeys?.has(key)) return true;
+			knownFinds.push({ key, snowball: record.snowball ?? [] });
+			return false;
+		})
+		: merged;
+	if (knownFinds.length) warn(`${knownFinds.length} find(s) already in the list`);
 	// The data-link lookup needs only DOIs, and they are known from here on:
 	// it starts now and runs alongside verification and enrichment (CrossRef
 	// takes 1-3 s per batch); the link stage collects it. The outcome is
@@ -413,7 +473,8 @@ export async function runSearch(options: SearchOptions) {
 	// delivered must itself fit the query blocks (the repository matched,
 	// not necessarily the paper). Runs after the abstract gate, so it
 	// judges the final abstracts.
-	const topicGate = dropOffTopicCodeRecords(abstractGate.kept, blocksByQuery, (source) => source in CODE_SEARCHERS);
+	const topicGate = dropOffTopicCodeRecords(abstractGate.kept, blocksByQuery, (source) => source in CODE_SEARCHERS || source === "snowball");
+	const offTopicSnowball = topicGate.dropped.filter(({ record }) => record.sources.every((source) => source === "snowball")).length;
 	for (const { record, reason } of topicGate.dropped) {
 		warn(`dropped "${record.title}": ${reason}`);
 	}
@@ -535,6 +596,12 @@ export async function runSearch(options: SearchOptions) {
 		// Code-first sources of this run and what each received (PRISMA
 		// "other methods": the reader sees which repository search ran).
 		code_sources_used: codeSourcesUsed.length ? codeSourcesUsed : null,
+		// Citation searching of this run (null without seeds): seeds found,
+		// seeds unknown to OpenAlex, direction, works per direction.
+		snowball: snowballInfo as (Omit<SnowballResult, "records"> & { direction: SnowballDirection }) | null,
+		// Extending an earlier run: finds that run already lists, with the
+		// seeds that led to them (null otherwise).
+		snowball_known: options.knownKeys ? knownFinds : null,
 		code_queries: codeSourcesUsed.length
 			? Object.fromEntries(codeSourcesUsed.map((source) => [source, queries.map((query, index) => {
 				const words = searchWords(query, blocksByQuery[index]);
@@ -542,6 +609,8 @@ export async function runSearch(options: SearchOptions) {
 					case "hf-papers": return buildHfQuery(query, blocksByQuery[index]);
 					case "github-readme": return `${words} "arxiv.org" in:readme`;
 					case "gee-github": return `${blockQuery(query, blocksByQuery[index])} "code.earthengine.google.com" in:readme "doi.org" in:readme`;
+					case "datacite-software": return `${dataciteBlockQuery(query, blocksByQuery[index])} [resource type: software]`;
+					case "web-search": return `${webQueries(words).map((text) => `"${text}"`).join(" + ")} [${webEngine() === "searxng" ? "your SearXNG instance" : "Exa, your API key"}]`;
 					case "awesome-lists": return `lists tagged ${listTopics.length ? listTopics.join(", ") : "(no topics)"}; lists read: ${listsRead.length ? listsRead.join(", ") : "none"}; entries matched against the blocks ${blocksByQuery[index].length ? blocksByQuery[index].map((b) => `(${b.join(" OR ")})`).join(" AND ") : "(none -- skipped)"}`;
 					default: return words;
 				}
@@ -577,12 +646,14 @@ export async function runSearch(options: SearchOptions) {
 		flow: {
 			identified: records.length,
 			junk_removed: dropped.length,
-			duplicates_removed: kept.length - deduped.length,
+			duplicates_removed: kept.length - merged.length + knownFinds.length,
 			screened: deduped.length,
 			// Optional: only present when a code-first source ran.
 			...(codeSourcesUsed.length ? { late_code_pairs_removed: lateGate.dropped.length } : {}),
 			no_abstract_removed: abstractGate.dropped.length,
-			...(codeSourcesUsed.length ? { off_topic_code_removed: topicGate.dropped.length } : {}),
+			...(codeSourcesUsed.length ? { off_topic_code_removed: topicGate.dropped.length - offTopicSnowball } : {}),
+			// Optional: only present when citation searching ran.
+			...(snowballInfo ? { identified_citation: records.filter((record) => record.source === "snowball").length, off_topic_snowball_removed: offTopicSnowball } : {}),
 			excluded_by_filters: filterResult.dropped.length,
 			included: results.length,
 		},

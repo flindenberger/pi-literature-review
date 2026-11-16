@@ -15,6 +15,7 @@ self.addEventListener("install", () => self.skipWaiting());
 self.addEventListener("activate", (event) => event.waitUntil(self.clients.claim()));
 
 self.addEventListener("message", (event) => {
+	if (event.data && event.data.type === "claim") event.waitUntil(self.clients.claim());
 	if (event.data && event.data.type === "server-port" && event.ports[0]) {
 		serverPort = event.ports[0];
 		for (const resolve of portWaiters) resolve(serverPort);

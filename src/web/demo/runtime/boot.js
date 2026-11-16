@@ -20,9 +20,7 @@ const BOOT_SCRIPT = document.currentScript;
 	if (!("serviceWorker" in navigator)) return fail("This browser cannot run the demo (no Service Worker support).");
 
 	await navigator.serviceWorker.register(new URL("sw.js", here), { scope: here.pathname });
-	if (!navigator.serviceWorker.controller) {
-		await new Promise((resolve) => navigator.serviceWorker.addEventListener("controllerchange", resolve, { once: true }));
-	}
+	if (!(await controlled())) return;
 
 	// One server for every tab of the demo (SharedWorker); a dedicated
 	// Worker where the browser has none.
@@ -49,6 +47,7 @@ const BOOT_SCRIPT = document.currentScript;
 		line.postMessage({ type: "port" }, [channel.port1]);
 		navigator.serviceWorker.controller.postMessage({ type: "server-port" }, [channel.port2]);
 	};
+	try { sessionStorage.removeItem("plr-demo-reload"); } catch { /* storage blocked */ }
 	connect();
 	navigator.serviceWorker.addEventListener("message", (event) => {
 		if (event.data && event.data.type === "need-server-port") connect();
@@ -58,3 +57,24 @@ const BOOT_SCRIPT = document.currentScript;
 	app.src = appScript;
 	document.body.appendChild(app);
 })();
+
+/** True once the Service Worker controls this page. A hard reload
+ * (Ctrl+Shift+R) leaves the page without one although the worker is
+ * active: the page asks it to take control, and when that does not happen
+ * within a few seconds it loads itself once more the normal way. Returns
+ * false when that reload is under way. */
+async function controlled() {
+	const sw = navigator.serviceWorker;
+	if (sw.controller) return true;
+	const changed = new Promise((resolve) => sw.addEventListener("controllerchange", () => resolve(true), { once: true }));
+	const registration = await sw.ready;
+	if (sw.controller) return true;
+	if (registration.active) registration.active.postMessage({ type: "claim" });
+	const ok = await Promise.race([changed, new Promise((resolve) => setTimeout(() => resolve(false), 3000))]);
+	if (ok || sw.controller) return true;
+	let tried = false;
+	try { tried = sessionStorage.getItem("plr-demo-reload") === "1"; sessionStorage.setItem("plr-demo-reload", "1"); } catch { /* storage blocked */ }
+	if (tried) return changed;
+	location.reload();
+	return false;
+}

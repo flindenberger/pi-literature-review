@@ -244,13 +244,16 @@ Adapter and engine of a stage share their basename.
 | `extensions/search.ts` | `pi-literature-search` tool + `/lit-search`: intake wizard (tabs, variant suggestions via the Pi model, journal/author loaders), digest card, download question |
 | `src/search.ts` | run orchestration: per source and query fetch, pipeline steps, payload, source failures |
 | `src/sources/arxiv.ts`, `crossref.ts`, `openalex.ts`, `semanticscholar.ts` | one client per source: query building (booleans, author scope), record normalization. OpenAlex also: facets, abstract reconstruction, access classification (`accessFromWork`, `lookupAccessByDoi`), author window lookups (`lookupWorkAuthors`, `lookupAuthorFacts`). CrossRef also: data links (`lookupDataLinksByDoi`, `DATA_ARCHIVES`) |
-| `src/sources/datacite.ts` | DataCite related identifiers (`lookupDataciteLinks`, `dataLinksFromRelated`); combined CrossRef + DataCite lookup (`lookupAllDataLinks`) |
+| `src/sources/datacite.ts` | DataCite related identifiers (`lookupDataciteLinks`, `dataLinksFromRelated`); combined CrossRef + DataCite lookup (`lookupAllDataLinks`); software search for the `datacite-software` code source (`searchSoftware`, `dataciteBlockQuery`, `parseSoftwareHits`) |
+| `src/sources/websearch.ts` | the user's own web search engine for the `web-search` code source: SearXNG (`searxngUrl`) or Exa (`exaApiKey`); `webEngine`, response parsers |
 | `src/sources/orcid.ts` | current employments from the public ORCID record (`lookupOrcidEmployments`, `currentEmployments`) |
 | `src/sources/polite.ts` | shared request spacing, timeout, retry on rate-limit answers |
 | `src/sources/github.ts` | GitHub: code-source pacer, aggregator-name filter, repository search, raw README fetch |
 | `src/sources/huggingface.ts` | Hugging Face Papers search (arXiv id + linked repository; undocumented API, shape pinned) |
 | `src/sources/ecosystems.ts` | repos.ecosyste.ms (repository created date) and awesome.ecosyste.ms (lists by topic) |
-| `src/codesearch.ts` | code-first searchers (hf-papers, github-readme, awesome-lists, gee-github): repositories first, identifiers from READMEs, resolution at arXiv / OpenAlex, date gate |
+| `src/snowball.ts` | citation searching from seed papers at OpenAlex (`runSnowball`, `seedDois`, `seedLabel`, `MAX_CITING_PER_SEED`); runs as source `snowball` inside `runSearch` |
+| `src/snowmerge.ts` | snowball as an extension of a finished run (`mergeSnowball`, `payloadKeys`, `seedKey`): browser Snowball button and the terminal `snowball 1 3` |
+| `src/codesearch.ts` | code-first searchers (hf-papers, github-readme, awesome-lists, gee-github, datacite-software, web-search): repositories first, identifiers from READMEs, resolution at arXiv / OpenAlex, date gate |
 | `src/pipeline.ts` | junk filter, deduplication, term matching, block labels with evidence, metadata filters, abstract gate |
 | `src/verify.ts` | trust gate: DOI / arXiv ID resolution over HTTP |
 | `src/enrich.ts` | OpenAlex lookup (cites, venue, abstract), journal citedness, author metrics, code links from abstracts, data links, access status (batched) |

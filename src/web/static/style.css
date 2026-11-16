@@ -440,7 +440,7 @@ dialog.modal .regen:disabled { opacity: 0.5; cursor: default; }
 .results .sortmenu button.on { font-weight: 600; }
 .results .ibtn.on { background: var(--accent-soft); border-color: #bdbdb6; }
 .results .ibtn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
-.results .ibtn[disabled] { opacity: 0.45; cursor: default; }
+.results .ibtn[disabled], .results .chip[disabled] { opacity: 0.45; cursor: default; }
 /* Filters: a two-column table, label left, choices right. */
 .results .rfilters { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid var(--line); border-radius: 12px; margin-bottom: 0.7rem; font-size: 0.85rem; }
 .results .rfilters[hidden] { display: none; }
@@ -467,7 +467,7 @@ dialog.modal .regen:disabled { opacity: 0.5; cursor: default; }
 .results .chip.on { background: var(--accent); color: #fff; border-color: var(--accent); }
 .results .rlist { display: flex; flex-direction: column; gap: 0.5rem; }
 .results .rempty { color: var(--muted); font-size: 0.85rem; padding: 1rem; text-align: center; border: 1px dashed var(--line); border-radius: 12px; }
-.results .pcard { display: grid; grid-template-columns: 1.4rem 1fr auto; gap: 0.15rem 0.7rem; border: 1px solid var(--line); background: #fff; border-radius: 12px; padding: 0.65rem 0.9rem 0.55rem 0.7rem; }
+.results .pcard { display: grid; grid-template-columns: 1.4rem minmax(0, 1fr) auto; gap: 0.15rem 0.7rem; border: 1px solid var(--line); background: #fff; border-radius: 12px; padding: 0.65rem 0.9rem 0.55rem 0.7rem; }
 .results .pcard:hover { border-color: #bdbdb6; }
 .results .pcard.isdropped { background: #fafaf7; color: #555; }
 .results .pcard input { margin: 0.25rem 0 0; width: 1rem; height: 1rem; accent-color: var(--accent); }
@@ -485,7 +485,10 @@ dialog.modal .regen:disabled { opacity: 0.5; cursor: default; }
 .results .pcard .v b { color: #333; font-weight: 500; }
 .results .pcard .flags { display: flex; gap: 0.35rem; flex-wrap: wrap; margin-top: 0.2rem; }
 .results .pcard .flag { font-size: 0.7rem; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0 0.45rem; }
-.results .pcard .flag.dropped { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.results .pcard .flag.snow { display: inline-flex; align-items: center; gap: 0.15rem; }
+.results .pcard .flag.snow svg { width: 0.75rem; height: 0.75rem; }
+.results .pcard .body, .results .pcard .flags { min-width: 0; }
+.results .pcard .flag.dropped { display: inline-block; vertical-align: top; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .results .pcard .right { display: flex; flex-direction: column; align-items: flex-end; gap: 0.3rem; font-size: 0.75rem; color: var(--muted); white-space: nowrap; }
 .results .pcard .cites b { color: #333; font-weight: 600; }
 .results .badge { display: inline-flex; align-items: center; border-radius: 999px; padding: 0.08rem 0.55rem; font-size: 0.71rem; font-weight: 600; }

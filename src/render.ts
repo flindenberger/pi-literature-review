@@ -21,6 +21,7 @@ import type { CitationSite } from "./protocol.ts";
 import { type ChatReport, highlightPhrase, type ReportUnit, type SynthReport } from "./synthesis.ts";
 import type { AccessInfo, AccessLevel } from "./sources/openalex.ts";
 import { firstAuthorLastName } from "./types.ts";
+import { MAX_CITING_PER_SEED } from "./snowball.ts";
 
 /** One search record as the page needs it (kept AND dropped records). */
 interface RenderRecord {
@@ -106,6 +107,10 @@ export interface RenderPayload {
 	 * what they cite) and the search text each received per query. */
 	code_sources_used?: string[] | null;
 	code_queries?: Record<string, string[]> | null;
+	/** Citation searching of the run (snowball.ts): seeds found as
+	 * "Lee 2021", seed ids OpenAlex did not know, direction, distinct
+	 * works per direction, OpenAlex requests. */
+	snowball?: { seeds: string[]; missing: string[]; direction: "both" | "back" | "forward"; backward: number; forward: number; requests: number } | null;
 	/** Raw per-source x query hit counts before any processing (PRISMA-S
 	 * "records identified"); code-first sources add the repository->paper
 	 * candidates gathered before resolution. */
@@ -125,6 +130,10 @@ export interface RenderPayload {
 		/** Code-only records whose title/abstract miss the query blocks,
 		 * moved to the dropped table (only when a code source ran). */
 		off_topic_code_removed?: number;
+		/** Records the citation searching delivered (raw, before dedupe)
+		 * and snowball-only finds off topic (only when a snowball ran). */
+		identified_citation?: number;
+		off_topic_snowball_removed?: number;
 		excluded_by_filters: number;
 		included: number;
 	} | null;
@@ -913,7 +922,12 @@ export function flowDiagramSvg(
 	const FONT = 'font-family="system-ui, -apple-system, \'Segoe UI\', Helvetica, Arial, sans-serif"';
 
 	const excludedTotal = (flow.late_code_pairs_removed ?? 0) + (flow.no_abstract_removed ?? 0)
-		+ (flow.off_topic_code_removed ?? 0) + flow.excluded_by_filters;
+		+ (flow.off_topic_code_removed ?? 0) + (flow.off_topic_snowball_removed ?? 0) + flow.excluded_by_filters;
+	// PRISMA 2020 names citation searching as an identification method of
+	// its own: the identified box splits the count when a snowball ran.
+	const identifiedLines = flow.identified_citation !== undefined
+		? [`databases and code sources: n = ${flow.identified - flow.identified_citation}`, `citation searching (snowball): n = ${flow.identified_citation}`]
+		: [];
 	const side1Lines = [
 		`uncitable (no title or no authors): n = ${flow.junk_removed}`,
 		`duplicate records merged: n = ${flow.duplicates_removed}`,
@@ -923,6 +937,7 @@ export function flowDiagramSvg(
 	if (extras.abstractNone) side2Lines.push(`no abstract available: n = ${extras.abstractNone}`);
 	if (extras.abstractFailed) side2Lines.push(`abstract retrieval failed: n = ${extras.abstractFailed}`);
 	if (flow.off_topic_code_removed) side2Lines.push(`code-only find off topic: n = ${flow.off_topic_code_removed}`);
+	if (flow.off_topic_snowball_removed) side2Lines.push(`snowball-only find off topic: n = ${flow.off_topic_snowball_removed}`);
 	if (flow.excluded_by_filters) {
 		side2Lines.push(`user filters: n = ${flow.excluded_by_filters}`);
 		for (const entry of extras.filterBreakdown) side2Lines.push(`  ${entry.label}: n = ${entry.count}`);
@@ -931,10 +946,10 @@ export function flowDiagramSvg(
 	const box = (main: boolean, title: string, n: number, lines: string[] = []): Box => ({
 		x: main ? MAIN_X : SIDE_X, w: main ? MAIN_W : SIDE_W, title, n, lines, main, y: 0,
 		// title row, the count, then the breakdown lines
-		h: PAD * 2 + 16 + (main ? 22 : 18) + lines.length * LINE,
+		h: PAD * 2 + 16 + (main ? 22 : 18) + lines.length * LINE + (main && lines.length ? 4 : 0),
 	});
 	const boxes = [
-		box(true, "Records identified", flow.identified),
+		box(true, "Records identified", flow.identified, identifiedLines),
 		box(false, "Records removed before screening", flow.junk_removed + flow.duplicates_removed, side1Lines),
 		box(true, "Records screened", flow.screened),
 		box(false, "Records excluded", excludedTotal, side2Lines),
@@ -949,7 +964,7 @@ export function flowDiagramSvg(
 	const boxSvg = boxes.map((b) => {
 		const count = `<text x="${b.x + PAD}" y="${b.y + PAD + 16 + (b.main ? 20 : 16)}" ${FONT} font-size="${b.main ? 17 : 14}" font-weight="700" fill="#1c1c1c">n = ${b.n}</text>`;
 		const detail = b.lines.length
-			? `<text x="${b.x + PAD}" y="${b.y + PAD + 16 + 18 + 14}" ${FONT} font-size="12.5" fill="#4a4a4a">${b.lines.map((line, i) =>
+			? `<text x="${b.x + PAD}" y="${b.y + PAD + 16 + (b.main ? 26 : 18) + 14}" ${FONT} font-size="12.5" fill="#4a4a4a">${b.lines.map((line, i) =>
 				`<tspan x="${b.x + PAD + (line.startsWith("  ") ? 12 : 0)}" dy="${i === 0 ? 0 : LINE}">${esc(line.trim())}</tspan>`).join("")}</text>`
 			: "";
 		return `<rect x="${b.x}" y="${b.y}" width="${b.w}" height="${b.h}" rx="8" fill="${b.main ? "#ffffff" : "#f6f6f2"}" stroke="${b.main ? "#2a2a2a" : "#c9c9c2"}" stroke-width="${b.main ? 1.4 : 1}"/>`
@@ -1047,7 +1062,7 @@ export function renderHtml(payload: RenderPayload, options?: { network?: boolean
 		? `\n<p class="meta">Network = opens a citation-context graph of the paper in a new tab: its references and citing works, related by the classic bibliometric similarity measures (bibliographic coupling, Kessler 1963; co-citation analysis, Small 1973 -- the graph page explains how each is used). The page fetches this live from the open OpenAlex API when opened (internet needed then; only the paper's DOI or title is sent, never paper content) and involves no language model.</p>`
 		: "";
 	const codeFootnote = withCode
-		? `\n<p class="meta">&sup2; Code / data = links found deterministically, never generated, from three places. (1) The paper's own abstract: a code URL it names (GitHub, GitLab, Bitbucket, Codeberg, Hugging Face, Zenodo, OSF). (2) The DOI registry record: data and code archives deposited as related material -- CrossRef for publisher DOIs (relation types is-supplemented-by, is-part-of, references), DataCite for repository DOIs such as Zenodo (IsSupplementTo, IsSupplementedBy, References); shown only for known archives -- Zenodo, PANGAEA, Mendeley Data, Dryad, figshare, Dataverse, HydroShare, OSF, Eawag, GitHub, GitLab -- labelled by archive name). (3) Repository first (code sources, when enabled): repositories are searched for the query and the paper is resolved from the identifiers they cite -- Hugging Face Papers (repository as linked on the paper's Hugging Face page by the community), GitHub README searches, curated awesome lists (awesome.ecosyste.ms) and Google Earth Engine repositories; the paper's metadata then comes from arXiv or OpenAlex (<code>resolved_via</code>), and a repository created more than a year after the paper moves the record to the dropped table with the reason (usually a project citing the paper, not its code; more than five years after and the pair is not listed at all); when the found repository is a paper list, the linked repository whose name matches the paper title is taken instead; repository creation dates come from repos.ecosyste.ms (data CC-BY-SA). Code links are pointers to likely code, not verified artifact links -- follow them and judge. Recorded in the JSON as <code>code_url</code> and <code>data_links</code>, provenance in <code>enriched</code> (abstract | crossref | datacite | hf-papers | github-readme | awesome-lists | gee-github).</p>`
+		? `\n<p class="meta">&sup2; Code / data = links found deterministically, never generated, from three places. (1) The paper's own abstract: a code URL it names (GitHub, GitLab, Bitbucket, Codeberg, Hugging Face, Zenodo, OSF). (2) The DOI registry record: data and code archives deposited as related material -- CrossRef for publisher DOIs (relation types is-supplemented-by, is-part-of, references), DataCite for repository DOIs such as Zenodo (IsSupplementTo, IsSupplementedBy, References); shown only for known archives -- Zenodo, PANGAEA, Mendeley Data, Dryad, figshare, Dataverse, HydroShare, OSF, Eawag, GitHub, GitLab -- labelled by archive name). (3) Repository first (code sources, when enabled): repositories are searched for the query and the paper is resolved from the identifiers they cite -- Hugging Face Papers (repository as linked on the paper's Hugging Face page by the community), GitHub README searches, curated awesome lists (awesome.ecosyste.ms), Google Earth Engine repositories, archived software releases registered with DataCite, and -- when set up -- the user's own web search engine (SearXNG or Exa with the user's key); the paper's metadata then comes from arXiv or OpenAlex (<code>resolved_via</code>), and a repository created more than a year after the paper moves the record to the dropped table with the reason (usually a project citing the paper, not its code; more than five years after and the pair is not listed at all); when the found repository is a paper list, the linked repository whose name matches the paper title is taken instead; repository creation dates come from repos.ecosyste.ms (data CC-BY-SA). Code links are pointers to likely code, not verified artifact links -- follow them and judge. Recorded in the JSON as <code>code_url</code> and <code>data_links</code>, provenance in <code>enriched</code> (abstract | crossref | datacite | hf-papers | github-readme | awesome-lists | gee-github | datacite-software | web-search).</p>`
 		: "";
 
 	const variants = payload.query_variants ?? [];
@@ -1103,6 +1118,8 @@ export function renderHtml(payload: RenderPayload, options?: { network?: boolean
 		"github-readme": ["Sent to GitHub (README search)", "Repositories whose README cites arxiv.org and matches the words; aggregator and star-list repositories skipped; identifiers then read from each README."],
 		"gee-github": ["Sent to GitHub (Google Earth Engine)", "Repositories whose README names the Earth Engine code editor and cites doi.org; identifiers then read from each README."],
 		"awesome-lists": ["Matched against curated lists", "Awesome lists found by GitHub topic on awesome.ecosyste.ms; an entry matches when its name, description or category hits every block; identifiers then read from the repository README."],
+		"datacite-software": ["Sent to DataCite (software records)", "Archived code releases (Zenodo, figshare ...) registered with DataCite; a record that names its paper by DOI is paired directly, otherwise identifiers are read from the linked repository's README."],
+		"web-search": ["Sent to your web search engine", "The query text went to the search engine set up in the configuration (your SearXNG instance, or Exa with your API key); repository addresses and paper identifiers were pulled out of the hits by pattern, identifiers then read from each README."],
 	};
 	const codeQueries = payload.code_queries ?? {};
 	const codeQueryRows = (payload.code_sources_used ?? [])
@@ -1110,7 +1127,11 @@ export function renderHtml(payload: RenderPayload, options?: { network?: boolean
 			const [label, note] = CODE_SOURCE_LABELS[source] ?? [`Sent to ${source}`, undefined];
 			return sentRows(label, codeQueries[source], note);
 		})
-		.join("");
+		.join("")
+		+ (payload.snowball
+			? sentRows("Citation searching (OpenAlex)", [`${payload.snowball.direction === "back" ? "references of" : payload.snowball.direction === "forward" ? "works citing" : "references of and works citing"} ${payload.snowball.seeds.join(", ") || "(no seed found)"}${payload.snowball.missing.length ? `; not found at OpenAlex: ${payload.snowball.missing.join(", ")}` : ""}`],
+				`One round of snowballing from the seed papers ticked by the user: ${payload.snowball.backward} cited and ${payload.snowball.forward} citing works (at most ${MAX_CITING_PER_SEED} citing works per seed, the most cited first), ${payload.snowball.requests} OpenAlex requests. A find only the snowball delivered must fit the query blocks like a code-only find.`)
+			: "");
 	// Picked authors (the wizard lookup): who, in which position, and
 	// whether the query still applied -- one row in both meta blocks.
 	const authorScopeRow = payload.author_scope

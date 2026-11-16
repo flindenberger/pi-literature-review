@@ -128,8 +128,9 @@ The filter button opens a table. Filters apply instantly to the loaded list.
 |---|---|
 | **Keywords & synonyms** | Block editor in a window (term boxes, **Propose synonyms**); tooltip names the searched blocks |
 | **Add papers with code** | Same blocks again with the four code sources on; up to three awesome-list topics from the model |
+| **Snowball** | Adds the papers citing or cited by the ticked papers to this list ([Snowball](#snowball)) |
 
-Both ask "Start a new search?" first. Both are hidden for author-only searches.
+**Keywords & synonyms** and **Add papers with code** ask "Start a new search?" first; both are hidden for author-only searches. While a search runs, the buttons stay in place, greyed out.
 
 ### Download
 
@@ -140,6 +141,10 @@ Both ask "Start a new search?" first. Both are hidden for author-only searches.
 3. Progress, then the result with **Show in the file manager** and **Back to the list**. The cards reload with library flags; ticks are cleared.
 
 Restricted and abstract-only papers are listed with browser links, not tried. Details: [Selection](selection.md).
+
+### Snowball
+
+**Snowball** in the toolbar (active once papers are ticked) opens a small window: references and citing papers, only references, or only citing papers. **Add to the list** runs only the citation searching from the ticked papers; the list stays as it is and the new finds join it (ticks kept). Marks on the cards: **seed** (a paper the list rolled from), **cites Lee 2021** (this paper cites the seed), **cited by Lee 2021** (the seed cites this paper); all seeds in the tooltip. A find already in the list only gains its mark. Finds that miss the keywords are in the dropped records. Details: [Search -> Snowball](search.md#snowball-citation-searching).
 
 ### Reports from the list
 
@@ -339,14 +344,14 @@ Settings writes `config.json` ([Configuration](configuration.md)); its path is t
 | Section | Rows |
 |---|---|
 | Models | **LLM** + Thinking (in Pi: **Follow pi (/model)** or one of Pi's models, `browserModel`; standalone: `llm.chatModel` + address). **Generation (synthesis)** + Thinking (`llm.generateModel` + address, `generateThinking`). **Embedding (RAG)** + **Fetch** for Ollama. **Advanced**: API dialect, shared address. |
-| Sources | Contact email; keys OpenAlex, Semantic Scholar, GitHub, LLM API |
+| Sources | Contact email; keys OpenAlex, Exa, Semantic Scholar, GitHub, LLM API; SearXNG address |
 | Folders | **Library** (PDF folders: show, remove, **+ Add folder**); **Config & data** (the store) |
 | Saved data | Conversations (Delete all), Indexes with size (Delete all), Keyword blocks (Forget); each with a show-folder button |
 
 - Each model row has a status dot: green = local server answers, red = it does not, grey = remote or not checked.
 - Model fields list what the server offers (Ollama `/api/tags`, OpenAI-compatible `/v1/models`), with **Other ...** for free text. An unreachable server leaves a text field.
 - Thinking above Off shows a red warning line.
-- Keys are write-only (`POST /api/settings/key`): Save key, Remove, Cancel; **Get a free key** for OpenAlex and Semantic Scholar. The page sees only set / not set.
+- Keys are write-only (`POST /api/settings/key`): Save key, Remove, Cancel; **Get a free key** for OpenAlex and Semantic Scholar, **Get a key** link for Exa. The page sees only set / not set.
 - Delete all indexes (`POST /api/indexes/clear`) is refused while a chat, report or index job runs; the background pass rebuilds them.
 
 ## Info popover
@@ -372,4 +377,3 @@ The unchanged interface with its server running in the visitor's browser, publis
 
 - A model's reasoning is never shown.
 - The terminal report option "answer in the chat only" has no browser counterpart.
-- Snowball search is not available.

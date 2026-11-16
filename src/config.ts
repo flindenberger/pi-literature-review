@@ -53,6 +53,12 @@ export interface StoredConfig {
 	 * an own daily budget instead of the one shared by every machine
 	 * behind the same IP address. Sent as a bearer header, never in a URL. */
 	openAlexApiKey?: string;
+	/** Optional Exa API key (exa.ai): turns on the "web-search" code
+	 * source. The user's own account, so the user's own terms with Exa. */
+	exaApiKey?: string;
+	/** Optional address of the user's own SearXNG instance (JSON output
+	 * enabled): turns on the "web-search" code source and is asked first. */
+	searxngUrl?: string;
 	/** GitHub topics whose awesome lists the code-first "awesome-lists"
 	 * source reads (default: remote-sensing, satellite-imagery,
 	 * earth-observation -- the tool is otherwise domain-neutral). */
@@ -166,7 +172,8 @@ export function storedConfigView(): {
 	generateThinking: ThinkingSetting;
 	browserModel: string;
 	llm: Partial<LlmConfig> & { chatModel?: string };
-	keys: { s2ApiKey: boolean; openAlexApiKey: boolean; githubToken: boolean; llmApiKey: boolean };
+	keys: { s2ApiKey: boolean; openAlexApiKey: boolean; exaApiKey: boolean; githubToken: boolean; llmApiKey: boolean };
+	searxngUrl: string;
 } {
 	const stored = loadStoredConfig();
 	const { apiKey, ...llm } = stored.llm ?? {};
@@ -177,7 +184,8 @@ export function storedConfigView(): {
 		generateThinking: thinkingFor("generation", {}, stored),
 		browserModel: browserModel(stored),
 		llm,
-		keys: { s2ApiKey: Boolean(stored.s2ApiKey), openAlexApiKey: Boolean(stored.openAlexApiKey), githubToken: Boolean(stored.githubToken), llmApiKey: Boolean(apiKey) },
+		keys: { s2ApiKey: Boolean(stored.s2ApiKey), openAlexApiKey: Boolean(stored.openAlexApiKey), exaApiKey: Boolean(stored.exaApiKey), githubToken: Boolean(stored.githubToken), llmApiKey: Boolean(apiKey) },
+		searxngUrl: (stored.searxngUrl ?? "").trim(),
 	};
 }
 
@@ -220,6 +228,23 @@ export function openAlexApiKey(
 	stored: StoredConfig = loadStoredConfig(),
 ): string {
 	return pick(env.PI_LITERATURE_REVIEW_OPENALEX_API_KEY, stored.openAlexApiKey);
+}
+
+/** Exa API key for the web-search code source; empty = not set. */
+export function exaApiKey(
+	env: Record<string, string | undefined> = process.env,
+	stored: StoredConfig = loadStoredConfig(),
+): string {
+	return pick(env.PI_LITERATURE_REVIEW_EXA_API_KEY, stored.exaApiKey);
+}
+
+/** Base address of the user's own SearXNG instance, without a trailing
+ * slash; empty = not set. */
+export function searxngUrl(
+	env: Record<string, string | undefined> = process.env,
+	stored: StoredConfig = loadStoredConfig(),
+): string {
+	return pick(env.PI_LITERATURE_REVIEW_SEARXNG_URL, stored.searxngUrl).replace(/\/+$/, "");
 }
 
 export function s2ApiKey(

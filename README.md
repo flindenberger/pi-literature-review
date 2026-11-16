@@ -21,7 +21,8 @@ A local, open, login-free literature tool as an extension for the [Pi coding age
 ## Features
 
 - **Search papers and download them directly** — arXiv, CrossRef, OpenAlex and Semantic Scholar, verified DOIs, open-access PDFs into a folder you choose
-- **Search papers with code repositories** — code and data links on every result, plus papers found through GitHub, Hugging Face and awesome lists
+- **Search papers with code repositories** — code and data links on every result, plus papers found through GitHub, Hugging Face, awesome lists, archived software and, optionally, your own web search
+- **Snowball search** — follow the citations of the papers you tick, backward and forward
 - **Search for specific authors and their work** — narrow a topic to chosen authors, or list everything they published, optionally as first author
 - **Ask questions and write summaries or synthesis reports about your PDF library** — page-exact citations, highlighted where they come from
 - **Integrated notes editor** — one notepad per paper, with screenshots and citations from the PDF, an AI corrector and an AI wording assistant
@@ -53,7 +54,7 @@ Needs Node.js 22.19 or newer. Searching needs no model. Chat and reports use the
 
 ## Privacy
 
-No account, no telemetry. Search terms and paper identifiers go to the public scholarly APIs. PDF text goes only to your own embedding and chat models; with a remote model, excerpts go to that provider.
+No account, no telemetry. Search terms and paper identifiers go to the public scholarly APIs. The optional web search for papers with code sends the search terms to the search engine you set up yourself. PDF text goes only to your own embedding and chat models; with a remote model, excerpts go to that provider.
 
 ## Documentation
 

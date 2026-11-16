@@ -285,6 +285,9 @@
 
 	const ACCESS_LABEL = { free: "full text free", abstract_only: "abstract only", restricted: "restricted", unknown: "unknown" };
 	const ICON_FILTER = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5h18l-7 8v6l-4 2v-8z"/></svg>';
+	const ICON_PLUS_MINI = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>';
+	const ICON_CITES = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17 17 7M9 7h8v8"/></svg>';
+	const ICON_CITED = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 7 7 17M15 17H7V9"/></svg>';
 	const ICON_RELOAD = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/></svg>';
 	const ICON_EDIT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M14 6l4 4"/></svg>';
 	const SORT_LABELS = { relevance: "Relevance", cites: "Most cited", year: "Newest" };
@@ -307,9 +310,25 @@
 		let entry = state.results.get(name);
 		if (!entry) {
 			entry = { data: null, loading: false, error: null, filters: freshFilters(), sort: "relevance", open: false, listOpen: null, narrow: "", ticked: new Set(), showDropped: false, defaulted: false };
+			// A snowball extends the list before it: ticks, filters and sort carry over.
+			const earlier = extendedList(name);
+			if (earlier) Object.assign(entry, { filters: structuredClone(earlier.filters), sort: earlier.sort, open: earlier.open, ticked: new Set(earlier.ticked), showDropped: earlier.showDropped, defaulted: earlier.defaulted });
 			state.results.set(name, entry);
 		}
 		return entry;
+	}
+
+	/** The state of the list a snowball round extended into run `name`, if
+	 * that list is still in memory. */
+	function extendedList(name) {
+		const messages = state.dialog ? state.dialog.messages : [];
+		const index = messages.findIndex((message) => message.role === "results" && message.run === name);
+		if (index < 1) return null;
+		const before = messages.slice(0, index);
+		const job = [...before].reverse().find((message) => message.role === "working");
+		if (!job || !/^snowball:/.test(job.jobLabel || "")) return null;
+		const list = [...before].reverse().find((message) => message.role === "results");
+		return list ? state.results.get(list.run) || null : null;
 	}
 
 	/** Rows loaded once per run; the list is drawn from memory afterwards. */
@@ -409,6 +428,10 @@
 	function rerunIcon(key) {
 		return `<span class="rerun">${optionIcon(key)}<span class="mini">${ICON_RELOAD}</span></span>`;
 	}
+	/** An option's icon with a small "+": adds to the list. */
+	function addIcon(key) {
+		return `<span class="rerun">${optionIcon(key)}<span class="mini">${ICON_PLUS_MINI}</span></span>`;
+	}
 	/** Small yes/no window (a confirmation before a new search). */
 	function confirmBox(title, text, okLabel) {
 		return new Promise((resolve) => {
@@ -480,13 +503,30 @@
 			? `<input type="checkbox" data-act="tick" data-id="${esc(row.id)}" ${entry.ticked.has(row.id) ? "checked" : ""} title="Tick for download">`
 			: `<span class="notick" title="No DOI or arXiv id: cannot be downloaded here"></span>`;
 		const meta = [esc(row.year || "n.d."), row.venue ? `<b>${esc(row.venue)}</b>` : "venue not given", row.journalScore !== null ? `journal score ${Number(row.journalScore).toFixed(1)}` : ""].filter(Boolean).join(" · ");
-		const flags = [row.inLibrary ? '<span class="flag">in library</span>' : "", row.group === "on_target" ? '<span class="flag">on target</span>' : "", row.dropped ? `<span class="flag dropped" title="${esc(row.reason || "")}">dropped: ${esc(row.reason || "")}</span>` : ""].join("");
+		const flags = [row.inLibrary ? '<span class="flag">in library</span>' : "", row.group === "on_target" ? '<span class="flag">on target</span>' : "", snowFlags(row), row.dropped ? `<span class="flag dropped" title="${esc(row.reason || "")}">dropped: ${esc(row.reason || "")}</span>` : ""].join("");
 		return `<div class="pcard ${row.dropped ? "isdropped" : ""}" data-n="${row.n}">${tick}
 <div class="body"><div class="t">${row.url ? `<a href="${esc(row.url)}" target="_blank" rel="noopener">${esc(row.title)}</a>` : esc(row.title)}</div>
 <div class="a">${authors || "authors not given"}</div><div class="v">${meta}</div>${flags ? `<div class="flags">${flags}</div>` : ""}</div>
 <div class="right"><span class="badge ${esc(access)}">${ACCESS_LABEL[access]}</span><span class="cites"><b>${row.cites === null ? "–" : row.cites}</b> citations</span></div>
 <div class="links">${links.join("")}<span class="src">${esc(row.sources.join(" + "))}</span></div>
 ${row.abstract ? `<details class="abs"><summary>Abstract</summary>${esc(row.abstract)}</details>` : ""}</div>`;
+	}
+
+	/** Snowball marks of a card: "seed" for a paper the list rolled from,
+	 * "cites X" (this paper cites the seed X: found forward) and "cited by X"
+	 * (X cites this paper: found in its reference list). */
+	function snowFlags(row) {
+		const cites = []; const citedBy = [];
+		for (const label of row.snowball || []) {
+			const match = /^(cites|references of):\s*(.+)$/.exec(label);
+			if (match) (match[1] === "cites" ? cites : citedBy).push(match[2]);
+		}
+		const flag = (icon, word, names, tip) => `<span class="flag snow" title="${esc(names.map((name) => `${tip} ${name}`).join("\n"))}">${optionIcon("snowball")}${icon}${word} ${esc(names[0])}${names.length > 1 ? ` +${names.length - 1}` : ""}</span>`;
+		return [
+			row.seed ? `<span class="flag snow" title="Seed of the snowball: the list holds the papers it cites and the papers citing it">${optionIcon("snowball")}seed</span>` : "",
+			cites.length ? flag(ICON_CITES, "cites", cites, "This paper cites") : "",
+			citedBy.length ? flag(ICON_CITED, "cited by", citedBy, "This paper is cited by") : "",
+		].join("");
 	}
 
 	function resultsHtml(name) {
@@ -507,6 +547,10 @@ ${row.abstract ? `<details class="abs"><summary>Abstract</summary>${esc(row.abst
 		const lists = state.dialog ? state.dialog.messages.filter((message) => message.role === "results") : [];
 		const latest = lists.length && lists[lists.length - 1].run === name;
 		const pickOpen = latest && state.dialog.step === "pick" && !state.dialog.activeJob && !state.dialog.pending;
+		// While a follow-up search (snowball, add code, search again) runs, the
+		// newest list keeps its buttons, greyed out.
+		const busy = latest && !pickOpen && Boolean(state.dialog.activeJob || state.dialog.pending);
+		const actions = pickOpen || busy;
 		const sources = [...new Set(data.rows.flatMap((row) => row.sources))];
 		// Choices of the type, code, journal and author rows come from the list itself.
 		const pool = data.rows.filter((row) => entry.showDropped || !row.dropped);
@@ -519,7 +563,7 @@ ${row.abstract ? `<details class="abs"><summary>Abstract</summary>${esc(row.abst
 </div>
 <div class="rtools"><span class="sortwrap"><button type="button" class="ibtn ${entry.sortOpen ? "on" : ""}" data-act="sort" title="Sort the list" aria-haspopup="menu" aria-expanded="${entry.sortOpen ? "true" : "false"}">${ICON_SORT}${SORT_LABELS[entry.sort]}</button>${entry.sortOpen ? `<div class="sortmenu" role="menu">${Object.entries(SORT_LABELS).map(([key, label]) => `<button type="button" role="menuitemradio" aria-checked="${entry.sort === key}" class="${entry.sort === key ? "on" : ""}" data-act="sortby" data-sort="${key}">${label}</button>`).join("")}</div>` : ""}</span>
 <button type="button" class="ibtn ${active.length ? "on" : ""}" data-act="filters" title="Filter the list">${ICON_FILTER}Filter${active.length ? ` (${active.length})` : ""}</button>
-${latest && !byAuthors ? `<span class="tsep" aria-hidden="true"></span><button type="button" class="ibtn" data-act="editblocks" title="Searched: ${esc(blocks)}. Change keywords or synonyms; a new search runs">${rerunIcon("synonyms")}Keywords &amp; synonyms</button>` : ""}${pickOpen && !codeOn && !byAuthors ? `<button type="button" class="ibtn" data-act="addcode" title="A new search with the code sources on (about 20-60 s more); list topics chosen automatically">${rerunIcon("code")}Add papers with code</button>` : ""}</div>
+${latest && !byAuthors ? `<span class="tsep" aria-hidden="true"></span><button type="button" class="ibtn" data-act="editblocks" ${busy ? "disabled" : ""} title="Searched: ${esc(blocks)}. Change keywords or synonyms; a new search runs">${rerunIcon("synonyms")}Keywords &amp; synonyms</button>` : ""}${actions && !codeOn && !byAuthors ? `<button type="button" class="ibtn" data-act="addcode" ${busy ? "disabled" : ""} title="A new search with the code sources on (about 20-60 s more); list topics chosen automatically">${addIcon("code")}Add papers with code</button>` : ""}${actions ? snowballButton(entry, busy) : ""}</div>
 <table class="rfilters" ${entry.open ? "" : "hidden"}><tbody>
 <tr><th>Published</th><td class="chips">${periodChips(entry)}</td></tr>
 <tr><th>Full text</th><td class="chips">${["free", "abstract_only", "restricted"].map((level) => `<button type="button" class="chip ${f.access.has(level) ? "on" : ""}" data-act="access" data-v="${level}">${ACCESS_LABEL[level]}</button>`).join("")}</td></tr>
@@ -530,16 +574,21 @@ ${latest && !byAuthors ? `<span class="tsep" aria-hidden="true"></span><button t
 <tr><th>Author</th>${pickRowHtml(entry, "authors", pool, "author")}</tr>
 <tr><th>Source</th><td class="chips">${sources.map((source) => `<button type="button" class="chip ${f.sources.has(source) ? "on" : ""}" data-act="source" data-v="${esc(source)}">${esc(source)}</button>`).join("")}</td></tr>
 <tr><th>Dropped</th><td class="chips"><button type="button" class="chip ${entry.showDropped ? "on" : ""}" data-act="dropped" title="Records the search set aside (no abstract, off topic, ...), each with its reason">Show dropped records <small>${data.rows.filter((row) => row.dropped).length}</small></button></td></tr>
-<tr class="foot"><th></th><td><button type="button" class="chip" data-act="clear">Clear filters</button>${pickOpen ? `<button type="button" class="chip" data-act="again" title="Send the period and citation filters to the sources as a new query: more papers inside the filter">Search again with these filters</button>` : ""}</td></tr>
+<tr class="foot"><th></th><td><button type="button" class="chip" data-act="clear">Clear filters</button>${actions ? `<button type="button" class="chip" data-act="again" ${busy ? "disabled" : ""} title="Send the period and citation filters to the sources as a new query: more papers inside the filter">Search again with these filters</button>` : ""}</td></tr>
 </tbody></table>
 <div class="rlist">${rows.length ? rows.map((row) => cardRowHtml(row, entry)).join("") : '<div class="rempty">No paper matches these filters. Widen a filter, or search again with the filters sent to the sources.</div>'}</div>
-<div class="ractions">${pickOpen ? `<button type="button" class="ibtn primary" data-act="download" ${entry.ticked.size ? "" : "disabled"}>Download ${entry.ticked.size} ticked PDF${entry.ticked.size === 1 ? "" : "s"}</button><span class="sep"></span>` : ""}<span class="lbl">Reports from this list:</span>${REPORT_ACTIONS.map((action) => `<button type="button" class="ibtn" data-act="report" data-kind="${action.kind}" title="${esc(action.title)}">${action.icon}${action.label}</button>`).join("")}</div>`;
+<div class="ractions">${actions ? `<button type="button" class="ibtn primary" data-act="download" ${entry.ticked.size && !busy ? "" : "disabled"}>Download ${entry.ticked.size} ticked PDF${entry.ticked.size === 1 ? "" : "s"}</button><span class="sep"></span>` : ""}<span class="lbl">Reports from this list:</span>${REPORT_ACTIONS.map((action) => `<button type="button" class="ibtn" data-act="report" data-kind="${action.kind}" title="${esc(action.title)}">${action.icon}${action.label}</button>`).join("")}</div>`;
 	}
 
 	function redrawResults(name) {
 		document.querySelectorAll(`.msg.results[data-run="${CSS.escape(name)}"]`).forEach((node) => { node.innerHTML = resultsHtml(name); });
 	}
 
+	/** "Snowball from n ticked": citation searching from the ticked papers. */
+	function snowballButton(entry, busy) {
+		const n = entry.ticked.size;
+		return `<button type="button" class="ibtn" data-act="snowball" ${n && !busy ? "" : "disabled"} title="${n ? `Snowball from the ${n} ticked paper${n === 1 ? "" : "s"}: add` : "Tick papers to add"} the papers they cite and the papers citing them to this list (OpenAlex); new finds must fit your keywords">${addIcon("snowball")}Snowball</button>`;
+	}
 	/** Ticks of the newest result list on the page (the pick step reads them). */
 	function tickedInResults() {
 		const nodes = document.querySelectorAll(".msg.results[data-run]");
@@ -554,7 +603,10 @@ ${latest && !byAuthors ? `<span class="tsep" aria-hidden="true"></span><button t
 		const name = box.closest(".msg.results").dataset.run; const entry = resultsEntry(name);
 		if (box.checked) entry.ticked.add(box.dataset.id); else entry.ticked.delete(box.dataset.id);
 		const button = box.closest(".msg.results").querySelector('[data-act="download"]');
-		if (button) { button.disabled = !entry.ticked.size; button.textContent = `Download ${entry.ticked.size} ticked PDF${entry.ticked.size === 1 ? "" : "s"}`; }
+		const busy = Boolean(state.dialog && (state.dialog.activeJob || state.dialog.pending));
+		if (button) { button.disabled = !entry.ticked.size || busy; button.textContent = `Download ${entry.ticked.size} ticked PDF${entry.ticked.size === 1 ? "" : "s"}`; }
+		const snow = box.closest(".msg.results").querySelector('[data-act="snowball"]');
+		if (snow) snow.outerHTML = snowballButton(entry, busy);
 	});
 	$("thread").addEventListener("input", (event) => {
 		const input = event.target.closest(".msg.results input[data-act=\"narrow\"]");
@@ -618,6 +670,21 @@ ${latest && !byAuthors ? `<span class="tsep" aria-hidden="true"></span><button t
 			return;
 		}
 		if (act === "download") { state.modal.dismissed = 0; await answer({ chip: "ticked", ids: [...entry.ticked] }); return; }
+		if (act === "snowball") {
+			const n = entry.ticked.size;
+			const choice = await askBox({
+				title: `Snowball from ${n} paper${n === 1 ? "" : "s"}`,
+				text: "This list stays as it is; the papers found through the citations are added. Papers that do not fit your keywords go to the dropped records.",
+				radios: [
+					{ id: "both", label: "References and citing papers" },
+					{ id: "back", label: "Only their references" },
+					{ id: "forward", label: "Only papers citing them" },
+				],
+				buttons: [{ id: "go", label: "Add to the list", primary: true }],
+			});
+			if (choice.button === "go") await answer({ chip: "snowball", ids: [...entry.ticked], direction: choice.radio || "both" });
+			return;
+		}
 		if (act === "editblocks") { openBlocksWindow(); return; }
 		if (act === "addcode") {
 			const ok = await confirmBox("Start a new search?", "The same keywords are searched again with the code sources added (about 20-60 s more); this list is replaced.", "Search");
@@ -1277,7 +1344,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		const details = document.querySelector(`.working[data-job="${CSS.escape(jobId)}"] pre`);
 		if (!details) return;
 		const lines = state.lines.get(jobId) || [];
-		const message = state.dialog && state.dialog.messages.find((item) => item.role === "working" && item.job === jobId);
+		const message = state.dialog && [...state.dialog.messages].reverse().find((item) => item.role === "working" && item.job === jobId);
 		document.querySelectorAll(`.working[data-job="${CSS.escape(jobId)}"] .wstatus`).forEach((node) => { if (message) node.textContent = workingStatus(message); });
 		details.innerHTML = lines.slice(-200).map(lineHtml).join("");
 		details.scrollTop = details.scrollHeight;
@@ -3628,6 +3695,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		$("set-base-url").value = llm.baseUrl || "";
 		$("set-base-url").placeholder = data.resolved.baseUrl;
 		$("set-mailto").value = data.mailto || "";
+		$("set-searxng").value = data.searxngUrl || "";
 		$("set-mailto").placeholder = data.mailtoResolved && !data.mailto ? `${data.mailtoResolved} (environment)` : "asked at each download";
 		$("set-thinking").value = data.thinking || "off";
 		$("set-generate-thinking").value = data.generateThinking || data.thinking || "off";
@@ -3639,6 +3707,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	 * page never sees a stored key, only whether it is set). */
 	const KEYS = [
 		{ name: "openAlexApiKey", label: "OpenAlex", title: "Free API key: your own daily budget instead of the one shared by everyone on your network", signup: "https://openalex.org/settings/api-key" },
+		{ name: "exaApiKey", label: "Exa", title: "API key of your own Exa account: turns on the web search for papers with code (the query text goes to Exa)", signup: "https://dashboard.exa.ai/api-keys" },
 		{ name: "s2ApiKey", label: "Semantic Scholar", title: "Free API key: Semantic Scholar becomes the fourth search source", signup: "https://www.semanticscholar.org/product/api" },
 		{ name: "githubToken", label: "GitHub", title: "Token: GitHub search 30 instead of 10 requests per minute for the code sources" },
 		{ name: "llmApiKey", label: "LLM API", title: "Bearer token for a remote model API" },
@@ -3842,6 +3911,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		try {
 			await post(BASE + "/api/settings", {
 				mailto: $("set-mailto").value,
+				searxngUrl: $("set-searxng").value,
 				thinking: $("set-thinking").value,
 				generateThinking: $("set-generate-thinking").value,
 				...($("set-browser-model").hidden ? {} : { browserModel: $("set-browser-model").value }),

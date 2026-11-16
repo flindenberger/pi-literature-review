@@ -696,3 +696,19 @@ export async function lookupTopWorkDoi(authorId: string, signal?: AbortSignal): 
 	const doi = data?.results?.[0]?.doi;
 	return typeof doi === "string" ? doi.replace(/^https?:\/\/doi\.org\//, "") : "";
 }
+
+/** One page of works for a filter expression (exact lookups: ids, DOIs,
+ * cites:W...), with the cursor for the next page (null at the end).
+ * Filter requests cost one credit each (measured 2026-11-15), unlike a
+ * text search. */
+export async function worksPage(filter: string, select: string, perPage: number, cursor = "*", sort?: string): Promise<{ items: Array<Record<string, any>>; next: string | null; count: number | null }> {
+	const params = withContact(new URLSearchParams({ filter, select, "per-page": String(perPage), cursor }));
+	if (sort) params.set("sort", sort);
+	const response = await fetchLookup(`${BASE_URL}?${params}`, { headers: HEADERS() });
+	const data = (await response.json()) as Record<string, any>;
+	return {
+		items: (data?.results ?? []) as Array<Record<string, any>>,
+		next: typeof data?.meta?.next_cursor === "string" ? data.meta.next_cursor : null,
+		count: Number.isInteger(data?.meta?.count) ? data.meta.count : null,
+	};
+}

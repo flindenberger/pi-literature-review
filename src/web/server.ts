@@ -87,6 +87,8 @@ import { candidatesFromRecords, type CandidateRecord } from "../pick.ts";
 import { parseSocialReply, SOCIAL_SYSTEM, socialCandidate, STEP_ACCEPTS } from "./help.ts";
 import { describeFilters, prismaSvgFor, renderHtml, searchLabel, renderPaperChatReportHtml, renderSynthReportHtml, webPdfHref } from "../render.ts";
 import { keyRequirement, runSearch, SEARCHERS, type SearchOptions, type SearchPayload } from "../search.ts";
+import { MAX_SEEDS } from "../snowball.ts";
+import { mergeSnowball, payloadKeys } from "../snowmerge.ts";
 import { parseIdentifier, renderFetchReport, runSelection, type SelectionRunOptions } from "../selection.ts";
 import { listsForTopic } from "../sources/ecosystems.ts";
 import { type AuthorMatch, autocompleteAuthors, authorFacets, type FacetPage, type FacetScope, journalFacets } from "../sources/openalex.ts";
@@ -741,9 +743,18 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 		const byAuthors = !intake.options.query && intake.options.authorScope === "all" && Boolean(intake.options.filters?.pickedAuthors?.length);
 		if (!intake.options.query && !byAuthors) throw new HttpError(400, "no query -- fill at least one concept block or the free text");
 		const label = byAuthors ? authorsOnlyLabel((intake.options.filters?.pickedAuthors ?? []).map((name) => ({ name })), intake.options.filters?.authorPosition === "first") : intake.options.query;
-		const job = startJob("search", `search: ${label}`, async ({ signal, log }) => {
+		// Snowball over an earlier list: that list stays, the new finds join it.
+		const extendRun = typeof form.extend?.run === "string" ? form.extend.run : "";
+		const extendSeeds = Array.isArray(form.extend?.seeds) ? form.extend.seeds.filter((id): id is string => typeof id === "string" && Boolean(id.trim())).slice(0, MAX_SEEDS) : [];
+		const prior = extendRun ? runPayload(extendRun) : null;
+		if (extendRun && !prior) throw new HttpError(404, `no search run named ${extendRun}`);
+		if (extendRun && !extendSeeds.length) throw new HttpError(400, "no seed papers to snowball from");
+		const extendDirection = form.extend?.direction === "back" || form.extend?.direction === "forward" ? form.extend.direction : "both";
+		const job = startJob("search", `${prior ? "snowball" : "search"}: ${label}`, async ({ signal, log }) => {
 			for (const warning of intake.warnings) log(`note: ${warning}`);
-			const payload = await deps.runSearch({ ...intake.options, onWarn: log, signal });
+			const payload = prior
+				? mergeSnowball(prior as SearchPayload, await deps.runSearch({ ...intake.options, snowball: { seeds: extendSeeds, direction: extendDirection }, snowballOnly: true, knownKeys: payloadKeys(prior as SearchPayload), onWarn: log, signal }), extendSeeds)
+				: await deps.runSearch({ ...intake.options, onWarn: log, signal });
 			const written = deps.writeSearch(payload);
 			log(`written ${written.jsonPath}`);
 			const name = (written.htmlPath.split(/[\\/]/).pop() ?? "").replace(/\.html$/i, "");
@@ -1860,6 +1871,7 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 				...(options ? { options } : {}),
 				...(chat ? { chat } : {}),
 				...(typeof body.folder === "string" && body.folder.trim() ? { folder: body.folder.trim() } : {}),
+				...(body.direction === "both" || body.direction === "back" || body.direction === "forward" ? { direction: body.direction } : {}),
 				filters: searchAgainFilters(body.filters),
 			});
 			return json(res, 200, dialogView());
@@ -2081,6 +2093,11 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 				if (mailto && !isPlausibleMailto(mailto)) throw new HttpError(400, `"${mailto}" does not look like an email address`);
 				patch.mailto = mailto || undefined;
 			}
+			if (typeof body.searxngUrl === "string") {
+				const url = body.searxngUrl.trim().replace(/\/+$/, "");
+				if (url && !/^https?:\/\/[^\s/]+/i.test(url)) throw new HttpError(400, `"${url}" is not a web address (http:// or https://)`);
+				patch.searxngUrl = url || undefined;
+			}
 			if (typeof body.thinking === "string") {
 				if (!(THINKING_SETTINGS as readonly string[]).includes(body.thinking)) throw new HttpError(400, `thinking must be one of ${THINKING_SETTINGS.join(", ")}`);
 				patch.thinking = body.thinking === "off" ? undefined : body.thinking as ThinkingSetting;
@@ -2123,7 +2140,7 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 			const body = (await readBody(req)) as Record<string, unknown>;
 			const value = typeof body.value === "string" ? body.value.trim() : "";
 			if (/\s/.test(value)) throw new HttpError(400, "a key has no spaces");
-			if (body.name === "s2ApiKey" || body.name === "openAlexApiKey" || body.name === "githubToken") {
+			if (body.name === "s2ApiKey" || body.name === "openAlexApiKey" || body.name === "exaApiKey" || body.name === "githubToken") {
 				updateStoredConfig({ [body.name]: value || undefined });
 			} else if (body.name === "llmApiKey") {
 				const llm: Record<string, unknown> = { ...storedConfigView().llm };

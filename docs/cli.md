@@ -60,7 +60,8 @@ node src/cli.ts "<query>" [-n PER_SOURCE] [-s SOURCES] [-g "a,b;c,d"]
 | `--no-enrich` | Skip the enrichment step (abstracts, citations, access, code/data links) |
 | `--html [FILE]` | Write the HTML report, its JSON copy and `network.html`. Without FILE: `<store>/lit-search/<date>_<query>.html`. |
 | `--digest` | Print the agent-facing digest instead of the JSON payload |
-| `--code LIST` | Code-first sources: `hf-papers`, `github-readme`, `awesome-lists`, `gee-github`. Repositories are searched first, the papers they cite resolved at arXiv and OpenAlex. Adds up to ~40 s. `awesome-lists` reads the topics of [`codeListTopics`](configuration.md#keys-and-contact-data). |
+| `--snowball IDS` | Citation searching from these seed papers (comma list of DOIs / arXiv IDs): their references and the works citing them, from OpenAlex. `--snowball-direction both\|back\|forward` (default both). |
+| `--code LIST` | Code-first sources: `hf-papers`, `github-readme`, `awesome-lists`, `gee-github`, `datacite-software`, `web-search` (needs `searxngUrl` or `exaApiKey`). Repositories are searched first, the papers they cite resolved at arXiv and OpenAlex. Adds up to ~40 s. `awesome-lists` reads the topics of [`codeListTopics`](configuration.md#keys-and-contact-data). |
 | `--author "Name"` | Papers by this author (repeatable). Goes into each source's author field; a post-filter keeps records naming the author. |
 | `--author-id A...` | OpenAlex author ID for the `--author` in the same position (repeatable). OpenAlex then filters by the exact person. |
 | `--author-position first\|contributing\|any` | Required position of the picked author. Default `any`. |

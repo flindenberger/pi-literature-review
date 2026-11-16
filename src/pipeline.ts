@@ -106,6 +106,9 @@ function mergePair(a: MergedRecord, b: MergedRecord): MergedRecord {
 	const foundByA = a.found_by ?? [];
 	const foundBy = [...foundByA, ...(b.found_by ?? []).filter((q) => !foundByA.includes(q))];
 	if (foundBy.length) merged.found_by = foundBy;
+	const viaA = a.snowball ?? [];
+	const via = [...viaA, ...(b.snowball ?? []).filter((label) => !viaA.includes(label))];
+	if (via.length) merged.snowball = via;
 	return merged;
 }
 
@@ -478,7 +481,9 @@ export function dropOffTopicCodeRecords<T extends { title: string; abstract: str
 			kept.push(record);
 			continue;
 		}
-		const via = record.code_url ? `code repository ${record.code_url}` : "a code source";
+		const via = record.sources.every((source) => source === "snowball")
+			? "citation searching (snowball)"
+			: record.code_url ? `code repository ${record.code_url}` : "a code source";
 		dropped.push({
 			record,
 			reason: `found only via ${via}; title/abstract match ${best.hits} of ${best.total} query blocks `

@@ -66,6 +66,8 @@ import { authorFacets, type FacetScope, journalFacets } from "../src/sources/ope
 import { chatLangDefault, installChatLangObserver, runWizard } from "./dialogs.ts";
 import { gatedSelection, showSelectionReport } from "./selection.ts";
 import { type Candidate, type CandidateRecord, candidatesFromRecords, parsePickAnswer, pickedIds } from "../src/pick.ts";
+import { MAX_SEEDS } from "../src/snowball.ts";
+import { mergeSnowball, payloadKeys } from "../src/snowmerge.ts";
 import { completeWithPiModel } from "./pi-model.ts";
 
 const THOROUGH_PER_SOURCE = 15;
@@ -188,6 +190,7 @@ const PICK_TEXT = {
 		tab: "Download",
 		title: "Welche Paper als PDF herunterladen? Die im Bericht kopierte Zeile \"Download these papers: ...\" einfügen, "
 			+ "Zeilennummern (1 3 7), DOIs / arXiv-IDs, all (alle on-target) oder code (mit Code/Daten). "
+			+ "snowball 1 3 ergänzt die Liste stattdessen um die Paper, die diese zitieren oder von ihnen zitiert werden. "
 			+ "Leer lassen oder Esc: später (/lit-selection geht jederzeit).",
 		placeholder: "z. B. Download these papers: 10.3390/rs13081505 ... | 1 3 7 | all | code",
 		unclear: (typed: string) => `"${typed}" ergibt keine Paper: Zeile aus dem Bericht, Zeilennummern, DOIs, all oder code.`,
@@ -198,6 +201,7 @@ const PICK_TEXT = {
 		tab: "Download",
 		title: "Which papers do you want as PDFs? Paste the line \"Download these papers: ...\" copied in the report, "
 			+ "row numbers (1 3 7), DOIs / arXiv IDs, all (every on-target paper) or code (papers with code/data). "
+			+ "snowball 1 3 instead adds the papers citing or cited by those papers to the list. "
 			+ "Leave empty or press Esc: later (/lit-selection works any time).",
 		placeholder: "e.g. Download these papers: 10.3390/rs13081505 ... | 1 3 7 | all | code",
 		unclear: (typed: string) => `"${typed}" names no papers: the line from the report, row numbers, DOIs, all or code.`,
@@ -212,7 +216,7 @@ async function pickDialog(
 	candidates: Candidate[],
 	diagnostics: string[],
 	signal: AbortSignal | undefined,
-): Promise<string[] | null> {
+): Promise<{ ids: string[] } | { snowball: string[] } | null> {
 	const lang = chatLangDefault();
 	const text = PICK_TEXT[lang];
 	let typed = "";
@@ -237,8 +241,12 @@ async function pickDialog(
 			ctx.ui.notify(text.empty, "warning");
 			continue;
 		}
+		if (answer.kind === "snowball") {
+			diagnostics.push(`download question: snowball from ${ids.length} paper(s)`);
+			return { snowball: ids };
+		}
 		diagnostics.push(`download question: ${ids.length} paper(s)`);
-		return ids;
+		return { ids };
 	}
 }
 
@@ -444,6 +452,8 @@ const SEARCH_TEXT: Record<DialogLang, {
 			"github-readme": ["GitHub README-Suche", "Suche auf GitHub nach Repos, deren README ein arXiv-Paper nennt, Paper-Daten von arXiv"],
 			"awesome-lists": ["Awesome-Listen (awesome.ecosyste.ms)", "Awesome-Listen nach Fachgebiet (GitHub-Topic), Einträge gegen die Blöcke geprüft; anhaken zeigt die Themen"],
 			"gee-github": ["Google Earth Engine (GitHub)", "Suche auf GitHub nach Earth-Engine-Repos, Paper-Daten von OpenAlex über die DOI in der README"],
+			"datacite-software": ["Archivierte Software (DataCite)", "Bei Zenodo, figshare u. a. archivierte Code-Versionen, Paper über die DOI im Eintrag oder in der README"],
+			"web-search": ["Websuche (eigene SearXNG oder Exa-Schlüssel)", "Die Suchanfrage geht an deine eigene Suchmaschine; ohne Einrichtung übersprungen"],
 		},
 		codeTopicOwn: "+ Eigenes Listen-Thema für Awesome-Listen (Enter fügt hinzu und hakt an)",
 		codeTopicsLoading: "Listen-Themen für das Fachgebiet werden vorgeschlagen und geprüft ...",
@@ -552,6 +562,8 @@ const SEARCH_TEXT: Record<DialogLang, {
 			"github-readme": ["GitHub README search", "GitHub search for repos whose README cites an arXiv paper, paper details from arXiv"],
 			"awesome-lists": ["Awesome lists (awesome.ecosyste.ms)", "awesome lists by field (GitHub topic), entries matched against the blocks; tick to see the topics"],
 			"gee-github": ["Google Earth Engine (GitHub)", "GitHub search for Earth Engine repos, paper details from OpenAlex via the README's DOI"],
+			"datacite-software": ["Archived software (DataCite)", "code releases archived at Zenodo, figshare and others, paper via the DOI in the record or the README"],
+			"web-search": ["Web search (your SearXNG or Exa key)", "the query goes to your own search engine; skipped when none is set up"],
 		},
 		codeTopicOwn: "+ Own list topic for Awesome lists (Enter adds and checks it)",
 		codeTopicsLoading: "suggesting and checking list topics for the field ...",
@@ -1706,8 +1718,7 @@ export default function literatureSearch(pi: ExtensionAPI) {
 			// the AGENT streams -- the agent-free command path shows a pulsing
 			// elapsed line in the widget instead (1s tick, dots building 1-2-3
 			// at the END of the line).
-			const startedAt = Date.now();
-			const ticker = setInterval(() => {
+			const startTicker = () => { const startedAt = Date.now(); return setInterval(() => {
 				const seconds = Math.round((Date.now() - startedAt) / 1000);
 				const dots = ".".repeat(1 + (seconds % 3));
 				const base = `working -- ${seconds}s elapsed -- searching, verifying, enriching`;
@@ -1728,74 +1739,119 @@ export default function literatureSearch(pi: ExtensionAPI) {
 				} else {
 					ctx.ui.setWidget(INTAKE_WIDGET, [base + dots]);
 				}
-			}, 1000);
+			}, 1000); };
+			let ticker = startTicker();
 			try {
-				const payload = await runSearch({
-					...searchOptionsFor(confirmed),
-					filters: filtersFor(confirmed),
-					onWarn: progress,
-					signal: ctx.signal,
-				});
-				clearInterval(ticker);
-				ctx.ui.setWidget(INTAKE_WIDGET, undefined);
-				let htmlPath: string | null = null;
-				try {
-					htmlPath = writeSearchOutputs(payload).htmlPath;
-				} catch (error) {
-					ctx.ui.notify(
-						`writing the output files failed: ${error instanceof Error ? error.message : error}`,
-						"warning",
-					);
-				}
-				if (htmlPath) {
-					ctx.ui.notify(
-						`Search finished: ${payload.results.length} record(s). Results written to ${htmlPath}`,
-						"info",
-					);
-				}
-				// The digest for the USER (no agent instructions on the card).
-				const digest = renderDigest(payload, htmlPath, "user");
-				// TUI: ONE custom message is display (the card renderer draws
-				// details), verbatim LLM context and /resume persistence at
-				// once; triggerTurn prompts ONE brief agent summary under the
-				// card (the note forbids re-typing identifiers/paths).
-				// The card shows now; the agent's short summary waits until the
-				// download part of the stage is answered (a streaming reply
-				// would run into the question).
-				const tuiCard = digestEntryReady && ctx.mode === "tui";
-				if (tuiCard) {
-					pi.sendMessage({
-						customType: DIGEST_ENTRY,
-						content: `${searchTurnNote()}\n\n${digest}`,
-						display: true,
-						details: {
-							heading: `Literature search -- ${confirmed.query}`,
-							text: digest,
-						},
-					}, { triggerTurn: false });
-				} else {
-					const digestLines = digest.split("\n");
-					ctx.ui.setWidget(INTAKE_WIDGET, digestLines.length > 16
-						? [...digestLines.slice(0, 15), `... (${digestLines.length - 15} more lines -- full results in the HTML)`]
-						: digestLines);
-				}
+				// Search, card, download question; "snowball <rows>" in the
+				// question extends the list by the citation searching from those
+				// papers (snowmerge.ts) and asks again over the extended list.
+				let snowballSeeds: string[] = [];
+				let newSeeds: string[] = [];
+				let payload!: SearchPayload;
+				let digest = "";
+				let tuiCard = false;
+				let candidates: Candidate[] = [];
+				let pickedPapers: string[] | null = null;
+				for (;;) {
+					payload = newSeeds.length
+						? mergeSnowball(payload, await runSearch({
+							...searchOptionsFor(confirmed),
+							filters: filtersFor(confirmed),
+							snowball: { seeds: newSeeds, direction: "both" as const },
+							snowballOnly: true,
+							knownKeys: payloadKeys(payload),
+							onWarn: progress,
+							signal: ctx.signal,
+						}), newSeeds)
+						: await runSearch({
+							...searchOptionsFor(confirmed),
+							filters: filtersFor(confirmed),
+							onWarn: progress,
+							signal: ctx.signal,
+						});
+					clearInterval(ticker);
+					ctx.ui.setWidget(INTAKE_WIDGET, undefined);
+					let htmlPath: string | null = null;
+					try {
+						htmlPath = writeSearchOutputs(payload).htmlPath;
+					} catch (error) {
+						ctx.ui.notify(
+							`writing the output files failed: ${error instanceof Error ? error.message : error}`,
+							"warning",
+						);
+					}
+					if (htmlPath) {
+						ctx.ui.notify(
+							`Search finished: ${payload.results.length} record(s). Results written to ${htmlPath}`,
+							"info",
+						);
+					}
+					// The digest for the USER (no agent instructions on the card).
+					digest = renderDigest(payload, htmlPath, "user");
+					// TUI: ONE custom message is display (the card renderer draws
+					// details), verbatim LLM context and /resume persistence at
+					// once; triggerTurn prompts ONE brief agent summary under the
+					// card (the note forbids re-typing identifiers/paths).
+					// The card shows now; the agent's short summary waits until the
+					// download part of the stage is answered (a streaming reply
+					// would run into the question).
+					tuiCard = digestEntryReady && ctx.mode === "tui";
+					if (tuiCard) {
+						pi.sendMessage({
+							customType: DIGEST_ENTRY,
+							content: `${searchTurnNote()}\n\n${digest}`,
+							display: true,
+							details: {
+								heading: `Literature search -- ${confirmed.query}`,
+								text: digest,
+							},
+						}, { triggerTurn: false });
+					} else {
+						const digestLines = digest.split("\n");
+						ctx.ui.setWidget(INTAKE_WIDGET, digestLines.length > 16
+							? [...digestLines.slice(0, 15), `... (${digestLines.length - 15} more lines -- full results in the HTML)`]
+							: digestLines);
+					}
 
-				// Second part of stage 1: which papers as PDFs (or later).
-				// Papers already in the library are skipped by "all" and "code".
-				let libraryKeys = new Set<string>();
-				try {
-					libraryKeys = new Set(matchLibrary(outputRoot(), () => {}).matched.map((paper) => paper.key));
-				} catch {
-					// an unreadable library only means nothing is skipped
+					// Second part of stage 1: which papers as PDFs (or later).
+					// Papers already in the library are skipped by "all" and "code".
+					let libraryKeys = new Set<string>();
+					try {
+						libraryKeys = new Set(matchLibrary(outputRoot(), () => {}).matched.map((paper) => paper.key));
+					} catch {
+						// an unreadable library only means nothing is skipped
+					}
+					candidates = candidatesFromRecords(
+						payload.results as unknown as CandidateRecord[],
+						payload.dropped as unknown as Array<{ record: CandidateRecord }>,
+						libraryKeys,
+					);
+					pickedPapers = null;
+					if (candidates.length && !ctx.signal?.aborted) {
+						let picked = await pickDialog(ctx, candidates, diagnostics, ctx.signal);
+						// Seeds the list already rolled from: say so and ask again.
+						while (picked && "snowball" in picked) {
+							const asked = picked.snowball;
+							const fresh = asked.filter((id, index) => !snowballSeeds.some((seed) => seed.toLowerCase() === id.toLowerCase()) && asked.findIndex((other) => other.toLowerCase() === id.toLowerCase()) === index);
+							if (fresh.length && snowballSeeds.length < MAX_SEEDS) break;
+							ctx.ui.notify(fresh.length ? `At most ${MAX_SEEDS} seed papers per list.` : "The list already holds the snowball of these papers.", "info");
+							picked = await pickDialog(ctx, candidates, diagnostics, ctx.signal);
+						}
+						if (picked && "snowball" in picked) {
+							newSeeds = picked.snowball
+								.filter((id, index) => !snowballSeeds.some((seed) => seed.toLowerCase() === id.toLowerCase()) && picked.snowball.findIndex((other) => other.toLowerCase() === id.toLowerCase()) === index)
+								.slice(0, Math.max(0, MAX_SEEDS - snowballSeeds.length));
+							snowballSeeds = [...snowballSeeds, ...newSeeds];
+							ticker = startTicker();
+							continue;
+						}
+						pickedPapers = picked ? picked.ids : null;
+					}
+					break;
 				}
-				const candidates = candidatesFromRecords(
-					payload.results as unknown as CandidateRecord[],
-					payload.dropped as unknown as Array<{ record: CandidateRecord }>,
-					libraryKeys,
-				);
 				let downloadNote = "The user chose to download papers later (nothing was downloaded).";
-				if (candidates.length && !ctx.signal?.aborted) {
-					const ids = await pickDialog(ctx, candidates, diagnostics, ctx.signal);
+				if (pickedPapers && !ctx.signal?.aborted) {
+					const ids = pickedPapers;
 					if (ids) {
 						const outcome = await gatedSelection(ctx, ids, diagnostics, ctx.signal, progress);
 						if (outcome.status === "done") {

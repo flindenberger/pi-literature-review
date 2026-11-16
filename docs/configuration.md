@@ -26,6 +26,8 @@ The file is for everything else: llama.cpp, a remote API, a separate generation 
 | `mailto` | `PI_LITERATURE_REVIEW_MAILTO` | Contact email. Sent in the User-Agent of every API request except DataCite and ORCID; also as a URL parameter to CrossRef and OpenAlex (`mailto`) and Unpaywall (`email`, required there). Asked at the first download. |
 | `openAlexApiKey` | `PI_LITERATURE_REVIEW_OPENALEX_API_KEY` | Free key (openalex.org/settings/api-key). Without it, all machines behind one IP address share one daily credit budget; the results page notes when a run used it. Sent as `Authorization: Bearer` header, never in a URL. A refused key fails the OpenAlex part with a message naming this setting. `network.html` queries OpenAlex from the browser without a key. |
 | `s2ApiKey` | `PI_LITERATURE_REVIEW_S2_API_KEY` | Free Semantic Scholar key (semanticscholar.org/product/api). Enables Semantic Scholar as fourth search source and second abstract source. Without it Semantic Scholar is not queried; the results page says so. |
+| `exaApiKey` | `PI_LITERATURE_REVIEW_EXA_API_KEY` | Key of your own Exa account (dashboard.exa.ai). Turns on the `web-search` code source; the query text then goes to Exa under your account and terms. Sent as `x-api-key` header. |
+| `searxngUrl` | `PI_LITERATURE_REVIEW_SEARXNG_URL` | Address of your own SearXNG instance with JSON output enabled (`search.formats: [html, json]` in its settings). Turns on the `web-search` code source and is asked before Exa. |
 | `githubToken` | `PI_LITERATURE_REVIEW_GITHUB_TOKEN` | Raises the GitHub search limit from 10 to 30 requests per minute for the code sources `github-readme` and `gee-github`. |
 | `codeListTopics` | `PI_LITERATURE_REVIEW_CODE_LIST_TOPICS` | GitHub topics whose awesome lists the `awesome-lists` code source reads (env: comma list). See below. |
 
@@ -35,7 +37,7 @@ The file is for everything else: llama.cpp, a remote API, a separate generation 
 - Browser: the stored topics plus the model's suggestions. Unset = no built-in topics offered.
 - Topics are research fields (`bioinformatics`, `robotics`, `gis`), not query words.
 
-Keys (`githubToken`, `openAlexApiKey`, `s2ApiKey`, `llm.apiKey`) are entered in the file or in the browser's Settings. No dialog asks for a key; no key is copied from Pi's configuration.
+Keys (`githubToken`, `openAlexApiKey`, `s2ApiKey`, `exaApiKey`, `llm.apiKey`) and `searxngUrl` are entered in the file or in the browser's Settings. No dialog asks for a key; no key is copied from Pi's configuration.
 
 ## Models and backends
 

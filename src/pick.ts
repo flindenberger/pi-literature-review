@@ -64,7 +64,7 @@ export function candidatesFromRecords(
 	return out;
 }
 
-export type PickAnswer = { kind: "all" } | { kind: "code" } | { kind: "ids"; ids: string[] } | { kind: "none" };
+export type PickAnswer = { kind: "all" } | { kind: "code" } | { kind: "ids"; ids: string[] } | { kind: "snowball"; ids: string[] } | { kind: "none" };
 
 /** The paper-pick answer: "all" (on-target rows), "code" (rows with a
  * code or data link), row numbers of the results table, or identifiers. */
@@ -74,6 +74,13 @@ export function parsePickAnswer(text: string, candidates: Candidate[]): PickAnsw
 	const lower = t.toLowerCase();
 	if (/^(all|all on-target|everything)$/.test(lower)) return { kind: "all" };
 	if (/^(code|with code|papers with code)$/.test(lower)) return { kind: "code" };
+	// "snowball 1 3" / "snowball 10.1/x": citation searching from these
+	// papers instead of a download.
+	const snow = /^snowball\b\s*:?\s*(.*)$/i.exec(t);
+	if (snow) {
+		const inner = parsePickAnswer(snow[1], candidates);
+		return inner.kind === "ids" ? { kind: "snowball", ids: inner.ids } : { kind: "none" };
+	}
 	const results = candidates.filter((candidate) => !candidate.dropped);
 	if (/^\d+(?:[\s,;]+\d+)*$/.test(t)) {
 		const ids = [...new Set(t.split(/[^\d]+/).filter(Boolean).map(Number))]
@@ -93,6 +100,6 @@ export function parsePickAnswer(text: string, candidates: Candidate[]): PickAnsw
 export function pickedIds(answer: PickAnswer, candidates: Candidate[]): string[] {
 	if (answer.kind === "all") return candidates.filter((candidate) => candidate.group === "on_target" && !candidate.inLibrary).map((candidate) => candidate.id);
 	if (answer.kind === "code") return candidates.filter((candidate) => candidate.code && !candidate.inLibrary).map((candidate) => candidate.id);
-	if (answer.kind === "ids") return answer.ids;
+	if (answer.kind === "ids" || answer.kind === "snowball") return answer.ids;
 	return [];
 }

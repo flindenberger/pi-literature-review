@@ -13,6 +13,12 @@
  *                  blocks, then each repository's README
  *   gee-github     GitHub search for Google Earth Engine repositories whose
  *                  README mentions doi.org, then the README
+ *   datacite-software  DataCite's software records (Zenodo, figshare ...
+ *                  archives of code releases) matching the blocks: their
+ *                  repository and paper relations, else the README
+ *   web-search     the user's own web search engine (SearXNG or an Exa
+ *                  key, sources/websearch.ts): repository addresses and
+ *                  paper identifiers pulled out of the hits, then READMEs
  *
  * Every searcher returns records whose `source` is the code platform, with
  * `resolved_via` naming the database that delivered the metadata, `code_url`
@@ -30,10 +36,12 @@ import { queryBlocks } from "./intake.ts";
 import { termMatches } from "./pipeline.ts";
 import { lookupArxivIds } from "./sources/arxiv.ts";
 import { flattenBlockTerms } from "./sources/crossref.ts";
+import { dataciteBlockQuery, searchSoftware, type SoftwareHit } from "./sources/datacite.ts";
 import { fetchRepoMeta, listEntries, listsForTopic, type ListEntry, type RepoMeta } from "./sources/ecosystems.ts";
 import { fetchReadme, LIST_REPO_NAME, parseRepoUrl, repoUrl, searchRepositories } from "./sources/github.ts";
 import { searchHfPapers, buildHfQuery, type HfPaper } from "./sources/huggingface.ts";
 import { lookupArxivViaOpenalex, lookupOpenalexDois } from "./sources/openalex.ts";
+import { webSearch, type WebHit } from "./sources/websearch.ts";
 import { IN_BROWSER, type SourceRecord, type SourceScope } from "./types.ts";
 
 /* ---------------- 1. Types and registry ---------------- */
@@ -66,6 +74,8 @@ export interface CodeSearchDeps {
 	listEntries: (slug: string) => Promise<ListEntry[]>;
 	lookupArxiv: (ids: string[]) => Promise<SourceRecord[]>;
 	lookupDois: (dois: string[]) => Promise<SourceRecord[]>;
+	softwareSearch: (query: string, size: number) => Promise<SoftwareHit[]>;
+	webSearch: (query: string) => Promise<WebHit[]>;
 }
 
 export interface CodeSearchContext {
@@ -95,6 +105,8 @@ const REAL_DEPS: CodeSearchDeps = {
 	// ids resolve through OpenAlex instead.
 	lookupArxiv: IN_BROWSER ? lookupArxivViaOpenalex : lookupArxivIds,
 	lookupDois: lookupOpenalexDois,
+	softwareSearch: searchSoftware,
+	webSearch: async (query) => (await webSearch(query)).hits,
 };
 
 /** Default GitHub topics for the awesome-lists searcher (config.ts owns
@@ -551,11 +563,110 @@ export const searchAwesomeLists: CodeSearcher = async (query, perSource, scope, 
 	return { records, candidates: pairs.length, failures, listsRead };
 };
 
+/** DataCite software records for the blocks: a record that names its
+ * paper (IsSupplementTo / IsDescribedBy ... a DOI) pairs that DOI with its
+ * repository directly; otherwise the repository's README is read. */
+export const searchDataciteSoftware: CodeSearcher = async (query, perSource, scope, ctx) => {
+	const d = deps(ctx);
+	const failures: CodeSearchFailure[] = [];
+	const limit = perSource * CANDIDATE_FACTOR;
+	// Software records carry a title and a short description: all blocks at
+	// once often find nothing. With three or more blocks and too few hits,
+	// each block is left out once -- the same all-but-one rule the topic
+	// gate applies to code-only finds.
+	const blocks = scope?.blocks ?? [];
+	const size = Math.min(100, limit * 2);
+	let hits: SoftwareHit[];
+	try {
+		hits = await d.softwareSearch(dataciteBlockQuery(query, blocks), size);
+		if (blocks.length >= 3 && hits.length < limit) {
+			for (let skip = 0; skip < blocks.length; skip++) {
+				aborted(ctx);
+				hits.push(...await d.softwareSearch(dataciteBlockQuery(query, blocks.filter((_, index) => index !== skip)), size));
+			}
+		}
+	} catch (error) {
+		throw new Error(`DataCite software search failed: ${errorText(error)}`);
+	}
+	const direct: CodePair[] = [];
+	const readmeRepos: Array<{ owner: string; repo: string; createdAt: string | null }> = [];
+	const seen = new Set<string>();
+	for (const hit of hits) {
+		const parsed = hit.repoUrls.map(parseRepoUrl).find(Boolean) ?? null;
+		if (!parsed || LIST_REPO_NAME.test(parsed.repo)) continue;
+		const key = `${parsed.owner}/${parsed.repo}`.toLowerCase();
+		if (seen.has(key)) continue;
+		seen.add(key);
+		if (hit.paperDois.length) {
+			for (const doi of hit.paperDois.slice(0, MAX_IDS_PER_README)) direct.push({ repoUrl: repoUrl(parsed.owner, parsed.repo), id: { kind: "doi", value: doi }, createdAt: undefined });
+		} else {
+			readmeRepos.push({ ...parsed, createdAt: null });
+		}
+	}
+	const fromReadmes = (await pairsFromReadmes(readmeRepos, Math.max(0, limit - direct.length), ctx, failures)).map((p) => ({ ...p, createdAt: undefined }));
+	const pairs = [...direct, ...fromReadmes];
+	const records = await resolvePairs(pairs, "datacite-software", perSource, ctx, failures);
+	return { records, candidates: pairs.length, failures };
+};
+
+/** Requests per query for the web search: the words alone (finds paper
+ * pages with DOIs) and with "github" (finds repositories). */
+export function webQueries(words: string): string[] {
+	return [words, `${words} github`];
+}
+
+/** The user's own web search engine: repository addresses in the hits
+ * (the hit's own address or links in its text) are read like any other
+ * repository; paper identifiers in a hit that is not a repository page
+ * become papers without code (topic gate as for every code source). */
+export const searchWebCode: CodeSearcher = async (query, perSource, scope, ctx) => {
+	const d = deps(ctx);
+	const failures: CodeSearchFailure[] = [];
+	const limit = perSource * CANDIDATE_FACTOR;
+	const repos: Array<{ owner: string; repo: string; createdAt: string | null }> = [];
+	const seen = new Set<string>();
+	const idsOnly: Array<{ id: PaperId; repoUrl: null }> = [];
+	let answered = 0;
+	for (const text of webQueries(searchWords(query, scope?.blocks))) {
+		aborted(ctx);
+		let hits: WebHit[];
+		try {
+			hits = await d.webSearch(text);
+			answered++;
+		} catch (error) {
+			failures.push({ step: `web search "${text}"`, error: errorText(error) });
+			continue;
+		}
+		for (const hit of hits) {
+			const own = parseRepoUrl(hit.url);
+			const urls = own ? [repoUrl(own.owner, own.repo)] : repoUrlsFromText(`${hit.url} ${hit.text}`);
+			for (const url of urls) {
+				const parsed = parseRepoUrl(url);
+				if (!parsed || LIST_REPO_NAME.test(parsed.repo)) continue;
+				const key = `${parsed.owner}/${parsed.repo}`.toLowerCase();
+				if (seen.has(key)) continue;
+				seen.add(key);
+				repos.push({ ...parsed, createdAt: null });
+			}
+			if (!own) {
+				for (const id of paperIdsFromText(hit.text).slice(0, MAX_IDS_PER_README)) idsOnly.push({ id, repoUrl: null });
+			}
+		}
+	}
+	if (!answered) throw new Error(`web search failed: ${failures.map((f) => f.error).join("; ")}`);
+	const pairs = (await pairsFromReadmes(repos, limit, ctx, failures)).map((p) => ({ ...p, createdAt: undefined }));
+	const all = [...pairs, ...idsOnly.slice(0, Math.max(0, limit - pairs.length))];
+	const records = await resolvePairs(all, "web-search", perSource, ctx, failures);
+	return { records, candidates: all.length, failures };
+};
+
 export const CODE_SEARCHERS: Record<string, CodeSearcher> = {
 	"hf-papers": searchHfPapersCode,
 	"github-readme": searchGithubReadme,
 	"awesome-lists": searchAwesomeLists,
 	"gee-github": searchGeeGithub,
+	"datacite-software": searchDataciteSoftware,
+	"web-search": searchWebCode,
 };
 
 /** Reset the per-process list cache (tests). */

@@ -68,6 +68,9 @@ export class JobRunner {
 	private readonly lines: LineEvent[] = [];
 	private readonly listeners = new Set<(event: RunnerEvent) => void>();
 	private counter = 0;
+	// Ids stay unique across server restarts: a conversation reopened from
+	// History may hold a finished job of an earlier server ("search-2").
+	private readonly session = Date.now().toString(36);
 	private readonly now: () => Date;
 
 	constructor(now: () => Date = () => new Date()) {
@@ -84,7 +87,7 @@ export class JobRunner {
 		if (all.length >= MAX_RUNNING) throw new JobBusyError({ ...all[all.length - 1] });
 		const controller = new AbortController();
 		const info: JobInfo = {
-			id: `${kind}-${++this.counter}`,
+			id: `${kind}-${this.session}-${++this.counter}`,
 			kind,
 			label,
 			state: "running",

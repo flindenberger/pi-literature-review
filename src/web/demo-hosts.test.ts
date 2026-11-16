@@ -36,13 +36,14 @@ const REQUESTED = new Set([
 
 /** In the shared code, never asked by the demo: arXiv sends no header
  * that lets a web page read it (skipped in a browser), Semantic Scholar
- * runs only with a key, Unpaywall only for downloads (installed version). */
-const INSTALLED_ONLY = new Set(["export.arxiv.org", "api.semanticscholar.org", "api.unpaywall.org"]);
+ * runs only with a key, Unpaywall only for downloads, the web search only
+ * with the user's own engine (installed version). */
+const INSTALLED_ONLY = new Set(["export.arxiv.org", "api.semanticscholar.org", "api.unpaywall.org", "api.exa.ai"]);
 
 /** Links shown to the reader, opened only by a click. */
 const LINKS = new Set([
 	"github.com", "arxiv.org", "openalex.org", "orcid.org", "www.semanticscholar.org",
-	"www.npmjs.com", "nodejs.org", "pi.dev", "en.wikipedia.org",
+	"www.npmjs.com", "nodejs.org", "pi.dev", "en.wikipedia.org", "dashboard.exa.ai",
 ]);
 
 /** Not network addresses: local model servers in settings text, examples
