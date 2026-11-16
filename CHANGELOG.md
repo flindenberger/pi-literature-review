@@ -4,6 +4,14 @@ All notable changes to this package are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- Browser: the PDF panel could stay white after an answer or a click on
+  a paper in the library (the tab of the cited paper was removed in the
+  same step that opened it); the PDF now shows at once.
+
 ## [0.4.1] - 2026-11-16
 
 ### Security
@@ -217,6 +225,7 @@ in the Pi coding agent.
   per-paper summaries, detail questions and an optional review synthesis.
 - Command line for all three stages without Pi.
 
+[Unreleased]: https://github.com/flindenberger/pi-literature-review/compare/v0.4.1...HEAD
 [0.4.1]: https://github.com/flindenberger/pi-literature-review/releases/tag/v0.4.1
 [0.4.0]: https://github.com/flindenberger/pi-literature-review/releases/tag/v0.4.0
 [0.3.0]: https://github.com/flindenberger/pi-literature-review/releases/tag/v0.3.0

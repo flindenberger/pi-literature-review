@@ -1070,6 +1070,9 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		if (fresh) heroAnimate();
 		mountResults();
 		renderModal(view, resultsView);
+		// Another conversation: the tabs of the last one go -- before the
+		// tabs of this one are opened below.
+		if (state.tabsSession !== view.chatSession) { clearTabs(); state.tabsSession = view.chatSession; }
 		// A fresh answer while a PDF is open on the right: the PDF jumps to
 		// the first cited passage, marked (a click on any [n] shows another).
 		const answers = view.messages.filter((message) => message.role === "answer" && message.answer);
@@ -1154,8 +1157,6 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 			openReportTab(reportUrl, seen.url === reportUrl);
 		}
 		state.seenReports = { session: view.chatSession, url: reportUrl, job: reportJob };
-		// Another conversation: the tabs of the last one go.
-		if (state.tabsSession !== view.chatSession) { clearTabs(); state.tabsSession = view.chatSession; }
 		// The entry question follows the ticks (one paper, several PDFs).
 		if (entry && chatMenu) {
 			const question = thread.querySelector(".msg.assistant p");
@@ -2673,6 +2674,8 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	state.activeTab = null;
 	function clearTabs() {
 		reportBox.classList.remove("compact");
+		// The single frame comes back with what it last showed.
+		if (state.tabs.length) frame.hidden = !frame.getAttribute("src");
 		for (const tab of state.tabs) tab.frame.remove();
 		state.tabs = [];
 		state.activeTab = null;
