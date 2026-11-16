@@ -4,6 +4,15 @@ All notable changes to this package are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.1] - 2026-11-16
+
+### Security
+
+- Notes: HTML pasted into a note could run script code in the page
+  (e.g. an image with an error handler, copied from a prepared web
+  page). Pasted HTML is now read in an inert document; nothing in it
+  runs or loads. Affected: 0.3.0 and 0.4.0.
+
 ## [0.4.0] - 2026-11-16
 
 ### Added
@@ -208,6 +217,7 @@ in the Pi coding agent.
   per-paper summaries, detail questions and an optional review synthesis.
 - Command line for all three stages without Pi.
 
+[0.4.1]: https://github.com/flindenberger/pi-literature-review/releases/tag/v0.4.1
 [0.4.0]: https://github.com/flindenberger/pi-literature-review/releases/tag/v0.4.0
 [0.3.0]: https://github.com/flindenberger/pi-literature-review/releases/tag/v0.3.0
 [0.2.1]: https://github.com/flindenberger/pi-literature-review/releases/tag/v0.2.1
