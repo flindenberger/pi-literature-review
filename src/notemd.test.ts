@@ -13,7 +13,7 @@ const blocks: Block[] = [
 	{ t: "quote", c: [{ text: "Acquisition has operated continuously since late 2021. " }, { text: "Blanch et al. 2026, p. 4", href: "#page=4" }] },
 	{ t: "img", src: "img/p4-1.png", alt: "Blanch et al. 2026, p. 4 [Fig. 2]", page: 4 },
 	{ t: "img", src: "img/pasted 1.png", alt: "pasted" },
-	{ t: "table", rows: [[[{ text: "Site" }], [{ text: "MAE" }]], [[{ text: "ELB" }], [{ text: "0.96 | cm" }]], [[{ text: "LAU" }], []]] },
+	{ t: "table", rows: [[[{ text: "Site" }], [{ text: "MAE" }]], [[{ text: "ELB" }], [{ text: "0.96 | cm" }]], [[{ text: "LAU" }], []], [[{ text: "a\\|b \\" }], [{ text: "x\\|y | z\\", code: true }]]] },
 	{ t: "hr" },
 	{ t: "p", c: [{ text: "See " }, { text: "the paper", href: "https://doi.org/10.5194/hess-30-797-2026" }, { text: " - done" }] },
 	{ t: "p", c: [{ text: "- not a list, # not a heading" }] },

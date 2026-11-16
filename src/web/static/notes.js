@@ -639,8 +639,10 @@ export function createNotes(app) {
 		event.preventDefault();
 		commit();
 		if (html) {
-			const holder = document.createElement("div");
-			holder.innerHTML = html.replace(/<(script|style|meta|link|title)[\s\S]*?(<\/\1>|>)/gi, "");
+			// An inert document: nothing in the pasted page runs or loads
+			// (an element of this page would fire e.g. <img onerror>).
+			const holder = new DOMParser().parseFromString(html, "text/html").body;
+			holder.querySelectorAll("script, style, meta, link, title").forEach((node) => node.remove());
 			// Text from a PDF comes as lines (spans and line breaks only): it
 			// is joined like plain text below; real structure is kept.
 			// (PDF viewers wrap their lines in div and span elements.)

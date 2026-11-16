@@ -197,8 +197,10 @@ function escapeLineStart(line: string): string {
 	return line.replace(/^(\s*)(#{1,6}\s|>|[-+*]\s|\d+[.)]\s|---|\|)/, (_all, space: string, mark: string) => `${space}\\${mark}`);
 }
 
+/** A cell in a table row: backslash and "|" escaped for the row (splitRow
+ * undoes exactly this before the cell's inline Markdown is read). */
 function tableCell(runs: Inline[]): string {
-	return inlinesToMd(runs).replace(/\|/g, "\\|").replace(/\n/g, " ");
+	return inlinesToMd(runs).replace(/[\\|]/g, (char) => `\\${char}`).replace(/\n/g, " ");
 }
 
 function blockToMd(block: Block): string {
@@ -353,7 +355,7 @@ function splitRow(line: string): Inline[][] {
 	const cells: string[] = [];
 	let cell = "";
 	for (let pos = 0; pos < inner.length; pos += 1) {
-		if (inner[pos] === "\\" && inner[pos + 1] === "|") { cell += "|"; pos += 1; continue; }
+		if (inner[pos] === "\\" && (inner[pos + 1] === "|" || inner[pos + 1] === "\\")) { cell += inner[pos + 1]; pos += 1; continue; }
 		if (inner[pos] === "|") { cells.push(cell); cell = ""; continue; }
 		cell += inner[pos];
 	}
