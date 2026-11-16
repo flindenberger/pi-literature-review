@@ -2769,9 +2769,10 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		const listPage = document.querySelector(".chat").classList.contains("resultsview");
 		reportBox.classList.toggle("popup", on);
 		$("backdrop").hidden = !on;
-		$("btn-enlarge").hidden = on && listPage;
+		// Enlarged, the close button (or Esc) brings it back: no second button.
+		$("btn-enlarge").hidden = on;
 		if (!on && listPage) shell.classList.add("no-report");
-		$("btn-enlarge").title = on ? "Shrink beside the chat (Esc)" : "Enlarge over the page";
+		$("btn-close-panel").title = on && !listPage ? "Back beside the chat (Esc)" : "Hide the panel";
 		if (on) shell.classList.remove("no-report");
 	}
 	$("btn-enlarge").addEventListener("click", () => setPopup(!reportBox.classList.contains("popup")));
@@ -2820,7 +2821,21 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		link.click();
 		link.remove();
 	});
-	$("btn-close-panel").addEventListener("click", () => { setPopup(false); state.panelClosedByUser = true; shell.classList.add("no-report"); });
+	// Close on an enlarged panel beside a chat shrinks it back into the
+	// split; the results page has no split, so there it hides the window.
+	$("btn-close-panel").addEventListener("click", () => {
+		const listPage = document.querySelector(".chat").classList.contains("resultsview");
+		if (reportBox.classList.contains("popup") && !listPage) { setPopup(false); return; }
+		setPopup(false);
+		state.panelClosedByUser = true;
+		shell.classList.add("no-report");
+	});
+	/** A PDF hidden with Close stays loaded in the panel: the handle at the
+	 * right edge shows it again (the notepad has no card to click). */
+	function syncPanelHandle() { $("btn-show-panel").hidden = !(shell.classList.contains("no-report") && panelPaperBase()); }
+	function showPanelAgain() { state.panelClosedByUser = false; shell.classList.remove("no-report"); }
+	$("btn-show-panel").addEventListener("click", showPanelAgain);
+	new MutationObserver(syncPanelHandle).observe(shell, { attributes: true, attributeFilter: ["class"] });
 	frame.addEventListener("load", () => {
 		const update = () => { const n = tickedInReport().length; $("ticked").textContent = n ? `${n} ticked` : ""; };
 		try { frame.contentDocument.addEventListener("change", update); } catch { /* same origin always */ }
@@ -3109,7 +3124,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		const m = url && /^\/pdf\/([^?#]+)\.pdf/i.exec(unbase(url));
 		return m ? decodeURIComponent(m[1]) : null;
 	}
-	function syncPaperInfoButton() { $("btn-paper-info").hidden = !panelPaperBase(); syncViewbar(); }
+	function syncPaperInfoButton() { $("btn-paper-info").hidden = !panelPaperBase(); syncViewbar(); syncPanelHandle(); }
 
 	/* ---------------- notepad (static/notes.js) ---------------- */
 	/** The script's own ?v= (the demo's build version), passed on to the
@@ -3152,6 +3167,7 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 	async function openNotes(base) {
 		if (isDemo() && !state.lib) await loadLibrary();
 		if (panelPaperBase() !== base) { state.panelClosedByUser = false; showPdf(`${BASE}/pdf/${encodeURIComponent(base)}.pdf`); }
+		else showPanelAgain();
 		try {
 			const notes = await loadNotes();
 			await notes.open(base, paperLabel(base));
@@ -3180,6 +3196,14 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		// Back to the chat: this paper's chat, unless the open one is about it.
 		if (!(onePdfChat() && state.dialog.answers.scope[0] === base)) await openPaperChat(base);
 	});
+	// The paper's title above the chat or the notepad shows its PDF again.
+	async function showPaperPdf(base) {
+		if (!base) return;
+		if (panelPaperBase() === base) showPanelAgain();
+		else { state.panelClosedByUser = false; showPdf(`${BASE}/pdf/${encodeURIComponent(base)}.pdf`); }
+	}
+	$("viewbar-label").addEventListener("click", () => showPaperPdf(panelPaperBase()));
+	$("notes-title").addEventListener("click", async () => showPaperPdf(notesModule ? (await notesModule).base() : panelPaperBase()));
 	$("btn-rail-notes").addEventListener("click", () => $("btn-rail").click());
 	$("btn-paper-info").addEventListener("click", () => { const base = panelPaperBase(); if (base) showPaperInfo(base); });
 

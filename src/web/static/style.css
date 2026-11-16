@@ -28,6 +28,11 @@ button.primary:hover { background: #000000; }
 .shell { --rail-w: 16rem; flex: 1; display: grid; grid-template-columns: var(--rail-w) minmax(24rem, 1fr) minmax(0, 1.15fr); min-height: 0; height: 100vh; }
 .shell.no-report { grid-template-columns: var(--rail-w) minmax(24rem, 1fr) 0; }
 .shell.no-report .report { display: none; }
+/* Handle at the right edge: brings a hidden PDF panel back. */
+.panel-handle { position: fixed; right: 0; top: 50%; transform: translateY(-50%); z-index: 20; display: flex; align-items: center; justify-content: center; width: 2rem; height: 3rem; padding: 0; border: 1px solid var(--line); border-right: 0; border-radius: 8px 0 0 8px; background: #fff; color: var(--ink); cursor: pointer; box-shadow: -2px 2px 8px rgba(0,0,0,0.08); }
+.panel-handle:hover { background: var(--accent-soft); }
+.panel-handle[hidden] { display: none; }
+.panel-handle svg { width: 1.15rem; height: 1.15rem; }
 
 /* Rail */
 /* The rail's right edge: drag to make it wider or narrower. */
@@ -780,7 +785,8 @@ dialog.modal table.installrows a { display: block; font-size: 0.78rem; margin-to
 .shell.notes-open > .chat { display: none; }
 .notes { display: flex; flex-direction: column; min-height: 0; min-width: 0; border-right: 1px solid var(--line); background: var(--paper); }
 .viewbar { display: flex; align-items: center; gap: 0.7rem; min-width: 0; padding: 0.5rem 0.9rem; border-bottom: 1px solid var(--line); background: var(--paper); }
-.viewbar .viewlabel { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.82rem; font-weight: 500; color: #3d3d3d; }
+.viewbar .viewlabel { cursor: pointer; flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.82rem; font-weight: 500; color: #3d3d3d; }
+.viewbar .viewlabel:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 2px; }
 .viewtabs { display: inline-flex; flex: none; border: 1px solid #c9c9c2; border-radius: 7px; overflow: hidden; }
 .viewtabs button { border: 0; border-radius: 0; background: #fff; padding: 0.18rem 0.75rem; font-size: 0.8rem; color: var(--muted); }
 .viewtabs button + button { border-left: 1px solid #c9c9c2; }

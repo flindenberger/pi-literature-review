@@ -79,7 +79,7 @@
          wait. The first render replaces it. Keep in step with heroHtml. -->
     <div class="viewbar chatview" id="viewbar-chat" hidden>
       <span class="viewtabs" role="tablist"><button type="button" role="tab" data-view="chat" class="on" aria-selected="true" title="Chat about this paper" aria-label="Chat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a7.5 7.5 0 0 1-11 6.6L4 20l1.4-4.5A7.5 7.5 0 1 1 20 12z"/></svg></button><button type="button" role="tab" data-view="notes" title="Your notes on this paper" aria-label="Notes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 3H6.5A1.5 1.5 0 0 0 5 4.5v15A1.5 1.5 0 0 0 6.5 21H11"/><path d="M13 3l5 5v2"/><path d="M8.5 9h4M8.5 12.5h4"/><path d="M14 21h2.5l5-5-2.5-2.5-5 5z"/></svg></button></span>
-      <b class="viewlabel" id="viewbar-label"></b>
+      <b class="viewlabel" id="viewbar-label" title="Show the PDF"></b>
     </div>
     <div class="thread" id="thread"><div class="hero boot" aria-hidden="true">
 <div class="hero-mark"><svg viewBox="0 0 32 32"><circle cx="16" cy="16" r="16" fill="currentColor"/><text x="15.72" y="22" text-anchor="middle" font-family="Georgia,serif" font-weight="700" font-style="italic" font-size="22" fill="#fff">&pi;</text></svg></div>
@@ -108,7 +108,7 @@
     <div class="viewbar">
       <button type="button" class="rail-toggle notes-rail" id="btn-rail-notes" aria-label="Menu" title="Menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>
       <span class="viewtabs" role="tablist"><button type="button" role="tab" data-view="chat" title="Chat about this paper" aria-label="Chat"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a7.5 7.5 0 0 1-11 6.6L4 20l1.4-4.5A7.5 7.5 0 1 1 20 12z"/></svg></button><button type="button" role="tab" data-view="notes" class="on" aria-selected="true" title="Your notes on this paper" aria-label="Notes"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 3H6.5A1.5 1.5 0 0 0 5 4.5v15A1.5 1.5 0 0 0 6.5 21H11"/><path d="M13 3l5 5v2"/><path d="M8.5 9h4M8.5 12.5h4"/><path d="M14 21h2.5l5-5-2.5-2.5-5 5z"/></svg></button></span>
-      <b class="viewlabel" id="notes-title"></b>
+      <b class="viewlabel" id="notes-title" title="Show the PDF"></b>
       <div class="notes-bg" id="notes-bg"></div>
       <span class="notes-export">
         <button type="button" class="icon" id="btn-notes-export" title="Download or export these notes" aria-label="Export" aria-haspopup="menu" aria-expanded="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg></button>
@@ -125,6 +125,7 @@
     <div class="notes-scroll"><div class="notepaper" id="notes-paper" data-bg="blank" spellcheck="true" aria-label="Notes"></div></div>
   </section>
 
+  <button id="btn-show-panel" type="button" class="panel-handle" title="Show the PDF again" aria-label="Show the PDF again" hidden><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V7z"/><path d="M14 3v4h4"/><path d="M12 11l-2.5 2.5L12 16"/></svg></button>
   <section class="report" id="report">
     <div class="head">
       <span id="report-kind">Report</span><b id="report-name"></b><div class="tabs" id="tabs" role="tablist" hidden></div><span class="ticked" id="ticked"></span>
@@ -132,7 +133,7 @@
       <button id="btn-enlarge" type="button" class="icon" title="Enlarge over the page (Esc shrinks it again)" aria-label="Enlarge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M20 4l-7 7M10 20H4v-6M4 20l7-7"/></svg></button>
       <button id="btn-download" type="button" class="icon" title="Download this file" aria-label="Download"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10l5 5 5-5M5 19h14"/></svg></button>
       <button id="btn-newtab" type="button" class="icon" title="Open the file in a new browser tab" aria-label="New tab"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4h6v6M20 4L11 13M19 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"/></svg></button>
-      <button id="btn-close-panel" type="button" class="icon" title="Hide the panel; a card in the chat brings it back" aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+      <button id="btn-close-panel" type="button" class="icon" title="Hide the panel" aria-label="Close"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
     </div>
     <div class="layoutbar" id="layoutbar" hidden></div>
     <div class="empty" id="report-empty">The report appears here when a search or synthesis has finished.</div>

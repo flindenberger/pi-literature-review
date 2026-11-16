@@ -54,11 +54,27 @@ function sizePages() {
 		page.div.style.width = `${Math.floor(page.width * s)}px`;
 		page.div.style.height = `${Math.floor(page.height * s)}px`;
 		page.div.style.setProperty("--scale-factor", String(s));
-		if (page.scale !== s) { page.scale = 0; page.rendered = null; page.div.replaceChildren(); }
+		// The old canvas stays and stretches to the new box (100% in CSS)
+		// until the sharp one replaces it: no blank page, no size jump.
+		// Its text layer has the old scale and goes at once.
+		if (page.scale !== s) {
+			page.scale = 0;
+			page.rendered = null;
+			for (const layer of page.div.querySelectorAll(".textLayer")) layer.remove();
+		}
 	}
 	$("zoom").textContent = `${Math.round(state.zoom * 100)}%`;
-	// Pages already in view report again and are drawn at the new scale.
-	for (const page of state.pages) { observer.unobserve(page.div); observer.observe(page.div); }
+	redrawSoon();
+}
+
+/** Pages in view draw again at the new scale, once the size has settled
+ * (a resize sends many events; each would start a render). */
+let redrawTimer = 0;
+function redrawSoon() {
+	clearTimeout(redrawTimer);
+	redrawTimer = setTimeout(() => {
+		for (const page of state.pages) { observer.unobserve(page.div); observer.observe(page.div); }
+	}, 120);
 }
 
 /** Draw one page (canvas + text layer) at the current scale, once. */
@@ -75,8 +91,11 @@ function renderPage(page) {
 		canvas.height = Math.floor(viewport.height * ratio);
 		const layer = document.createElement("div");
 		layer.className = "textLayer";
-		page.div.replaceChildren(canvas, layer);
+		// Drawn off-page, then swapped in for the stretched old canvas.
 		await proxy.render({ canvasContext: canvas.getContext("2d"), viewport, transform: ratio === 1 ? null : [ratio, 0, 0, ratio, 0, 0] }).promise;
+		// The scale changed meanwhile: a newer render takes the page.
+		if (page.scale !== s) return page;
+		page.div.replaceChildren(canvas, layer);
 		// The same text the passage was checked against: not normalized,
 		// joined without separators, a line break per hasEOL item.
 		const content = await proxy.getTextContent({ disableNormalization: true });
@@ -209,8 +228,8 @@ async function open() {
 addEventListener("hashchange", () => { follow(); });
 let resizeTimer = 0;
 addEventListener("resize", () => {
-	clearTimeout(resizeTimer);
-	resizeTimer = setTimeout(() => { if (state.fit && state.doc) rescale(() => { state.base = fitBase(); }); }, 150);
+	cancelAnimationFrame(resizeTimer);
+	resizeTimer = requestAnimationFrame(() => { if (state.fit && state.doc) rescale(() => { state.base = fitBase(); }); });
 });
 scroller.addEventListener("scroll", () => { if (document.activeElement !== $("page")) $("page").value = String(currentPage()); });
 const step = (direction) => {
