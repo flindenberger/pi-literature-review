@@ -4,7 +4,7 @@ All notable changes to this package are listed here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.4.2] - 2026-11-16
 
 ### Fixed
 
@@ -225,7 +225,7 @@ in the Pi coding agent.
   per-paper summaries, detail questions and an optional review synthesis.
 - Command line for all three stages without Pi.
 
-[Unreleased]: https://github.com/flindenberger/pi-literature-review/compare/v0.4.1...HEAD
+[0.4.2]: https://github.com/flindenberger/pi-literature-review/releases/tag/v0.4.2
 [0.4.1]: https://github.com/flindenberger/pi-literature-review/releases/tag/v0.4.1
 [0.4.0]: https://github.com/flindenberger/pi-literature-review/releases/tag/v0.4.0
 [0.3.0]: https://github.com/flindenberger/pi-literature-review/releases/tag/v0.3.0
