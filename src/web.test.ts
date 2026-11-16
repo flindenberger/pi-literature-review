@@ -650,6 +650,7 @@ try {
 			assert.ok(ixBefore.count >= 1 && ixBefore.bytes >= 2);
 			assert.ok((await post3("/api/indexes/clear")).deleted >= 1);
 			assert.equal((await (await fetch(`${b3}/api/settings`, { headers: h3 })).json()).indexes.count, 0);
+			assert.equal(typeof (await post3("/api/indexes/update")).indexing.running, "boolean");
 			await post3("/api/dialog/new", { start: "search" });
 			const first = await post3("/api/dialog/answer", { text: "(waterline) AND (river)" });
 			await new Promise((resolve) => setTimeout(resolve, 30));

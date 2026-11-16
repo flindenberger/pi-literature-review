@@ -3334,7 +3334,25 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		}
 	}
 	for (const id of ["hist-1", "hist-2"]) $(id).addEventListener("toggle", () => { if ($(id).open) loadHistory(); });
-	$("rail-library").addEventListener("toggle", () => { if ($("rail-library").open) loadLibrary(); });
+	/** Look for new or changed PDFs in the library folders: the server
+	 * starts an index pass (new papers then rebuild the list). At most
+	 * once every few seconds unless forced (Settings button). */
+	let indexUpdateAt = 0;
+	async function updateIndex(force) {
+		if (!force && Date.now() - indexUpdateAt < 5_000) return;
+		indexUpdateAt = Date.now();
+		try { renderIndexing((await post(BASE + "/api/indexes/update")).indexing); } catch { /* the next opening tries again */ }
+	}
+	$("rail-library").addEventListener("toggle", () => { if ($("rail-library").open) { loadLibrary(); updateIndex(); } });
+	// Opening a folder in the library tree: fresh list + index pass. Clicks
+	// on the tick box or the buttons in the folder row do not count.
+	$("rail-library-list").addEventListener("click", (event) => {
+		const summary = event.target.closest("details.lfolder > summary");
+		if (!summary || event.target.closest("label, button, input")) return;
+		if (summary.parentElement.open) return;
+		loadLibrary();
+		updateIndex();
+	});
 	document.querySelector(".rail").addEventListener("click", async (event) => {
 		const more = event.target.closest("[data-hist-more]");
 		if (more) {
@@ -3756,6 +3774,11 @@ ${folder ? `<p class="folderline">${ICON_FOLDER_SMALL}<b title="${esc(folder.car
 		if (bytes >= 1e6) return `${Math.round(bytes / 1e6)} MB`;
 		return `${Math.max(1, Math.round(bytes / 1e3))} kB`;
 	}
+	$("btn-indexes-update").addEventListener("click", async () => {
+		await updateIndex(true);
+		if ($("rail-library").open) loadLibrary();
+		toast("Looking for new or changed PDFs; they are indexed in the background.");
+	});
 	$("btn-indexes-clear").addEventListener("click", async () => {
 		const n = state.settingsIndexes || 0;
 		if (!confirm(`Delete all ${n} index${n === 1 ? "" : "es"}? Your PDFs stay. The indexes are rebuilt in the background, about 8 seconds per PDF.`)) return;

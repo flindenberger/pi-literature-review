@@ -208,6 +208,7 @@ A PDF the library already holds byte for byte is not copied again: the library o
 ### Background indexing
 
 - Every library PDF without an index is indexed, one after the other: shortly after server start, after **+ Add folder**, an upload or a download.
+- PDFs put into a folder by hand are found when **Library** or one of its folders is opened, or with **Update** next to Indexes in Settings (`POST /api/indexes/update`). There is no folder watcher.
 - Waits between two PDFs while a chat, report, index or download job runs.
 - Rail: "indexing n/m" with a bar under **Library**. An unindexed PDF says so in its tooltip only.
 - PDFs without text are not retried until the file changes.

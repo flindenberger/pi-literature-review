@@ -1959,6 +1959,12 @@ export async function startWebServer(options: WebServerOptions): Promise<WebServ
 		// Show a data folder in the file manager: one of the three stage
 		// folders (the folder button of a file card) or the data root itself
 		// (the folder icon in the rail). Nothing else.
+		// Look for new or changed PDFs in the library folders and index
+		// them (Settings button, opening the library or a folder).
+		if (route === "POST /api/indexes/update") {
+			kickIndex();
+			return json(res, 200, { indexing: indexer.snapshot() });
+		}
 		// Delete every index file; the PDFs stay and the background pass
 		// builds the indexes again. Refused while a chat, report or index
 		// job reads them.

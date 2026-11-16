@@ -712,6 +712,7 @@ dialog.paperinfo details.abstract p { margin: 0.4rem 0 0; line-height: 1.5; }
 #settings .kv input { margin: 0; grid-column: 2 / 4; }
 #settings .kv.store .folders, #settings .kv > .keys { grid-column: 2 / 4; }
 #settings .kv > b { font-weight: 400; }
+#settings .kv > .btns { display: flex; gap: 0.4rem; }
 #settings .keys { display: flex; flex-wrap: wrap; gap: 0.4rem; }
 #settings .key { border: 1px solid var(--line); border-radius: 999px; padding: 0.1rem 0.6rem; font-size: 0.78rem; color: var(--muted); }
 #settings .key.on { color: var(--ink); border-color: #9a9a94; }
