@@ -6,19 +6,20 @@ abstract: "An open and login-free literature review tool, as an extension for
   the Pi coding agent or as a standalone browser app. It provides
   deterministic multi-source search across arXiv, Crossref, OpenAlex, and
   Semantic Scholar plus code repositories, with HTTP-verified identifiers,
-  citation graphs, PRISMA documentation, legal open-access PDF downloads,
-  and grounded question answering and synthesis over local PDFs with
-  page-exact citations. No language model is involved in bibliographic
-  search, identifier verification, or the citation path. The system is
-  designed to run with local language models and embedding models,
-  including on modest hardware, enabling a fully local literature review
-  workflow without requiring cloud-based AI services."
+  citation graphs, snowball (citation) searching, PRISMA documentation,
+  legal open-access PDF downloads, and grounded question answering and
+  synthesis over local PDFs with page-exact citations. No language model
+  is involved in bibliographic search, identifier verification, or the
+  citation path. The system is designed to run with local language models
+  and embedding models, including on modest hardware, enabling a fully
+  local literature review workflow without requiring cloud-based AI
+  services."
 authors:
   - family-names: "Lindenberger"
     given-names: "Florian"
     orcid: "https://orcid.org/0009-0008-1759-3515"
-version: "0.3.0"
-date-released: "2026-11-15"
+version: "0.4.0"
+date-released: "2026-11-16"
 license: MIT
 repository-code: "https://github.com/flindenberger/pi-literature-review"
 doi: "10.5281/zenodo.22954995"
